@@ -13,15 +13,9 @@
     >
 
 
-    <TextView android:text="@string/hello_world" android:layout_width="wrap_content"
+    <TextView android:text="You need ZXing installed for this to work well. And you need a QR code with datauri encoded in it." android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:id="@+id/textView" />
-
-    <WebView  xmlns:android="http://schemas.android.com/apk/res/android"
-        android:id="@+id/webdisp"
-        android:layout_width="fill_parent"
-        android:layout_height="wrap_content"
-        android:nestedScrollingEnabled="true" />
 
     <TextView
         android:layout_width="wrap_content"
@@ -32,8 +26,16 @@
     <Button
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="Read Barcode"
+        android:id="@+id/scanBarcode"
+        android:onClick="scanButton" />
+
+
+    <Button
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="launch content"
-        android:id="@+id/button"
-        android:onClick="launchContent"/>
+        android:id="@+id/button2"
+        android:onClick="launchContent" />
 </LinearLayout>
 </ScrollView>

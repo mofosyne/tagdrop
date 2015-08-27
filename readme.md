@@ -14,3 +14,10 @@ So will need a way to read all these tags an then join it together.
 ## V1.0
 
 First objective is completed. Secondary objective is not completed, as there is no easy way to split a file across multiple QR codes in an easy to use manner.
+
+
+# Extra
+
+Category: tools
+Source: https://github.com/mofosyne/tagdrop
+Licence: https://github.com/mofosyne/tagdrop/blob/master/COPYING.txt - GNU GENERAL PUBLIC LICENSE Version 3, 29 June 2007
