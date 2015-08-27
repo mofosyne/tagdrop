@@ -9,6 +9,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
@@ -28,44 +29,26 @@ public class main extends AppCompatActivity {
         if ( iObj.getAction().equals("android.intent.action.VIEW") ) {
             datauriString = iObj.getDataString();
             String debugText =
-                      "Action: '" + iObj.getAction() + "'"
-                    + ", getDataString:'" + iObj.getDataString() + "'"
-                    + ", getData:'" + iObj.getData() + "'"
-                    + ", getScheme:'" + iObj.getScheme() + "'"
-                    + "'";
+                    "DEBUG VIEW\n"
+                    + "Action: '" + iObj.getAction() + "'\n"
+                    + ", getDataString:'" + iObj.getDataString() + "'\n"
+                    + ", getData:'" + iObj.getData() + "'\n"
+                    + ", getScheme:'" + iObj.getScheme() + "'\n"
+                    + ", SCAN_RESULT:'" + iObj.getStringExtra("SCAN_RESULT") + "'\n"
+                    + ", SCAN_RESULT_FORMAT:'" + iObj.getStringExtra("SCAN_RESULT_FORMAT") + "'\n"
+                    + ", SCAN_RESULT:'" + iObj.getStringExtra("SCAN_RESULT") + "'\n"
+                    + ", SCAN_RESULT:'" + iObj.getStringExtra("SCAN_RESULT") + "'\n"
+                    ;
             debugDisp = (TextView) findViewById(R.id.debugView);
             debugDisp.setText( debugText );
             Log.d("incoming intent", debugText);
 
             //------ webview
-            /*
-            WebView webView = (WebView) findViewById(R.id.webview);
-            webView.getSettings().setJavaScriptEnabled(true);
-
-            webView.setWebChromeClient(new WebChromeClient() {
-                public void onProgressChanged(WebView view, int progress) {
-                    activity.setTitle("Loading...");
-                    activity.setProgress(progress * 100);
-
-                    if (progress == 100)
-                        activity.setTitle(R.string.app_name);
-                }
-            });
-
-            webView.setWebViewClient(new WebViewClient() {
-                @Override
-                public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                    // Handle the error
-                }
-
-                @Override
-                public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                    view.loadUrl(url);
-                    return true;
-                }
-            });
-            */
-
+            WebView myWebView = (WebView) findViewById(R.id.webdisp);
+            WebSettings webSettings = myWebView.getSettings();
+            webSettings.setJavaScriptEnabled(true);
+            //myWebView.loadData();
+            myWebView.loadUrl(datauriString);
 
 
         } else {
