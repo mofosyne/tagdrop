@@ -34,6 +34,13 @@
     <Button
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="Clear"
+        android:id="@+id/button"
+        android:onClick="clearButton" />
+
+    <Button
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="launch content"
         android:id="@+id/button2"
         android:onClick="launchContent" />
