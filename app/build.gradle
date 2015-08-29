@@ -8,8 +8,8 @@ android {
         applicationId "com.github.mofosyne.tagdrop"
         minSdkVersion 15
         targetSdkVersion 22
-        versionCode 3
-        versionName "1.2"
+        versionCode 4
+        versionName "1.3"
     }
     buildTypes {
         release {
@@ -24,3 +24,15 @@ dependencies {
     compile 'com.android.support:appcompat-v7:22.2.1'
     compile 'com.android.support:support-v4:22.2.1'
 }
+
+/*
+* Based on https://discuss.gradle.org/t/how-to-copy-and-rename-a-single-file/5956
+* */
+task copyreadme(type: Copy) {
+    from '../README.md'
+    into 'src/main/res/raw'
+    rename { String fileName ->
+        fileName.replace("README.md", "readme.md")
+    }
+}
+tasks.copyreadme.execute()

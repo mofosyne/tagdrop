@@ -84,7 +84,8 @@ public class main extends AppCompatActivity {
         int id = item.getItemId();
 
         //noinspection SimplifiableIfStatement
-        if (id == R.id.action_settings) {
+        if (id == R.id.action_readme) {
+            startActivity( new Intent(this, ReadMe.class ));
             return true;
         }
 
@@ -181,7 +182,6 @@ public class main extends AppCompatActivity {
         datauriString = TextUtils.join( "", contentArray ); // todo: need to concat all the arrays together
         debugDisp = (TextView) findViewById(R.id.debugView);
         debugDisp.setText( datauriString );
-
     }
 
     //-------------------------------------------------------

@@ -24,7 +24,7 @@
         android:id="@+id/debugView"/>
 
     <Button
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Read Barcode"
         android:id="@+id/scanBarcode"
@@ -32,14 +32,14 @@
 
 
     <Button
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Clear"
         android:id="@+id/button"
         android:onClick="clearButton" />
 
     <Button
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="launch content"
         android:id="@+id/button2"
