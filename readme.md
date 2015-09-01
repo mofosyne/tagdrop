@@ -15,7 +15,7 @@ Make sure you have zxing barcode reader installed, otherwise this app will just 
 
 There is two ways to open a datauri:
 
-* For datauris that fit in a single QR code, just scan directly from zxing barcode reader app, press "open browser" and you can start viewing it.
+* For datauris that fit in a single QR code, just scan directly from zxing barcode reader app (<a href="https://f-droid.org/repository/browse/?fdfilter=zxing&fdid=com.google.zxing.client.android">F-Droid</a>, <a href="https://play.google.com/store/apps/details?id=com.google.zxing.client.android">Play Store</a>), press "open browser" and you can start viewing it.
 * For longer datauris split across multiple barcodes, just scan them all in seqence using the main tag dead drop app.
 
 # Status
