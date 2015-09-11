@@ -21,8 +21,13 @@ android {
 
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
+    // https://developer.android.com/tools/support-library/features.html#v7-appcompat
     compile 'com.android.support:appcompat-v7:22.2.1'
     compile 'com.android.support:support-v4:22.2.1'
+
+    // We may need these two dependencies to implement proper zxing integration.
+    compile 'com.google.zxing:core:3.+'
+    compile 'com.google.zxing:android-integration:3.+'
 }
 
 /*

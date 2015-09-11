@@ -1,8 +1,12 @@
 package com.github.mofosyne.tagdrop;
 
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.preference.PreferenceManager;
 import android.support.v7.app.AppCompatActivity;
 import android.text.TextUtils;
 import android.util.Log;
@@ -10,6 +14,13 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
+
+import java.io.IOException;
+import java.util.Arrays;
 
 public class main extends AppCompatActivity {
     //
@@ -120,11 +131,33 @@ public class main extends AppCompatActivity {
     }
 
     public void launchBarcodeReader( String promptMessage ) {
+        /*
         Intent intent = new Intent("com.google.zxing.client.android.SCAN");
         intent.putExtra("SCAN_MODE", "QR_CODE_MODE");
         intent.putExtra("SCAN_FORMATS", "DATA_MATRIX,QR_CODE,MAXICODE,PDF_417,AZTEC");
         intent.putExtra("PROMPT_MESSAGE", promptMessage );
         startActivityForResult(intent, QR_READER_ACTIVITY_REQUEST_CODE);
+        */
+        // Lifted from QRStream :D
+        SharedPreferences sharedPref = PreferenceManager.getDefaultSharedPreferences(this);
+        IntentIntegrator integrator = new IntentIntegrator(this);
+        integrator.addExtra("RESULT_DISPLAY_DURATION_MS", Long.valueOf(sharedPref.getString("scan_delay", "0"))); // Want to be instant
+        integrator.addExtra("PROMPT_MESSAGE", promptMessage);
+        integrator.addExtra("CHARACTER_SET", "ISO-8859-1"); // By default process as 8bit
+
+        AlertDialog barcodeScannerPrompt
+                = integrator.initiateScan(Arrays.asList("QR_CODE", "AZTEC", "DATA_MATRIX", "MAXICODE" ));
+        if (barcodeScannerPrompt != null) {
+            // If zxing not installed, then launch the install recommendation dialog in barcodeScannerPrompt.
+            barcodeScannerPrompt.setButton(DialogInterface.BUTTON_NEGATIVE, null, new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialogInterface, int i) {
+                    setResult(RESULT_CANCELED, getIntent());
+                    finish();
+                }
+            });
+        }
+
     }
 
     public void clearButton(View v) { // You must have "View v" or app will crash
@@ -134,48 +167,56 @@ public class main extends AppCompatActivity {
 
 
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
-        if (requestCode == QR_READER_ACTIVITY_REQUEST_CODE) {
-            if (resultCode == RESULT_OK) {
-                String contents = intent.getStringExtra("SCAN_RESULT");
-                String format = intent.getStringExtra("SCAN_RESULT_FORMAT");
-                String bytecount = intent.getStringExtra("SCAN_RESULT_BYTES");
-                String orientation = intent.getStringExtra("SCAN_RESULT_ORIENTATION");
-                String eccLvl = intent.getStringExtra("SCAN_RESULT_ERROR_CORRECTION_LEVEL");
-                String strExtList = intent.getExtras().toString();
-                // Handle successful scan
-                String debugText =
-                        "DEBUG VIEW\n"
-                                + "Content: '" + datauriString + "'\n\n"
-                                + ", format:'" + format + "'\n\n"
-                                + ", bytecount:'" + bytecount + "'\n\n"
-                                + ", orientation:'" + orientation + "'\n\n"
-                                + ", eccLvl:'" + eccLvl + "'\n\n"
-                                + ", Other Strings Extras:'" + strExtList + "'\n\n"
-                        ; // Can we get structured append metadata here?
-                debugDisp = (TextView) findViewById(R.id.debugView);
-                debugDisp.setText( debugText );
-                Log.d("incoming intent", debugText);
 
-                // Save and append if required
-                if(structuredAppendDetected) {
-                    //todo: logic on smart addition of qr content (Then we could auto launch when all is received.
-                    contentArray[currentSeqNum] = contents;
-                } else {
-                    if (false) {
-                        //todo: would be good to autodetect datauris and respond as if it was a new sequence
-                    } else {
-                        // Dumb append mode
+        /*
+        *   ZXING integration
+        *   parseActivityResult shows null, if reuqest code receifved is not the int from ZXING.
+        * */
+        IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, intent);
+        if (result != null) {
+            // handle scan result
+            { // Add try catch here if needed (e.g. file io like in qrstream )
+                if (result.getFormatName() != null) {
+                    // Parse detected barcode
+                    /*
+                    *   Here we shall either do this in string mode or binary mode.
+                    *   By default we are always in string mode. Unless we parse a manifest indicating that subsequent barcodes are binary content.
+                    * */
+                    /* debug
+                    * */
+                    String debugText = "DEBUG VIEW\n" + result.toString();
+                    debugDisp = (TextView) findViewById(R.id.debugView);
+                    debugDisp.setText( debugText );
+                    Log.d("incoming intent", debugText);
+                    /* Treat as string
+                    * */
+                    String contents = result.getContents();
+                    // Save and append if required
+                    if(structuredAppendDetected) {
+                        //todo: logic on smart addition of qr content (Then we could auto launch when all is received.
                         contentArray[currentSeqNum] = contents;
-                        currentSeqNum++;
-                        totalInSeqNum++;
+                    } else {
+                        if (false) {
+                            //todo: would be good to autodetect datauris and respond as if it was a new sequence
+                        } else {
+                            // Dumb append mode
+                            contentArray[currentSeqNum] = contents;
+                            currentSeqNum++;
+                            totalInSeqNum++;
 
-                        // Ask for next sequence
-                        launchBarcodeReader("Scanning Next Sequence. Press back/return to escape. ");
+                            // Ask for next sequence
+                            launchBarcodeReader("Scanning Next Sequence. Press back/return to escape. ");
+                        }
                     }
+                    /* Or binary? */
+
+
+                } else {
+                    // No Barcode were detected.
                 }
-            } else if (resultCode == RESULT_CANCELED) {
-                // Handle cancel
             }
+
+
         }
 
         // Update Preview Screen
