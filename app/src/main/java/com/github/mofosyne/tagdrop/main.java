@@ -5,8 +5,6 @@ import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
 
-import com.github.mofosyne.tagdrop.R;
-
 public class main extends AppCompatActivity {
     /*
         This is ment to be the first page of tagdrop, and will have
@@ -22,7 +20,7 @@ public class main extends AppCompatActivity {
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
-        getMenuInflater().inflate(R.menu.menu_main, menu);
+        getMenuInflater().inflate(R.menu.menu_receive, menu);
         return true;
     }
 
