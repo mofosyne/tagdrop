@@ -41,7 +41,7 @@ public class Receive extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_Receive);
+        setContentView(R.layout.activity_receive);
 
         // On load, clear everything
         clear();
