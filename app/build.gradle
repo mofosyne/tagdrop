@@ -35,7 +35,7 @@ dependencies {
 * */
 task copyreadme(type: Copy) {
     from '../README.md'
-    into 'src/main/res/raw'
+    into 'src/Receive/res/raw'
     rename { String fileName ->
         fileName.replace("README.md", "readme.md")
     }

@@ -91,7 +91,7 @@ public class ReadMe extends AppCompatActivity {
     * */
     private void updateMainDisplay(String text) {
         TextView mTextView = (TextView) findViewById(R.id.readme_info);
-        // Let's update the main display
+        // Let's update the Receive display
         // Needs to set as spannable otherwise http://stackoverflow.com/questions/16340681/fatal-exception-string-cant-be-cast-to-spannable
         mTextView.setText(text, TextView.BufferType.SPANNABLE);
         // Let's prettify it!

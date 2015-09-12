@@ -10,4 +10,5 @@
     <string name="title_activity_html_view">htmlView</string>
     <string name="title_activity_read_me">ReadMe</string>
     <string name="readMe">Read Me</string>
+    <string name="title_activity_main">main</string>
 </resources>
