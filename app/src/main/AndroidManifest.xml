@@ -55,6 +55,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Scanned papers collection -->
+        <activity
+            android:name=".PapersActivity"
+            android:label="@string/title_papers"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- In-app README viewer -->
         <activity
             android:name=".ReadMeActivity"

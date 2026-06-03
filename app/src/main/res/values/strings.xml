@@ -26,6 +26,12 @@
     <string name="button_open">Open</string>
     <string name="button_delete">Delete</string>
 
+    <!-- Main screen -->
+    <string name="menu_papers">Scanned Papers</string>
+    <string name="title_papers">Papers</string>
+    <string name="empty_papers">No papers scanned yet.\nTap the camera button and scan a paper manifest QR.</string>
+    <string name="paper_file_count">%1$d file(s)</string>
+
     <!-- Paper manifest -->
     <string name="paper_manifest_label">Paper Manifest</string>
     <string name="paper_scanned">Paper scanned: %1$d file(s) in directory.</string>

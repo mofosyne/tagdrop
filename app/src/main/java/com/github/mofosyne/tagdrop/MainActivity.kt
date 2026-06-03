@@ -2,6 +2,8 @@ package com.github.mofosyne.tagdrop
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -49,5 +51,18 @@ class MainActivity : AppCompatActivity() {
         binding.fabScan.setOnClickListener {
             startActivity(Intent(this, ReceiveActivity::class.java))
         }
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_main, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == R.id.action_papers) {
+            startActivity(Intent(this, PapersActivity::class.java))
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 }
