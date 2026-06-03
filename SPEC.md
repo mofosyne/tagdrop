@@ -33,7 +33,20 @@ tagdrop://v1/<type>/<base45-cbor>
 | `<type>` | `s` | Single-code cache (complete payload) |
 | | `m` | Manifest (header for a multi-code cache) |
 | | `c` | Chunk (one geographic fragment) |
+| | `p` | Paper manifest (directory for a physical paper) |
 | `<base45-cbor>` | alphanumeric | RFC 9285 Base45-encoded CBOR map |
+
+### Navigation links (not QR payloads)
+
+HTML pages embedded in TagDrop caches can link to other files and papers using:
+
+```
+tagdrop://<rootHash-base45>/<slug>
+```
+
+`rootHash` is the 8-byte SHA-256 of the paper manifest CBOR, Base45-encoded (12 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
+
+**Disambiguation:** the encoding URI paths all begin `v1/` (lowercase `v`). The Base45 alphabet contains only uppercase letters and digits. So `v1/` can **never** be the start of a valid Base45-encoded root hash. Encoding URIs and navigation links are unambiguously distinguishable by the first two characters after `tagdrop://`.
 
 **Why Base45?** QR codes have an alphanumeric mode (charset 0–9, A–Z, space, `$%*+-./:`) that stores 5.5 bits per character vs 8 bits per character in binary mode. Base45 encodes 2 bytes → 3 alphanumeric characters, giving ~3% overhead — far better than Base64 (33% overhead in binary mode).
 
@@ -47,9 +60,9 @@ All payloads are CBOR maps with **integer keys**. Unknown keys must be ignored (
 
 | Key | Field | Type | Used in |
 |---|---|---|---|
-| 1 | `version` | uint | S, M |
-| 2 | `cache_id` | bytes (8) | S, M, C |
-| 3 | `hint` | text (opt) | S, M |
+| 1 | `version` | uint | S, M, P |
+| 2 | `cache_id` / `root_hash` | bytes (8) | S, M, C, P |
+| 3 | `hint` / `label` | text (opt) | S, M, P |
 | 4 | `mime_type` | text | S, M |
 | 5 | `content` | bytes | S |
 | 6 | `chunk_count` | uint | M |
@@ -59,8 +72,33 @@ All payloads are CBOR maps with **integer keys**. Unknown keys must be ignored (
 | 10 | `chunk_data` | bytes | C |
 | 11 | `filename` | text (opt) | S, M |
 | 12 | `compression` | uint (opt) | S, M |
+| 13 | `set` | text (opt) | P |
+| 14 | `slug` | text (opt) | P |
+| 15 | `files` | array | P |
+| 16 | `related` | array | P |
 
-**S** = Single, **M** = Manifest, **C** = Chunk
+**S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
+
+### File entry sub-keys (elements of key 15)
+
+Each element is a CBOR map:
+
+| Key | Field | Type |
+|---|---|---|
+| 20 | `slug` | text |
+| 21 | `mime_type` | text |
+| 22 | `file_id` | bytes (8) — `cache_id` of the file's root QR |
+
+### Related paper sub-keys (elements of key 16)
+
+Each element is a CBOR map:
+
+| Key | Field | Type |
+|---|---|---|
+| 3 | `hint` | text — human-readable location description |
+| 13 | `set` | text (opt) |
+| 14 | `slug` | text (opt) |
+| 23 | `paper_id` | bytes (8, opt) — root hash of the related paper |
 
 ---
 
@@ -116,6 +154,60 @@ CBOR map {
 
 Chunks intentionally omit version, hint, mime, and filename to minimise size.
 
+### 4.4 Paper Manifest (`tagdrop://v1/p/…`)
+
+A paper manifest is the **directory QR code** for a physical paper (A4 sheet, sticker board, poster). Think of it as a floppy disk's FAT: it lists every file on the paper and can point toward related papers at other locations.
+
+```
+CBOR map {
+  1: 1,                             // version
+  2: h'<8-byte root hash>',         // SHA-256(this CBOR)[0:8] — paper's permanent address
+  3: "Trail Stop 3 — Oak Tree",     // label — human-readable paper name (optional)
+  13: "sunset-trail",               // set — which network/trail (optional)
+  14: "oak-tree",                   // slug — this paper's address within the set (optional)
+  15: [                             // files — directory of QR codes on this paper
+    {20: "index",   21: "text/html",  22: h'<file_id>'},
+    {20: "map",     21: "image/svg+xml", 22: h'<file_id>'},
+  ],
+  16: [                             // related — hints to other papers
+    {3: "Next stop: the red letterbox 200m north", 14: "letterbox", 23: h'<paper_id>'},
+    {3: "Start of trail: town square notice board"},
+  ]
+}
+```
+
+`root_hash` (key 2) is computed externally after the rest of the CBOR is finalised — see §4.5.
+
+**Navigation:** HTML files on the paper can link to other files using:
+```html
+<a href="tagdrop://<paper-root-hash-base45>/map">See the map</a>
+```
+The TagDrop app intercepts these links and resolves them from the local database.
+
+### 4.5 Content-Addressed IDs (IPFS-inspired)
+
+TagDrop uses **content-addressed identifiers** — the same content always gets the same ID, regardless of who created it or where it was found.
+
+**File IDs (`cache_id`):**
+```
+cache_id = SHA-256(uncompressed content)[0:8]
+```
+Two QR codes encoding the same bytes will have the same `cache_id`. This enables deduplication across multiple papers and papers made by different authors.
+
+**Paper root hashes:**
+```
+root_hash = SHA-256(paper manifest CBOR bytes)[0:8]
+```
+A paper's root hash is computed from its manifest CBOR, which includes the root hash field itself (key 2). This is the same chicken-and-egg situation IPFS solves the same way: encode the manifest *without* the hash, compute the hash, insert it, then re-encode. The root hash is the paper's permanent, immutable address. Because paper is inherently immutable (you can't update a sticker), this is fine — a new revision gets a new root hash.
+
+**Three-level hierarchy:**
+
+```
+Paper (root hash)
+  └─ Files (cache_id)
+       └─ Chunks (cache_id of manifest, linked by chunk codes)
+```
+
 ---
 
 ## 5. Multi-Code Assembly Protocol
@@ -157,7 +249,68 @@ Or the manifest can be omitted from the field and provided out-of-band (e.g. pos
 
 ---
 
-## 7. Compression
+## 7. TagDropNet — The Offline Paper Web
+
+A collection of physical papers with paper manifests forms a **TagDropNet**: an offline, content-addressed hypertext web made of paper, with no server, no internet connection, and no central authority.
+
+### Paper as floppy disk
+
+Each A4 sheet is analogous to a floppy disk:
+
+| Floppy disk concept | TagDrop equivalent |
+|---|---|
+| Disk label / volume name | `label` field in paper manifest |
+| FAT (file allocation table) | paper manifest QR code |
+| Sectors | individual file QR codes (or chunk codes for large files) |
+| Directory | `files` array in paper manifest |
+| Volume serial number | `root_hash` (content-addressed, permanent) |
+
+A recommended layout for an A4 paper:
+
+```
+┌─────────────────────────────────────────────┐
+│  [ Manifest QR ]   Trail Stop 3 — Oak Tree  │
+│                                             │
+│  [ index.html ]    [ map.svg ]              │
+│                                             │
+│  Next: letterbox 200m north                 │
+└─────────────────────────────────────────────┘
+```
+
+Scan the manifest first to get the directory, then scan whichever file you want — you don't have to scan everything.
+
+### Navigation links
+
+HTML files can link across the TagDropNet using:
+```
+tagdrop://<rootHash-base45>/<slug>
+```
+
+When the TagDrop WebView encounters such a link, it:
+1. Looks up `rootHash` in the local scanned-papers database.
+2. Finds the `slug` in that paper's file directory.
+3. Looks up the file's `cache_id` in the found-caches database.
+4. If found: loads the file. If not: shows a "not yet scanned" message with the location hint.
+
+This gives the experience of browsing a website, but entirely offline and made of physical paper.
+
+### Sets and slugs
+
+Papers can belong to named **sets** (trails, networks, exhibitions). Within a set, each paper has a unique `slug`. This enables relative addressing:
+
+```
+A paper with set="sunset-trail", slug="oak-tree"
+links to another paper with slug="letterbox" in the same set.
+```
+
+The full navigation URI for the letterbox paper's index file would be:
+```
+tagdrop://<letterbox-paper-root-hash-base45>/index
+```
+
+Root hashes are permanent because paper is immutable. If a paper is updated, it gets a new hash — the old one continues to work as long as the old paper exists physically.
+
+## 8. Compression
 
 | `compression` value | Algorithm |
 |---|---|
@@ -171,7 +324,7 @@ DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively
 
 ---
 
-## 8. Backward Compatibility: Legacy `data:` URIs
+## 9. Backward Compatibility: Legacy `data:` URIs
 
 Codes containing a raw `data:` URI (without the `tagdrop://` scheme) are recognised and handled in **legacy mode**:
 
@@ -182,7 +335,7 @@ New content should use the `tagdrop://` scheme. Legacy support will be maintaine
 
 ---
 
-## 9. NFC Transport (future)
+## 10. NFC Transport (future)
 
 The CBOR payload (without the `tagdrop://v1/s/` prefix) can be stored directly in an NFC NDEF record with:
 
@@ -196,7 +349,7 @@ A NFC-NDEF capable multi-tag sequence would use the same manifest/chunk split, w
 
 ---
 
-## 10. Alternative Carriers
+## 11. Alternative Carriers
 
 The format is carrier-agnostic. Any medium that can carry a UTF-8 string supports the `tagdrop://` URI form. Any medium that carries raw bytes supports the raw CBOR form.
 
@@ -211,32 +364,38 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 
 ---
 
-## 11. Version Negotiation
+## 12. Version Negotiation
 
-The `version` field (key 1) is present in Single and Manifest payloads (not Chunks, which inherit from their Manifest). A reader encountering an unknown version should display a human-readable error rather than silently failing.
+The `version` field (key 1) is present in Single, Manifest, and PaperManifest payloads (not Chunks, which inherit from their Manifest). A reader encountering an unknown version should display a human-readable error rather than silently failing.
 
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. Keys 1–12. DEFLATE compression. Base45 URI encoding. |
+| 1 | Initial release. Keys 1–16, 20–23. Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. |
 
 ---
 
-## 12. Reference Implementations
+## 13. Reference Implementations
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
-  - `TagDropCodec.kt` — encode/decode
+  - `TagDropCodec.kt` — encode/decode all payload types; `contentId()`, `rootHashOf()`, `createSingle()`
   - `Base45.kt` — RFC 9285
-  - `MiniCbor.kt` — minimal CBOR encoder/decoder
+  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4) and nested maps
   - `ChunkAssembler.kt` — multi-code assembly with SHA-256 verification
+  - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links
+
+- **Android database:** `app/src/main/java/com/github/mofosyne/tagdrop/data/db/`
+  - `FoundCache.kt` — Room entity for scanned file caches
+  - `ScannedPaper.kt` — Room entity for scanned paper manifests
+  - `AppDatabase.kt` — Room DB v2 with migration
 
 ---
 
-## 13. Design Notes and Alternatives Considered
+## 14. Design Notes and Alternatives Considered
 
 **Why not extend `data:` URI syntax?** (issues #2, #4, #13) Adding parameters like `;seq-id=`, `;seq-total=`, `;crc=` to the data URI was the original approach. It fails because data: URIs are opaque to QR readers — there's no way to route them to the app by scheme. The `tagdrop://` scheme gives us OS-level routing and a clean separation between the envelope and payload.
 
-**Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§9).
+**Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§10).
 
 **Binary mode vs alphanumeric Base45:** Raw binary QR codes store 8 bits/char. Alphanumeric Base45 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop://` prefix is human-readable.
 

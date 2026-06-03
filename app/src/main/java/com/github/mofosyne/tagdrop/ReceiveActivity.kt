@@ -7,6 +7,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.ChunkAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
@@ -22,6 +23,7 @@ import kotlinx.coroutines.launch
  * Single-code caches are saved and opened immediately.
  * Multi-code caches accumulate until all chunks + manifest are received
  * (order-independent — useful for geographic distribution across a trail).
+ * Paper manifests are saved as directories and displayed for browsing.
  * Legacy data: URI fragments use dumb-append mode for backward compatibility.
  */
 class ReceiveActivity : AppCompatActivity() {
@@ -30,6 +32,7 @@ class ReceiveActivity : AppCompatActivity() {
 
     private val assembler = ChunkAssembler()
     private val legacyChunks = mutableListOf<String>()
+    private var lastPaper: TagDropPayload.PaperManifest? = null
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
         handleScanResult(result)
@@ -69,7 +72,7 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     private fun handleScanResult(result: ScanIntentResult) {
-        val scanned = result.contents ?: return  // user cancelled — do nothing
+        val scanned = result.contents ?: return
         processScanned(scanned)
     }
 
@@ -81,6 +84,7 @@ class ReceiveActivity : AppCompatActivity() {
             }
             is TagDropPayload.Manifest -> {
                 assembler.add(payload)
+                lastPaper = null
                 updateDisplay()
                 toast(getString(R.string.manifest_scanned, payload.chunkCount))
                 launchScanner()
@@ -105,6 +109,7 @@ class ReceiveActivity : AppCompatActivity() {
                     else -> updateDisplay()
                 }
             }
+            is TagDropPayload.PaperManifest -> handlePaperManifest(payload)
             is TagDropPayload.Legacy -> {
                 legacyChunks.add(payload.dataUri)
                 updateDisplay()
@@ -112,13 +117,31 @@ class ReceiveActivity : AppCompatActivity() {
                 launchScanner()
             }
             null -> {
-                // Unknown format — fall back to dumb-append (issue #13 backward compat)
                 legacyChunks.add(scanned)
                 updateDisplay()
                 toast(getString(R.string.unknown_fragment, legacyChunks.size))
                 launchScanner()
             }
         }
+    }
+
+    private fun handlePaperManifest(payload: TagDropPayload.PaperManifest) {
+        val cbor = TagDropCodec.paperManifestCbor(payload)
+        lifecycleScope.launch {
+            AppDatabase.get(this@ReceiveActivity).paperDao().insert(
+                ScannedPaper(
+                    rootHash  = payload.rootHash.toHex(),
+                    scannedAt = System.currentTimeMillis(),
+                    label     = payload.label,
+                    set       = payload.set,
+                    slug      = payload.slug,
+                    cborBytes = cbor
+                )
+            )
+        }
+        lastPaper = payload
+        updateDisplay()
+        toast(getString(R.string.paper_scanned, payload.files.size))
     }
 
     /** Cache is complete — save to DB and open immediately. */
@@ -144,8 +167,7 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun launchLegacyContent() {
         if (legacyChunks.isEmpty()) return
-        val uri = legacyChunks.joinToString("")
-        openDataUri(uri)
+        openDataUri(legacyChunks.joinToString(""))
     }
 
     private fun openContent(mimeType: String, bytes: ByteArray) {
@@ -164,6 +186,7 @@ class ReceiveActivity : AppCompatActivity() {
     private fun clearState() {
         assembler.reset()
         legacyChunks.clear()
+        lastPaper = null
         updateDisplay()
     }
 
@@ -173,6 +196,7 @@ class ReceiveActivity : AppCompatActivity() {
                 getString(R.string.status_legacy, legacyChunks.size) + "\n\n" +
                     legacyChunks.joinToString("").take(300)
             }
+            lastPaper != null -> buildPaperStatusText(lastPaper!!)
             !assembler.hasManifest -> getString(R.string.status_ready)
             else -> {
                 val state = assembler.currentState()
@@ -183,6 +207,22 @@ class ReceiveActivity : AppCompatActivity() {
         }
         binding.textStatus.text = statusText
         binding.buttonLaunch.isEnabled = legacyChunks.isNotEmpty()
+    }
+
+    private fun buildPaperStatusText(paper: TagDropPayload.PaperManifest): String = buildString {
+        appendLine(paper.label ?: getString(R.string.paper_manifest_label))
+        if (paper.set != null) appendLine(getString(R.string.paper_set, paper.set))
+        if (paper.slug != null) appendLine("/${paper.slug}")
+        appendLine()
+        appendLine(getString(R.string.paper_files_header, paper.files.size))
+        for (f in paper.files) appendLine("  • ${f.slug}  [${f.mimeType}]")
+        if (paper.related.isNotEmpty()) {
+            appendLine()
+            appendLine(getString(R.string.paper_related_header))
+            for (r in paper.related) appendLine("  → ${r.hint}")
+        }
+        appendLine()
+        appendLine(getString(R.string.paper_scan_hint))
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

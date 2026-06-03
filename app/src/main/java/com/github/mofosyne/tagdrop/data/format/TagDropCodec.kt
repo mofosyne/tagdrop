@@ -2,21 +2,27 @@ package com.github.mofosyne.tagdrop.data.format
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 import java.util.zip.DeflaterOutputStream
 import java.util.zip.InflaterInputStream
 
 /**
  * Encodes and decodes TagDrop QR payloads.
  *
- * URI scheme:  tagdrop://v1/<type>/<base45-cbor>
+ * Encoding URI scheme:  tagdrop://v1/<type>/<base45-cbor>
  *   s = Single  — complete cache in one QR
  *   m = Manifest — header for a multi-QR cache
  *   c = Chunk   — one geographic fragment
+ *   p = PaperManifest — directory of files on a physical paper
+ *
+ * Navigation links (NOT encoding URIs, NOT put in QR codes):
+ *   tagdrop://<rootHash-base45>/<slug>
+ *   'v' is lowercase — not in the Base45 alphabet — so "v1/" is unambiguous.
  *
  * CBOR map integer keys:
  *   1  version       uint
- *   2  cache_id      bytes (8)
- *   3  hint          text, optional
+ *   2  cache_id      bytes(8)  also root_hash for PaperManifest
+ *   3  hint          text, optional  also label for PaperManifest
  *   4  mime_type     text
  *   5  content       bytes    (Single only)
  *   6  chunk_count   uint     (Manifest only)
@@ -26,6 +32,21 @@ import java.util.zip.InflaterInputStream
  *   10 chunk_data    bytes    (Chunk only)
  *   11 filename      text, optional
  *   12 compression   uint 0=none 1=deflate
+ *   13 set           text, optional  (PaperManifest)
+ *   14 slug          text, optional  (PaperManifest)
+ *   15 files         array    (PaperManifest)
+ *   16 related       array    (PaperManifest)
+ *
+ * File entry sub-keys (within key 15 elements):
+ *   20 slug        text
+ *   21 mime_type   text
+ *   22 file_id     bytes(8)
+ *
+ * Related paper sub-keys (within key 16 elements):
+ *   3  hint        text
+ *   13 set         text, optional
+ *   14 slug        text, optional
+ *   23 paper_id    bytes(8), optional
  */
 object TagDropCodec {
 
@@ -36,6 +57,7 @@ object TagDropCodec {
     private const val PATH_S   = "v1/s/"
     private const val PATH_M   = "v1/m/"
     private const val PATH_C   = "v1/c/"
+    private const val PATH_P   = "v1/p/"
 
     private const val K_VERSION     = 1
     private const val K_CACHE_ID    = 2
@@ -49,6 +71,50 @@ object TagDropCodec {
     private const val K_CHUNK_DATA  = 10
     private const val K_FILENAME    = 11
     private const val K_COMPRESSION = 12
+    private const val K_SET         = 13
+    private const val K_SLUG        = 14
+    private const val K_FILES       = 15
+    private const val K_RELATED     = 16
+    private const val K_FILE_SLUG   = 20
+    private const val K_FILE_MIME   = 21
+    private const val K_FILE_ID     = 22
+    private const val K_PAPER_ID    = 23
+
+    // ── Content addressing (IPFS-inspired) ───────────────────────────────────
+
+    /** SHA-256(uncompressed content)[0:8] — same bytes, same ID, everywhere. */
+    fun contentId(content: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(content).copyOf(8)
+
+    /**
+     * SHA-256(paperManifestCbor)[0:8] — the paper's permanent root hash.
+     * Compute this AFTER finalizing the manifest; store it as root_hash inside the CBOR,
+     * then re-encode. (Same chicken-and-egg resolution as IPFS CIDs.)
+     */
+    fun rootHashOf(paperManifestCbor: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(paperManifestCbor).copyOf(8)
+
+    // ── Factory helpers ───────────────────────────────────────────────────────
+
+    /** Build a Single payload with an auto-computed content-addressed ID. */
+    fun createSingle(
+        hint: String?, filename: String?, mimeType: String,
+        rawContent: ByteArray, compress: Boolean = false
+    ): TagDropPayload.Single {
+        val (content, compression) = if (compress) {
+            compress(rawContent) to COMPRESSION_DEFLATE
+        } else {
+            rawContent to COMPRESSION_NONE
+        }
+        return TagDropPayload.Single(
+            cacheId     = contentId(rawContent),
+            hint        = hint,
+            filename    = filename,
+            mimeType    = mimeType,
+            compression = compression,
+            content     = content
+        )
+    }
 
     // ── Encoding ──────────────────────────────────────────────────────────────
 
@@ -84,8 +150,36 @@ object TagDropCodec {
                 K_CHUNK_DATA to payload.data
             ))
         )
+        is TagDropPayload.PaperManifest -> SCHEME + PATH_P + Base45.encode(
+            paperManifestCbor(payload)
+        )
         is TagDropPayload.Legacy -> payload.dataUri
     }
+
+    /** Raw CBOR for a PaperManifest — use this to compute rootHashOf() and for DB storage. */
+    fun paperManifestCbor(payload: TagDropPayload.PaperManifest): ByteArray =
+        MiniCbor.encodeMap(listOf(
+            K_VERSION  to 1,
+            K_CACHE_ID to payload.rootHash,
+            K_HINT     to payload.label,
+            K_SET      to payload.set,
+            K_SLUG     to payload.slug,
+            K_FILES    to payload.files.map { f ->
+                MiniCbor.CborMap(listOf(
+                    K_FILE_SLUG to f.slug,
+                    K_FILE_MIME to f.mimeType,
+                    K_FILE_ID   to f.fileId
+                ))
+            },
+            K_RELATED  to payload.related.map { r ->
+                MiniCbor.CborMap(listOf(
+                    K_HINT     to r.hint,
+                    K_SET      to r.set,
+                    K_SLUG     to r.slug,
+                    K_PAPER_ID to r.paperId
+                ))
+            }
+        ))
 
     // ── Decoding ──────────────────────────────────────────────────────────────
 
@@ -98,10 +192,15 @@ object TagDropCodec {
                 rest.startsWith(PATH_S) -> decodeSingle(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_S))))
                 rest.startsWith(PATH_M) -> decodeManifest(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_M))))
                 rest.startsWith(PATH_C) -> decodeChunk(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_C))))
+                rest.startsWith(PATH_P) -> decodePaperManifest(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_P))))
                 else -> null
             }
         }.getOrNull()
     }
+
+    /** Decode a PaperManifest from its raw CBOR bytes (e.g. stored in ScannedPaper.cborBytes). */
+    fun decodePaperManifestCbor(cbor: ByteArray): TagDropPayload.PaperManifest? =
+        runCatching { decodePaperManifest(MiniCbor.decodeMap(cbor)) }.getOrNull()
 
     private fun decodeSingle(m: Map<Int, Any>) = TagDropPayload.Single(
         cacheId     = m.bytes(K_CACHE_ID),
@@ -129,6 +228,37 @@ object TagDropCodec {
         data    = m.bytes(K_CHUNK_DATA)
     )
 
+    @Suppress("UNCHECKED_CAST")
+    private fun decodePaperManifest(m: Map<Int, Any>): TagDropPayload.PaperManifest {
+        val files = (m[K_FILES] as? List<*>)?.mapNotNull { entry ->
+            val em = entry as? Map<Int, Any> ?: return@mapNotNull null
+            TagDropPayload.FileEntry(
+                slug     = em.text(K_FILE_SLUG) ?: return@mapNotNull null,
+                mimeType = em.text(K_FILE_MIME) ?: return@mapNotNull null,
+                fileId   = (em[K_FILE_ID] as? ByteArray) ?: return@mapNotNull null
+            )
+        } ?: emptyList()
+
+        val related = (m[K_RELATED] as? List<*>)?.mapNotNull { entry ->
+            val em = entry as? Map<Int, Any> ?: return@mapNotNull null
+            TagDropPayload.RelatedPaper(
+                hint    = em.text(K_HINT) ?: return@mapNotNull null,
+                set     = em.text(K_SET),
+                slug    = em.text(K_SLUG),
+                paperId = em[K_PAPER_ID] as? ByteArray
+            )
+        } ?: emptyList()
+
+        return TagDropPayload.PaperManifest(
+            rootHash = m.bytes(K_CACHE_ID),
+            label    = m.text(K_HINT),
+            set      = m.text(K_SET),
+            slug     = m.text(K_SLUG),
+            files    = files,
+            related  = related
+        )
+    }
+
     // ── Compression helpers ───────────────────────────────────────────────────
 
     fun compress(data: ByteArray): ByteArray {
@@ -143,7 +273,6 @@ object TagDropCodec {
         return out.toByteArray()
     }
 
-    /** Decompress payload content if compression field says so. */
     fun decompressPayload(content: ByteArray, compression: Int): ByteArray =
         if (compression == COMPRESSION_DEFLATE) decompress(content) else content
 

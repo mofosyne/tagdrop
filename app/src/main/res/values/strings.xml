@@ -25,4 +25,18 @@
     <!-- Cache list -->
     <string name="button_open">Open</string>
     <string name="button_delete">Delete</string>
+
+    <!-- Paper manifest -->
+    <string name="paper_manifest_label">Paper Manifest</string>
+    <string name="paper_scanned">Paper scanned: %1$d file(s) in directory.</string>
+    <string name="paper_set">Set: %1$s</string>
+    <string name="paper_files_header">Files (%1$d):</string>
+    <string name="paper_related_header">Related papers:</string>
+    <string name="paper_scan_hint">Tap \'Read Barcode\' to scan a file from this paper.</string>
+
+    <!-- Link resolution (ViewDataUriActivity) -->
+    <string name="content_not_stored">Content not saved locally.</string>
+    <string name="file_not_scanned">File \'%1$s\' not yet scanned. Find and scan its QR code.</string>
+    <string name="slug_not_found">No file named \'%1$s\' in this paper\'s directory.</string>
+    <string name="paper_not_scanned">Paper not found in collection. Scan the paper manifest QR first.</string>
 </resources>
