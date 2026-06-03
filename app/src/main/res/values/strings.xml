@@ -1,14 +1,28 @@
 <resources>
     <string name="app_name">tagdrop</string>
+    <string name="title_activity_read_me">Read Me</string>
+    <string name="title_scan">Scan Tag</string>
 
-    <string name="hello_world">Hello world!</string>
-    <string name="action_settings">Settings</string>
+    <!-- Main screen -->
+    <string name="empty_collection">No caches found yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="scan_fab_desc">Scan QR code</string>
 
-    <string name="title_activity_htmlview">htmlview</string>
-    <string name="dummy_button">Dummy Button</string>
-    <string name="dummy_content">DUMMY\nCONTENT</string>
-    <string name="title_activity_html_view">htmlView</string>
-    <string name="title_activity_read_me">ReadMe</string>
-    <string name="readMe">Read Me</string>
-    <string name="title_activity_main">main</string>
+    <!-- Receive screen -->
+    <string name="scan_prompt">Scan a TagDrop QR code. Press back to cancel.</string>
+    <string name="button_scan">Read Barcode</string>
+    <string name="button_launch">Launch Content (legacy)</string>
+    <string name="button_clear">Clear</string>
+    <string name="button_readme">About / Read Me</string>
+    <string name="status_ready">Ready to scan.\n\nTap \'Read Barcode\' to start.</string>
+    <string name="status_collecting">Collecting chunks: %1$d / %2$d\nHint: %3$s\n\nScan the next code.</string>
+    <string name="status_legacy">Legacy mode: %1$d fragment(s) accumulated.\n\nTap \'Launch Content\' when done.</string>
+    <string name="manifest_scanned">Manifest scanned (%1$d chunks expected). Scan chunks now.</string>
+    <string name="chunk_progress">Chunk %1$d of %2$d received.</string>
+    <string name="hash_mismatch">Assembly failed: integrity check failed. Try rescanning.</string>
+    <string name="legacy_fragment">Legacy fragment %1$d received. Scan more or tap Launch.</string>
+    <string name="unknown_fragment">Fragment %1$d added. Scan more or tap Launch.</string>
+
+    <!-- Cache list -->
+    <string name="button_open">Open</string>
+    <string name="button_delete">Delete</string>
 </resources>
