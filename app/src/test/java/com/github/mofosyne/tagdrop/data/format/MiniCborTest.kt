@@ -153,6 +153,32 @@ class MiniCborTest {
 
     // ── Mixed types in one map ────────────────────────────────────────────────
 
+    // ── Truncation / malformed input ─────────────────────────────────────────
+
+    @Test fun emptyInputThrows() {
+        assertThrows(IllegalArgumentException::class.java) {
+            MiniCbor.decodeMap(ByteArray(0))
+        }
+    }
+
+    @Test fun truncatedByteStringThrows() {
+        // Map {1: bytes(4)} but the 4 bytes are missing from the stream
+        val cbor = MiniCbor.encodeMap(listOf(1 to byteArrayOf(1, 2, 3, 4)))
+        // Drop the last 3 bytes to simulate truncation
+        assertThrows(IllegalArgumentException::class.java) {
+            MiniCbor.decodeMap(cbor.copyOf(cbor.size - 3))
+        }
+    }
+
+    @Test fun truncatedMultiByteIntThrows() {
+        // Map {1: 300} — value 300 needs 2-byte encoding (0x19 0x01 0x2C)
+        val cbor = MiniCbor.encodeMap(listOf(1 to 300))
+        // Drop the last byte to truncate the 2-byte integer
+        assertThrows(IllegalArgumentException::class.java) {
+            MiniCbor.decodeMap(cbor.copyOf(cbor.size - 1))
+        }
+    }
+
     @Test fun mixedTypesRoundTrip() {
         val bytes = byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte())
         val m = encodeDecodeMap(listOf(

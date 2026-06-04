@@ -90,7 +90,7 @@ object MiniCbor {
     /** Returns a Map<Int, Any> where Any is Long, ByteArray, String, List<Any>, or Map<Int, Any>. */
     fun decodeMap(bytes: ByteArray): Map<Int, Any> {
         val stream = ByteArrayInputStream(bytes)
-        val head = stream.read()
+        val head = readByte(stream)
         require(head ushr 5 == 5) { "Expected CBOR map (major 5), got major ${head ushr 5}" }
         val count = readArg(head and 0x1F, stream).toInt()
         return readMapFromStream(stream, count)
