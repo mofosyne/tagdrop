@@ -42,6 +42,7 @@
     <string name="label_compression">Compress with DEFLATE (saves space for HTML/text)</string>
     <string name="button_generate">Generate QR Code</string>
     <string name="button_share_uri">Share URI</string>
+    <string name="button_print">Print</string>
     <string name="share_uri_title">Share TagDrop URI</string>
     <string name="content_empty_error">Content cannot be empty.</string>
     <string name="qr_cache_id">Content ID: %1$s</string>

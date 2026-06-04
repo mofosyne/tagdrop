@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TagDrop Generator</title>
+<!--
+  Static HTML generator for TagDrop QR codes.
+  No server required — open this file directly in a browser.
+
+  Requires internet for QR rendering (loads qrcode library from CDN).
+  For fully offline use: download qrcode.min.js and place it next to this file,
+  then change the <script src> below to point to the local copy.
+-->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
+  h1   { margin: 0; font-size: 1.4rem; }
+  header { background: #1a1a2e; color: #fff; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+  header small { color: #aaa; font-size: 0.8rem; }
+
+  .tabs { display: flex; gap: 0; border-bottom: 2px solid #ddd; background: #fff; padding: 0 24px; }
+  .tab-btn { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 0.95rem;
+             border-bottom: 3px solid transparent; margin-bottom: -2px; color: #666; }
+  .tab-btn.active { border-bottom-color: #1a1a2e; color: #1a1a2e; font-weight: 600; }
+
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  .container { max-width: 860px; margin: 0 auto; padding: 24px; }
+
+  label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; margin-top: 12px; }
+  input[type=text], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px;
+    font-size: 0.9rem; font-family: inherit; background: #fff;
+  }
+  textarea { resize: vertical; min-height: 120px; font-family: monospace; }
+  input[type=checkbox] { margin-right: 6px; }
+
+  .row { display: flex; gap: 12px; }
+  .row > * { flex: 1; }
+
+  button.primary {
+    margin-top: 16px; padding: 10px 24px; background: #1a1a2e; color: #fff;
+    border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem;
+  }
+  button.primary:hover { background: #2a2a4e; }
+  button.secondary {
+    padding: 8px 16px; background: #fff; border: 1px solid #ccc; border-radius: 6px;
+    cursor: pointer; font-size: 0.85rem;
+  }
+  button.secondary:hover { background: #f0f0f0; }
+  button.danger { color: #c00; border-color: #c00; }
+
+  .card { background: #fff; border-radius: 8px; padding: 16px; margin-top: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+  /* ── Results grid ── */
+  .qr-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; }
+  .qr-item { background: #fff; border-radius: 8px; padding: 16px; text-align: center;
+             box-shadow: 0 1px 3px rgba(0,0,0,.1); min-width: 200px; }
+  .qr-item canvas, .qr-item img { display: block; margin: 0 auto 8px; }
+  .qr-label { font-weight: 600; font-size: 0.9rem; word-break: break-all; }
+  .qr-sub   { font-size: 0.75rem; color: #888; margin-top: 2px; }
+  .qr-id    { font-family: monospace; font-size: 0.7rem; color: #aaa; margin-top: 4px; }
+
+  .warn { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px;
+          border-radius: 4px; margin-top: 12px; font-size: 0.85rem; }
+  .err  { background: #fdecea; border-left: 4px solid #e53935; padding: 10px 14px;
+          border-radius: 4px; margin-top: 12px; font-size: 0.85rem; }
+
+  .file-entry { border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; margin-top: 10px; }
+  .file-entry-header { display: flex; align-items: center; justify-content: space-between; }
+
+  .related-entry { background: #f9f9f9; border-radius: 6px; padding: 10px; margin-top: 8px; }
+
+  .action-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+
+  /* ── Print styles ── */
+  @media print {
+    header, .tabs, .controls, .action-row, button, label, input, select, textarea,
+    .file-entry, .related-entry, .warn, .err, h2, h3, #no-print { display: none !important; }
+    body { background: #fff; }
+    .qr-grid { break-inside: avoid; }
+    .qr-item { box-shadow: none; border: 1px solid #ccc; page-break-inside: avoid; }
+    .print-area { display: block !important; }
+    .print-header { display: block !important; }
+  }
+  .print-area  { display: none; }
+  .print-header { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>TagDrop Generator</h1>
+    <small>Create QR codes for physical paper drops</small>
+  </div>
+</header>
+
+<div class="tabs" id="no-print">
+  <button class="tab-btn active" onclick="showTab('single')">Single File</button>
+  <button class="tab-btn"        onclick="showTab('paper')">Paper Layout</button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SINGLE FILE TAB
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-single" class="tab-pane active">
+<div class="container">
+
+  <div class="card controls">
+    <div class="row">
+      <div>
+        <label>Placement hint <small>(optional — shown to the finder)</small></label>
+        <input type="text" id="s-hint" placeholder="e.g. under the park bench">
+      </div>
+      <div>
+        <label>Filename <small>(optional)</small></label>
+        <input type="text" id="s-filename" placeholder="e.g. poem.html">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>MIME type</label>
+        <select id="s-mime">
+          <option value="text/plain">text/plain</option>
+          <option value="text/html" selected>text/html</option>
+          <option value="application/json">application/json</option>
+          <option value="image/svg+xml">image/svg+xml</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-compress"> Compress with DEFLATE
+          <small style="display:block;color:#888;margin-top:2px">Saves ~50–70% for HTML/text</small>
+        </label>
+      </div>
+    </div>
+    <label>Content</label>
+    <textarea id="s-content" placeholder="Paste your HTML, text, JSON, or SVG here…"></textarea>
+    <button class="primary" onclick="generateSingle()">Generate QR Code</button>
+  </div>
+
+  <div id="s-messages"></div>
+  <div id="s-result" class="print-area"></div>
+
+</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     PAPER LAYOUT TAB
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-paper" class="tab-pane">
+<div class="container">
+
+  <div class="card controls">
+    <h3 style="margin-top:0">Paper Metadata</h3>
+    <div class="row">
+      <div>
+        <label>Label <small>(optional — name for this paper)</small></label>
+        <input type="text" id="p-label" placeholder="e.g. Trail Stop 3 — Oak Tree">
+      </div>
+      <div>
+        <label>Set <small>(optional — trail or network name)</small></label>
+        <input type="text" id="p-set" placeholder="e.g. sunset-trail">
+      </div>
+    </div>
+    <div>
+      <label>Slug <small>(optional — this paper's address within the set)</small></label>
+      <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
+    </div>
+  </div>
+
+  <div class="card controls">
+    <h3 style="margin-top:0">Files on this Paper</h3>
+    <div id="p-files"></div>
+    <button class="secondary" style="margin-top:10px" onclick="addFileEntry()">+ Add File</button>
+  </div>
+
+  <div class="card controls">
+    <h3 style="margin-top:0">Related Papers <small style="font-weight:normal;color:#888">(hints to other locations)</small></h3>
+    <div id="p-related"></div>
+    <button class="secondary" style="margin-top:10px" onclick="addRelatedEntry()">+ Add Related Paper</button>
+  </div>
+
+  <div class="action-row">
+    <button class="primary" onclick="generatePaper()">Generate Paper Layout</button>
+  </div>
+
+  <div id="p-messages"></div>
+  <div id="p-result" class="print-area"></div>
+
+</div>
+</div>
+
+<script>
+'use strict';
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ── Base45 ────────────────────────────────────────────────────────────────
+const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
+function base45Encode(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length - 1; i += 2) {
+    const n = u8[i] * 256 + u8[i + 1];
+    s += B45[n % 45] + B45[Math.floor(n / 45) % 45] + B45[Math.floor(n / 2025)];
+  }
+  if (u8.length & 1) {
+    const n = u8[u8.length - 1];
+    s += B45[n % 45] + B45[Math.floor(n / 45)];
+  }
+  return s;
+}
+
+// ── Minimal CBOR encoder ──────────────────────────────────────────────────
+function writeHead(out, major, n) {
+  const m = major << 5;
+  if      (n <= 23)       { out.push(m | n); }
+  else if (n <= 0xFF)     { out.push(m | 24, n); }
+  else if (n <= 0xFFFF)   { out.push(m | 25, n >> 8, n & 0xFF); }
+  else { out.push(m | 26, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF); }
+}
+
+function cborValue(out, v) {
+  if (v === null || v === undefined) return;
+  if (typeof v === 'number') { writeHead(out, 0, v); }
+  else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
+  else if (typeof v === 'string') {
+    const b = new TextEncoder().encode(v);
+    writeHead(out, 3, b.length); b.forEach(x => out.push(x));
+  } else if (Array.isArray(v)) {
+    writeHead(out, 4, v.length); v.forEach(item => cborValue(out, item));
+  } else if (v && v.__map) {
+    const pairs = v.pairs.filter(([, x]) => x !== null && x !== undefined);
+    writeHead(out, 5, pairs.length);
+    pairs.forEach(([k, x]) => { writeHead(out, 0, k); cborValue(out, x); });
+  }
+}
+
+function cborMap(pairs) {
+  const nonNull = pairs.filter(([, v]) => v !== null && v !== undefined);
+  const out = [];
+  writeHead(out, 5, nonNull.length);
+  nonNull.forEach(([k, v]) => { writeHead(out, 0, k); cborValue(out, v); });
+  return new Uint8Array(out);
+}
+
+// Nested map (inside an array value)
+function subMap(pairs) { return { __map: true, pairs }; }
+
+// ── SHA-256 ───────────────────────────────────────────────────────────────
+async function sha256first8(bytes) {
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return new Uint8Array(hash).slice(0, 8);
+}
+
+// ── DEFLATE (zlib-wrapped, matching Android's DeflaterOutputStream) ───────
+async function zlibCompress(bytes) {
+  const cs = new CompressionStream('deflate');
+  const w = cs.writable.getWriter();
+  await w.write(bytes); await w.close();
+  const chunks = [];
+  const r = cs.readable.getReader();
+  for (;;) { const { done, value } = await r.read(); if (done) break; chunks.push(value); }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0; for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+// ── TagDrop encoding ──────────────────────────────────────────────────────
+// CBOR keys
+const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
+             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23 };
+
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
+  let content = rawBytes, compression = null;
+  if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
+  const cacheId = await sha256first8(rawBytes);
+  const cbor = cborMap([
+    [K.VERSION,     1],
+    [K.CACHE_ID,    cacheId],
+    [K.HINT,        hint || null],
+    [K.FILENAME,    filename || null],
+    [K.MIME,        mimeType],
+    [K.COMPRESSION, compression],
+    [K.CONTENT,     content],
+  ]);
+  return { uri: 'tagdrop://v1/s/' + base45Encode(cbor), cacheId };
+}
+
+async function encodePaperManifest({ label, set, slug, files, related }) {
+  // files = [{slug, mimeType, fileId:Uint8Array}]
+  // related = [{hint, set, slug, paperId:Uint8Array|null}]
+  // root_hash = SHA-256(cbor_without_root_hash)[0:8]
+  const cborNoHash = cborMap([
+    [K.VERSION,  1],
+    [K.HINT,     label || null],
+    [K.SET,      set || null],
+    [K.SLUG,     slug || null],
+    [K.FILES,    files.map(f => subMap([
+      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
+    ]))],
+    [K.RELATED,  related.map(r => subMap([
+      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
+    ]))],
+  ]);
+  const rootHash = await sha256first8(cborNoHash);
+  const cbor = cborMap([
+    [K.VERSION,  1],
+    [K.CACHE_ID, rootHash],
+    [K.HINT,     label || null],
+    [K.SET,      set || null],
+    [K.SLUG,     slug || null],
+    [K.FILES,    files.map(f => subMap([
+      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
+    ]))],
+    [K.RELATED,  related.map(r => subMap([
+      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
+    ]))],
+  ]);
+  return { uri: 'tagdrop://v1/p/' + base45Encode(cbor), rootHash };
+}
+
+function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
+
+// ── QR rendering ──────────────────────────────────────────────────────────
+function renderQr(container, uri) {
+  return new Promise((resolve, reject) => {
+    container.innerHTML = '';
+    QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width: 220 }, (err, canvas) => {
+      if (err) { reject(err); return; }
+      container.appendChild(canvas);
+      resolve();
+    });
+  });
+}
+
+// ── Single-file generator ─────────────────────────────────────────────────
+async function generateSingle() {
+  const msgs   = document.getElementById('s-messages');
+  const result = document.getElementById('s-result');
+  msgs.innerHTML = ''; result.innerHTML = '';
+
+  const hint     = document.getElementById('s-hint').value.trim() || null;
+  const filename = document.getElementById('s-filename').value.trim() || null;
+  const mimeType = document.getElementById('s-mime').value;
+  const text     = document.getElementById('s-content').value;
+  const compress = document.getElementById('s-compress').checked;
+
+  if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
+
+  const rawBytes = new TextEncoder().encode(text);
+  let encoded;
+  try { encoded = await encodeSingle({ hint, filename, mimeType, rawBytes, compress }); }
+  catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
+
+  if (encoded.uri.length > 2000)
+    msgs.innerHTML = `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
+      Enable compression or reduce content size.</div>`;
+
+  const item = document.createElement('div');
+  item.className = 'qr-item';
+  const qrDiv = document.createElement('div');
+  item.appendChild(qrDiv);
+  item.innerHTML += `<div class="qr-label">${hint ? escHtml(hint) : (filename ? escHtml(filename) : 'TagDrop')}</div>
+    <div class="qr-sub">${mimeType}${compress ? ' · deflate' : ''}</div>
+    <div class="qr-id">ID: ${toHex(encoded.cacheId)}</div>`;
+  result.innerHTML = '<div class="qr-grid"></div>';
+  result.querySelector('.qr-grid').appendChild(item);
+  item.insertBefore(qrDiv, item.firstChild);
+  try {
+    await renderQr(qrDiv, encoded.uri);
+  } catch(e) {
+    msgs.innerHTML += `<div class="err">QR rendering failed. Is the qrcode library loaded? (requires internet on first use)</div>`;
+    return;
+  }
+
+  const actionRow = document.createElement('div');
+  actionRow.className = 'action-row';
+  actionRow.innerHTML = `
+    <button class="secondary" onclick="window.print()">🖨 Print</button>
+    <button class="secondary" onclick="copyToClipboard('${encoded.uri.replace(/'/g,"\\'")}')">Copy URI</button>`;
+  result.appendChild(actionRow);
+}
+
+// ── Paper layout generator ─────────────────────────────────────────────────
+let fileEntries   = [];
+let relatedEntries = [];
+
+function addFileEntry() {
+  const id = Date.now();
+  fileEntries.push(id);
+  const div = document.createElement('div');
+  div.className = 'file-entry'; div.id = 'file-' + id;
+  div.innerHTML = `
+    <div class="file-entry-header">
+      <strong>File</strong>
+      <button class="secondary danger" onclick="removeEntry('file-${id}', fileEntries, ${id})">Remove</button>
+    </div>
+    <div class="row">
+      <div>
+        <label>Slug <small>(URL-safe name, e.g. index or map)</small></label>
+        <input type="text" id="fslug-${id}" placeholder="index">
+      </div>
+      <div>
+        <label>MIME type</label>
+        <select id="fmime-${id}">
+          <option value="text/html" selected>text/html</option>
+          <option value="text/plain">text/plain</option>
+          <option value="application/json">application/json</option>
+          <option value="image/svg+xml">image/svg+xml</option>
+        </select>
+      </div>
+    </div>
+    <label><input type="checkbox" id="fcompress-${id}"> Compress with DEFLATE</label>
+    <label>Content</label>
+    <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
+  document.getElementById('p-files').appendChild(div);
+}
+
+function addRelatedEntry() {
+  const id = Date.now();
+  relatedEntries.push(id);
+  const div = document.createElement('div');
+  div.className = 'related-entry'; div.id = 'related-' + id;
+  div.innerHTML = `
+    <div style="display:flex;justify-content:space-between">
+      <strong>Related Paper</strong>
+      <button class="secondary danger" onclick="removeEntry('related-${id}', relatedEntries, ${id})">Remove</button>
+    </div>
+    <label>Hint <small>(location description for the finder)</small></label>
+    <input type="text" id="rhint-${id}" placeholder="e.g. red letterbox 200m north on Main St">
+    <div class="row">
+      <div><label>Set <small>(optional)</small></label><input type="text" id="rset-${id}"></div>
+      <div><label>Slug <small>(optional)</small></label><input type="text" id="rslug-${id}"></div>
+    </div>`;
+  document.getElementById('p-related').appendChild(div);
+}
+
+function removeEntry(divId, arr, id) {
+  document.getElementById(divId)?.remove();
+  const idx = arr.indexOf(id); if (idx >= 0) arr.splice(idx, 1);
+}
+
+async function generatePaper() {
+  const msgs   = document.getElementById('p-messages');
+  const result = document.getElementById('p-result');
+  msgs.innerHTML = ''; result.innerHTML = '';
+
+  const label = document.getElementById('p-label').value.trim() || null;
+  const set   = document.getElementById('p-set').value.trim() || null;
+  const slug  = document.getElementById('p-slug').value.trim() || null;
+
+  // Encode all files first
+  const encodedFiles = [];
+  for (const id of fileEntries) {
+    const fslug    = document.getElementById('fslug-' + id)?.value.trim();
+    const fmime    = document.getElementById('fmime-' + id)?.value;
+    const fcompr   = document.getElementById('fcompress-' + id)?.checked;
+    const fcontent = document.getElementById('fcontent-' + id)?.value;
+    if (!fslug) { msgs.innerHTML = '<div class="err">Each file needs a slug.</div>'; return; }
+    if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${fslug}" has no content.</div>`; return; }
+    const rawBytes = new TextEncoder().encode(fcontent);
+    try {
+      const enc = await encodeSingle({ hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr });
+      encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
+    } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${fslug}" failed: ${e.message}</div>`; return; }
+  }
+
+  // Build related list
+  const related = relatedEntries.map(id => ({
+    hint:   document.getElementById('rhint-' + id)?.value.trim() || '(hint)',
+    set:    document.getElementById('rset-' + id)?.value.trim() || null,
+    slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
+    paperId: null,
+  }));
+
+  // Encode paper manifest
+  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
+  let manifestEnc;
+  try { manifestEnc = await encodePaperManifest({ label, set, slug, files: manifestFiles, related }); }
+  catch(e) { msgs.innerHTML = `<div class="err">Manifest encoding failed: ${e.message}</div>`; return; }
+
+  // Render all QR codes
+  result.innerHTML = `
+    <div class="print-header" style="display:none">
+      <h2>${label ? escHtml(label) : 'TagDrop Paper'}</h2>
+      ${set ? `<p>Set: ${escHtml(set)}${slug ? ' / ' + escHtml(slug) : ''}</p>` : ''}
+    </div>
+    <div class="qr-grid" id="p-qr-grid"></div>`;
+  const grid = document.getElementById('p-qr-grid');
+
+  // Manifest QR first
+  const mItem = makeQrItem(`📋 ${label || 'Manifest'}`, 'paper manifest', toHex(manifestEnc.rootHash));
+  grid.appendChild(mItem.div);
+  try { await renderQr(mItem.qrDiv, manifestEnc.uri); }
+  catch(e) { msgs.innerHTML = '<div class="err">QR rendering failed — is the qrcode library loaded?</div>'; return; }
+
+  // File QRs
+  for (const f of encodedFiles) {
+    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId));
+    grid.appendChild(fItem.div);
+    if (f.uri.length > 2000)
+      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
+    try { await renderQr(fItem.qrDiv, f.uri); }
+    catch(e) { fItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed</div>'); }
+  }
+
+  // Navigation link info
+  const rootHashB45 = base45Encode(manifestEnc.rootHash);
+  result.insertAdjacentHTML('beforeend', `
+    <div class="card" id="no-print" style="margin-top:16px">
+      <strong>Root hash (Base45):</strong>
+      <code style="display:block;margin:4px 0;font-size:0.85rem">${rootHashB45}</code>
+      <small style="color:#555">Use in navigation links:
+        <code>tagdrop://${rootHashB45}/${slug || 'index'}</code></small>
+    </div>`);
+
+  const actionRow = document.createElement('div');
+  actionRow.className = 'action-row'; actionRow.id = 'no-print';
+  actionRow.innerHTML = `<button class="secondary" onclick="window.print()">🖨 Print Paper Layout</button>`;
+  result.appendChild(actionRow);
+}
+
+function makeQrItem(label, sub, id) {
+  const div = document.createElement('div');
+  div.className = 'qr-item';
+  const qrDiv = document.createElement('div');
+  div.appendChild(qrDiv);
+  div.insertAdjacentHTML('beforeend',
+    `<div class="qr-label">${escHtml(label)}</div>
+     <div class="qr-sub">${escHtml(sub)}</div>
+     <div class="qr-id">${id}</div>`);
+  return { div, qrDiv };
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(() => alert('URI copied to clipboard.'));
+}
+
+// Seed a sample file entry when the Paper tab loads
+document.getElementById('tab-paper').addEventListener('click', function once() {
+  if (fileEntries.length === 0) addFileEntry();
+  this.removeEventListener('click', once);
+});
+</script>
+</body>
+</html>
