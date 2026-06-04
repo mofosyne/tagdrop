@@ -176,6 +176,16 @@
 
   <div class="card controls">
     <h3 style="margin-top:0">Files on this Paper</h3>
+    <p style="font-size:0.82rem;color:#666;margin:0 0 10px">
+      Each file gets its own QR code. HTML files can reference other files on the
+      <em>same or different</em> papers using absolute tagdrop:// links —
+      the app intercepts these and serves the cached bytes inline, so images,
+      audio, and SVGs load without a network connection:<br>
+      <code style="font-size:0.8rem">&lt;img src="tagdrop://ROOTHASH/photo.jpg"&gt;</code><br>
+      <code style="font-size:0.8rem">&lt;audio controls src="tagdrop://ROOTHASH/song.mid"&gt;</code><br>
+      Slugs can contain <code>/</code> to mimic folder paths
+      (e.g. <code>images/photo.jpg</code>) — they are matched as plain strings.
+    </p>
     <div id="p-files"></div>
     <button class="secondary" style="margin-top:10px" onclick="addFileEntry()">+ Add File</button>
   </div>
@@ -421,6 +431,10 @@ function addFileEntry() {
           <option value="text/plain">text/plain</option>
           <option value="application/json">application/json</option>
           <option value="image/svg+xml">image/svg+xml</option>
+          <option value="image/jpeg">image/jpeg (paste base64)</option>
+          <option value="image/png">image/png (paste base64)</option>
+          <option value="audio/midi">audio/midi</option>
+          <option value="audio/mpeg">audio/mpeg (paste base64)</option>
         </select>
       </div>
     </div>
