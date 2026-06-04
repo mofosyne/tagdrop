@@ -90,6 +90,8 @@ class ViewDataUriActivity : AppCompatActivity() {
                     toast(getString(R.string.slug_not_found, result.slug))
                 is TagDropLinkResolver.Resolution.PaperNotFound ->
                     toast(getString(R.string.paper_not_scanned))
+                is TagDropLinkResolver.Resolution.Invalid ->
+                    toast(getString(R.string.link_invalid))
                 else -> {}
             }
         }

@@ -106,6 +106,10 @@ class ReceiveActivity : AppCompatActivity() {
                         toast(getString(R.string.hash_mismatch))
                         updateDisplay()
                     }
+                    is ChunkAssembler.State.WaitingForManifest -> {
+                        toast(getString(R.string.chunk_before_manifest))
+                        updateDisplay()
+                    }
                     else -> updateDisplay()
                 }
             }
@@ -144,7 +148,7 @@ class ReceiveActivity : AppCompatActivity() {
         toast(getString(R.string.paper_scanned, payload.files.size))
     }
 
-    /** Cache is complete — save to DB and open immediately. */
+    /** Cache is complete — save to DB, then open. openContent/clearState run after insert. */
     private fun completeSingle(
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray
@@ -160,9 +164,9 @@ class ReceiveActivity : AppCompatActivity() {
                     contentBytes = content
                 )
             )
+            openContent(mimeType, content)
+            clearState()
         }
-        openContent(mimeType, content)
-        clearState()
     }
 
     private fun launchLegacyContent() {

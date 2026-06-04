@@ -106,13 +106,13 @@ object MiniCbor {
         }
 
     private fun readValue(stream: ByteArrayInputStream): Any {
-        val b     = stream.read()
+        val b     = readByte(stream)
         val major = b ushr 5
         val arg   = readArg(b and 0x1F, stream)
         return when (major) {
             0 -> arg
-            2 -> ByteArray(arg.toInt()).also { stream.read(it) }
-            3 -> ByteArray(arg.toInt()).also { stream.read(it) }.toString(Charsets.UTF_8)
+            2 -> readBytes(stream, arg.toInt())
+            3 -> readBytes(stream, arg.toInt()).toString(Charsets.UTF_8)
             4 -> List(arg.toInt()) { readValue(stream) }
             5 -> readMapFromStream(stream, arg.toInt())
             7 -> if (b == 0xF6) Unit else throw IllegalArgumentException("Unsupported simple value 0x${b.toString(16)}")
@@ -122,10 +122,23 @@ object MiniCbor {
 
     private fun readArg(info: Int, stream: ByteArrayInputStream): Long = when (info) {
         in 0..23 -> info.toLong()
-        24       -> stream.read().toLong()
-        25       -> { var n = 0L; repeat(2) { n = (n shl 8) or stream.read().toLong() }; n }
-        26       -> { var n = 0L; repeat(4) { n = (n shl 8) or stream.read().toLong() }; n }
-        27       -> { var n = 0L; repeat(8) { n = (n shl 8) or stream.read().toLong() }; n }
+        24       -> readByte(stream).toLong()
+        25       -> { var n = 0L; repeat(2) { n = (n shl 8) or readByte(stream).toLong() }; n }
+        26       -> { var n = 0L; repeat(4) { n = (n shl 8) or readByte(stream).toLong() }; n }
+        27       -> { var n = 0L; repeat(8) { n = (n shl 8) or readByte(stream).toLong() }; n }
         else     -> throw IllegalArgumentException("Unsupported CBOR additional info: $info")
+    }
+
+    private fun readByte(stream: ByteArrayInputStream): Int {
+        val b = stream.read()
+        require(b >= 0) { "Unexpected end of CBOR input" }
+        return b
+    }
+
+    private fun readBytes(stream: ByteArrayInputStream, n: Int): ByteArray {
+        val buf = ByteArray(n)
+        val read = stream.read(buf)
+        require(read == n) { "Truncated CBOR byte string: expected $n bytes, got $read" }
+        return buf
     }
 }

@@ -485,12 +485,12 @@ async function generatePaper() {
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
     if (!fslug) { msgs.innerHTML = '<div class="err">Each file needs a slug.</div>'; return; }
-    if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${fslug}" has no content.</div>`; return; }
+    if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" has no content.</div>`; return; }
     const rawBytes = new TextEncoder().encode(fcontent);
     try {
       const enc = await encodeSingle({ hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr });
       encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
-    } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${fslug}" failed: ${e.message}</div>`; return; }
+    } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${escHtml(fslug)}" failed: ${e.message}</div>`; return; }
   }
 
   // Build related list
