@@ -55,6 +55,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Cache creator / QR generator -->
+        <activity
+            android:name=".CreateActivity"
+            android:label="@string/title_create"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Scanned papers collection -->
         <activity
             android:name=".PapersActivity"

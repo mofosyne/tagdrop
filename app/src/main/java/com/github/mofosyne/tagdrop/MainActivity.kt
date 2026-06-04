@@ -59,10 +59,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (item.itemId == R.id.action_papers) {
-            startActivity(Intent(this, PapersActivity::class.java))
-            return true
+        return when (item.itemId) {
+            R.id.action_create -> { startActivity(Intent(this, CreateActivity::class.java)); true }
+            R.id.action_papers -> { startActivity(Intent(this, PapersActivity::class.java)); true }
+            else -> super.onOptionsItemSelected(item)
         }
-        return super.onOptionsItemSelected(item)
     }
 }

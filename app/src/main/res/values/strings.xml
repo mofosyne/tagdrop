@@ -28,9 +28,25 @@
 
     <!-- Main screen -->
     <string name="menu_papers">Scanned Papers</string>
+    <string name="menu_create">Create Cache</string>
     <string name="title_papers">Papers</string>
+    <string name="title_create">Create Cache</string>
     <string name="empty_papers">No papers scanned yet.\nTap the camera button and scan a paper manifest QR.</string>
     <string name="paper_file_count">%1$d file(s)</string>
+
+    <!-- Create screen -->
+    <string name="hint_hint">Placement hint (optional)</string>
+    <string name="hint_filename">Filename, e.g. readme.html (optional)</string>
+    <string name="hint_content">Content (text or HTML)</string>
+    <string name="label_mime_type">MIME type</string>
+    <string name="label_compression">Compress with DEFLATE (saves space for HTML/text)</string>
+    <string name="button_generate">Generate QR Code</string>
+    <string name="button_share_uri">Share URI</string>
+    <string name="share_uri_title">Share TagDrop URI</string>
+    <string name="content_empty_error">Content cannot be empty.</string>
+    <string name="qr_cache_id">Content ID: %1$s</string>
+    <string name="qr_too_large">URI is %1$d chars — may not fit in one QR. Enable compression or reduce content size.</string>
+    <string name="qr_encode_error">QR encoding failed. Try reducing content size.</string>
 
     <!-- Paper manifest -->
     <string name="paper_manifest_label">Paper Manifest</string>
