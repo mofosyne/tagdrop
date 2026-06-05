@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TagDrop Reader</title>
+<!--
+  TagDrop Reader — scan TagDrop QR codes in any modern browser.
+  Self-contained single HTML file, no server required.
+
+  QR decoding uses jsQR (CDN). For fully offline use, download
+  https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js and change the
+  script src below to a relative path.
+-->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
+
+header { background: #1a1a2e; color: #fff; padding: 14px 20px;
+         display: flex; align-items: center; justify-content: space-between; }
+header h1 { margin: 0; font-size: 1.2rem; }
+
+button.primary { padding: 10px 22px; background: #1a1a2e; color: #fff;
+                 border: none; border-radius: 8px; cursor: pointer; font-size: 0.95rem; }
+button.primary:hover { background: #2a2a4e; }
+button.primary.big { padding: 16px 36px; font-size: 1.1rem; border-radius: 12px; }
+button.secondary { padding: 7px 14px; background: #fff; border: 1px solid #ccc;
+                   border-radius: 6px; cursor: pointer; font-size: 0.88rem; }
+button.secondary:hover { background: #f0f0f0; }
+button.ghost { background: none; border: 1px solid rgba(255,255,255,0.3); color: #fff;
+               padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+
+/* Scanner overlay */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+           display: flex; align-items: center; justify-content: center; z-index: 100; }
+.overlay.hidden { display: none; }
+.scan-box { display: flex; flex-direction: column; align-items: center; gap: 12px;
+            padding: 16px; color: #fff; width: min(480px, 96vw); }
+.scan-box video { width: 100%; max-height: 50vh; object-fit: cover;
+                  border-radius: 8px; background: #000; }
+#scanStatus { font-size: 0.9rem; color: #ccc; text-align: center; margin: 0; }
+
+/* Main content */
+main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
+
+#scanSection { text-align: center; padding: 24px 0; }
+#scanSection p { color: #666; font-size: 0.9rem; margin-top: 10px; }
+
+/* Message bar */
+#msgBar { padding: 10px 14px; border-radius: 6px; margin-bottom: 12px;
+          font-size: 0.9rem; }
+#msgBar.ok   { background: #d4edda; color: #155724; }
+#msgBar.err  { background: #f8d7da; color: #721c24; }
+#msgBar.warn { background: #fff3cd; color: #856404; }
+#msgBar.info { background: #d1ecf1; color: #0c5460; }
+#msgBar.hidden { display: none; }
+
+/* Assembly progress */
+#assemblyBar { background: #e8f4fd; border: 1px solid #bee5f9; border-radius: 6px;
+               padding: 10px 14px; display: flex; align-items: center;
+               justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+#assemblyBar.hidden { display: none; }
+#assemblyText { font-size: 0.9rem; color: #0c5460; }
+
+/* Paper directory */
+#paperSection { background: #fff; border-radius: 10px; padding: 16px;
+                box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 16px; }
+#paperSection.hidden { display: none; }
+#paperHeader { font-size: 1rem; margin-bottom: 12px; display: flex;
+               align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.chip { background: #e9ecef; padding: 2px 8px; border-radius: 12px;
+        font-size: 0.78rem; color: #555; }
+
+#fileList { list-style: none; margin: 0; padding: 0; }
+.file-item { display: flex; align-items: center; gap: 8px; padding: 8px 0;
+             border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; }
+.file-item:last-child { border-bottom: none; }
+.file-item .slug { font-family: monospace; font-size: 0.88rem; flex: 1; min-width: 0;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item .mime { font-size: 0.75rem; color: #888; white-space: nowrap; }
+.file-item.have .slug { color: #155724; }
+.file-item.missing .slug { color: #999; }
+.missing-label { font-size: 0.75rem; color: #aaa; font-style: italic; }
+
+.paper-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Content viewer */
+#contentSection { background: #fff; border-radius: 10px;
+                  box-shadow: 0 1px 4px rgba(0,0,0,0.08); overflow: hidden; }
+#contentSection.hidden { display: none; }
+#contentHeader { display: flex; align-items: center; justify-content: space-between;
+                 padding: 12px 16px; border-bottom: 1px solid #eee; gap: 12px; }
+#contentTitle { font-size: 0.9rem; font-family: monospace; color: #555;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#contentArea { min-height: 200px; }
+#contentArea pre { margin: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>TagDrop Reader</h1>
+  <button id="btnClear" class="ghost">Clear cache</button>
+</header>
+
+<div id="scanOverlay" class="overlay hidden">
+  <div class="scan-box">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" hidden></canvas>
+    <p id="scanStatus">Point camera at a TagDrop QR code.</p>
+    <button id="btnStopScan" class="secondary">Cancel</button>
+  </div>
+</div>
+
+<main>
+  <section id="scanSection">
+    <button id="btnScan" class="primary big">📷 Scan TagDrop QR</button>
+    <p>Tap above to start the camera and scan a TagDrop code.</p>
+  </section>
+
+  <div id="msgBar" class="hidden"></div>
+
+  <div id="assemblyBar" class="hidden">
+    <span id="assemblyText"></span>
+    <button id="btnScanChunk" class="secondary">Scan next chunk</button>
+  </div>
+
+  <section id="paperSection" class="hidden">
+    <div id="paperHeader"></div>
+    <ul id="fileList"></ul>
+    <div class="paper-actions">
+      <button id="btnScanFile" class="secondary">📷 Scan a file QR</button>
+    </div>
+  </section>
+
+  <section id="contentSection" class="hidden">
+    <div id="contentHeader">
+      <span id="contentTitle"></span>
+      <button id="btnBack" class="secondary">← Back</button>
+    </div>
+    <div id="contentArea"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+
+// ── Base45 decoder ────────────────────────────────────────────────────────
+const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
+function base45Decode(s) {
+  if (s.length % 3 === 1) throw new Error('Invalid Base45 length');
+  const out = [];
+  let i = 0;
+  while (i + 2 < s.length) {
+    const c0 = B45.indexOf(s[i]), c1 = B45.indexOf(s[i+1]), c2 = B45.indexOf(s[i+2]);
+    if (c0 < 0 || c1 < 0 || c2 < 0) throw new Error('Invalid Base45 char');
+    const n = c0 + c1 * 45 + c2 * 2025;
+    if (n > 0xFFFF) throw new Error('Base45 value overflow');
+    out.push((n >> 8) & 0xFF, n & 0xFF);
+    i += 3;
+  }
+  if (i < s.length) {
+    const c0 = B45.indexOf(s[i]), c1 = B45.indexOf(s[i+1]);
+    if (c0 < 0 || c1 < 0) throw new Error('Invalid Base45 char');
+    out.push(c0 + c1 * 45);
+  }
+  return new Uint8Array(out);
+}
+
+// ── CBOR decoder ──────────────────────────────────────────────────────────
+function cborDecode(bytes) {
+  let pos = 0;
+  function rb() {
+    if (pos >= bytes.length) throw new Error('Unexpected end of CBOR');
+    return bytes[pos++];
+  }
+  function rbs(n) {
+    if (pos + n > bytes.length) throw new Error('Truncated CBOR');
+    const slice = bytes.slice(pos, pos + n); pos += n; return slice;
+  }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) { return rb() * 256 + rb(); }
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function readVal() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    switch (major) {
+      case 0: return a;
+      case 2: return rbs(a);
+      case 3: return new TextDecoder().decode(rbs(a));
+      case 4: return Array.from({length: a}, readVal);
+      case 5: {
+        const m = {};
+        for (let i = 0; i < a; i++) { const k = readVal(); m[k] = readVal(); }
+        return m;
+      }
+      case 7: if (b === 0xF6) return null;
+      // falls through to error for unsupported simple values
+      default: throw new Error('Unsupported CBOR major type: ' + major);
+    }
+  }
+  return readVal();
+}
+
+// ── Decompression ─────────────────────────────────────────────────────────
+async function zlibDecompress(bytes) {
+  const ds = new DecompressionStream('deflate');
+  const writer = ds.writable.getWriter();
+  await writer.write(bytes);
+  await writer.close();
+  const chunks = [];
+  const reader = ds.readable.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────
+function toHex(u8) {
+  return Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ── CBOR keys ─────────────────────────────────────────────────────────────
+const K = {
+  VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+  CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_IDX:9, CHUNK_DATA:10,
+  FILENAME:11, COMPRESSION:12,
+  SET:13, SLUG:14, FILES:15, RELATED:16,
+  FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23
+};
+
+// ── TagDrop URI parser ────────────────────────────────────────────────────
+async function parseUri(uri) {
+  if (!uri.startsWith('tagdrop://')) return null;
+
+  // Navigation link: tagdrop://ROOTHASH_B45[/slug] — no 'v1/' component
+  if (!uri.startsWith('tagdrop://v1/')) {
+    const rest = uri.slice('tagdrop://'.length);
+    const slash = rest.indexOf('/');
+    const rhB45 = slash < 0 ? rest : rest.slice(0, slash);
+    const slug  = slash < 0 ? null  : (rest.slice(slash + 1) || null);
+    try {
+      return { type: 'nav', rootHashHex: toHex(base45Decode(rhB45)), slug };
+    } catch (e) {
+      return { type: 'invalid' };
+    }
+  }
+
+  // Encoding URI: tagdrop://v1/<kind>/<base45-cbor>
+  const after = uri.slice('tagdrop://v1/'.length);
+  const slash = after.indexOf('/');
+  if (slash < 0) return null;
+  const kind = after.slice(0, slash);
+
+  let cbor;
+  try { cbor = base45Decode(after.slice(slash + 1)); }
+  catch (e) { return { type: 'invalid' }; }
+
+  const m = cborDecode(cbor);
+
+  if (kind === 's') {
+    let content = m[K.CONTENT];
+    if (m[K.COMPRESSION] === 1) content = await zlibDecompress(content);
+    return {
+      type: 'single',
+      cacheId:  toHex(m[K.CACHE_ID]),
+      hint:     m[K.HINT]     || null,
+      filename: m[K.FILENAME] || null,
+      mimeType: m[K.MIME],
+      content,
+    };
+  }
+  if (kind === 'p') {
+    return {
+      type:     'paper',
+      rootHash: toHex(m[K.CACHE_ID]),
+      label:    m[K.HINT] || null,
+      set:      m[K.SET]  || null,
+      slug:     m[K.SLUG] || null,
+      scannedAt: Date.now(),
+      files: (m[K.FILES] || []).map(f => ({
+        slug:     f[K.FILE_SLUG],
+        mimeType: f[K.FILE_MIME],
+        fileId:   toHex(f[K.FILE_ID]),
+      })),
+      related: (m[K.RELATED] || []).map(r => ({
+        hint:    r[K.HINT],
+        set:     r[K.SET]     || null,
+        slug:    r[K.SLUG]    || null,
+        paperId: r[K.PAPER_ID] ? toHex(r[K.PAPER_ID]) : null,
+      })),
+    };
+  }
+  if (kind === 'm') {
+    return {
+      type:        'manifest',
+      cacheId:     toHex(m[K.CACHE_ID]),
+      hint:        m[K.HINT]     || null,
+      filename:    m[K.FILENAME] || null,
+      mimeType:    m[K.MIME],
+      compression: m[K.COMPRESSION] || 0,
+      chunkCount:  m[K.CHUNK_COUNT],
+      sha256:      m[K.SHA256],
+    };
+  }
+  if (kind === 'c') {
+    return {
+      type:    'chunk',
+      cacheId: toHex(m[K.CACHE_ID]),
+      index:   m[K.CHUNK_IDX],
+      data:    m[K.CHUNK_DATA],
+    };
+  }
+  return null;
+}
+
+// ── IndexedDB ─────────────────────────────────────────────────────────────
+let _db;
+async function getDb() {
+  if (_db) return _db;
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('tagdrop-reader', 1);
+    req.onupgradeneeded = e => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains('caches'))
+        d.createObjectStore('caches', { keyPath: 'cacheId' });
+      if (!d.objectStoreNames.contains('papers'))
+        d.createObjectStore('papers', { keyPath: 'rootHash' });
+    };
+    req.onsuccess = e => { _db = e.target.result; res(_db); };
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbPut(store, val) {
+  const d = await getDb();
+  return new Promise((res, rej) => {
+    const tx = d.transaction(store, 'readwrite');
+    tx.objectStore(store).put(val).onsuccess = res;
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function dbGet(store, key) {
+  const d = await getDb();
+  return new Promise((res, rej) => {
+    const tx = d.transaction(store, 'readonly');
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbGetAll(store) {
+  const d = await getDb();
+  return new Promise((res, rej) => {
+    const tx = d.transaction(store, 'readonly');
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbClear() {
+  const d = await getDb();
+  return new Promise((res, rej) => {
+    const tx = d.transaction(['caches', 'papers'], 'readwrite');
+    tx.objectStore('caches').clear();
+    tx.objectStore('papers').clear();
+    tx.oncomplete = res;
+    tx.onerror = () => rej(tx.error);
+  });
+}
+
+// ── Chunk assembly ────────────────────────────────────────────────────────
+// In-memory only — multi-code sets must be scanned in one session.
+const assemblies = {};
+
+// ── Camera / QR scanner ───────────────────────────────────────────────────
+let scanning = false;
+let scanRafId = null;
+
+async function startScan() {
+  if (scanning) return;
+  const overlay = document.getElementById('scanOverlay');
+  const video   = document.getElementById('video');
+  overlay.classList.remove('hidden');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }
+    });
+    video.srcObject = stream;
+    scanning = true;
+    document.getElementById('scanStatus').textContent = 'Point camera at a TagDrop QR code.';
+    tickScan(video, document.getElementById('canvas'), stream);
+  } catch (e) {
+    overlay.classList.add('hidden');
+    showMsg('Camera error: ' + e.message, 'err');
+  }
+}
+
+function stopScan(stream) {
+  scanning = false;
+  if (scanRafId) { cancelAnimationFrame(scanRafId); scanRafId = null; }
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  document.getElementById('video').srcObject = null;
+  document.getElementById('scanOverlay').classList.add('hidden');
+}
+
+function tickScan(video, canvas, stream) {
+  if (!scanning) return;
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0);
+    const img  = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+    if (code) {
+      stopScan(stream);
+      handleScanned(code.data);
+      return;
+    }
+  }
+  scanRafId = requestAnimationFrame(() => tickScan(video, canvas, stream));
+}
+
+// ── Main scan handler ─────────────────────────────────────────────────────
+let activePaperHash = null;
+
+async function handleScanned(raw) {
+  let parsed;
+  try { parsed = await parseUri(raw); }
+  catch (e) { showMsg('Parse error: ' + e.message, 'err'); return; }
+  if (!parsed) { showMsg('Not a TagDrop QR code.', 'err'); return; }
+
+  switch (parsed.type) {
+
+    case 'single':
+      await dbPut('caches', {
+        cacheId: parsed.cacheId, mimeType: parsed.mimeType,
+        content: parsed.content, hint: parsed.hint, filename: parsed.filename,
+      });
+      showMsg('Loaded: ' + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
+      showContent(parsed.mimeType, parsed.content, parsed.filename || parsed.hint || parsed.mimeType);
+      // Refresh directory if this file belongs to the active paper
+      if (activePaperHash) await renderPaper(activePaperHash);
+      break;
+
+    case 'paper':
+      await dbPut('papers', parsed);
+      activePaperHash = parsed.rootHash;
+      showMsg('Paper: ' + (parsed.label || 'untitled') + ' — ' + parsed.files.length + ' file(s)', 'ok');
+      await renderPaper(parsed.rootHash);
+      break;
+
+    case 'manifest':
+      assemblies[parsed.cacheId] = { manifest: parsed, chunks: new Map() };
+      showMsg('Manifest scanned — need ' + parsed.chunkCount + ' chunk(s). Scan them now.', 'info');
+      showAssemblyProgress(parsed.cacheId, 0, parsed.chunkCount);
+      break;
+
+    case 'chunk': {
+      const a = assemblies[parsed.cacheId];
+      if (!a) {
+        showMsg('Chunk received but no manifest yet — scan the manifest QR first.', 'warn');
+        return;
+      }
+      a.chunks.set(parsed.index, parsed.data);
+      const got = a.chunks.size, need = a.manifest.chunkCount;
+      if (got < need) {
+        showMsg('Chunk ' + got + '/' + need + ' received.', 'info');
+        showAssemblyProgress(parsed.cacheId, got, need);
+        return;
+      }
+      // All chunks present — assemble in order
+      const parts = [];
+      for (let i = 0; i < need; i++) {
+        const chunk = a.chunks.get(i);
+        if (!chunk) { showMsg('Missing chunk ' + i + '. Scan it.', 'err'); return; }
+        parts.push(chunk);
+      }
+      const raw = new Uint8Array(parts.reduce((s, c) => s + c.length, 0));
+      let off = 0;
+      for (const p of parts) { raw.set(p, off); off += p.length; }
+      // SHA-256 integrity check (against compressed bytes, matching Android ChunkAssembler)
+      const hashBuf  = await crypto.subtle.digest('SHA-256', raw);
+      const hashBytes = new Uint8Array(hashBuf);
+      const expected  = a.manifest.sha256;
+      let ok = expected && hashBytes.length === expected.length;
+      if (ok) for (let i = 0; i < hashBytes.length; i++) if (hashBytes[i] !== expected[i]) { ok = false; break; }
+      if (!ok) { showMsg('Integrity check failed — try rescanning all chunks.', 'err'); return; }
+      const content = a.manifest.compression === 1 ? await zlibDecompress(raw) : raw;
+      await dbPut('caches', {
+        cacheId: a.manifest.cacheId, mimeType: a.manifest.mimeType,
+        content, hint: a.manifest.hint, filename: a.manifest.filename,
+      });
+      delete assemblies[a.manifest.cacheId];
+      hideAssemblyProgress();
+      showMsg('All chunks assembled!', 'ok');
+      showContent(a.manifest.mimeType, content, a.manifest.filename || a.manifest.hint || a.manifest.mimeType);
+      if (activePaperHash) await renderPaper(activePaperHash);
+      break;
+    }
+
+    case 'nav':
+      await resolveNavLink(parsed.rootHashHex, parsed.slug);
+      break;
+
+    case 'invalid':
+      showMsg('Invalid tagdrop:// link.', 'err');
+      break;
+
+    default:
+      showMsg('Unrecognised QR content.', 'err');
+  }
+}
+
+// ── Navigation link resolution ────────────────────────────────────────────
+async function resolveNavLink(rootHashHex, slug) {
+  const paper = await dbGet('papers', rootHashHex);
+  if (!paper) {
+    showMsg('Paper not in collection — scan its manifest QR first.', 'warn');
+    return;
+  }
+  if (!slug) {
+    activePaperHash = rootHashHex;
+    await renderPaper(rootHashHex);
+    return;
+  }
+  const fileEntry = paper.files.find(f => f.slug === slug);
+  if (!fileEntry) {
+    showMsg("File '" + slug + "' not in this paper's directory.", 'err');
+    return;
+  }
+  const cached = await dbGet('caches', fileEntry.fileId);
+  if (!cached) {
+    showMsg("File '" + slug + "' not yet scanned — find and scan its QR.", 'warn');
+    return;
+  }
+  showContent(cached.mimeType, cached.content, slug);
+}
+
+// ── Paper directory ───────────────────────────────────────────────────────
+async function renderPaper(rootHash) {
+  const paper = await dbGet('papers', rootHash);
+  if (!paper) return;
+
+  // Build header
+  let hdr = '<strong>' + escHtml(paper.label || 'Untitled Paper') + '</strong>';
+  if (paper.set)  hdr += ' <span class="chip">' + escHtml(paper.set) + '</span>';
+  if (paper.slug) hdr += ' <span class="chip">/' + escHtml(paper.slug) + '</span>';
+  document.getElementById('paperHeader').innerHTML = hdr;
+
+  // Which files are already cached?
+  const allCaches = await dbGetAll('caches');
+  const cachedIds = new Set(allCaches.map(c => c.cacheId));
+
+  const list = document.getElementById('fileList');
+  list.innerHTML = '';
+  for (const f of paper.files) {
+    const have = cachedIds.has(f.fileId);
+    const li   = document.createElement('li');
+    li.className = 'file-item ' + (have ? 'have' : 'missing');
+    if (have) {
+      li.innerHTML =
+        '<span class="slug">' + escHtml(f.slug) + '</span>' +
+        '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
+        '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>';
+    } else {
+      li.innerHTML =
+        '<span class="slug">' + escHtml(f.slug) + '</span>' +
+        '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
+        '<span class="missing-label">not scanned</span>';
+    }
+    list.appendChild(li);
+  }
+
+  document.getElementById('paperSection').classList.remove('hidden');
+  document.getElementById('contentSection').classList.add('hidden');
+}
+
+// ── Content rendering ─────────────────────────────────────────────────────
+function showContent(mimeType, content, title) {
+  const area = document.getElementById('contentArea');
+  area.innerHTML = '';
+  document.getElementById('contentTitle').textContent = title;
+
+  if (mimeType.startsWith('text/html')) {
+    // Inject a postMessage relay for tagdrop:// link clicks.
+    // sandbox="allow-scripts" (no allow-same-origin) so the iframe cannot
+    // access parent storage or DOM — only postMessage works cross-sandbox.
+    const relay =
+      `<script>document.addEventListener('click',function(e){` +
+      `var a=e.target.closest('a');` +
+      `if(a&&a.href.startsWith('tagdrop://')){` +
+      `e.preventDefault();window.parent.postMessage({type:'tagdrop-nav',uri:a.href},'*');}` +
+      `});<\/script>`;
+    let html = new TextDecoder().decode(content);
+    html = html.includes('</head>') ? html.replace('</head>', relay + '</head>') : relay + html;
+    const frame = document.createElement('iframe');
+    frame.sandbox  = 'allow-scripts';
+    frame.srcdoc   = html;
+    frame.style.cssText = 'width:100%;height:75vh;border:none;display:block;background:#fff;';
+    area.appendChild(frame);
+  } else if (mimeType.startsWith('text/')) {
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';
+    pre.textContent = new TextDecoder().decode(content);
+    area.appendChild(pre);
+  } else if (mimeType.startsWith('image/')) {
+    const blob = new Blob([content], { type: mimeType });
+    const img  = document.createElement('img');
+    img.src = URL.createObjectURL(blob);
+    img.style.cssText = 'max-width:100%;display:block;margin:16px auto;';
+    area.appendChild(img);
+  } else if (mimeType.startsWith('audio/')) {
+    const blob  = new Blob([content], { type: mimeType });
+    const audio = document.createElement('audio');
+    audio.src      = URL.createObjectURL(blob);
+    audio.controls = true;
+    audio.style.cssText = 'width:100%;padding:20px 16px;display:block;';
+    area.appendChild(audio);
+  } else {
+    // Unknown type — offer download
+    const blob = new Blob([content], { type: mimeType });
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = title || 'tagdrop-file';
+    a.style.cssText = 'display:block;padding:24px 16px;';
+    a.textContent = 'Download ' + mimeType;
+    area.appendChild(a);
+  }
+
+  document.getElementById('contentSection').classList.remove('hidden');
+}
+
+// ── postMessage from sandboxed iframe ─────────────────────────────────────
+window.addEventListener('message', async e => {
+  if (!e.data || e.data.type !== 'tagdrop-nav') return;
+  let parsed;
+  try { parsed = await parseUri(e.data.uri); } catch (err) { return; }
+  if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.rootHashHex, parsed.slug);
+});
+
+// ── Assembly progress bar ─────────────────────────────────────────────────
+function showAssemblyProgress(cacheId, got, need) {
+  document.getElementById('assemblyText').textContent = 'Multi-code: ' + got + '/' + need + ' chunks';
+  document.getElementById('btnScanChunk').onclick = startScan;
+  document.getElementById('assemblyBar').classList.remove('hidden');
+}
+function hideAssemblyProgress() {
+  document.getElementById('assemblyBar').classList.add('hidden');
+}
+
+// ── Status message ────────────────────────────────────────────────────────
+let msgTimer;
+function showMsg(text, type) {
+  const bar = document.getElementById('msgBar');
+  bar.textContent = text;
+  bar.className = type || '';
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => bar.classList.add('hidden'), 5000);
+}
+
+// ── Event wiring ──────────────────────────────────────────────────────────
+document.getElementById('btnScan').onclick = startScan;
+document.getElementById('btnScanFile').onclick = startScan;
+
+document.getElementById('btnStopScan').onclick = () => {
+  const v = document.getElementById('video');
+  stopScan(v.srcObject);
+};
+
+document.getElementById('btnBack').onclick = async () => {
+  document.getElementById('contentSection').classList.add('hidden');
+  if (activePaperHash) await renderPaper(activePaperHash);
+};
+
+document.getElementById('fileList').addEventListener('click', async e => {
+  const btn = e.target.closest('.open-file');
+  if (!btn) return;
+  const cached = await dbGet('caches', btn.dataset.id);
+  if (cached) showContent(cached.mimeType, cached.content, btn.dataset.slug);
+  else showMsg('Not cached yet — scan its QR code.', 'warn');
+});
+
+document.getElementById('btnClear').onclick = async () => {
+  if (!confirm('Clear all cached TagDrop content from this browser?')) return;
+  await dbClear();
+  activePaperHash = null;
+  document.getElementById('paperSection').classList.add('hidden');
+  document.getElementById('contentSection').classList.add('hidden');
+  showMsg('Cache cleared.', 'ok');
+};
+
+// ── Restore on load ───────────────────────────────────────────────────────
+(async () => {
+  const papers = await dbGetAll('papers');
+  if (papers.length === 0) return;
+  // Show the most recently scanned paper
+  const latest = papers.reduce((a, b) => ((b.scannedAt || 0) > (a.scannedAt || 0) ? b : a));
+  activePaperHash = latest.rootHash;
+  await renderPaper(latest.rootHash);
+})();
+</script>
+</body>
+</html>
