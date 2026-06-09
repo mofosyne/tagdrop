@@ -8,10 +8,10 @@ Everything needed to get the TagDrop Android app building and running from scrat
 
 | Tool | Minimum version | Notes |
 |------|----------------|-------|
-| Android Studio | Hedgehog (2023.1.1) | Ships with JDK 17 and Gradle 8 support |
-| JDK | 17 | Bundled with Android Studio; use the bundled JDK unless you have a specific reason not to |
+| Android Studio | Meerkat (2024.3.1) | Minimum version that supports AGP 9.x; ships with JBR 21 |
+| JDK | 21 | Bundled JBR 21 in Android Studio Meerkat satisfies this; use the bundled JDK |
 | Android SDK | API 34 | Install via SDK Manager (see below) |
-| Gradle | 8.4 | Downloaded automatically by the Gradle wrapper — no manual install needed |
+| Gradle | 9.4.1 | Downloaded automatically by the Gradle wrapper — no manual install needed |
 
 Android Studio is the recommended IDE. The project also works in IntelliJ IDEA with the Android plugin, but Android Studio is easier to set up.
 
@@ -44,7 +44,7 @@ cd tagdrop
 
 1. Launch Android Studio.
 2. Choose **Open** (not *New Project*) and select the `tagdrop/` directory — the one containing `settings.gradle`.
-3. Android Studio will detect the Gradle project and start syncing automatically. The first sync downloads Gradle 8.4 and all Maven dependencies (~150 MB). This can take a few minutes on a slow connection.
+3. Android Studio will detect the Gradle project and start syncing automatically. The first sync downloads Gradle 9.4.1 and all Maven dependencies (~150 MB). This can take a few minutes on a slow connection.
 4. Wait for the "Gradle sync finished" message in the status bar before doing anything else.
 
 If sync fails with a JDK error, verify Android Studio is using its bundled JDK:
@@ -157,12 +157,13 @@ sdk.dir=/path/to/your/Android/Sdk
 ```
 Android Studio does this automatically; only needed for pure command-line builds.
 
-**`Unsupported class file major version`** — The project requires JDK 17. Check `JAVA_HOME` or point Gradle at the right JDK:
+**`Unsupported class file major version`** — The build toolchain requires JDK 21. Check `JAVA_HOME` or point Gradle at the right JDK:
 ```bash
-./gradlew -Dorg.gradle.java.home=/path/to/jdk17 assembleDebug
+./gradlew -Dorg.gradle.java.home=/path/to/jdk21 assembleDebug
 ```
+The app bytecode targets Java 17 compatibility, but the Gradle daemon itself must run on JDK 21 (enforced by `gradle/gradle-daemon-jvm.properties`).
 
-**Gradle sync slow on first run** — Normal; Gradle 8.4 (~130 MB) and all Maven dependencies are downloaded once and cached in `~/.gradle/`. Subsequent syncs are fast.
+**Gradle sync slow on first run** — Normal; Gradle 9.4.1 (~140 MB) and all Maven dependencies are downloaded once and cached in `~/.gradle/`. Subsequent syncs are fast.
 
 **`INSTALL_FAILED_UPDATE_INCOMPATIBLE`** — Uninstall the existing app from the device before installing a debug build signed with a different key:
 ```bash
