@@ -136,9 +136,15 @@ object MiniCbor {
     }
 
     private fun readBytes(stream: ByteArrayInputStream, n: Int): ByteArray {
+        if (n == 0) return ByteArray(0)
         val buf = ByteArray(n)
-        val read = stream.read(buf)
-        require(read == n) { "Truncated CBOR byte string: expected $n bytes, got $read" }
+        var totalRead = 0
+        while (totalRead < n) {
+            val read = stream.read(buf, totalRead, n - totalRead)
+            if (read == -1) break
+            totalRead += read
+        }
+        require(totalRead == n) { "Truncated CBOR byte string: expected $n bytes, got $totalRead" }
         return buf
     }
 }

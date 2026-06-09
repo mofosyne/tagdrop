@@ -42,6 +42,7 @@ class ReceiveActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityReceiveBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.title_scan)
 
@@ -67,7 +68,7 @@ class ReceiveActivity : AppCompatActivity() {
             setPrompt(getString(R.string.scan_prompt))
             setBeepEnabled(false)
             setOrientationLocked(false)
-            setDesiredBarcodeFormats(ScanOptions.QR_CODE, ScanOptions.AZTEC, ScanOptions.DATA_MATRIX)
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE, ScanOptions.DATA_MATRIX, "AZTEC")
         })
     }
 

@@ -21,6 +21,7 @@ class ReadMeActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityReadMeBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.title_activity_read_me)
         applyMarkdownSpans(binding.readmeInfo, readRaw())

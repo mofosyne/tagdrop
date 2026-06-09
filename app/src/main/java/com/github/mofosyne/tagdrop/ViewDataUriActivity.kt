@@ -24,6 +24,7 @@ class ViewDataUriActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityViewdatauriBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         resolver = TagDropLinkResolver(AppDatabase.get(this))
