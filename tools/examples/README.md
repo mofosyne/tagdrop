@@ -1,0 +1,37 @@
+# TagDrop Example Payloads
+
+`index.html` is a **generated file** containing pre-rendered QR codes for
+testing the TagDrop Android app and the [web reader](../reader/index.html).
+It's fully static — open it directly in a browser, no internet connection
+or JS crypto/compression APIs required.
+
+## Contents
+
+- **Standalone QR codes** — plain text, a compressed HTML page, an SVG
+  graphic, and JSON data. Each is a complete payload on its own.
+- **Paper set** — a manifest QR plus three file QRs (`readme`, `note`,
+  `badge`) demonstrating a multi-file paper drop. Scan the manifest first.
+
+## Regenerating
+
+The page is built by `generate.mjs` from the example definitions at the top
+of that file. To change the examples or regenerate after editing:
+
+```bash
+cd tools/examples
+npm install
+npm run build
+```
+
+This overwrites `index.html`. Commit the regenerated file along with any
+changes to `generate.mjs`.
+
+## How it works
+
+`generate.mjs` re-implements the same Base45/CBOR/SHA-256/DEFLATE encoding
+used by [`tools/generator/index.html`](../generator/index.html) and the
+Android app (see [`SPEC.md`](../../SPEC.md)), but runs it in Node at build
+time using `node:crypto` and `node:zlib` instead of the browser's
+SubtleCrypto/CompressionStream APIs. QR codes are rendered as inline SVG via
+the [`qrcode`](https://www.npmjs.com/package/qrcode) package, so the output
+page needs no `<canvas>` or CDN script.
