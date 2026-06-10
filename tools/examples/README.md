@@ -9,6 +9,9 @@ or JS crypto/compression APIs required.
 
 - **Standalone QR codes** — plain text, a compressed HTML page, an SVG
   graphic, and JSON data. Each is a complete payload on its own.
+- **Multi-code cache** — a short story too large for one QR, split into a
+  Manifest QR (`v1/m`) plus three Chunk QRs (`v1/c`). Scan the manifest and
+  the chunks (any order) to test reassembly and SHA-256 verification.
 - **Paper set** — a manifest QR plus three file QRs (`readme`, `note`,
   `badge`) demonstrating a multi-file paper drop. Scan the manifest first.
 

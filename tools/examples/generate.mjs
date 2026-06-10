@@ -77,6 +77,7 @@ function zlibCompress(bytes) {
 
 // ── TagDrop CBOR keys ─────────────────────────────────────────────────────
 const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+            CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23 };
 
@@ -95,6 +96,48 @@ function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
     [K.CONTENT,     content],
   ]);
   return { uri: 'tagdrop://v1/s/' + base45Encode(cbor), cacheId };
+}
+
+/**
+ * Split content too large for one QR into a Manifest (v1/m) plus a series of
+ * Chunks (v1/c). cache_id is content-addressed from the *original* bytes, so
+ * a Single and a Manifest+Chunks encoding of the same content share an ID.
+ * sha256 covers the assembled bytes (post-compression, pre-decompression).
+ */
+function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, chunkCount }) {
+  const cacheId = sha256first8(rawBytes);
+  let assembled = rawBytes, compression = null;
+  if (compress) { assembled = zlibCompress(rawBytes); compression = 1; }
+  const sha256Full = new Uint8Array(createHash('sha256').update(Buffer.from(assembled)).digest());
+  const totalBytes = assembled.length;
+
+  const manifestCbor = cborMap([
+    [K.VERSION,     1],
+    [K.CACHE_ID,    cacheId],
+    [K.HINT,        hint || null],
+    [K.FILENAME,    filename || null],
+    [K.MIME,        mimeType],
+    [K.COMPRESSION, compression],
+    [K.CHUNK_COUNT, chunkCount],
+    [K.TOTAL_BYTES, totalBytes],
+    [K.SHA256,      sha256Full],
+  ]);
+  const manifestUri = 'tagdrop://v1/m/' + base45Encode(manifestCbor);
+
+  const chunkSize = Math.ceil(totalBytes / chunkCount);
+  const chunks = [];
+  for (let i = 0; i < chunkCount; i++) {
+    const start = i * chunkSize;
+    const data  = assembled.slice(start, Math.min(start + chunkSize, totalBytes));
+    const chunkCbor = cborMap([
+      [K.CACHE_ID,    cacheId],
+      [K.CHUNK_INDEX, i],
+      [K.CHUNK_DATA,  data],
+    ]);
+    chunks.push({ index: i, size: data.length, uri: 'tagdrop://v1/c/' + base45Encode(chunkCbor) });
+  }
+
+  return { manifestUri, chunks, cacheId, totalBytes, sha256: sha256Full, chunkCount, compression };
 }
 
 function encodePaperManifest({ label, set, slug, files, related }) {
@@ -212,6 +255,53 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
   },
 ];
 
+// Content too large for a single QR (~800 bytes recommended max) — split into
+// a Manifest (v1/m) plus several Chunks (v1/c) per SPEC.md §4.2-4.3.
+const MULTI_CHUNK_EXAMPLE = {
+  label: 'Sunset Trail story',
+  hint: 'Sunset Trail — collect all 3 markers',
+  filename: 'sunset-trail.txt',
+  mimeType: 'text/plain',
+  compress: false,
+  chunkCount: 3,
+  content:
+`The Sunset Trail — A TagDrop Story
+===================================
+
+This story is too long for one QR code, so it is split across three
+Chunk codes plus one Manifest code. Scan the manifest (it announces the
+chunk count, total size, and a SHA-256 checksum), then scan the three
+chunks in any order. TagDrop assembles them and verifies the checksum.
+
+--- Chapter 1: The Trailhead ---
+
+The gate creaks as you push it open. Gravel crunches beneath your boots.
+Ahead, the path winds upward through tall grass silvered by the late
+afternoon sun. A weathered signpost reads: "Sunset Trail, 2.3km, follow
+the orange markers." Somewhere up the slope, the next code is waiting.
+
+--- Chapter 2: The Overlook ---
+
+Halfway up, the trail opens onto a rocky ledge. Below, the valley
+stretches out in patchwork greens and golds. A bench, half-swallowed by
+lichen, offers a place to rest. Someone has carved initials into the
+wood, long since faded. The second marker is bolted underneath the seat.
+
+--- Chapter 3: The Old Oak ---
+
+At the trail's end stands an ancient oak, its branches reaching wide as
+if to embrace the setting sun. A small brass plaque at its base reads:
+"Planted 1923, still growing." This is where the trail, and the story,
+end.
+
+--- The End ---
+
+If you are reading this, you found and scanned all three chunks, and
+TagDrop confirmed the assembled bytes match the manifest's SHA-256
+checksum. Well done, wanderer.
+`,
+};
+
 const PAPER_EXAMPLE = {
   label: 'TagDrop Test Paper',
   set:   'tagdrop-tests',
@@ -316,6 +406,43 @@ async function main() {
     });
   }
 
+  // Multi-code cache: Manifest + Chunks
+  const mc = MULTI_CHUNK_EXAMPLE;
+  const mcRawBytes = Buffer.from(mc.content, 'utf8');
+  const mcEnc = encodeMultiChunk({
+    hint: mc.hint, filename: mc.filename, mimeType: mc.mimeType,
+    rawBytes: mcRawBytes, compress: mc.compress, chunkCount: mc.chunkCount,
+  });
+
+  let multiHtml = await renderCard({
+    label: mc.label,
+    mime: 'manifest',
+    extraBadge: null,
+    id: toHex(mcEnc.cacheId),
+    uri: mcEnc.manifestUri,
+    isManifest: true,
+  });
+  for (const c of mcEnc.chunks) {
+    multiHtml += await renderCard({
+      label: `Chunk ${c.index}`,
+      mime: `${c.size} bytes`,
+      extraBadge: null,
+      id: toHex(mcEnc.cacheId),
+      uri: c.uri,
+      isManifest: false,
+    });
+  }
+
+  const multiInfoHtml = `
+    <div class="paper-info">
+      <strong>${escHtml(mc.label)}</strong>
+      — ${escHtml(mc.mimeType)}, ${mcEnc.totalBytes} bytes total, ${mcEnc.chunkCount} chunks<br>
+      Cache ID: <code>${toHex(mcEnc.cacheId)}</code><br>
+      SHA-256 (assembled): <code>${toHex(mcEnc.sha256)}</code>
+      <div class="step">① Scan the <strong>manifest</strong> — any time, before or after the chunks.</div>
+      <div class="step">② Scan each <strong>chunk</strong> in any order. TagDrop reassembles and verifies the SHA-256 once all ${mcEnc.chunkCount} are collected.</div>
+    </div>`;
+
   // Paper set
   const p = PAPER_EXAMPLE;
   const encodedFiles = p.files.map(f => {
@@ -358,12 +485,12 @@ async function main() {
       <div class="step">② Scan each <strong>file</strong> QR in any order to cache its content.</div>
     </div>`;
 
-  const html = renderPage({ standaloneHtml, paperInfoHtml, paperHtml });
+  const html = renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml });
   writeFileSync(join(__dirname, 'index.html'), html);
   console.log('Wrote tools/examples/index.html');
 }
 
-function renderPage({ standaloneHtml, paperInfoHtml, paperHtml }) {
+function renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -457,6 +584,19 @@ function renderPage({ standaloneHtml, paperInfoHtml, paperHtml }) {
       Scan any one with the <a href="../reader/index.html">web reader</a> or the Android app.
     </p>
     <div class="qr-grid">${standaloneHtml}
+    </div>
+  </section>
+
+  <section id="sec-multi">
+    <h2>Multi-Code Cache (Manifest + Chunks)</h2>
+    <p class="section-desc">
+      Content too large for one QR (&gt; ~800 bytes) is split into a
+      <strong>Manifest</strong> code plus several <strong>Chunk</strong> codes.
+      Chunks can be scanned in any order — even from different physical
+      locations — and TagDrop reassembles and checksums them once complete.
+    </p>
+    ${multiInfoHtml}
+    <div class="qr-grid">${multiHtml}
     </div>
   </section>
 
