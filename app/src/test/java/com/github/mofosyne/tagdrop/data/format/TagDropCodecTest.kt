@@ -40,6 +40,8 @@ class TagDropCodecTest {
         assertNull(decoded.hint)
         assertNull(decoded.filename)
         assertNull(decoded.collectionId)
+        assertNull(decoded.collectionLabel)
+        assertNull(decoded.collectionTag)
     }
 
     @Test fun singleWithCollectionId() {
@@ -54,6 +56,23 @@ class TagDropCodecTest {
         )
         val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.Single
         assertArrayEquals(collectionId, decoded.collectionId)
+    }
+
+    @Test fun singleWithCollectionLabelAndTag() {
+        val collectionId = byteArrayOf(0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80.toByte())
+        val original = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            hint = null, filename = null,
+            mimeType = "text/plain",
+            compression = TagDropCodec.COMPRESSION_NONE,
+            content = "hello".toByteArray(),
+            collectionId = collectionId,
+            collectionLabel = "Spring 2026 Sticker Hunt",
+            collectionTag = "springtrail2026"
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.Single
+        assertEquals("Spring 2026 Sticker Hunt", decoded.collectionLabel)
+        assertEquals("springtrail2026", decoded.collectionTag)
     }
 
     @Test fun singleWithCompression() {
@@ -92,6 +111,8 @@ class TagDropCodecTest {
         assertEquals(3200, decoded.totalBytes)
         assertArrayEquals(sha256, decoded.sha256)
         assertNull(decoded.collectionId)
+        assertNull(decoded.collectionLabel)
+        assertNull(decoded.collectionTag)
     }
 
     // ── Chunk ─────────────────────────────────────────────────────────────────
@@ -131,7 +152,9 @@ class TagDropCodecTest {
                     paperId = byteArrayOf(17, 18, 19, 20, 21, 22, 23, 24)),
                 TagDropPayload.RelatedPaper("trail start at town square")
             ),
-            collectionId = collectionId
+            collectionId    = collectionId,
+            collectionLabel = "Sunset Trail 2026",
+            collectionTag   = "sunsettrail"
         )
 
         val uri = TagDropCodec.encode(original)
@@ -143,6 +166,8 @@ class TagDropCodecTest {
         assertEquals("sunset-trail", decoded.set)
         assertEquals("oak-tree", decoded.slug)
         assertArrayEquals(collectionId, decoded.collectionId)
+        assertEquals("Sunset Trail 2026", decoded.collectionLabel)
+        assertEquals("sunsettrail", decoded.collectionTag)
 
         assertEquals(2, decoded.files.size)
         assertEquals("index", decoded.files[0].slug)
@@ -256,6 +281,16 @@ class TagDropCodecTest {
         val collectionId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
         val payload = TagDropCodec.createSingle(null, null, "text/plain", "hi".toByteArray(), collectionId = collectionId)
         assertArrayEquals(collectionId, payload.collectionId)
+    }
+
+    @Test fun createSingleWithCollectionLabelAndTag() {
+        val collectionId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
+        val payload = TagDropCodec.createSingle(
+            null, null, "text/plain", "hi".toByteArray(),
+            collectionId = collectionId, collectionLabel = "Garden Trail", collectionTag = "gardentrail"
+        )
+        assertEquals("Garden Trail", payload.collectionLabel)
+        assertEquals("gardentrail", payload.collectionTag)
     }
 
     // ── Compression helpers ───────────────────────────────────────────────────

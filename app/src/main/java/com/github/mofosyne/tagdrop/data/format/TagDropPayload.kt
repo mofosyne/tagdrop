@@ -22,7 +22,9 @@ sealed class TagDropPayload {
         val mimeType: String,
         val compression: Int,     // 0 = none, 1 = deflate
         val content: ByteArray,   // raw (possibly compressed) payload bytes
-        val collectionId: ByteArray? = null  // optional — groups related QR codes (see SPEC §7)
+        val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
+        val collectionLabel: String? = null,    // optional — human-readable name for the collection
+        val collectionTag: String? = null       // optional — hashtag-style cross-collection tag
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Single && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId.contentHashCode()
@@ -41,7 +43,9 @@ sealed class TagDropPayload {
         val chunkCount: Int,
         val totalBytes: Int,
         val sha256: ByteArray,    // SHA-256 of the assembled (uncompressed) content
-        val collectionId: ByteArray? = null  // optional — groups related QR codes (see SPEC §7)
+        val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
+        val collectionLabel: String? = null,    // optional — human-readable name for the collection
+        val collectionTag: String? = null       // optional — hashtag-style cross-collection tag
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Manifest && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId.contentHashCode()
@@ -97,7 +101,9 @@ sealed class TagDropPayload {
         val slug: String?,                 // this paper's address within the set
         val files: List<FileEntry>,        // directory of files on this paper
         val related: List<RelatedPaper>,   // hints to other papers / locations
-        val collectionId: ByteArray? = null  // optional — groups related QR codes (see SPEC §7)
+        val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
+        val collectionLabel: String? = null,    // optional — human-readable name for the collection
+        val collectionTag: String? = null       // optional — hashtag-style cross-collection tag
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is PaperManifest && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()

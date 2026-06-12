@@ -36,7 +36,9 @@ import java.util.zip.InflaterInputStream
  *   14 slug          text, optional  (PaperManifest)
  *   15 files         array    (PaperManifest)
  *   16 related       array    (PaperManifest)
- *   17 collection_id bytes(8), optional  (Single, Manifest, PaperManifest)
+ *   17 collection_id    bytes(8), optional  (Single, Manifest, PaperManifest)
+ *   18 collection_label text, optional      (Single, Manifest, PaperManifest)
+ *   19 collection_tag   text, optional      (Single, Manifest, PaperManifest)
  *
  * File entry sub-keys (within key 15 elements):
  *   20 slug        text
@@ -76,7 +78,9 @@ object TagDropCodec {
     private const val K_SLUG        = 14
     private const val K_FILES       = 15
     private const val K_RELATED     = 16
-    private const val K_COLLECTION_ID = 17
+    private const val K_COLLECTION_ID    = 17
+    private const val K_COLLECTION_LABEL = 18
+    private const val K_COLLECTION_TAG   = 19
     private const val K_FILE_SLUG   = 20
     private const val K_FILE_MIME   = 21
     private const val K_FILE_ID     = 22
@@ -101,7 +105,8 @@ object TagDropCodec {
     /** Build a Single payload with an auto-computed content-addressed ID. */
     fun createSingle(
         hint: String?, filename: String?, mimeType: String,
-        rawContent: ByteArray, compress: Boolean = false, collectionId: ByteArray? = null
+        rawContent: ByteArray, compress: Boolean = false, collectionId: ByteArray? = null,
+        collectionLabel: String? = null, collectionTag: String? = null
     ): TagDropPayload.Single {
         val (content, compression) = if (compress) {
             compress(rawContent) to COMPRESSION_DEFLATE
@@ -109,13 +114,15 @@ object TagDropCodec {
             rawContent to COMPRESSION_NONE
         }
         return TagDropPayload.Single(
-            cacheId      = contentId(rawContent),
-            hint         = hint,
-            filename     = filename,
-            mimeType     = mimeType,
-            compression  = compression,
-            content      = content,
-            collectionId = collectionId
+            cacheId         = contentId(rawContent),
+            hint            = hint,
+            filename        = filename,
+            mimeType        = mimeType,
+            compression     = compression,
+            content         = content,
+            collectionId    = collectionId,
+            collectionLabel = collectionLabel,
+            collectionTag   = collectionTag
         )
     }
 
@@ -131,7 +138,9 @@ object TagDropCodec {
                 K_MIME        to payload.mimeType,
                 K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
                 K_CONTENT     to payload.content,
-                K_COLLECTION_ID to payload.collectionId
+                K_COLLECTION_ID    to payload.collectionId,
+                K_COLLECTION_LABEL to payload.collectionLabel,
+                K_COLLECTION_TAG   to payload.collectionTag
             ))
         )
         is TagDropPayload.Manifest -> SCHEME + PATH_M + Base45.encode(
@@ -145,7 +154,9 @@ object TagDropCodec {
                 K_CHUNK_COUNT to payload.chunkCount,
                 K_TOTAL_BYTES to payload.totalBytes,
                 K_SHA256      to payload.sha256,
-                K_COLLECTION_ID to payload.collectionId
+                K_COLLECTION_ID    to payload.collectionId,
+                K_COLLECTION_LABEL to payload.collectionLabel,
+                K_COLLECTION_TAG   to payload.collectionTag
             ))
         )
         is TagDropPayload.Chunk -> SCHEME + PATH_C + Base45.encode(
@@ -184,7 +195,9 @@ object TagDropCodec {
                     K_PAPER_ID to r.paperId
                 ))
             },
-            K_COLLECTION_ID to payload.collectionId
+            K_COLLECTION_ID    to payload.collectionId,
+            K_COLLECTION_LABEL to payload.collectionLabel,
+            K_COLLECTION_TAG   to payload.collectionTag
         ))
 
     // ── Decoding ──────────────────────────────────────────────────────────────
@@ -209,25 +222,29 @@ object TagDropCodec {
         runCatching { decodePaperManifest(MiniCbor.decodeMap(cbor)) }.getOrNull()
 
     private fun decodeSingle(m: Map<Int, Any>) = TagDropPayload.Single(
-        cacheId      = m.bytes(K_CACHE_ID),
-        hint         = m.text(K_HINT),
-        filename     = m.text(K_FILENAME),
-        mimeType     = m.text(K_MIME)!!,
-        compression  = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
-        content      = m.bytes(K_CONTENT),
-        collectionId = m.bytesOrNull(K_COLLECTION_ID)
+        cacheId         = m.bytes(K_CACHE_ID),
+        hint            = m.text(K_HINT),
+        filename        = m.text(K_FILENAME),
+        mimeType        = m.text(K_MIME)!!,
+        compression     = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
+        content         = m.bytes(K_CONTENT),
+        collectionId    = m.bytesOrNull(K_COLLECTION_ID),
+        collectionLabel = m.text(K_COLLECTION_LABEL),
+        collectionTag   = m.text(K_COLLECTION_TAG)
     )
 
     private fun decodeManifest(m: Map<Int, Any>) = TagDropPayload.Manifest(
-        cacheId      = m.bytes(K_CACHE_ID),
-        hint         = m.text(K_HINT),
-        filename     = m.text(K_FILENAME),
-        mimeType     = m.text(K_MIME)!!,
-        compression  = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
-        chunkCount   = m.uint(K_CHUNK_COUNT)!!.toInt(),
-        totalBytes   = m.uint(K_TOTAL_BYTES)!!.toInt(),
-        sha256       = m.bytes(K_SHA256),
-        collectionId = m.bytesOrNull(K_COLLECTION_ID)
+        cacheId         = m.bytes(K_CACHE_ID),
+        hint            = m.text(K_HINT),
+        filename        = m.text(K_FILENAME),
+        mimeType        = m.text(K_MIME)!!,
+        compression     = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
+        chunkCount      = m.uint(K_CHUNK_COUNT)!!.toInt(),
+        totalBytes      = m.uint(K_TOTAL_BYTES)!!.toInt(),
+        sha256          = m.bytes(K_SHA256),
+        collectionId    = m.bytesOrNull(K_COLLECTION_ID),
+        collectionLabel = m.text(K_COLLECTION_LABEL),
+        collectionTag   = m.text(K_COLLECTION_TAG)
     )
 
     private fun decodeChunk(m: Map<Int, Any>) = TagDropPayload.Chunk(
@@ -258,13 +275,15 @@ object TagDropCodec {
         } ?: emptyList()
 
         return TagDropPayload.PaperManifest(
-            rootHash     = m.bytes(K_CACHE_ID),
-            label        = m.text(K_HINT),
-            set          = m.text(K_SET),
-            slug         = m.text(K_SLUG),
-            files        = files,
-            related      = related,
-            collectionId = m.bytesOrNull(K_COLLECTION_ID)
+            rootHash        = m.bytes(K_CACHE_ID),
+            label           = m.text(K_HINT),
+            set             = m.text(K_SET),
+            slug            = m.text(K_SLUG),
+            files           = files,
+            related         = related,
+            collectionId    = m.bytesOrNull(K_COLLECTION_ID),
+            collectionLabel = m.text(K_COLLECTION_LABEL),
+            collectionTag   = m.text(K_COLLECTION_TAG)
         )
     }
 

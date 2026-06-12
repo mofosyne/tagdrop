@@ -11,7 +11,9 @@ data class ScannedPaper(
     val set: String?,
     val slug: String?,
     val cborBytes: ByteArray,          // full paper manifest CBOR, used to re-parse files/related
-    val collectionId: String? = null   // hex-encoded 8-byte ID, groups related scans
+    val collectionId: String? = null,    // hex-encoded 8-byte ID, groups related scans
+    val collectionLabel: String? = null, // human-readable name for the collection
+    val collectionTag: String? = null    // hashtag-style cross-collection tag
 ) {
     override fun equals(other: Any?) = other is ScannedPaper && rootHash == other.rootHash
     override fun hashCode() = rootHash.hashCode()

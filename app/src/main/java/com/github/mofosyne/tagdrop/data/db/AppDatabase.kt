@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [FoundCache::class, ScannedPaper::class], version = 3, exportSchema = false)
+@Database(entities = [FoundCache::class, ScannedPaper::class], version = 4, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cacheDao(): CacheDao
     abstract fun paperDao(): PaperDao
@@ -37,13 +37,22 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE found_caches ADD COLUMN collectionLabel TEXT")
+                database.execSQL("ALTER TABLE found_caches ADD COLUMN collectionTag TEXT")
+                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionLabel TEXT")
+                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionTag TEXT")
+            }
+        }
+
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "tagdrop.db"
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build().also { INSTANCE = it }
         }
     }

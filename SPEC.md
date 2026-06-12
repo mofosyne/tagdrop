@@ -77,6 +77,8 @@ All payloads are CBOR maps with **integer keys**. Unknown keys must be ignored (
 | 15 | `files` | array | P |
 | 16 | `related` | array | P |
 | 17 | `collection_id` | bytes (8, opt) | S, M, P |
+| 18 | `collection_label` | text (opt) | S, M, P |
+| 19 | `collection_tag` | text (opt) | S, M, P |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
@@ -119,6 +121,8 @@ CBOR map {
   11: "poem.html",        // filename — optional
   12: 1,                  // compression — omit if none (0)
   17: h'<8 random bytes>',// collection_id — optional, see §7 Collections
+  18: "Spring Sticker Hunt", // collection_label — optional, see §7 Collections
+  19: "springtrail2026",  // collection_tag — optional, see §7 Collections
 }
 ```
 
@@ -140,6 +144,8 @@ CBOR map {
   7: 3200,                  // total_bytes: assembled (pre-decompression if compressed)
   8: h'<32-byte sha256>',   // hash of assembled raw chunk data (before decompression)
   17: h'<8 random bytes>',  // collection_id — optional, see §7 Collections
+  18: "Spring Sticker Hunt", // collection_label — optional, see §7 Collections
+  19: "springtrail2026",    // collection_tag — optional, see §7 Collections
 }
 ```
 
@@ -177,6 +183,8 @@ CBOR map {
     {3: "Start of trail: town square notice board"},
   ],
   17: h'<8 random bytes>',          // collection_id — optional, see §7 Collections
+  18: "Spring Sticker Hunt",        // collection_label — optional, see §7 Collections
+  19: "springtrail2026",            // collection_tag — optional, see §7 Collections
 }
 ```
 
@@ -377,6 +385,27 @@ Unlike `root_hash`, `collection_id` is **not** content-addressed — it's
 arbitrary random bytes chosen once by the author, since its only purpose is
 grouping in the finder's app, not identity or integrity.
 
+#### Naming a collection
+
+Two optional text fields give a collection a human identity, independent of
+its random `collection_id`:
+
+- `collection_label` (key 18) — a human-readable name for the collection
+  (e.g. `"Spring 2026 Sticker Hunt"`), shown as the title of the collection
+  card on the home screen. The author repeats the same label on every code
+  that shares the `collection_id`; the app can display it as soon as it sees
+  the first one.
+- `collection_tag` (key 19) — a short, hashtag-style string (e.g.
+  `"springtrail2026"`) for cross-referencing **separate** collections that
+  belong to a larger event or theme. Unlike `collection_id`, a tag is not a
+  grouping key by itself — multiple distinct `collection_id`s (e.g. several
+  independent trails) can share the same `collection_tag` to indicate they're
+  part of the same city-wide event, without merging them into one collection.
+
+Both fields are optional and purely cosmetic — omitting them just means the
+app falls back to a generated title (e.g. derived from the first scanned
+item's hint or filename).
+
 ## 8. Compression
 
 | `compression` value | Algorithm |
@@ -438,7 +467,7 @@ The `version` field (key 1) is present in Single, Manifest, and PaperManifest pa
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. Keys 1–16, 20–23. Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. |
+| 1 | Initial release. Keys 1–19, 20–23. Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). |
 
 ---
 
@@ -454,7 +483,7 @@ Version history:
 - **Android database:** `app/src/main/java/com/github/mofosyne/tagdrop/data/db/`
   - `FoundCache.kt` — Room entity for scanned file caches
   - `ScannedPaper.kt` — Room entity for scanned paper manifests
-  - `AppDatabase.kt` — Room DB v2 with migration
+  - `AppDatabase.kt` — Room DB v4 with migrations
 
 ---
 
