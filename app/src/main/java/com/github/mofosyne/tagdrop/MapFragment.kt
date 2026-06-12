@@ -1,10 +1,16 @@
 package com.github.mofosyne.tagdrop
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
+import androidx.core.content.getSystemService
 import androidx.fragment.app.Fragment
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
@@ -22,7 +28,19 @@ class MapFragment : Fragment() {
 
     private var _binding: FragmentMapBinding? = null
     private val binding get() = _binding!!
+
     private var hasCentered = false
+    private var deviceLocation: GeoPoint? = null
+    private var latestPapers: List<ScannedPaper> = emptyList()
+    private var latestCaches: List<FoundCache> = emptyList()
+
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                deviceLocation = lastKnownLocation()
+                render()
+            }
+        }
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -41,62 +59,15 @@ class MapFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         binding.map.setTileSource(TileSourceFactory.MAPNIK)
         binding.map.setMultiTouchControls(true)
-        binding.map.controller.setZoom(2.0)
+        binding.map.controller.setZoom(WORLD_ZOOM)
         binding.map.controller.setCenter(GeoPoint(20.0, 0.0))
 
-        var latestPapers: List<ScannedPaper> = emptyList()
-        var latestCaches: List<FoundCache> = emptyList()
-
-        fun render() {
-            binding.map.overlays.clear()
-            val points = mutableListOf<GeoPoint>()
-
-            for (cache in latestCaches) {
-                val lat = cache.lat
-                val lng = cache.lng
-                if (lat == null || lng == null) continue
-                val point = GeoPoint(lat, lng)
-                points += point
-                binding.map.overlays.add(Marker(binding.map).apply {
-                    position = point
-                    title = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
-                    setOnMarkerClickListener { _, _ ->
-                        val collectionId = cache.collectionId
-                        if (collectionId != null) requireContext().openCollectionDetail(collectionId = collectionId)
-                        else requireContext().openCollectionDetail(cacheId = cache.cacheId)
-                        true
-                    }
-                })
-            }
-
-            for (paper in latestPapers) {
-                val lat = paper.lat
-                val lng = paper.lng
-                if (lat == null || lng == null) continue
-                val point = GeoPoint(lat, lng)
-                points += point
-                binding.map.overlays.add(Marker(binding.map).apply {
-                    position = point
-                    title = paper.label ?: getString(R.string.paper_manifest_label)
-                    setOnMarkerClickListener { _, _ ->
-                        requireContext().openCollectionDetail(rootHash = paper.rootHash)
-                        true
-                    }
-                })
-            }
-
-            binding.textEmpty.visibility = if (points.isEmpty()) View.VISIBLE else View.GONE
-            if (!hasCentered && points.isNotEmpty()) {
-                hasCentered = true
-                val north = points.maxOf { it.latitude }
-                val south = points.minOf { it.latitude }
-                val east = points.maxOf { it.longitude }
-                val west = points.minOf { it.longitude }
-                binding.map.post {
-                    binding.map.zoomToBoundingBox(BoundingBox(north, east, south, west), true)
-                }
-            }
-            binding.map.invalidate()
+        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            deviceLocation = lastKnownLocation()
+        } else {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
 
         val db = AppDatabase.get(requireContext())
@@ -108,6 +79,86 @@ class MapFragment : Fragment() {
             latestCaches = caches
             render()
         }
+    }
+
+    /** Draws all known pins and, on first load, focuses the view on the user's area. */
+    private fun render() {
+        if (_binding == null) return
+        binding.map.overlays.clear()
+        val points = mutableListOf<GeoPoint>()
+
+        for (cache in latestCaches) {
+            val lat = cache.lat
+            val lng = cache.lng
+            if (lat == null || lng == null) continue
+            val point = GeoPoint(lat, lng)
+            points += point
+            binding.map.overlays.add(Marker(binding.map).apply {
+                position = point
+                title = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
+                setOnMarkerClickListener { _, _ ->
+                    val collectionId = cache.collectionId
+                    if (collectionId != null) requireContext().openCollectionDetail(collectionId = collectionId)
+                    else requireContext().openCollectionDetail(cacheId = cache.cacheId)
+                    true
+                }
+            })
+        }
+
+        for (paper in latestPapers) {
+            val lat = paper.lat
+            val lng = paper.lng
+            if (lat == null || lng == null) continue
+            val point = GeoPoint(lat, lng)
+            points += point
+            binding.map.overlays.add(Marker(binding.map).apply {
+                position = point
+                title = paper.label ?: getString(R.string.paper_manifest_label)
+                setOnMarkerClickListener { _, _ ->
+                    requireContext().openCollectionDetail(rootHash = paper.rootHash)
+                    true
+                }
+            })
+        }
+
+        binding.textEmpty.visibility = if (points.isEmpty()) View.VISIBLE else View.GONE
+
+        if (!hasCentered) {
+            // Frame the user's own area plus any tags within it; ignore far-away tags
+            // (e.g. someone else's drop) so the initial view doesn't zoom out to fit them.
+            val nearbyPoints = deviceLocation?.let { here ->
+                points.filter { it.distanceToAsDouble(here) <= NEARBY_RADIUS_METERS }
+            } ?: points
+            val focusPoints = nearbyPoints + listOfNotNull(deviceLocation)
+            if (focusPoints.size == 1) {
+                hasCentered = true
+                binding.map.controller.setZoom(LOCAL_ZOOM)
+                binding.map.controller.setCenter(focusPoints.single())
+            } else if (focusPoints.size > 1) {
+                hasCentered = true
+                val north = focusPoints.maxOf { it.latitude }
+                val south = focusPoints.minOf { it.latitude }
+                val east = focusPoints.maxOf { it.longitude }
+                val west = focusPoints.minOf { it.longitude }
+                binding.map.post {
+                    binding.map.zoomToBoundingBox(BoundingBox(north, east, south, west), true)
+                }
+            }
+        }
+        binding.map.invalidate()
+    }
+
+    /** Best-known device location, or null if unavailable/permission not granted. */
+    private fun lastKnownLocation(): GeoPoint? {
+        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) return null
+        val locationManager = requireContext().getSystemService<LocationManager>() ?: return null
+        return listOf(LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+            .filter { locationManager.isProviderEnabled(it) }
+            .mapNotNull { locationManager.getLastKnownLocation(it) }
+            .maxByOrNull { it.time }
+            ?.let { GeoPoint(it.latitude, it.longitude) }
     }
 
     override fun onResume() {
@@ -123,5 +174,11 @@ class MapFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
+    }
+
+    companion object {
+        private const val WORLD_ZOOM = 2.0
+        private const val LOCAL_ZOOM = 14.0
+        private const val NEARBY_RADIUS_METERS = 50_000.0
     }
 }
