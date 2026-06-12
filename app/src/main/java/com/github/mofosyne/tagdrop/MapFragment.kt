@@ -30,6 +30,8 @@ import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.io.File
 
 /** "Map" tab: pins for every scan that has a captured location. */
@@ -40,14 +42,17 @@ class MapFragment : Fragment() {
 
     private var hasCentered = false
     private var deviceLocation: GeoPoint? = null
+    private lateinit var myLocationOverlay: MyLocationNewOverlay
+    private val markerFolder = org.osmdroid.views.overlay.FolderOverlay()
     private var latestPapers: List<ScannedPaper> = emptyList()
     private var latestCaches: List<FoundCache> = emptyList()
     private val markerInfos = mutableListOf<MarkerInfo>()
     private var labelsShown = false
 
     private val locationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) {
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            if (results.any { it.value }) {
+                setupMyLocation()
                 deviceLocation = lastKnownLocation()
                 render()
             }
@@ -72,6 +77,7 @@ class MapFragment : Fragment() {
         binding.map.setMultiTouchControls(true)
         binding.map.controller.setZoom(DEFAULT_ZOOM)
         binding.map.controller.setCenter(GeoPoint(20.0, 0.0))
+        binding.map.overlays.add(markerFolder)
         binding.map.addMapListener(object : MapListener {
             override fun onScroll(event: ScrollEvent): Boolean = false
             override fun onZoom(event: ZoomEvent): Boolean {
@@ -85,12 +91,14 @@ class MapFragment : Fragment() {
             }
         })
 
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
+        val hasCoarse = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasFine = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        if (hasCoarse || hasFine) {
+            setupMyLocation()
             deviceLocation = lastKnownLocation()
         } else {
-            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
         }
 
         val db = AppDatabase.get(requireContext())
@@ -107,7 +115,7 @@ class MapFragment : Fragment() {
     /** Draws all known pins and, on first load, focuses the view on the user's area. */
     private fun render() {
         if (_binding == null) return
-        binding.map.overlays.clear()
+        markerFolder.items.clear()
         markerInfos.clear()
         val points = mutableListOf<GeoPoint>()
 
@@ -128,7 +136,7 @@ class MapFragment : Fragment() {
                     true
                 }
             }
-            binding.map.overlays.add(marker)
+            markerFolder.add(marker)
             markerInfos += MarkerInfo(marker, cache.icon, label)
         }
 
@@ -147,7 +155,7 @@ class MapFragment : Fragment() {
                     true
                 }
             }
-            binding.map.overlays.add(marker)
+            markerFolder.add(marker)
             markerInfos += MarkerInfo(marker, paper.icon, label)
         }
 
@@ -181,14 +189,31 @@ class MapFragment : Fragment() {
         binding.map.invalidate()
     }
 
+    private fun setupMyLocation() {
+        if (_binding == null) return
+        if (!::myLocationOverlay.isInitialized) {
+            myLocationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(requireContext()), binding.map)
+            myLocationOverlay.enableMyLocation()
+            binding.map.overlays.add(myLocationOverlay)
+            myLocationOverlay.runOnFirstFix {
+                activity?.runOnUiThread {
+                    if (!hasCentered && _binding != null) {
+                        deviceLocation = myLocationOverlay.myLocation
+                        render()
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * Sets a marker's visual icon based on its emoji (if any) and whether the zoom-dependent
      * text label should currently be shown. Falls back to osmdroid's default pin when there's
      * nothing custom to draw.
      */
     private fun applyMarkerIcon(info: MarkerInfo, showLabel: Boolean) {
-        val label = if (showLabel) info.label else null
-        if (info.icon == null && label == null) {
+        val label = if (showLabel && info.label.isNotBlank()) info.label else null
+        if (info.icon.isNullOrBlank() && label == null) {
             info.marker.setDefaultIcon()
             return
         }
@@ -219,38 +244,42 @@ class MapFragment : Fragment() {
         }
         val padding = 4f * density
 
-        val iconHeight = if (icon != null) iconPaint.descent() - iconPaint.ascent() else 0f
-        val iconWidth = if (icon != null) iconPaint.measureText(icon) else 0f
+        val hasIcon = !icon.isNullOrBlank()
+        val iconHeight = if (hasIcon) iconPaint.descent() - iconPaint.ascent() else 0f
+        val iconWidth = if (hasIcon) iconPaint.measureText(icon) else 0f
         val labelHeight = if (label != null) (labelPaint.descent() - labelPaint.ascent()) + padding * 2 else 0f
         val labelWidth = if (label != null) labelPaint.measureText(label) + padding * 2 else 0f
 
-        val width = maxOf(iconWidth, labelWidth, 1f)
-        val height = maxOf(iconHeight + labelHeight, 1f)
+        val width = maxOf(iconWidth, labelWidth, 20f * density)
+        val height = maxOf(iconHeight + labelHeight, 20f * density)
 
         val bitmap = Bitmap.createBitmap(width.toInt(), height.toInt(), Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
-        if (icon != null) {
-            canvas.drawText(icon, width / 2f, -iconPaint.ascent(), iconPaint)
+        if (hasIcon) {
+            canvas.drawText(icon!!, width / 2f, -iconPaint.ascent(), iconPaint)
         }
         if (label != null) {
             canvas.drawRoundRect(0f, iconHeight, width, iconHeight + labelHeight, padding, padding, labelBgPaint)
             canvas.drawText(label, width / 2f, iconHeight + padding - labelPaint.ascent(), labelPaint)
         }
 
-        val anchorV = if (icon != null && label != null) (iconHeight / 2f) / height else 0.5f
+        val anchorV = if (hasIcon && label != null) (iconHeight / 2f) / height else 0.5f
         return BitmapDrawable(resources, bitmap) to anchorV
     }
 
     /** Best-known device location, or null if unavailable/permission not granted. */
     private fun lastKnownLocation(): GeoPoint? {
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) return null
+        val hasCoarse = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasFine = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasCoarse && !hasFine) return null
+
         val locationManager = requireContext().getSystemService<LocationManager>() ?: return null
-        return listOf(LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        return listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
             .filter { locationManager.isProviderEnabled(it) }
-            .mapNotNull { locationManager.getLastKnownLocation(it) }
+            .mapNotNull {
+                try { locationManager.getLastKnownLocation(it) } catch (e: SecurityException) { null }
+            }
             .maxByOrNull { it.time }
             ?.let { GeoPoint(it.latitude, it.longitude) }
     }
@@ -258,11 +287,17 @@ class MapFragment : Fragment() {
     override fun onResume() {
         super.onResume()
         binding.map.onResume()
+        if (::myLocationOverlay.isInitialized) {
+            myLocationOverlay.enableMyLocation()
+        }
     }
 
     override fun onPause() {
         super.onPause()
         binding.map.onPause()
+        if (::myLocationOverlay.isInitialized) {
+            myLocationOverlay.disableMyLocation()
+        }
     }
 
     override fun onDestroyView() {
