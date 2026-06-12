@@ -40,7 +40,7 @@ class CollectionListAdapter(
                         ?: ctx.getString(R.string.collection_adhoc_default_title, item.collectionId.take(8))
                     binding.textSubtitle.text = ctx.getString(R.string.collection_item_count, item.items.size)
                     binding.textMeta.text = buildString {
-                        if (item.tag != null) append("#${item.tag}  ·  ")
+                        if (item.tags.isNotEmpty()) append(item.tags.joinToString(" ") { "#$it" } + "  ·  ")
                         append(DATE_FMT.format(Date(item.timestamp)))
                     }
                 }

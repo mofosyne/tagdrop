@@ -63,11 +63,15 @@ class CollectionDetailActivity : AppCompatActivity() {
             binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
 
             title = paper.label ?: getString(R.string.paper_manifest_label)
+            // Each page may be focused on its own theme, so accumulate every
+            // distinct tag seen across the paper and its cached pages.
+            val tags = (listOf(paper.collectionTag) + items.mapNotNull { it.cache?.collectionTag })
+                .filterNotNull().distinct()
             val info = buildString {
                 if (paper.set != null) append(getString(R.string.paper_set, paper.set))
-                if (paper.collectionTag != null) {
+                if (tags.isNotEmpty()) {
                     if (isNotEmpty()) append("  ·  ")
-                    append("#${paper.collectionTag}")
+                    append(tags.joinToString(" ") { "#$it" })
                 }
             }
             binding.textInfo.text = info
@@ -102,9 +106,9 @@ class CollectionDetailActivity : AppCompatActivity() {
 
             title = caches.firstOrNull { it.collectionLabel != null }?.collectionLabel
                 ?: getString(R.string.collection_adhoc_default_title, collectionId.take(8))
-            val tag = caches.firstOrNull { it.collectionTag != null }?.collectionTag
-            binding.textInfo.text = tag?.let { "#$it" } ?: ""
-            binding.textInfo.visibility = if (tag != null) View.VISIBLE else View.GONE
+            val tags = caches.mapNotNull { it.collectionTag }.distinct()
+            binding.textInfo.text = tags.joinToString(" ") { "#$it" }
+            binding.textInfo.visibility = if (tags.isNotEmpty()) View.VISIBLE else View.GONE
         }
     }
 
