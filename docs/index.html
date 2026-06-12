@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TagDrop — Tag Dead Drop</title>
+<link rel="icon" href="icon.png" type="image/png">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; line-height: 1.5; }
+  h1   { margin: 0; font-size: 1.4rem; }
+  h2   { font-size: 1.25rem; margin: 0 0 8px; }
+  h3   { margin: 0 0 6px; font-size: 1.05rem; }
+  a    { color: #1a1a2e; }
+
+  header { background: #1a1a2e; color: #fff; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+  header small { color: #aaa; font-size: 0.8rem; }
+
+  .container { max-width: 860px; margin: 0 auto; padding: 24px; }
+
+  .hero { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin-bottom: 8px; }
+  .hero img { width: 96px; height: 96px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.15); background: #fff; }
+  .hero .lead { flex: 1; min-width: 240px; font-size: 1rem; color: #444; }
+
+  .card { background: #fff; border-radius: 8px; padding: 16px; margin-top: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+  section { margin-top: 28px; }
+  section p { color: #444; }
+  section ul { color: #444; padding-left: 22px; }
+  section li { margin-bottom: 6px; }
+  code { background: #eee; border-radius: 4px; padding: 1px 5px; font-size: 0.9em; }
+
+  .card-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+  .tool-card { flex: 1; min-width: 200px; background: #fff; border-radius: 8px; padding: 16px;
+                box-shadow: 0 1px 3px rgba(0,0,0,.1); text-decoration: none; color: #222;
+                transition: box-shadow .15s, transform .15s; }
+  .tool-card:hover { box-shadow: 0 3px 10px rgba(0,0,0,.15); transform: translateY(-2px); }
+  .tool-card h3 { color: #1a1a2e; }
+  .tool-card p { margin: 0; font-size: 0.88rem; color: #666; }
+
+  footer { max-width: 860px; margin: 32px auto 0; padding: 16px 24px 32px; color: #888; font-size: 0.85rem; }
+  footer a { color: #555; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>TagDrop</h1>
+    <small>Tag Dead Drop — physical content, scanned to life</small>
+  </div>
+</header>
+
+<div class="container">
+
+  <section class="hero">
+    <img src="icon.png" alt="TagDrop logo">
+    <p class="lead">
+      TagDrop encodes self-contained digital content — HTML pages, images, audio
+      clips, plain text — into one or more 2D barcodes (QR, Aztec, Data Matrix)
+      for physical placement: on walls, along trails, inside objects. A finder
+      scans the code(s) with the TagDrop Android app, or any browser using the
+      tools below, to retrieve the content — no internet connection required
+      once the codes are scanned.
+    </p>
+  </section>
+
+  <section>
+    <h2>Web Tools</h2>
+    <p>Try the format right in your browser — no install required.</p>
+    <div class="card-grid">
+      <a class="tool-card" href="generator/">
+        <h3>🧰 Generator</h3>
+        <p>Create TagDrop QR codes from text, HTML, images, or audio — single
+        files or multi-file "paper" layouts with directories and related-paper
+        hints. Print-ready output.</p>
+      </a>
+      <a class="tool-card" href="reader/">
+        <h3>📷 Reader</h3>
+        <p>Scan TagDrop QR codes with your device camera, assemble multi-code
+        payloads, browse paper directories, and follow tagdrop:// links
+        between pages — entirely offline.</p>
+      </a>
+      <a class="tool-card" href="examples/">
+        <h3>🧪 Examples</h3>
+        <p>A gallery of pre-generated sample codes: standalone payloads, a
+        multi-code story, a paper directory, and a multi-location trail —
+        ready to scan with the app or the Reader.</p>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <ul>
+      <li><strong>URI scheme:</strong> every code carries
+        <code>tagdrop://v1/&lt;type&gt;/&lt;base45-cbor&gt;</code> — a CBOR map,
+        Base45-encoded so it fits QR alphanumeric mode with minimal overhead.</li>
+      <li><strong>Single codes</strong> hold a complete payload (<code>s</code>);
+        larger payloads split into a manifest (<code>m</code>) plus chunks
+        (<code>c</code>) that can be scattered across multiple physical
+        locations and reassembled later.</li>
+      <li><strong>Paper manifests</strong> (<code>p</code>) describe a
+        directory of files on one physical sheet, plus hints pointing to
+        related papers elsewhere — letting a "trail" of drops link together
+        into a collection.</li>
+      <li><strong>Forward-compatible:</strong> versioned, with unknown CBOR
+        keys ignored, so the format can grow without breaking old readers.</li>
+    </ul>
+    <p>
+      Full details in the
+      <a href="https://github.com/mofosyne/tagdrop/blob/master/SPEC.md">format specification</a>.
+    </p>
+  </section>
+
+  <section>
+    <h2>Android App</h2>
+    <p>
+      The TagDrop Android app scans codes with the camera, caches found
+      content, tracks scanned papers and collections on a map, and renders
+      HTML/image/audio content offline — including navigation between pages
+      of the same paper via <code>tagdrop://</code> links. Build it from
+      source using the instructions in
+      <a href="https://github.com/mofosyne/tagdrop/blob/master/DEVELOPING.md">DEVELOPING.md</a>.
+    </p>
+  </section>
+
+</div>
+
+<footer>
+  <p>
+    <a href="https://github.com/mofosyne/tagdrop">Source on GitHub</a> ·
+    <a href="https://github.com/mofosyne/tagdrop/blob/master/SPEC.md">Specification</a> ·
+    <a href="https://github.com/mofosyne/tagdrop/blob/master/DEVELOPING.md">Developing</a> ·
+    <a href="https://github.com/mofosyne/tagdrop/blob/master/COPYING.txt">License (GPLv3)</a>
+  </p>
+</footer>
+
+</body>
+</html>

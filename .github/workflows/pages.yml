@@ -1,0 +1,69 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - 'tools/generator/**'
+      - 'tools/reader/**'
+      - 'tools/examples/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, but don't cancel in-progress runs.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Regenerate the static example gallery so it's never stale.
+      - name: Build examples gallery
+        working-directory: tools/examples
+        run: |
+          npm install
+          npm run build
+
+      # Assemble the site: homepage at the root, web tools as subdirectories.
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r docs/. _site/
+          mkdir -p _site/generator _site/reader _site/examples
+          cp tools/generator/index.html _site/generator/index.html
+          cp tools/reader/index.html _site/reader/index.html
+          cp tools/examples/index.html _site/examples/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
