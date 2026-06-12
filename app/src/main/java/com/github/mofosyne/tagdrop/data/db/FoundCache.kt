@@ -10,7 +10,8 @@ data class FoundCache(
     val hint: String?,
     val filename: String?,
     val mimeType: String,
-    val contentBytes: ByteArray?          // null if user chose not to save content
+    val contentBytes: ByteArray?,         // null if user chose not to save content
+    val collectionId: String? = null      // hex-encoded 8-byte ID, groups related scans
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()

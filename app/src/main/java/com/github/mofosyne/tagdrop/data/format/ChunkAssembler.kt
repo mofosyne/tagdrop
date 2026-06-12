@@ -29,7 +29,8 @@ class ChunkAssembler {
             val hint: String?,
             val filename: String?,
             val mimeType: String,
-            val content: ByteArray   // already decompressed
+            val content: ByteArray,  // already decompressed
+            val collectionId: ByteArray?
         ) : State()
 
         /** All chunks received but assembly failed integrity check. */
@@ -72,7 +73,7 @@ class ChunkAssembler {
         }
 
         val content = TagDropCodec.decompressPayload(assembled, m.compression)
-        return State.Complete(m.cacheId, m.hint, m.filename, m.mimeType, content)
+        return State.Complete(m.cacheId, m.hint, m.filename, m.mimeType, content, m.collectionId)
     }
 
     fun reset() {

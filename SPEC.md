@@ -76,6 +76,7 @@ All payloads are CBOR maps with **integer keys**. Unknown keys must be ignored (
 | 14 | `slug` | text (opt) | P |
 | 15 | `files` | array | P |
 | 16 | `related` | array | P |
+| 17 | `collection_id` | bytes (8, opt) | S, M, P |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
@@ -117,6 +118,7 @@ CBOR map {
   5: h'<content bytes>',  // content — raw or compressed
   11: "poem.html",        // filename — optional
   12: 1,                  // compression — omit if none (0)
+  17: h'<8 random bytes>',// collection_id — optional, see §7 Collections
 }
 ```
 
@@ -137,6 +139,7 @@ CBOR map {
   6: 4,                     // chunk_count: 4 codes to collect
   7: 3200,                  // total_bytes: assembled (pre-decompression if compressed)
   8: h'<32-byte sha256>',   // hash of assembled raw chunk data (before decompression)
+  17: h'<8 random bytes>',  // collection_id — optional, see §7 Collections
 }
 ```
 
@@ -172,7 +175,8 @@ CBOR map {
   16: [                             // related — hints to other papers
     {3: "Next stop: the red letterbox 200m north", 14: "letterbox", 23: h'<paper_id>'},
     {3: "Start of trail: town square notice board"},
-  ]
+  ],
+  17: h'<8 random bytes>',          // collection_id — optional, see §7 Collections
 }
 ```
 
@@ -341,6 +345,37 @@ tagdrop://<letterbox-paper-root-hash-base45>/index
 ```
 
 Root hashes are permanent because paper is immutable. If a paper is updated, it gets a new hash — the old one continues to work as long as the old paper exists physically.
+
+### Collections (ad-hoc grouping)
+
+`set`/`slug` require a named, coordinated trail — every paper in the set
+agrees on the set name and a unique slug, and (for paper manifests) is
+addressed via its content-derived `root_hash`. That's the right model for a
+curated trail or exhibition.
+
+For looser groupings — a handful of stickers scattered by the same person, a
+single-file drop that's part of a bigger scavenger hunt, or any case where
+there's no shared directory to scan first — the optional `collection_id`
+field (key 17, 8 random bytes) provides a lighter-weight mechanism:
+
+- The author generates one random `collection_id` and stamps it into every
+  QR code (Single, Manifest, or Paper Manifest) that should be grouped
+  together. There's no central directory listing what belongs to the
+  collection — it's **distributed**: each code is independently
+  self-contained, and membership is discovered purely by what's been scanned.
+- The app groups everything it has found that shares the same
+  `collection_id` into one "collection" on the home screen, alongside papers
+  (grouped by `root_hash` + `files[]`) and standalone single-file scans
+  (each of which is its own one-page collection). The collection grows as
+  more pieces are scanned — there's no fixed membership list and no
+  "complete" state.
+- `collection_id` is independent of `set`/`slug`: a paper can belong to both
+  a named set (for trail navigation between papers) and an ad-hoc collection
+  (for home-screen grouping with unrelated loose scans).
+
+Unlike `root_hash`, `collection_id` is **not** content-addressed — it's
+arbitrary random bytes chosen once by the author, since its only purpose is
+grouping in the finder's app, not identity or integrity.
 
 ## 8. Compression
 

@@ -81,7 +81,10 @@ class ReceiveActivity : AppCompatActivity() {
         when (val payload = TagDropCodec.decode(scanned)) {
             is TagDropPayload.Single -> {
                 val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
-                completeSingle(payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content)
+                completeSingle(
+                    payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
+                    payload.collectionId?.toHex()
+                )
             }
             is TagDropPayload.Manifest -> {
                 assembler.add(payload)
@@ -100,7 +103,7 @@ class ReceiveActivity : AppCompatActivity() {
                     is ChunkAssembler.State.Complete -> {
                         completeSingle(
                             state.cacheId.toHex(), state.hint, state.filename,
-                            state.mimeType, state.content
+                            state.mimeType, state.content, state.collectionId?.toHex()
                         )
                     }
                     is ChunkAssembler.State.HashMismatch -> {
@@ -135,12 +138,13 @@ class ReceiveActivity : AppCompatActivity() {
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).paperDao().insert(
                 ScannedPaper(
-                    rootHash  = payload.rootHash.toHex(),
-                    scannedAt = System.currentTimeMillis(),
-                    label     = payload.label,
-                    set       = payload.set,
-                    slug      = payload.slug,
-                    cborBytes = cbor
+                    rootHash     = payload.rootHash.toHex(),
+                    scannedAt    = System.currentTimeMillis(),
+                    label        = payload.label,
+                    set          = payload.set,
+                    slug         = payload.slug,
+                    cborBytes    = cbor,
+                    collectionId = payload.collectionId?.toHex()
                 )
             )
         }
@@ -152,7 +156,7 @@ class ReceiveActivity : AppCompatActivity() {
     /** Cache is complete — save to DB, then open. openContent/clearState run after insert. */
     private fun completeSingle(
         cacheId: String, hint: String?, filename: String?,
-        mimeType: String, content: ByteArray
+        mimeType: String, content: ByteArray, collectionId: String? = null
     ) {
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).cacheDao().insert(
@@ -162,7 +166,8 @@ class ReceiveActivity : AppCompatActivity() {
                     hint         = hint,
                     filename     = filename,
                     mimeType     = mimeType,
-                    contentBytes = content
+                    contentBytes = content,
+                    collectionId = collectionId
                 )
             )
             openContent(mimeType, content)
