@@ -1,5 +1,6 @@
 package com.github.mofosyne.tagdrop
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Base64
@@ -159,4 +160,13 @@ class CollectionDetailActivity : AppCompatActivity() {
         const val EXTRA_COLLECTION_ID = "extra_collection_id"
         const val EXTRA_CACHE_ID = "extra_cache_id"
     }
+}
+
+/** Opens the collection-detail ("map") screen for a paper, ad-hoc group, or loose scan. */
+fun Context.openCollectionDetail(rootHash: String? = null, collectionId: String? = null, cacheId: String? = null) {
+    val intent = Intent(this, CollectionDetailActivity::class.java)
+    rootHash?.let { intent.putExtra(CollectionDetailActivity.EXTRA_ROOT_HASH, it) }
+    collectionId?.let { intent.putExtra(CollectionDetailActivity.EXTRA_COLLECTION_ID, it) }
+    cacheId?.let { intent.putExtra(CollectionDetailActivity.EXTRA_CACHE_ID, it) }
+    startActivity(intent)
 }

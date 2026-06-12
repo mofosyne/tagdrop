@@ -3,8 +3,15 @@
     <string name="title_activity_read_me">Read Me</string>
     <string name="title_scan">Scan Tag</string>
 
+    <!-- Bottom navigation tabs -->
+    <string name="tab_collections">Collections</string>
+    <string name="tab_history">History</string>
+    <string name="tab_map">Map</string>
+
     <!-- Main screen -->
     <string name="empty_collection">No collections yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="empty_history">No scans yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="map_coming_soon">Map view coming soon — pins will appear here once scan locations are captured.</string>
     <string name="scan_fab_desc">Scan QR code</string>
     <string name="title_collection_detail">Collection</string>
     <string name="collection_type_paper">Paper</string>
