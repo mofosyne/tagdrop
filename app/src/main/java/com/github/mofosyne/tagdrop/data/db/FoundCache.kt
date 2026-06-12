@@ -13,7 +13,9 @@ data class FoundCache(
     val contentBytes: ByteArray?,         // null if user chose not to save content
     val collectionId: String? = null,     // hex-encoded 8-byte ID, groups related scans
     val collectionLabel: String? = null,  // human-readable name for the collection
-    val collectionTag: String? = null     // hashtag-style cross-collection tag
+    val collectionTag: String? = null,    // hashtag-style cross-collection tag
+    val lat: Double? = null,              // latitude where this was scanned, if available
+    val lng: Double? = null               // longitude where this was scanned, if available
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()

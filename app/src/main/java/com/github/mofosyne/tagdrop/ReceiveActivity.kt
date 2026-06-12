@@ -1,9 +1,15 @@
 package com.github.mofosyne.tagdrop
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.getSystemService
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
@@ -38,6 +44,9 @@ class ReceiveActivity : AppCompatActivity() {
         handleScanResult(result)
     }
 
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityReceiveBinding.inflate(layoutInflater)
@@ -45,6 +54,12 @@ class ReceiveActivity : AppCompatActivity() {
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.title_scan)
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
 
         binding.buttonScan.setOnClickListener   { launchScanner() }
         binding.buttonClear.setOnClickListener  { clearState() }
@@ -136,6 +151,7 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun handlePaperManifest(payload: TagDropPayload.PaperManifest) {
         val cbor = TagDropCodec.paperManifestCbor(payload)
+        val location = getLastKnownLocation()
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).paperDao().insert(
                 ScannedPaper(
@@ -147,7 +163,9 @@ class ReceiveActivity : AppCompatActivity() {
                     cborBytes       = cbor,
                     collectionId    = payload.collectionId?.toHex(),
                     collectionLabel = payload.collectionLabel,
-                    collectionTag   = payload.collectionTag
+                    collectionTag   = payload.collectionTag,
+                    lat             = location?.first,
+                    lng             = location?.second
                 )
             )
         }
@@ -162,6 +180,7 @@ class ReceiveActivity : AppCompatActivity() {
         mimeType: String, content: ByteArray, collectionId: String? = null,
         collectionLabel: String? = null, collectionTag: String? = null
     ) {
+        val location = getLastKnownLocation()
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).cacheDao().insert(
                 FoundCache(
@@ -173,12 +192,27 @@ class ReceiveActivity : AppCompatActivity() {
                     contentBytes    = content,
                     collectionId    = collectionId,
                     collectionLabel = collectionLabel,
-                    collectionTag   = collectionTag
+                    collectionTag   = collectionTag,
+                    lat             = location?.first,
+                    lng             = location?.second
                 )
             )
             openContent(mimeType, content)
             clearState()
         }
+    }
+
+    /** Best-known device location at scan time, or null if unavailable/permission not granted. */
+    private fun getLastKnownLocation(): Pair<Double, Double>? {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) return null
+        val locationManager = getSystemService<LocationManager>() ?: return null
+        return listOf(LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+            .filter { locationManager.isProviderEnabled(it) }
+            .mapNotNull { locationManager.getLastKnownLocation(it) }
+            .maxByOrNull { it.time }
+            ?.let { it.latitude to it.longitude }
     }
 
     private fun launchLegacyContent() {
