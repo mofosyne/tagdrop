@@ -4,8 +4,16 @@
     <string name="title_scan">Scan Tag</string>
 
     <!-- Main screen -->
-    <string name="empty_collection">No caches found yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="empty_collection">No collections yet.\nTap the camera button to scan your first TagDrop.</string>
     <string name="scan_fab_desc">Scan QR code</string>
+    <string name="title_collection_detail">Collection</string>
+    <string name="collection_type_paper">Paper</string>
+    <string name="collection_type_adhoc">Collection</string>
+    <string name="collection_type_loose">Scan</string>
+    <string name="collection_cached_progress">Cached %1$d / %2$d</string>
+    <string name="collection_item_count">%1$d item(s)</string>
+    <string name="collection_adhoc_default_title">Collection #%1$s</string>
+    <string name="collection_untitled">Untitled</string>
 
     <!-- Receive screen -->
     <string name="scan_prompt">Scan a TagDrop QR code. Press back to cancel.</string>
@@ -22,17 +30,17 @@
     <string name="legacy_fragment">Legacy fragment %1$d received. Scan more or tap Launch.</string>
     <string name="unknown_fragment">Fragment %1$d added. Scan more or tap Launch.</string>
 
-    <!-- Cache list -->
+    <!-- Collection detail ("map") screen -->
     <string name="button_open">Open</string>
     <string name="button_delete">Delete</string>
+    <string name="status_cached">Cached</string>
+    <string name="status_not_cached">Not yet scanned</string>
+    <string name="delete_confirm_title">Delete item?</string>
+    <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
 
     <!-- Main screen -->
-    <string name="menu_papers">Scanned Papers</string>
     <string name="menu_create">Create Cache</string>
-    <string name="title_papers">Papers</string>
     <string name="title_create">Create Cache</string>
-    <string name="empty_papers">No papers scanned yet.\nTap the camera button and scan a paper manifest QR.</string>
-    <string name="paper_file_count">%1$d file(s)</string>
 
     <!-- Create screen -->
     <string name="hint_hint">Placement hint (optional)</string>

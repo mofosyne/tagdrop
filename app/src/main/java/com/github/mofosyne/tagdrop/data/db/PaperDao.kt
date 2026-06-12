@@ -14,6 +14,9 @@ interface PaperDao {
     @Query("SELECT * FROM scanned_papers WHERE rootHash = :rootHash LIMIT 1")
     suspend fun getByRootHash(rootHash: String): ScannedPaper?
 
+    @Query("SELECT * FROM scanned_papers WHERE rootHash = :rootHash LIMIT 1")
+    fun observeByRootHash(rootHash: String): LiveData<ScannedPaper?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(paper: ScannedPaper)
 

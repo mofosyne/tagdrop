@@ -16,4 +16,10 @@ interface CacheDao {
 
     @Query("SELECT * FROM found_caches WHERE cacheId = :id LIMIT 1")
     suspend fun getById(id: String): FoundCache?
+
+    @Query("SELECT * FROM found_caches WHERE cacheId = :id LIMIT 1")
+    fun observeById(id: String): LiveData<FoundCache?>
+
+    @Query("SELECT * FROM found_caches WHERE collectionId = :collectionId ORDER BY discoveredAt DESC")
+    fun getByCollectionId(collectionId: String): LiveData<List<FoundCache>>
 }

@@ -128,7 +128,7 @@ tagdrop/
 │   ├── ReceiveActivity.kt    # QR scanner + payload assembly
 │   ├── ViewDataUriActivity.kt# WebView content renderer
 │   ├── CreateActivity.kt     # In-app QR generator
-│   ├── PapersActivity.kt     # Paper manifest collection
+│   ├── CollectionDetailActivity.kt # Collection "map" / page list
 │   └── ReadMeActivity.kt
 ├── app/src/test/            # JVM unit tests
 ├── tools/

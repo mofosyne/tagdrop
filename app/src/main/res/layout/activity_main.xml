@@ -16,7 +16,7 @@
     </com.google.android.material.appbar.AppBarLayout>
 
     <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/recyclerCaches"
+        android:id="@+id/recyclerCollections"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:padding="8dp"

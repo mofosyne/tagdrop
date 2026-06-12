@@ -6,12 +6,13 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
+import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.databinding.ActivityMainBinding
-import com.github.mofosyne.tagdrop.ui.CacheListAdapter
-import kotlinx.coroutines.launch
+import com.github.mofosyne.tagdrop.ui.CollectionItem
+import com.github.mofosyne.tagdrop.ui.CollectionListAdapter
 
 class MainActivity : AppCompatActivity() {
 
@@ -23,34 +24,42 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         setSupportActionBar(binding.toolbar)
 
-        val adapter = CacheListAdapter(
-            onOpen = { cache ->
-                val bytes = cache.contentBytes ?: return@CacheListAdapter
-                val dataUri = "data:${cache.mimeType};base64," +
-                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                startActivity(
-                    Intent(this, ViewDataUriActivity::class.java)
-                        .putExtra(ViewDataUriActivity.EXTRA_DATA_URI, dataUri)
-                )
-            },
-            onDelete = { cache ->
-                lifecycleScope.launch {
-                    AppDatabase.get(this@MainActivity).cacheDao().delete(cache)
-                }
-            }
-        )
+        val adapter = CollectionListAdapter { item -> openCollection(item) }
+        binding.recyclerCollections.layoutManager = LinearLayoutManager(this)
+        binding.recyclerCollections.adapter = adapter
 
-        binding.recyclerCaches.layoutManager = LinearLayoutManager(this)
-        binding.recyclerCaches.adapter = adapter
+        var latestPapers: List<ScannedPaper> = emptyList()
+        var latestCaches: List<FoundCache> = emptyList()
 
-        AppDatabase.get(this).cacheDao().getAllCaches().observe(this) { caches ->
-            adapter.submitList(caches)
-            binding.textEmpty.visibility = if (caches.isEmpty()) View.VISIBLE else View.GONE
+        fun render() {
+            val items = CollectionItem.build(latestPapers, latestCaches)
+            adapter.submitList(items)
+            binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+        }
+
+        val db = AppDatabase.get(this)
+        db.paperDao().getAll().observe(this) { papers ->
+            latestPapers = papers
+            render()
+        }
+        db.cacheDao().getAllCaches().observe(this) { caches ->
+            latestCaches = caches
+            render()
         }
 
         binding.fabScan.setOnClickListener {
             startActivity(Intent(this, ReceiveActivity::class.java))
         }
+    }
+
+    private fun openCollection(item: CollectionItem) {
+        val intent = Intent(this, CollectionDetailActivity::class.java)
+        when (item) {
+            is CollectionItem.Paper -> intent.putExtra(CollectionDetailActivity.EXTRA_ROOT_HASH, item.paper.rootHash)
+            is CollectionItem.AdHoc -> intent.putExtra(CollectionDetailActivity.EXTRA_COLLECTION_ID, item.collectionId)
+            is CollectionItem.Loose -> intent.putExtra(CollectionDetailActivity.EXTRA_CACHE_ID, item.cache.cacheId)
+        }
+        startActivity(intent)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -61,7 +70,6 @@ class MainActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.action_create -> { startActivity(Intent(this, CreateActivity::class.java)); true }
-            R.id.action_papers -> { startActivity(Intent(this, PapersActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }
     }

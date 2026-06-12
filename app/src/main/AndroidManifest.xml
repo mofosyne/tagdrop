@@ -63,10 +63,10 @@
             android:parentActivityName=".MainActivity"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- Scanned papers collection -->
+        <!-- Collection detail ("map" of a collection's pages) -->
         <activity
-            android:name=".PapersActivity"
-            android:label="@string/title_papers"
+            android:name=".CollectionDetailActivity"
+            android:label="@string/title_collection_detail"
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 

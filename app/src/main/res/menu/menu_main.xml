@@ -7,9 +7,4 @@
         android:title="@string/menu_create"
         app:showAsAction="never" />
 
-    <item
-        android:id="@+id/action_papers"
-        android:title="@string/menu_papers"
-        app:showAsAction="never" />
-
 </menu>
