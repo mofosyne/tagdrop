@@ -52,6 +52,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:textSize="16sp"
+                android:textAllCaps="false"
                 android:text="@string/button_open" />
 
             <Button
@@ -60,6 +62,8 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
+                android:textSize="16sp"
+                android:textAllCaps="false"
                 android:text="@string/button_delete"
                 android:textColor="#cc0000" />
 
