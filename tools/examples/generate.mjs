@@ -331,10 +331,17 @@ It has three files — each stored in its own QR code on the same physical paper
 <ul>
   <li><strong>readme</strong> (this page) — text/html</li>
   <li><strong>note</strong> — text/plain</li>
-  <li><strong>badge</strong> — image/svg+xml</li>
+  <li><strong>images/badge.svg</strong> — image/svg+xml</li>
 </ul>
 <p>Once you have scanned the manifest and all file QRs into the app, the other
-files can be referenced via <code>tagdrop://</code> navigation links.</p>
+files can be referenced via <code>tagdrop://</code> navigation links — or, from
+inside HTML, with <strong>ordinary relative links</strong> like these:</p>
+<p><a href="note">Open the note →</a></p>
+<img src="images/badge.svg" alt="TagDrop badge" width="160" height="50">
+<p><small>These relative links (<code>note</code>, <code>images/badge.svg</code>)
+only resolve inside the TagDrop Android app — it loads each page with a
+same-paper base URL so <code>./</code>-style links find sibling files on this
+paper. In a plain browser they're just dead links.</small></p>
 </body>
 </html>`,
     },
@@ -347,7 +354,7 @@ files can be referenced via <code>tagdrop://</code> navigation links.</p>
 ===========================
 
 This plain-text file is the "note" slug on the test-paper paper.
-It lives alongside readme (HTML) and badge (SVG) under the same manifest.
+It lives alongside readme (HTML) and images/badge.svg under the same manifest.
 
 Set:   tagdrop-tests
 Paper: test-paper
@@ -355,7 +362,7 @@ Slug:  note
 `,
     },
     {
-      slug:     'badge',
+      slug:     'images/badge.svg',
       mimeType: 'image/svg+xml',
       compress: false,
       content:
@@ -483,6 +490,7 @@ async function main() {
       Navigation link base: <code>tagdrop://${escHtml(rootHashB45)}/${escHtml(p.slug)}</code>
       <div class="step">① Scan <strong>manifest</strong> first — it registers the paper and its file list.</div>
       <div class="step">② Scan each <strong>file</strong> QR in any order to cache its content.</div>
+      <div class="step">③ Open <strong>readme</strong> — its relative links (<code>note</code>, <code>images/badge.svg</code>) resolve to the sibling files on this same paper.</div>
     </div>`;
 
   const html = renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml });

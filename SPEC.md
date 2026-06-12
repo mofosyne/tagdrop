@@ -294,6 +294,38 @@ When the TagDrop WebView encounters such a link, it:
 
 This gives the experience of browsing a website, but entirely offline and made of physical paper.
 
+### Relative links (same-paper)
+
+HTML authored for TagDrop can use ordinary relative URLs (`./about.html`,
+`../images/logo.svg`, `style.css`) to reference other files on the **same**
+physical paper — exactly as if the paper's files were a normal website
+directory, with no special TagDrop syntax required.
+
+This works because of how slugs and page-loading combine:
+
+- A paper's manifest lists files as flat slug strings, which may contain `/`
+  (e.g. `images/logo.svg`, `pages/about.html`) to express a directory layout
+  (see "No explicit folder hierarchy" below).
+- When the Android app displays a file, it loads the page with
+  `https://paper.tagdrop.invalid/<rootHash-hex>/<slug>` as the **base URL**
+  (via `loadDataWithBaseURL`) instead of as an opaque `data:` URI. `.invalid`
+  is an IANA-reserved TLD (RFC 2606) that never resolves over the network.
+- Ordinary relative URLs in the HTML/CSS resolve against that base using
+  standard URL resolution, producing more `https://paper.tagdrop.invalid/...`
+  URLs. The app's `WebViewClient` recognises this host (alongside the
+  `tagdrop://` scheme) and resolves the resulting `<rootHash-hex>/<slug>` pair
+  through `TagDropLinkResolver`, exactly like a `tagdrop://<rootHash>/<slug>`
+  link.
+
+To reference a file on a **different** paper (a different root hash), use an
+explicit `tagdrop://<rootHash-base45>/<slug>` link — this can't be relative,
+since it's a different content-addressed directory.
+
+Practical effect: a normal static-site folder (HTML + CSS + images with
+relative links) can be zipped, fed to the generator, and turned into a set of
+QR codes where the relative links keep working once scanned into the app —
+no rewriting of the authored HTML required.
+
 ### Sets and slugs
 
 Papers can belong to named **sets** (trails, networks, exhibitions). Within a set, each paper has a unique `slug`. This enables relative addressing:

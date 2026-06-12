@@ -1,5 +1,6 @@
 package com.github.mofosyne.tagdrop
 
+import android.net.Uri
 import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -9,6 +10,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
+import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
 import kotlinx.coroutines.launch
@@ -41,39 +43,89 @@ class ViewDataUriActivity : AppCompatActivity() {
         binding.htmldisp.webViewClient = object : WebViewClient() {
 
             /**
-             * Navigation interception: tagdrop:// links clicked by the user.
-             * Resolved asynchronously; loads the target as a new data: URI page.
+             * Navigation interception: tagdrop:// links and same-paper relative links
+             * (resolved by the browser to https://paper.tagdrop.invalid/...) clicked
+             * by the user. Resolved asynchronously; loads the target as a new page.
              */
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val url = request.url.toString()
-                if (url.startsWith("tagdrop://")) {
-                    handleNavigation(url)
-                    return true
-                }
-                return false
+                if (!isTagDropUrl(request.url)) return false
+                handleNavigation(request.url.toString())
+                return true
             }
 
             /**
-             * Subresource interception: tagdrop:// URLs in <img src>, <audio src>,
-             * <video src>, <script src>, <link href>, XHR, etc.
+             * Subresource interception: tagdrop:// or same-paper relative URLs in
+             * <img src>, <audio src>, <video src>, <script src>, <link href>, XHR, etc.
              *
              * Called on a background thread — resolves DB synchronously via runBlocking.
              * Returns null for unknown/unresolvable resources so the browser degrades
              * gracefully (broken-image icon, silent audio failure).
              */
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                val url = request.url.toString()
-                if (!url.startsWith("tagdrop://")) return null
-                return resolveResource(url)
+                if (!isTagDropUrl(request.url)) return null
+                return resolveResource(request.url.toString())
             }
         }
 
-        binding.htmldisp.loadUrl(dataUri)
+        loadInitial(dataUri)
+    }
+
+    /**
+     * True for both navigation-link forms TagDropLinkResolver understands:
+     *   tagdrop://<rootHash-base45>/<slug>
+     *   https://paper.tagdrop.invalid/<rootHash-hex>/<slug>  (same-paper relative links)
+     */
+    private fun isTagDropUrl(uri: Uri): Boolean =
+        uri.scheme == "tagdrop" || uri.host == TagDropLinkResolver.SYNTHETIC_HOST
+
+    /**
+     * Loads the activity's initial content. If it's HTML belonging to a scanned
+     * paper, load it with a same-paper synthetic base URL so relative links
+     * (./about.html, ../images/logo.svg, ...) and subresources resolve to sibling
+     * files in that paper. Otherwise fall back to the plain data: URI.
+     */
+    private fun loadInitial(dataUri: String) {
+        val (mimeType, bytes) = parseDataUri(dataUri) ?: run {
+            binding.htmldisp.loadUrl(dataUri)
+            return
+        }
+        if (!mimeType.startsWith("text/html")) {
+            binding.htmldisp.loadUrl(dataUri)
+            return
+        }
+        lifecycleScope.launch {
+            val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
+            if (context != null) {
+                loadHtml(String(bytes, Charsets.UTF_8), context.rootHashHex, context.slug)
+            } else {
+                binding.htmldisp.loadUrl(dataUri)
+            }
+        }
+    }
+
+    /** Loads HTML with a synthetic same-paper base URL so its relative links resolve. */
+    private fun loadHtml(html: String, rootHashHex: String, slug: String) {
+        val baseUrl = "${TagDropLinkResolver.SYNTHETIC_BASE}$rootHashHex/$slug"
+        binding.htmldisp.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null)
+    }
+
+    /** Parses a "data:<mime>;base64,<payload>" URI into (mimeType, bytes), or null if not one. */
+    private fun parseDataUri(dataUri: String): Pair<String, ByteArray>? {
+        if (!dataUri.startsWith("data:")) return null
+        val comma = dataUri.indexOf(',')
+        if (comma < 0) return null
+        val header = dataUri.substring(5, comma)
+        if (!header.endsWith(";base64")) return null
+        val bytes = runCatching {
+            android.util.Base64.decode(dataUri.substring(comma + 1), android.util.Base64.NO_WRAP)
+        }.getOrNull() ?: return null
+        return header.removeSuffix(";base64") to bytes
     }
 
     /**
      * Navigate to a new file — runs on main thread via lifecycleScope.
-     * Loads the resolved content as a top-level data: URI (replaces current page).
+     * HTML loads with a synthetic same-paper base URL (so its own relative links keep
+     * working); other content types replace the page with a top-level data: URI.
      */
     private fun handleNavigation(uri: String) {
         lifecycleScope.launch {
@@ -81,9 +133,13 @@ class ViewDataUriActivity : AppCompatActivity() {
                 is TagDropLinkResolver.Resolution.FileFound -> {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
-                    val dataUri = "data:${result.cache.mimeType};base64," +
-                        android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
-                    binding.htmldisp.loadUrl(dataUri)
+                    if (result.cache.mimeType.startsWith("text/html")) {
+                        loadHtml(String(content, Charsets.UTF_8), result.paper.rootHash, result.slug)
+                    } else {
+                        val dataUri = "data:${result.cache.mimeType};base64," +
+                            android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
+                        binding.htmldisp.loadUrl(dataUri)
+                    }
                 }
                 is TagDropLinkResolver.Resolution.FileNotCached ->
                     toast(getString(R.string.file_not_scanned, result.file.slug))
@@ -99,8 +155,8 @@ class ViewDataUriActivity : AppCompatActivity() {
     }
 
     /**
-     * Serve a tagdrop:// resource inline — called from a background thread.
-     * Used for embedded assets: images, audio, MIDI (via JS player), SVG, etc.
+     * Serve a tagdrop:// or same-paper resource inline — called from a background thread.
+     * Used for embedded assets: images, audio, MIDI (via JS player), SVG, stylesheets, etc.
      *
      * Returns null if not found so the browser degrades gracefully rather than
      * showing an error page.
@@ -117,6 +173,8 @@ class ViewDataUriActivity : AppCompatActivity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
