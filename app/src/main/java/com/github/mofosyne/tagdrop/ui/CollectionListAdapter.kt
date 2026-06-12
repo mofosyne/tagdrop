@@ -1,6 +1,7 @@
 package com.github.mofosyne.tagdrop.ui
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
@@ -20,6 +21,13 @@ class CollectionListAdapter(
 
         fun bind(item: CollectionItem) {
             val ctx = binding.root.context
+            val icon = when (item) {
+                is CollectionItem.Paper -> item.paper.icon
+                is CollectionItem.AdHoc -> item.icon
+                is CollectionItem.Loose -> item.cache.icon
+            }
+            binding.textIcon.text = icon
+            binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
             when (item) {
                 is CollectionItem.Paper -> {
                     binding.textType.text = ctx.getString(R.string.collection_type_paper)

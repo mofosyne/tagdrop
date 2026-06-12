@@ -79,8 +79,12 @@ All payloads are CBOR maps with **integer keys**. Unknown keys must be ignored (
 | 17 | `collection_id` | bytes (8, opt) | S, M, P |
 | 18 | `collection_label` | text (opt) | S, M, P |
 | 19 | `collection_tag` | text (opt) | S, M, P |
+| 24 | `icon` | text (opt) | S, M, P |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
+
+Key 25 is reserved for a future small embedded image icon (raw bytes), as an
+alternative to the emoji `icon` field above.
 
 ### File entry sub-keys (elements of key 15)
 
@@ -123,6 +127,7 @@ CBOR map {
   17: h'<8 random bytes>',// collection_id — optional, see §7 Collections
   18: "Spring Sticker Hunt", // collection_label — optional, see §7 Collections
   19: "springtrail2026",  // collection_tag — optional, see §7 Collections
+  24: "🌳",                // icon — optional, see §7 Icons
 }
 ```
 
@@ -146,6 +151,7 @@ CBOR map {
   17: h'<8 random bytes>',  // collection_id — optional, see §7 Collections
   18: "Spring Sticker Hunt", // collection_label — optional, see §7 Collections
   19: "springtrail2026",    // collection_tag — optional, see §7 Collections
+  24: "🌳",                  // icon — optional, see §7 Icons
 }
 ```
 
@@ -185,6 +191,7 @@ CBOR map {
   17: h'<8 random bytes>',          // collection_id — optional, see §7 Collections
   18: "Spring Sticker Hunt",        // collection_label — optional, see §7 Collections
   19: "springtrail2026",            // collection_tag — optional, see §7 Collections
+  24: "🌳",                          // icon — optional, see §7 Icons
 }
 ```
 
@@ -406,6 +413,22 @@ Both fields are optional and purely cosmetic — omitting them just means the
 app falls back to a generated title (e.g. derived from the first scanned
 item's hint or filename).
 
+### Icons
+
+`icon` (key 24) is an optional text field — typically a single emoji — that
+authors can stamp onto a Single, Manifest, or Paper Manifest to give a page
+or collection a visual identity (e.g. "🌳" for a trail stop under a tree,
+"📖" for a story page). The TagDrop app shows it in a small icon slot on the
+Collections, History, and collection-detail screens.
+
+For an ad-hoc collection (`collection_id`), the app uses the icon from the
+first scanned item that has one — the same "first wins" pattern used for
+`collection_label`.
+
+Key 25 is reserved for a future small embedded image icon (raw bytes), as an
+alternative for authors who want a custom image instead of an emoji. The
+icon slot in the app's UI is designed to host either form.
+
 ## 8. Compression
 
 | `compression` value | Algorithm |
@@ -467,7 +490,7 @@ The `version` field (key 1) is present in Single, Manifest, and PaperManifest pa
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. Keys 1–19, 20–23. Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). |
+| 1 | Initial release. Keys 1–19, 20–24 (25 reserved). Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. |
 
 ---
 

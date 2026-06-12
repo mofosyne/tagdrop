@@ -83,7 +83,8 @@ class MainActivity : AppCompatActivity() {
                         collectionLabel = label,
                         collectionTag   = "demo",
                         lat             = item.lat,
-                        lng             = item.lng
+                        lng             = item.lng,
+                        icon            = item.icon
                     )
                 )
             }
@@ -101,21 +102,24 @@ class MainActivity : AppCompatActivity() {
                 content  = "Welcome to the TagDrop demo trail!\n\nThis sample page was added so you can " +
                     "preview the Collections, History, and Map tabs without scanning a real code. " +
                     "Delete it any time from this collection's detail screen.",
-                lat = 37.7694, lng = -122.4862
+                lat = 37.7694, lng = -122.4862,
+                icon = "🚩"
             ),
             DemoItem(
                 cacheId  = "demo-lookout",
                 hint     = "Lookout Point",
                 filename = "lookout.txt",
                 content  = "Lookout Point — the second stop on the demo trail. Tap its pin on the Map tab to jump back here.",
-                lat = 37.8024, lng = -122.4058
+                lat = 37.8024, lng = -122.4058,
+                icon = "🔭"
             ),
             DemoItem(
                 cacheId  = "demo-finish",
                 hint     = "Finish Line",
                 filename = "finish.txt",
                 content  = "You've reached the end of the demo trail. Nice work!",
-                lat = 37.8199, lng = -122.4783
+                lat = 37.8199, lng = -122.4783,
+                icon = "🏁"
             )
         )
     }
@@ -127,5 +131,6 @@ private data class DemoItem(
     val filename: String,
     val content: String,
     val lat: Double,
-    val lng: Double
+    val lng: Double,
+    val icon: String? = null
 )

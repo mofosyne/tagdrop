@@ -57,11 +57,12 @@ class CreateActivity : AppCompatActivity() {
 
         val hint     = binding.editHint.text?.toString()?.ifBlank { null }
         val filename = binding.editFilename.text?.toString()?.ifBlank { null }
+        val icon     = binding.editIcon.text?.toString()?.ifBlank { null }
         val mimeType = mimeTypes[binding.spinnerMime.selectedItemPosition]
         val compress = binding.checkCompress.isChecked
 
         val payload = TagDropCodec.createSingle(hint, filename, mimeType,
-                          content.toByteArray(Charsets.UTF_8), compress)
+                          content.toByteArray(Charsets.UTF_8), compress, icon = icon)
         val uri = TagDropCodec.encode(payload)
         lastUri = uri
         lastPayloadHint = hint ?: filename

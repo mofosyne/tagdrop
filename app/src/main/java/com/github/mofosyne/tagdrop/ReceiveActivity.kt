@@ -98,7 +98,7 @@ class ReceiveActivity : AppCompatActivity() {
                 val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                 completeSingle(
                     payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag
+                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
                 )
             }
             is TagDropPayload.Manifest -> {
@@ -119,7 +119,7 @@ class ReceiveActivity : AppCompatActivity() {
                         completeSingle(
                             state.cacheId.toHex(), state.hint, state.filename,
                             state.mimeType, state.content, state.collectionId?.toHex(),
-                            state.collectionLabel, state.collectionTag
+                            state.collectionLabel, state.collectionTag, state.icon
                         )
                     }
                     is ChunkAssembler.State.HashMismatch -> {
@@ -165,7 +165,8 @@ class ReceiveActivity : AppCompatActivity() {
                     collectionLabel = payload.collectionLabel,
                     collectionTag   = payload.collectionTag,
                     lat             = location?.first,
-                    lng             = location?.second
+                    lng             = location?.second,
+                    icon            = payload.icon
                 )
             )
         }
@@ -178,7 +179,7 @@ class ReceiveActivity : AppCompatActivity() {
     private fun completeSingle(
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray, collectionId: String? = null,
-        collectionLabel: String? = null, collectionTag: String? = null
+        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null
     ) {
         val location = getLastKnownLocation()
         lifecycleScope.launch {
@@ -194,7 +195,8 @@ class ReceiveActivity : AppCompatActivity() {
                     collectionLabel = collectionLabel,
                     collectionTag   = collectionTag,
                     lat             = location?.first,
-                    lng             = location?.second
+                    lng             = location?.second,
+                    icon            = icon
                 )
             )
             openContent(mimeType, content)

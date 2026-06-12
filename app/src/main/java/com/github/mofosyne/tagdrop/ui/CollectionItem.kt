@@ -20,7 +20,7 @@ sealed class CollectionItem {
         override val timestamp get() = paper.scannedAt
     }
 
-    data class AdHoc(val collectionId: String, val label: String?, val tags: List<String>, val items: List<FoundCache>) : CollectionItem() {
+    data class AdHoc(val collectionId: String, val label: String?, val tags: List<String>, val icon: String?, val items: List<FoundCache>) : CollectionItem() {
         override val key get() = "adhoc:$collectionId"
         override val timestamp get() = items.maxOf { it.discoveredAt }
     }
@@ -59,7 +59,8 @@ sealed class CollectionItem {
                 // Each page may be focused on its own theme, so accumulate every
                 // distinct tag seen across the collection's pages as they're discovered.
                 val tags = items.mapNotNull { it.collectionTag }.distinct()
-                AdHoc(collectionId, withLabel?.collectionLabel, tags, items)
+                val icon = items.firstOrNull { it.icon != null }?.icon
+                AdHoc(collectionId, withLabel?.collectionLabel, tags, icon, items)
             }
 
             val looseItems = loose.map { Loose(it) }

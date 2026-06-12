@@ -39,6 +39,8 @@ import java.util.zip.InflaterInputStream
  *   17 collection_id    bytes(8), optional  (Single, Manifest, PaperManifest)
  *   18 collection_label text, optional      (Single, Manifest, PaperManifest)
  *   19 collection_tag   text, optional      (Single, Manifest, PaperManifest)
+ *   24 icon              text, optional      (Single, Manifest, PaperManifest) — emoji icon
+ *   25 reserved for future image icon (bytes — small embedded icon image)
  *
  * File entry sub-keys (within key 15 elements):
  *   20 slug        text
@@ -85,6 +87,8 @@ object TagDropCodec {
     private const val K_FILE_MIME   = 21
     private const val K_FILE_ID     = 22
     private const val K_PAPER_ID    = 23
+    private const val K_ICON        = 24
+    // K_ICON_IMAGE = 25 — reserved for a future small embedded image icon (bytes)
 
     // ── Content addressing (IPFS-inspired) ───────────────────────────────────
 
@@ -106,7 +110,7 @@ object TagDropCodec {
     fun createSingle(
         hint: String?, filename: String?, mimeType: String,
         rawContent: ByteArray, compress: Boolean = false, collectionId: ByteArray? = null,
-        collectionLabel: String? = null, collectionTag: String? = null
+        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null
     ): TagDropPayload.Single {
         val (content, compression) = if (compress) {
             compress(rawContent) to COMPRESSION_DEFLATE
@@ -122,7 +126,8 @@ object TagDropCodec {
             content         = content,
             collectionId    = collectionId,
             collectionLabel = collectionLabel,
-            collectionTag   = collectionTag
+            collectionTag   = collectionTag,
+            icon            = icon
         )
     }
 
@@ -140,7 +145,8 @@ object TagDropCodec {
                 K_CONTENT     to payload.content,
                 K_COLLECTION_ID    to payload.collectionId,
                 K_COLLECTION_LABEL to payload.collectionLabel,
-                K_COLLECTION_TAG   to payload.collectionTag
+                K_COLLECTION_TAG   to payload.collectionTag,
+                K_ICON             to payload.icon
             ))
         )
         is TagDropPayload.Manifest -> SCHEME + PATH_M + Base45.encode(
@@ -156,7 +162,8 @@ object TagDropCodec {
                 K_SHA256      to payload.sha256,
                 K_COLLECTION_ID    to payload.collectionId,
                 K_COLLECTION_LABEL to payload.collectionLabel,
-                K_COLLECTION_TAG   to payload.collectionTag
+                K_COLLECTION_TAG   to payload.collectionTag,
+                K_ICON             to payload.icon
             ))
         )
         is TagDropPayload.Chunk -> SCHEME + PATH_C + Base45.encode(
@@ -197,7 +204,8 @@ object TagDropCodec {
             },
             K_COLLECTION_ID    to payload.collectionId,
             K_COLLECTION_LABEL to payload.collectionLabel,
-            K_COLLECTION_TAG   to payload.collectionTag
+            K_COLLECTION_TAG   to payload.collectionTag,
+            K_ICON             to payload.icon
         ))
 
     // ── Decoding ──────────────────────────────────────────────────────────────
@@ -230,7 +238,8 @@ object TagDropCodec {
         content         = m.bytes(K_CONTENT),
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
         collectionLabel = m.text(K_COLLECTION_LABEL),
-        collectionTag   = m.text(K_COLLECTION_TAG)
+        collectionTag   = m.text(K_COLLECTION_TAG),
+        icon            = m.text(K_ICON)
     )
 
     private fun decodeManifest(m: Map<Int, Any>) = TagDropPayload.Manifest(
@@ -244,7 +253,8 @@ object TagDropCodec {
         sha256          = m.bytes(K_SHA256),
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
         collectionLabel = m.text(K_COLLECTION_LABEL),
-        collectionTag   = m.text(K_COLLECTION_TAG)
+        collectionTag   = m.text(K_COLLECTION_TAG),
+        icon            = m.text(K_ICON)
     )
 
     private fun decodeChunk(m: Map<Int, Any>) = TagDropPayload.Chunk(
@@ -283,7 +293,8 @@ object TagDropCodec {
             related         = related,
             collectionId    = m.bytesOrNull(K_COLLECTION_ID),
             collectionLabel = m.text(K_COLLECTION_LABEL),
-            collectionTag   = m.text(K_COLLECTION_TAG)
+            collectionTag   = m.text(K_COLLECTION_TAG),
+            icon            = m.text(K_ICON)
         )
     }
 

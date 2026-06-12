@@ -1,6 +1,7 @@
 package com.github.mofosyne.tagdrop.ui
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
@@ -20,6 +21,12 @@ class HistoryAdapter(
 
         fun bind(item: HistoryItem) {
             val ctx = binding.root.context
+            val icon = when (item) {
+                is HistoryItem.CacheScan -> item.cache.icon
+                is HistoryItem.PaperScan -> item.paper.icon
+            }
+            binding.textIcon.text = icon
+            binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
             when (item) {
                 is HistoryItem.CacheScan -> {
                     val cache = item.cache

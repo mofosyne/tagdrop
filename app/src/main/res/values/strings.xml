@@ -55,6 +55,7 @@
     <!-- Create screen -->
     <string name="hint_hint">Placement hint (optional)</string>
     <string name="hint_filename">Filename, e.g. readme.html (optional)</string>
+    <string name="hint_icon">Icon emoji, e.g. 🌳 (optional)</string>
     <string name="hint_content">Content (text or HTML)</string>
     <string name="label_mime_type">MIME type</string>
     <string name="label_compression">Compress with DEFLATE (saves space for HTML/text)</string>

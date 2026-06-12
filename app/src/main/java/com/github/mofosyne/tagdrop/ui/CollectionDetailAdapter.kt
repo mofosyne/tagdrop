@@ -23,6 +23,12 @@ class CollectionDetailAdapter(
 
         fun bind(item: PageItem) {
             val ctx = binding.root.context
+            val icon = when (item) {
+                is PageItem.PaperFile -> item.cache?.icon
+                is PageItem.CacheEntry -> item.cache.icon
+            }
+            binding.textIcon.text = icon
+            binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug
