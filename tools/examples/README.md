@@ -14,6 +14,11 @@ or JS crypto/compression APIs required.
   the chunks (any order) to test reassembly and SHA-256 verification.
 - **Paper set** — a manifest QR plus three file QRs (`readme`, `note`,
   `badge`) demonstrating a multi-file paper drop. Scan the manifest first.
+- **Multi-location trail** — three independent paper manifests ("Park Gate",
+  "Duck Pond", "Lookout Tower"), each with its own icon and `related` hints to
+  its neighbours, sharing one `collection_id`/label/tag. Scan each stop at a
+  different location (or with a mock-location app) to see three separate pins
+  on the Map tab that still group into one collection.
 
 ## Regenerating
 

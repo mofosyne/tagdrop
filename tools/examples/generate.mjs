@@ -79,7 +79,8 @@ function zlibCompress(bytes) {
 const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
-            FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23 };
+            COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
+            FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24 };
 
 // ── Encoding ──────────────────────────────────────────────────────────────
 function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
@@ -140,18 +141,24 @@ function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, chunkC
   return { manifestUri, chunks, cacheId, totalBytes, sha256: sha256Full, chunkCount, compression };
 }
 
-function encodePaperManifest({ label, set, slug, files, related }) {
+function encodePaperManifest({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
+  const filesCbor = files.map(f => subMap([
+    [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
+  ]));
+  const relatedCbor = (related || []).map(r => subMap([
+    [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
+  ]));
   const cborNoHash = cborMap([
     [K.VERSION, 1],
     [K.HINT,    label || null],
     [K.SET,     set   || null],
     [K.SLUG,    slug  || null],
-    [K.FILES,   files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
-    ]))],
-    [K.RELATED, (related || []).map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
-    ]))],
+    [K.FILES,   filesCbor],
+    [K.RELATED, relatedCbor],
+    [K.COLLECTION_ID,    collectionId    || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag   || null],
+    [K.ICON,             icon            || null],
   ]);
   const rootHash = sha256first8(cborNoHash);
   const cbor = cborMap([
@@ -160,12 +167,12 @@ function encodePaperManifest({ label, set, slug, files, related }) {
     [K.HINT,     label || null],
     [K.SET,      set   || null],
     [K.SLUG,     slug  || null],
-    [K.FILES,    files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
-    ]))],
-    [K.RELATED,  (related || []).map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
-    ]))],
+    [K.FILES,    filesCbor],
+    [K.RELATED,  relatedCbor],
+    [K.COLLECTION_ID,    collectionId    || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag   || null],
+    [K.ICON,             icon            || null],
   ]);
   return { uri: 'tagdrop://v1/p/' + base45Encode(cbor), rootHash };
 }
@@ -377,6 +384,119 @@ Slug:  note
   ],
 };
 
+// Multi-location trail: three *separate* paper manifests (one per "stop"),
+// simulating a trail where each paper is placed at a different physical
+// location. Each carries an icon, set/slug, related-paper hints to its
+// neighbours, and a shared collection_id/label/tag so the app groups all
+// three stops into one collection even though they're independent scans.
+const TRAIL_COLLECTION = {
+  id:    Buffer.from('parktrl0', 'utf8'), // 8 bytes — fixed for a reproducible example
+  label: 'City Park Trail',
+  tag:   '#citypark2026',
+};
+
+const TRAIL_EXAMPLES = [
+  {
+    label: 'Park Gate',
+    set:   'city-park-trail',
+    slug:  'gate',
+    icon:  '🚩',
+    related: [
+      { hint: 'Next: Duck Pond — follow the path east', set: 'city-park-trail', slug: 'pond' },
+    ],
+    file: {
+      slug: 'index', mimeType: 'text/html', compress: true,
+      content:
+`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Park Gate</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:540px;margin:30px auto;padding:0 20px;color:#222;line-height:1.5}
+h1{color:#1a1a2e}
+</style>
+</head>
+<body>
+<h1>🚩 Park Gate</h1>
+<p>Stop 1 of the <strong>City Park Trail</strong> — this paper marks the trail's starting point.</p>
+<p>Scan this manifest and its <code>index</code> QR while you're physically here (or with a mock-location
+app set to this stop's coordinates). TagDrop records where each paper was scanned, so this stop gets its
+own pin on the Map tab.</p>
+<p><strong>Next stop:</strong> Duck Pond — follow the path east.</p>
+</body>
+</html>`,
+    },
+  },
+  {
+    label: 'Duck Pond',
+    set:   'city-park-trail',
+    slug:  'pond',
+    icon:  '🦆',
+    related: [
+      { hint: 'Back to: Park Gate', set: 'city-park-trail', slug: 'gate' },
+      { hint: 'Next: Lookout Tower — climb the hill', set: 'city-park-trail', slug: 'tower' },
+    ],
+    file: {
+      slug: 'index', mimeType: 'text/html', compress: true,
+      content:
+`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Duck Pond</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:540px;margin:30px auto;padding:0 20px;color:#222;line-height:1.5}
+h1{color:#1a1a2e}
+</style>
+</head>
+<body>
+<h1>🦆 Duck Pond</h1>
+<p>Stop 2 of the <strong>City Park Trail</strong>.</p>
+<p><strong>Previous stop:</strong> Park Gate.<br>
+<strong>Next stop:</strong> Lookout Tower — climb the hill.</p>
+<p>Scan this paper at a different spot than the other two stops to see three separate pins on the Map tab.</p>
+</body>
+</html>`,
+    },
+  },
+  {
+    label: 'Lookout Tower',
+    set:   'city-park-trail',
+    slug:  'tower',
+    icon:  '🗼',
+    related: [
+      { hint: 'Back to: Duck Pond', set: 'city-park-trail', slug: 'pond' },
+    ],
+    file: {
+      slug: 'index', mimeType: 'text/html', compress: true,
+      content:
+`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lookout Tower</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:540px;margin:30px auto;padding:0 20px;color:#222;line-height:1.5}
+h1{color:#1a1a2e}
+</style>
+</head>
+<body>
+<h1>🗼 Lookout Tower</h1>
+<p>Stop 3 (final) of the <strong>City Park Trail</strong>.</p>
+<p><strong>Previous stop:</strong> Duck Pond.</p>
+<p>All three stops share one <code>collection_id</code>, so once scanned they group together as
+"City Park Trail" on the Collections tab — while still showing as three separate pins on the Map tab,
+each with its own icon.</p>
+</body>
+</html>`,
+    },
+  },
+];
+
 // ── Card rendering ────────────────────────────────────────────────────────
 async function renderCard({ label, mime, extraBadge, id, uri, isManifest }) {
   const svg = await renderQrSvg(uri);
@@ -493,12 +613,79 @@ async function main() {
       <div class="step">③ Open <strong>readme</strong> — its relative links (<code>note</code>, <code>images/badge.svg</code>) resolve to the sibling files on this same paper.</div>
     </div>`;
 
-  const html = renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml });
+  // Multi-location trail: three independent papers sharing one collection
+  let trailHtml = '';
+  for (const stop of TRAIL_EXAMPLES) {
+    const rawBytes = Buffer.from(stop.file.content, 'utf8');
+    const fileEnc = encodeSingle({
+      hint: null, filename: stop.file.slug, mimeType: stop.file.mimeType,
+      rawBytes, compress: stop.file.compress,
+    });
+    const manifestEnc = encodePaperManifest({
+      label: stop.label, set: stop.set, slug: stop.slug,
+      files: [{ slug: stop.file.slug, mimeType: stop.file.mimeType, fileId: fileEnc.cacheId }],
+      related: stop.related,
+      collectionId: TRAIL_COLLECTION.id,
+      collectionLabel: TRAIL_COLLECTION.label,
+      collectionTag: TRAIL_COLLECTION.tag,
+      icon: stop.icon,
+    });
+    const rootHashHex = toHex(manifestEnc.rootHash);
+
+    let stopCards = await renderCard({
+      label: `${stop.icon} ${stop.label}`,
+      mime: 'paper manifest',
+      extraBadge: null,
+      id: rootHashHex,
+      uri: manifestEnc.uri,
+      isManifest: true,
+    });
+    stopCards += await renderCard({
+      label: stop.file.slug,
+      mime: stop.file.mimeType,
+      extraBadge: stop.file.compress ? 'deflate' : null,
+      id: toHex(fileEnc.cacheId),
+      uri: fileEnc.uri,
+      isManifest: false,
+    });
+
+    const relatedHtml = stop.related
+      .map(r => `<div class="step">→ ${escHtml(r.hint)}</div>`)
+      .join('');
+
+    trailHtml += `
+      <div class="paper-info">
+        <strong>${stop.icon} ${escHtml(stop.label)}</strong>
+        — set: <code>${escHtml(stop.set)}</code>, slug: <code>${escHtml(stop.slug)}</code><br>
+        Root hash: <code>${rootHashHex}</code>
+        ${relatedHtml}
+      </div>
+      <div class="qr-grid">${stopCards}
+      </div>`;
+  }
+
+  const trailInfoHtml = `
+    <div class="paper-info">
+      Collection: <strong>${escHtml(TRAIL_COLLECTION.label)}</strong>
+      (<code>${escHtml(TRAIL_COLLECTION.tag)}</code>)<br>
+      Collection ID: <code>${toHex(TRAIL_COLLECTION.id)}</code>
+      <div class="step">① Scan each stop's <strong>manifest</strong> and <strong>index</strong> QR — ideally
+        at a different physical location per stop (or with a mock-location app), so each gets its own
+        recorded position.</div>
+      <div class="step">② Open the <strong>Map</strong> tab — each stop appears as its own pin, using its
+        icon; zoom in to see the labels.</div>
+      <div class="step">③ Open the <strong>Collections</strong> tab — all three stops group together as
+        "${escHtml(TRAIL_COLLECTION.label)}" because they share a <code>collection_id</code>, even though
+        each is an independent paper with its own <code>set</code>/<code>slug</code> and
+        <code>related</code> hints to its neighbours.</div>
+    </div>`;
+
+  const html = renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml, trailInfoHtml, trailHtml });
   writeFileSync(join(__dirname, 'index.html'), html);
   console.log('Wrote tools/examples/index.html');
 }
 
-function renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml }) {
+function renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, paperHtml, trailInfoHtml, trailHtml }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -617,6 +804,18 @@ function renderPage({ standaloneHtml, multiInfoHtml, multiHtml, paperInfoHtml, p
     ${paperInfoHtml}
     <div class="qr-grid">${paperHtml}
     </div>
+  </section>
+
+  <section id="sec-trail">
+    <h2>Multi-Location Trail (Multiple Papers)</h2>
+    <p class="section-desc">
+      Three independent paper manifests — one per "stop" — each with its own icon and
+      <code>related</code> hints to its neighbours. Useful for testing what happens when multiple pages
+      are scanned at different locations: separate map pins, shared collection grouping, and trail
+      navigation hints.
+    </p>
+    ${trailInfoHtml}
+    ${trailHtml}
   </section>
 
 </div>
