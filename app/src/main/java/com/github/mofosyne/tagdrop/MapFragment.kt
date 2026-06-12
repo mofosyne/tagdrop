@@ -3,6 +3,12 @@ package com.github.mofosyne.tagdrop
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
 import android.location.LocationManager
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -17,6 +23,9 @@ import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.databinding.FragmentMapBinding
 import org.osmdroid.config.Configuration
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -33,6 +42,8 @@ class MapFragment : Fragment() {
     private var deviceLocation: GeoPoint? = null
     private var latestPapers: List<ScannedPaper> = emptyList()
     private var latestCaches: List<FoundCache> = emptyList()
+    private val markerInfos = mutableListOf<MarkerInfo>()
+    private var labelsShown = false
 
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -61,6 +72,18 @@ class MapFragment : Fragment() {
         binding.map.setMultiTouchControls(true)
         binding.map.controller.setZoom(DEFAULT_ZOOM)
         binding.map.controller.setCenter(GeoPoint(20.0, 0.0))
+        binding.map.addMapListener(object : MapListener {
+            override fun onScroll(event: ScrollEvent): Boolean = false
+            override fun onZoom(event: ZoomEvent): Boolean {
+                val shouldShow = event.zoomLevel >= LABEL_ZOOM_THRESHOLD
+                if (shouldShow != labelsShown) {
+                    labelsShown = shouldShow
+                    markerInfos.forEach { applyMarkerIcon(it, labelsShown) }
+                    binding.map.invalidate()
+                }
+                return false
+            }
+        })
 
         if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
             == PackageManager.PERMISSION_GRANTED
@@ -85,6 +108,7 @@ class MapFragment : Fragment() {
     private fun render() {
         if (_binding == null) return
         binding.map.overlays.clear()
+        markerInfos.clear()
         val points = mutableListOf<GeoPoint>()
 
         for (cache in latestCaches) {
@@ -93,16 +117,19 @@ class MapFragment : Fragment() {
             if (lat == null || lng == null) continue
             val point = GeoPoint(lat, lng)
             points += point
-            binding.map.overlays.add(Marker(binding.map).apply {
+            val label = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
+            val marker = Marker(binding.map).apply {
                 position = point
-                title = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
+                title = label
                 setOnMarkerClickListener { _, _ ->
                     val collectionId = cache.collectionId
                     if (collectionId != null) requireContext().openCollectionDetail(collectionId = collectionId)
                     else requireContext().openCollectionDetail(cacheId = cache.cacheId)
                     true
                 }
-            })
+            }
+            binding.map.overlays.add(marker)
+            markerInfos += MarkerInfo(marker, cache.icon, label)
         }
 
         for (paper in latestPapers) {
@@ -111,15 +138,21 @@ class MapFragment : Fragment() {
             if (lat == null || lng == null) continue
             val point = GeoPoint(lat, lng)
             points += point
-            binding.map.overlays.add(Marker(binding.map).apply {
+            val label = paper.label ?: getString(R.string.paper_manifest_label)
+            val marker = Marker(binding.map).apply {
                 position = point
-                title = paper.label ?: getString(R.string.paper_manifest_label)
+                title = label
                 setOnMarkerClickListener { _, _ ->
                     requireContext().openCollectionDetail(rootHash = paper.rootHash)
                     true
                 }
-            })
+            }
+            binding.map.overlays.add(marker)
+            markerInfos += MarkerInfo(marker, paper.icon, label)
         }
+
+        labelsShown = binding.map.zoomLevelDouble >= LABEL_ZOOM_THRESHOLD
+        markerInfos.forEach { applyMarkerIcon(it, labelsShown) }
 
         binding.textEmpty.visibility = if (points.isEmpty()) View.VISIBLE else View.GONE
 
@@ -146,6 +179,67 @@ class MapFragment : Fragment() {
             }
         }
         binding.map.invalidate()
+    }
+
+    /**
+     * Sets a marker's visual icon based on its emoji (if any) and whether the zoom-dependent
+     * text label should currently be shown. Falls back to osmdroid's default pin when there's
+     * nothing custom to draw.
+     */
+    private fun applyMarkerIcon(info: MarkerInfo, showLabel: Boolean) {
+        val label = if (showLabel) info.label else null
+        if (info.icon == null && label == null) {
+            info.marker.setDefaultIcon()
+            return
+        }
+        val (drawable, anchorV) = buildMarkerDrawable(info.icon, label)
+        info.marker.setIcon(drawable)
+        info.marker.setAnchor(0.5f, anchorV)
+    }
+
+    /**
+     * Draws an emoji icon and/or a text label (on a white pill background) onto a single
+     * bitmap. When both are present the emoji is stacked above the label, and the returned
+     * anchor keeps the emoji — not the label — centered on the marker's geo point.
+     */
+    private fun buildMarkerDrawable(icon: String?, label: String?): Pair<BitmapDrawable, Float> {
+        val density = resources.displayMetrics.density
+        val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 32f * density
+            textAlign = Paint.Align.CENTER
+        }
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 12f * density
+            color = Color.BLACK
+            typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
+        val labelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(220, 255, 255, 255)
+        }
+        val padding = 4f * density
+
+        val iconHeight = if (icon != null) iconPaint.descent() - iconPaint.ascent() else 0f
+        val iconWidth = if (icon != null) iconPaint.measureText(icon) else 0f
+        val labelHeight = if (label != null) (labelPaint.descent() - labelPaint.ascent()) + padding * 2 else 0f
+        val labelWidth = if (label != null) labelPaint.measureText(label) + padding * 2 else 0f
+
+        val width = maxOf(iconWidth, labelWidth, 1f)
+        val height = maxOf(iconHeight + labelHeight, 1f)
+
+        val bitmap = Bitmap.createBitmap(width.toInt(), height.toInt(), Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        if (icon != null) {
+            canvas.drawText(icon, width / 2f, -iconPaint.ascent(), iconPaint)
+        }
+        if (label != null) {
+            canvas.drawRoundRect(0f, iconHeight, width, iconHeight + labelHeight, padding, padding, labelBgPaint)
+            canvas.drawText(label, width / 2f, iconHeight + padding - labelPaint.ascent(), labelPaint)
+        }
+
+        val anchorV = if (icon != null && label != null) (iconHeight / 2f) / height else 0.5f
+        return BitmapDrawable(resources, bitmap) to anchorV
     }
 
     /** Best-known device location, or null if unavailable/permission not granted. */
@@ -176,9 +270,14 @@ class MapFragment : Fragment() {
         _binding = null
     }
 
+    /** A placed marker plus the data needed to rebuild its icon when zoom crosses [LABEL_ZOOM_THRESHOLD]. */
+    private data class MarkerInfo(val marker: Marker, val icon: String?, val label: String)
+
     companion object {
         // Roughly a regional/state-sized view (e.g. Melbourne/Victoria, Australia).
         private const val DEFAULT_ZOOM = 8.0
         private const val NEARBY_RADIUS_METERS = 50_000.0
+        // Show text labels once zoomed in to roughly street level.
+        private const val LABEL_ZOOM_THRESHOLD = 15.0
     }
 }
