@@ -59,8 +59,7 @@ class MapFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         binding.map.setTileSource(TileSourceFactory.MAPNIK)
         binding.map.setMultiTouchControls(true)
-        binding.map.minZoomLevel = MIN_ZOOM_LEVEL
-        binding.map.controller.setZoom(MIN_ZOOM_LEVEL)
+        binding.map.controller.setZoom(DEFAULT_ZOOM)
         binding.map.controller.setCenter(GeoPoint(20.0, 0.0))
 
         if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -133,7 +132,7 @@ class MapFragment : Fragment() {
             val focusPoints = nearbyPoints + listOfNotNull(deviceLocation)
             if (focusPoints.size == 1) {
                 hasCentered = true
-                binding.map.controller.setZoom(LOCAL_ZOOM)
+                binding.map.controller.setZoom(DEFAULT_ZOOM)
                 binding.map.controller.setCenter(focusPoints.single())
             } else if (focusPoints.size > 1) {
                 hasCentered = true
@@ -178,10 +177,8 @@ class MapFragment : Fragment() {
     }
 
     companion object {
-        // Roughly a regional/state-sized view (e.g. Victoria, Australia) — the map
-        // never zooms out further than this, even when fitting widely-spread points.
-        private const val MIN_ZOOM_LEVEL = 7.0
-        private const val LOCAL_ZOOM = 14.0
+        // Roughly a regional/state-sized view (e.g. Melbourne/Victoria, Australia).
+        private const val DEFAULT_ZOOM = 8.0
         private const val NEARBY_RADIUS_METERS = 50_000.0
     }
 }
