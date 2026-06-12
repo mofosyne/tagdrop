@@ -11,7 +11,7 @@
     <!-- Main screen -->
     <string name="empty_collection">No collections yet.\nTap the camera button to scan your first TagDrop.</string>
     <string name="empty_history">No scans yet.\nTap the camera button to scan your first TagDrop.</string>
-    <string name="map_coming_soon">Map view coming soon — pins will appear here once scan locations are captured.</string>
+    <string name="map_no_locations">No located scans yet.\nGrant location access and scan a TagDrop to see it here.</string>
     <string name="scan_fab_desc">Scan QR code</string>
     <string name="title_collection_detail">Collection</string>
     <string name="collection_type_paper">Paper</string>

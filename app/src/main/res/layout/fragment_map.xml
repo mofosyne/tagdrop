@@ -4,13 +4,21 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
+    <org.osmdroid.views.MapView
+        android:id="@+id/map"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <TextView
+        android:id="@+id/textEmpty"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:gravity="center"
         android:padding="24dp"
-        android:text="@string/map_coming_soon"
-        android:textSize="16sp" />
+        android:background="#CCFFFFFF"
+        android:text="@string/map_no_locations"
+        android:textSize="16sp"
+        android:visibility="gone" />
 
 </FrameLayout>
