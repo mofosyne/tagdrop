@@ -21,6 +21,8 @@
     <string name="collection_item_count">%1$d item(s)</string>
     <string name="collection_adhoc_default_title">Collection #%1$s</string>
     <string name="collection_untitled">Untitled</string>
+    <string name="action_view_raw_cbor">View raw CBOR</string>
+    <string name="cbor_debug_title">Raw CBOR — %1$s</string>
 
     <!-- Receive screen -->
     <string name="scan_prompt">Scan a TagDrop QR code. Press back to cancel.</string>

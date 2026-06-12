@@ -326,4 +326,59 @@ object TagDropCodec {
     private fun Map<Int, Any>.text(key: Int): String? = get(key) as? String
 
     private fun Map<Int, Any>.uint(key: Int): Long? = get(key) as? Long
+
+    // ── Debug ─────────────────────────────────────────────────────────────────
+
+    /** Human-readable names for TagDrop's CBOR integer keys, used by [describeCbor]. */
+    private val KEY_NAMES = mapOf(
+        K_VERSION to "version", K_CACHE_ID to "cache_id/root_hash", K_HINT to "hint/label",
+        K_MIME to "mime_type", K_CONTENT to "content", K_CHUNK_COUNT to "chunk_count",
+        K_TOTAL_BYTES to "total_bytes", K_SHA256 to "sha256", K_CHUNK_IDX to "chunk_index",
+        K_CHUNK_DATA to "chunk_data", K_FILENAME to "filename", K_COMPRESSION to "compression",
+        K_SET to "set", K_SLUG to "slug", K_FILES to "files", K_RELATED to "related",
+        K_COLLECTION_ID to "collection_id", K_COLLECTION_LABEL to "collection_label",
+        K_COLLECTION_TAG to "collection_tag", K_FILE_SLUG to "slug", K_FILE_MIME to "mime_type",
+        K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon"
+    )
+
+    /**
+     * Pretty-prints raw TagDrop CBOR for the on-device debug view: a hex dump followed by a
+     * key-by-key breakdown annotated with the field names from the key table above this object.
+     */
+    fun describeCbor(cbor: ByteArray): String = buildString {
+        appendLine("${cbor.size} bytes")
+        appendLine(cbor.toHexDump())
+        appendLine()
+        runCatching { MiniCbor.decodeMap(cbor) }
+            .onSuccess { describeMap(it, 0, this) }
+            .onFailure { append("Failed to decode as CBOR map: ${it.message}") }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun describeMap(map: Map<Int, Any>, indent: Int, out: StringBuilder) {
+        val pad = "  ".repeat(indent)
+        for ((key, value) in map.toSortedMap()) {
+            val label = KEY_NAMES[key]?.let { "$key ($it)" } ?: "$key"
+            when (value) {
+                is ByteArray -> out.appendLine("$pad$label: ${value.toHexDump()} (${value.size} bytes)")
+                is String    -> out.appendLine("$pad$label: \"$value\"")
+                is List<*>   -> {
+                    out.appendLine("$pad$label: [")
+                    for (item in value) {
+                        if (item is Map<*, *>) {
+                            out.appendLine("$pad  {")
+                            describeMap(item as Map<Int, Any>, indent + 2, out)
+                            out.appendLine("$pad  }")
+                        } else {
+                            out.appendLine("$pad  $item")
+                        }
+                    }
+                    out.appendLine("$pad]")
+                }
+                else -> out.appendLine("$pad$label: $value")
+            }
+        }
+    }
+
+    private fun ByteArray.toHexDump(): String = joinToString(" ") { "%02x".format(it) }
 }

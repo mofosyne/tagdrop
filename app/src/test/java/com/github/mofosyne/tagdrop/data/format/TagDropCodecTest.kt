@@ -244,6 +244,35 @@ class TagDropCodecTest {
         assertEquals("readme", decoded.files[0].slug)
     }
 
+    // ── Debug ─────────────────────────────────────────────────────────────────
+
+    @Test fun describeCborIncludesKeyNamesAndValues() {
+        val original = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte(), 0xDD.toByte(),
+                                    0xEE.toByte(), 0xFF.toByte(), 0x11, 0x22),
+            label = "Test Paper", set = "test-set", slug = "test-slug",
+            files = listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(5, 6, 7, 8, 9, 10, 11, 12))),
+            related = listOf(TagDropPayload.RelatedPaper("hint text", set = "test-set", slug = "other")),
+            icon = "🌳"
+        )
+        val cbor = TagDropCodec.paperManifestCbor(original)
+        val text = TagDropCodec.describeCbor(cbor)
+
+        assertTrue(text.contains("${cbor.size} bytes"))
+        assertTrue(text.contains("1 (version): 1"))
+        assertTrue(text.contains("2 (cache_id/root_hash): aa bb cc dd ee ff 11 22 (8 bytes)"))
+        assertTrue(text.contains("3 (hint/label): \"Test Paper\""))
+        assertTrue(text.contains("15 (files): ["))
+        assertTrue(text.contains("20 (slug): \"readme\""))
+        assertTrue(text.contains("16 (related): ["))
+        assertTrue(text.contains("24 (icon): \"🌳\""))
+    }
+
+    @Test fun describeCborHandlesMalformedBytes() {
+        val text = TagDropCodec.describeCbor(byteArrayOf(0x01))
+        assertTrue(text.contains("Failed to decode as CBOR map"))
+    }
+
     // ── Legacy ────────────────────────────────────────────────────────────────
 
     @Test fun legacyDataUri() {

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Base64
 import android.view.View
+import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -77,6 +78,9 @@ class CollectionDetailActivity : AppCompatActivity() {
             }
             binding.textInfo.text = info
             binding.textInfo.visibility = if (info.isEmpty()) View.GONE else View.VISIBLE
+
+            binding.textInspectCbor.visibility = View.VISIBLE
+            binding.textInspectCbor.setOnClickListener { showCborDebugDialog(paper.cborBytes, rootHash) }
         }
 
         // Only the paper observer's null branch finishes the activity: a transient empty
@@ -135,6 +139,17 @@ class CollectionDetailActivity : AppCompatActivity() {
             Intent(this, ViewDataUriActivity::class.java)
                 .putExtra(ViewDataUriActivity.EXTRA_DATA_URI, dataUri)
         )
+    }
+
+    /** Shows the raw CBOR bytes of a scanned paper manifest, annotated with field names. */
+    private fun showCborDebugDialog(cbor: ByteArray, rootHash: String) {
+        val view = layoutInflater.inflate(R.layout.dialog_cbor_debug, null)
+        view.findViewById<TextView>(R.id.textCborDump).text = TagDropCodec.describeCbor(cbor)
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.cbor_debug_title, rootHash))
+            .setView(view)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     private fun confirmDelete(cache: FoundCache) {
