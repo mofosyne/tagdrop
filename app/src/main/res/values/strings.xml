@@ -48,6 +48,9 @@
     <!-- Main screen -->
     <string name="menu_create">Create Cache</string>
     <string name="title_create">Create Cache</string>
+    <string name="menu_demo_collection">Add Demo Collection</string>
+    <string name="demo_collection_label">Demo Trail</string>
+    <string name="demo_collection_added">Demo collection added — check Collections, History, and Map.</string>
 
     <!-- Create screen -->
     <string name="hint_hint">Placement hint (optional)</string>
