@@ -9,18 +9,18 @@ import java.util.zip.InflaterInputStream
 /**
  * Encodes and decodes TagDrop QR payloads.
  *
- * Encoding URI scheme:  tagdrop://v1/<type>/<base45-cbor>
- *   s = Single  — complete cache in one QR
- *   m = Manifest — header for a multi-QR cache
- *   c = Chunk   — one geographic fragment
- *   p = PaperManifest — directory of files on a physical paper
+ * Encoding URI scheme:  tagdrop:<base45-cbor-sequence>
+ *   <base45-cbor-sequence> = Base45( CBOR(version) || CBOR(type) || CBOR(payload) )
+ *   version = uint, currently 1
+ *   type    = uint: 0 = Single, 1 = Manifest, 2 = Chunk, 3 = PaperManifest
  *
  * Navigation links (NOT encoding URIs, NOT put in QR codes):
  *   tagdrop://<rootHash-base45>/<slug>
- *   'v' is lowercase — not in the Base45 alphabet — so "v1/" is unambiguous.
+ *   Disambiguated by "//": a Base45 sequence of 2+ bytes can never start with
+ *   '/' (Base45 index 43), so an encoding URI never has "//" right after the scheme.
  *
- * CBOR map integer keys:
- *   1  version       uint
+ * CBOR payload map integer keys (key 1 "version" is retired — it now lives in
+ * the envelope above):
  *   2  cache_id      bytes(8)  also root_hash for PaperManifest
  *   3  hint          text, optional  also label for PaperManifest
  *   4  mime_type     text
@@ -60,13 +60,16 @@ object TagDropCodec {
     const val COMPRESSION_NONE    = 0
     const val COMPRESSION_DEFLATE = 1
 
-    private const val SCHEME   = "tagdrop://"
-    private const val PATH_S   = "v1/s/"
-    private const val PATH_M   = "v1/m/"
-    private const val PATH_C   = "v1/c/"
-    private const val PATH_P   = "v1/p/"
+    private const val SCHEME         = "tagdrop:"
+    private const val NAV_LINK_PREFIX = "tagdrop://"
 
-    private const val K_VERSION     = 1
+    private const val VERSION = 1L
+
+    private const val TYPE_SINGLE         = 0
+    private const val TYPE_MANIFEST       = 1
+    private const val TYPE_CHUNK          = 2
+    private const val TYPE_PAPER_MANIFEST = 3
+
     private const val K_CACHE_ID    = 2
     private const val K_HINT        = 3
     private const val K_MIME        = 4
@@ -138,17 +141,25 @@ object TagDropCodec {
     // ── Encoding ──────────────────────────────────────────────────────────────
 
     fun encode(payload: TagDropPayload): String = when (payload) {
-        is TagDropPayload.Single -> SCHEME + PATH_S + Base45.encode(singleCbor(payload))
-        is TagDropPayload.Manifest -> SCHEME + PATH_M + Base45.encode(manifestCbor(payload))
-        is TagDropPayload.Chunk -> SCHEME + PATH_C + Base45.encode(chunkCbor(payload))
-        is TagDropPayload.PaperManifest -> SCHEME + PATH_P + Base45.encode(paperManifestCbor(payload))
+        is TagDropPayload.Single -> SCHEME + Base45.encode(singleCbor(payload))
+        is TagDropPayload.Manifest -> SCHEME + Base45.encode(manifestCbor(payload))
+        is TagDropPayload.Chunk -> SCHEME + Base45.encode(chunkCbor(payload))
+        is TagDropPayload.PaperManifest -> SCHEME + Base45.encode(paperManifestCbor(payload))
         is TagDropPayload.Legacy -> payload.dataUri
     }
 
-    /** Raw CBOR for a Single payload — useful for on-device CBOR inspection. */
+    /** Prefixes a payload map with the version/type CBOR-sequence envelope (SPEC §2). */
+    private fun envelope(type: Int, pairs: List<Pair<Int, Any?>>): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(MiniCbor.encodeUInt(VERSION))
+        out.write(MiniCbor.encodeUInt(type.toLong()))
+        out.write(MiniCbor.encodeMap(pairs))
+        return out.toByteArray()
+    }
+
+    /** Raw CBOR sequence (envelope + payload) for a Single payload — useful for on-device inspection. */
     fun singleCbor(payload: TagDropPayload.Single): ByteArray =
-        MiniCbor.encodeMap(listOf(
-            K_VERSION     to 1,
+        envelope(TYPE_SINGLE, listOf(
             K_CACHE_ID    to payload.cacheId,
             K_HINT        to payload.hint,
             K_FILENAME    to payload.filename,
@@ -161,10 +172,9 @@ object TagDropCodec {
             K_ICON             to payload.icon
         ))
 
-    /** Raw CBOR for a Manifest payload — useful for on-device CBOR inspection. */
+    /** Raw CBOR sequence (envelope + payload) for a Manifest payload — useful for on-device inspection. */
     fun manifestCbor(payload: TagDropPayload.Manifest): ByteArray =
-        MiniCbor.encodeMap(listOf(
-            K_VERSION     to 1,
+        envelope(TYPE_MANIFEST, listOf(
             K_CACHE_ID    to payload.cacheId,
             K_HINT        to payload.hint,
             K_FILENAME    to payload.filename,
@@ -179,15 +189,15 @@ object TagDropCodec {
             K_ICON             to payload.icon
         ))
 
-    /** Raw CBOR for a Chunk payload — useful for on-device CBOR inspection. */
+    /** Raw CBOR sequence (envelope + payload) for a Chunk payload — useful for on-device inspection. */
     fun chunkCbor(payload: TagDropPayload.Chunk): ByteArray =
-        MiniCbor.encodeMap(listOf(
+        envelope(TYPE_CHUNK, listOf(
             K_CACHE_ID   to payload.cacheId,
             K_CHUNK_IDX  to payload.index,
             K_CHUNK_DATA to payload.data
         ))
 
-    /** Raw CBOR for any payload, or null for [TagDropPayload.Legacy] which has no CBOR form. */
+    /** Raw CBOR sequence for any payload, or null for [TagDropPayload.Legacy] which has no CBOR form. */
     fun rawCbor(payload: TagDropPayload): ByteArray? = when (payload) {
         is TagDropPayload.Single -> singleCbor(payload)
         is TagDropPayload.Manifest -> manifestCbor(payload)
@@ -196,10 +206,9 @@ object TagDropCodec {
         is TagDropPayload.Legacy -> null
     }
 
-    /** Raw CBOR for a PaperManifest — use this to compute rootHashOf() and for DB storage. */
+    /** Raw CBOR sequence (envelope + payload) for a PaperManifest — use this to compute rootHashOf() and for DB storage. */
     fun paperManifestCbor(payload: TagDropPayload.PaperManifest): ByteArray =
-        MiniCbor.encodeMap(listOf(
-            K_VERSION  to 1,
+        envelope(TYPE_PAPER_MANIFEST, listOf(
             K_CACHE_ID to payload.rootHash,
             K_HINT     to payload.label,
             K_SET      to payload.set,
@@ -231,22 +240,43 @@ object TagDropCodec {
 
     fun decode(scanned: String): TagDropPayload? {
         if (scanned.startsWith("data:")) return TagDropPayload.Legacy(scanned)
-        if (!scanned.startsWith(SCHEME)) return null
+        // Navigation links (tagdrop://<rootHash>/<slug>) are not encoding URIs (SPEC §2).
+        if (!scanned.startsWith(SCHEME) || scanned.startsWith(NAV_LINK_PREFIX)) return null
         val rest = scanned.removePrefix(SCHEME)
         return runCatching {
-            when {
-                rest.startsWith(PATH_S) -> decodeSingle(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_S))))
-                rest.startsWith(PATH_M) -> decodeManifest(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_M))))
-                rest.startsWith(PATH_C) -> decodeChunk(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_C))))
-                rest.startsWith(PATH_P) -> decodePaperManifest(MiniCbor.decodeMap(Base45.decode(rest.removePrefix(PATH_P))))
+            val (type, payload) = decodeEnvelope(Base45.decode(rest)) ?: return@runCatching null
+            when (type) {
+                TYPE_SINGLE         -> decodeSingle(payload)
+                TYPE_MANIFEST       -> decodeManifest(payload)
+                TYPE_CHUNK          -> decodeChunk(payload)
+                TYPE_PAPER_MANIFEST -> decodePaperManifest(payload)
                 else -> null
             }
         }.getOrNull()
     }
 
-    /** Decode a PaperManifest from its raw CBOR bytes (e.g. stored in ScannedPaper.cborBytes). */
+    /**
+     * Splits a CBOR sequence (RFC 8742) into (type, payload map), per the version/type
+     * envelope in SPEC §2. Returns null for an unsupported version or malformed envelope.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun decodeEnvelope(bytes: ByteArray): Pair<Int, Map<Int, Any>>? {
+        val items = MiniCbor.decodeSequence(bytes)
+        if (items.size < 3) return null
+        val version = items[0] as? Long ?: return null
+        if (version != VERSION) return null
+        val type = items[1] as? Long ?: return null
+        val payload = items[2] as? Map<Int, Any> ?: return null
+        return type.toInt() to payload
+    }
+
+    /** Decode a PaperManifest from its raw CBOR sequence bytes (e.g. stored in ScannedPaper.cborBytes). */
     fun decodePaperManifestCbor(cbor: ByteArray): TagDropPayload.PaperManifest? =
-        runCatching { decodePaperManifest(MiniCbor.decodeMap(cbor)) }.getOrNull()
+        runCatching {
+            val (type, payload) = decodeEnvelope(cbor) ?: return@runCatching null
+            if (type != TYPE_PAPER_MANIFEST) return@runCatching null
+            decodePaperManifest(payload)
+        }.getOrNull()
 
     private fun decodeSingle(m: Map<Int, Any>) = TagDropPayload.Single(
         cacheId         = m.bytes(K_CACHE_ID),
@@ -352,9 +382,9 @@ object TagDropCodec {
 
     // ── Debug ─────────────────────────────────────────────────────────────────
 
-    /** Human-readable names for TagDrop's CBOR integer keys, used by [describeCbor]. */
+    /** Human-readable names for TagDrop's CBOR payload-map integer keys, used by [describeCbor]. */
     private val KEY_NAMES = mapOf(
-        K_VERSION to "version", K_CACHE_ID to "cache_id/root_hash", K_HINT to "hint/label",
+        K_CACHE_ID to "cache_id/root_hash", K_HINT to "hint/label",
         K_MIME to "mime_type", K_CONTENT to "content", K_CHUNK_COUNT to "chunk_count",
         K_TOTAL_BYTES to "total_bytes", K_SHA256 to "sha256", K_CHUNK_IDX to "chunk_index",
         K_CHUNK_DATA to "chunk_data", K_FILENAME to "filename", K_COMPRESSION to "compression",
@@ -365,17 +395,35 @@ object TagDropCodec {
         K_LAT to "lat", K_LNG to "lng"
     )
 
+    /** Human-readable names for the envelope's `type` values, used by [describeCbor]. */
+    private val TYPE_NAMES = mapOf(
+        TYPE_SINGLE to "Single", TYPE_MANIFEST to "Manifest",
+        TYPE_CHUNK to "Chunk", TYPE_PAPER_MANIFEST to "PaperManifest"
+    )
+
     /**
-     * Pretty-prints raw TagDrop CBOR for the on-device debug view: a hex dump followed by a
-     * key-by-key breakdown annotated with the field names from the key table above this object.
+     * Pretty-prints a raw TagDrop CBOR sequence for the on-device debug view: a hex dump,
+     * the version/type envelope (SPEC §2), and a key-by-key breakdown of the payload map
+     * annotated with the field names from the key table above this object.
      */
     fun describeCbor(cbor: ByteArray): String = buildString {
         appendLine("${cbor.size} bytes")
         appendLine(cbor.toHexDump())
         appendLine()
-        runCatching { MiniCbor.decodeMap(cbor) }
-            .onSuccess { describeMap(it, 0, this) }
-            .onFailure { append("Failed to decode as CBOR map: ${it.message}") }
+        runCatching {
+            val items = MiniCbor.decodeSequence(cbor)
+            require(items.size >= 3) { "Expected version, type, payload — got ${items.size} item(s)" }
+            val version = items[0] as Long
+            val type = items[1] as Long
+            @Suppress("UNCHECKED_CAST")
+            val payload = items[2] as Map<Int, Any>
+            Triple(version, type, payload)
+        }.onSuccess { (version, type, payload) ->
+            appendLine("version: $version")
+            appendLine("type: $type (${TYPE_NAMES[type.toInt()] ?: "unknown"})")
+            appendLine()
+            describeMap(payload, 0, this)
+        }.onFailure { append("Failed to decode as CBOR sequence: ${it.message}") }
     }
 
     @Suppress("UNCHECKED_CAST")

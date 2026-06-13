@@ -13,6 +13,10 @@ import java.io.ByteArrayOutputStream
  *   - Float64         (major type 7, additional info 27)
  *   - Null (0xf6)
  *
+ * Also supports top-level CBOR Sequences (RFC 8742) — concatenated CBOR data
+ * items with no enclosing array or map — used to prefix TagDrop's payload map
+ * with a version/type envelope (see TagDropCodec).
+ *
  * Values over 2^32 are not supported. This keeps the implementation compact
  * with no library dependency while covering everything TagDrop payloads need.
  */
@@ -38,7 +42,8 @@ object MiniCbor {
         return out.toByteArray()
     }
 
-    private fun encodeUInt(n: Long): ByteArray {
+    /** Encodes a single CBOR unsigned integer (major type 0) — e.g. a sequence envelope item. */
+    fun encodeUInt(n: Long): ByteArray {
         val out = ByteArrayOutputStream()
         writeHead(out, 0, n)
         return out.toByteArray()
@@ -103,6 +108,20 @@ object MiniCbor {
         require(head ushr 5 == 5) { "Expected CBOR map (major 5), got major ${head ushr 5}" }
         val count = readArg(head and 0x1F, stream).toInt()
         return readMapFromStream(stream, count)
+    }
+
+    /**
+     * Decodes a CBOR Sequence (RFC 8742): top-level CBOR data items concatenated with no
+     * enclosing array, read until the input is exhausted. Item types follow [decodeMap]'s
+     * value conventions (Long, ByteArray, String, List<Any>, Map<Int, Any>, Double).
+     */
+    fun decodeSequence(bytes: ByteArray): List<Any> {
+        val stream = ByteArrayInputStream(bytes)
+        val items = mutableListOf<Any>()
+        while (stream.available() > 0) {
+            items.add(readValue(stream))
+        }
+        return items
     }
 
     private fun readMapFromStream(stream: ByteArrayInputStream, count: Int): Map<Int, Any> =

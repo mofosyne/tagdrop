@@ -21,15 +21,15 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
  * selects a file within that paper's directory. Both are resolved from the local
  * Room database, so no network is needed -- the offline TagDropNet.
  *
- * Encoding URIs (tagdrop://v1/...) are passed through as EncodingUri so callers
- * know not to treat them as navigation.
+ * Encoding URIs (tagdrop:<base45-cbor-sequence>, no "//") are passed through as
+ * EncodingUri so callers know not to treat them as navigation.
  */
 class TagDropLinkResolver(private val db: AppDatabase) {
 
     sealed class Resolution {
         /** Not a recognised navigation link at all. */
         object NotTagDrop  : Resolution()
-        /** A QR encoding URI (tagdrop://v1/...) — not a navigation link. */
+        /** A QR encoding URI (tagdrop:<base45-cbor-sequence>) — not a navigation link. */
         object EncodingUri : Resolution()
         /** Could not parse the root hash. */
         object Invalid     : Resolution()
@@ -52,14 +52,14 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         val ref = when {
             uri.startsWith(SCHEME) -> {
                 val rest = uri.removePrefix(SCHEME)
-                // 'v' is lowercase — never appears in Base45 — so this is unambiguous.
-                if (rest.startsWith("v1/")) return Resolution.EncodingUri
                 val (rootHashB45, slug) = splitFirstSlash(rest)
                 val rootHashHex = runCatching { Base45.decode(rootHashB45).toHex() }.getOrElse {
                     return Resolution.Invalid
                 }
                 Ref(rootHashHex, slug)
             }
+            // tagdrop:<base45> with no "//" — an encoding URI, not a navigation link (SPEC §2).
+            uri.startsWith(ENCODING_PREFIX) -> return Resolution.EncodingUri
             uri.startsWith(SYNTHETIC_BASE) -> {
                 val (rootHashHex, slug) = splitFirstSlash(uri.removePrefix(SYNTHETIC_BASE))
                 if (!HEX_ROOT_HASH.matches(rootHashHex)) return Resolution.Invalid
@@ -113,6 +113,7 @@ class TagDropLinkResolver(private val db: AppDatabase) {
 
     companion object {
         private const val SCHEME = "tagdrop://"
+        private const val ENCODING_PREFIX = "tagdrop:"
 
         /** Synthetic host used as a same-paper base URL — see class doc. */
         const val SYNTHETIC_HOST = "paper.tagdrop.invalid"

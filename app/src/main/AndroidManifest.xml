@@ -28,7 +28,7 @@
             </intent-filter>
         </activity>
 
-        <!-- QR scanner + assembler; also handles tagdrop:// deep links -->
+        <!-- QR scanner + assembler; also handles tagdrop: deep links -->
         <activity
             android:name=".ReceiveActivity"
             android:label="@string/title_scan"

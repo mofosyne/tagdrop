@@ -117,9 +117,9 @@ class ReceiveActivity : AppCompatActivity() {
             updateDisplay()
         }
 
-        // Handle tagdrop:// deep-link if started via intent
+        // Handle tagdrop: encoding-URI deep-link if started via intent (tagdrop://... nav links have no decoder here)
         intent?.dataString?.let { uri ->
-            if (uri.startsWith("tagdrop://")) processScanned(uri)
+            if (uri.startsWith("tagdrop:") && !uri.startsWith("tagdrop://")) processScanned(uri)
         }
 
         updateDisplay()
