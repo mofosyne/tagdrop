@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Base64
 import android.view.View
-import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -14,9 +13,11 @@ import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
 import com.github.mofosyne.tagdrop.ui.CollectionDetailAdapter
 import com.github.mofosyne.tagdrop.ui.PageItem
+import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import kotlinx.coroutines.launch
 
 /** "Map" screen for one collection: lists its pages and lets you open or delete cached ones. */
@@ -34,7 +35,8 @@ class CollectionDetailActivity : AppCompatActivity() {
         val adapter = CollectionDetailAdapter(
             onOpen = { cache -> openCache(cache) },
             onDelete = { cache -> confirmDelete(cache) },
-            onMap = { lat, lng -> jumpToMap(lat, lng) }
+            onMap = { lat, lng -> jumpToMap(lat, lng) },
+            onInspectCbor = { cache -> inspectCacheCbor(cache) }
         )
         binding.recyclerPages.layoutManager = LinearLayoutManager(this)
         binding.recyclerPages.adapter = adapter
@@ -161,15 +163,21 @@ class CollectionDetailActivity : AppCompatActivity() {
         )
     }
 
-    /** Shows the raw CBOR bytes of a scanned paper manifest, annotated with field names. */
-    private fun showCborDebugDialog(cbor: ByteArray, rootHash: String) {
-        val view = layoutInflater.inflate(R.layout.dialog_cbor_debug, null)
-        view.findViewById<TextView>(R.id.textCborDump).text = TagDropCodec.describeCbor(cbor)
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.cbor_debug_title, rootHash))
-            .setView(view)
-            .setPositiveButton(android.R.string.ok, null)
-            .show()
+    /** Reconstructs the CBOR for a cached page from its decoded fields and shows the debug dialog. */
+    private fun inspectCacheCbor(cache: FoundCache) {
+        val payload = TagDropPayload.Single(
+            cacheId         = cache.cacheId.hexToBytes(),
+            hint            = cache.hint,
+            filename        = cache.filename,
+            mimeType        = cache.mimeType,
+            compression     = TagDropCodec.COMPRESSION_NONE,
+            content         = cache.contentBytes ?: ByteArray(0),
+            collectionId    = cache.collectionId?.hexToBytes(),
+            collectionLabel = cache.collectionLabel,
+            collectionTag   = cache.collectionTag,
+            icon            = cache.icon
+        )
+        showCborDebugDialog(TagDropCodec.singleCbor(payload), cache.cacheId)
     }
 
     private fun jumpToMap(lat: Double, lng: Double) {
@@ -198,6 +206,9 @@ class CollectionDetailActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+
+    private fun String.hexToBytes(): ByteArray =
+        ByteArray(length / 2) { i -> ((this[i * 2].digitToInt(16) shl 4) or this[i * 2 + 1].digitToInt(16)).toByte() }
 
     companion object {
         const val EXTRA_ROOT_HASH = "extra_root_hash"

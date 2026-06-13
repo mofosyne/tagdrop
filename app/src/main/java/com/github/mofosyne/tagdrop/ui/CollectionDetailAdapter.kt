@@ -18,7 +18,8 @@ import java.util.Locale
 class CollectionDetailAdapter(
     private val onOpen: (FoundCache) -> Unit,
     private val onDelete: (FoundCache) -> Unit,
-    private val onMap: (Double, Double) -> Unit
+    private val onMap: (Double, Double) -> Unit,
+    private val onInspectCbor: (FoundCache) -> Unit
 ) : ListAdapter<PageItem, RecyclerView.ViewHolder>(Diff) {
 
     inner class PageViewHolder(private val binding: ItemPageBinding) :
@@ -50,11 +51,14 @@ class CollectionDetailAdapter(
                         } else {
                             binding.buttonMap.visibility = View.GONE
                         }
+                        binding.buttonCbor.visibility = View.VISIBLE
+                        binding.buttonCbor.setOnClickListener { onInspectCbor(cache) }
                     } else {
                         binding.textStatus.text = ctx.getString(R.string.status_not_cached)
                         binding.buttonOpen.isEnabled = false
                         binding.buttonOpen.setOnClickListener(null)
                         binding.buttonMap.visibility = View.GONE
+                        binding.buttonCbor.visibility = View.GONE
                     }
                 }
                 is PageItem.CacheEntry -> {
@@ -73,6 +77,8 @@ class CollectionDetailAdapter(
                     } else {
                         binding.buttonMap.visibility = View.GONE
                     }
+                    binding.buttonCbor.visibility = View.VISIBLE
+                    binding.buttonCbor.setOnClickListener { onInspectCbor(cache) }
                 }
                 is PageItem.RelatedHint -> {
                     val related = item.related
@@ -81,6 +87,7 @@ class CollectionDetailAdapter(
                     binding.textSubtitle.text = sub
                     binding.textSubtitle.visibility = if (sub.isEmpty()) View.GONE else View.VISIBLE
                     binding.buttonDelete.visibility = View.GONE
+                    binding.buttonCbor.visibility = View.GONE
 
                     val paper = item.scannedPaper
                     if (paper != null) {

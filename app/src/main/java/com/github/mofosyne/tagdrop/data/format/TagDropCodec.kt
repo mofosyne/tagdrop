@@ -138,49 +138,62 @@ object TagDropCodec {
     // ── Encoding ──────────────────────────────────────────────────────────────
 
     fun encode(payload: TagDropPayload): String = when (payload) {
-        is TagDropPayload.Single -> SCHEME + PATH_S + Base45.encode(
-            MiniCbor.encodeMap(listOf(
-                K_VERSION     to 1,
-                K_CACHE_ID    to payload.cacheId,
-                K_HINT        to payload.hint,
-                K_FILENAME    to payload.filename,
-                K_MIME        to payload.mimeType,
-                K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
-                K_CONTENT     to payload.content,
-                K_COLLECTION_ID    to payload.collectionId,
-                K_COLLECTION_LABEL to payload.collectionLabel,
-                K_COLLECTION_TAG   to payload.collectionTag,
-                K_ICON             to payload.icon
-            ))
-        )
-        is TagDropPayload.Manifest -> SCHEME + PATH_M + Base45.encode(
-            MiniCbor.encodeMap(listOf(
-                K_VERSION     to 1,
-                K_CACHE_ID    to payload.cacheId,
-                K_HINT        to payload.hint,
-                K_FILENAME    to payload.filename,
-                K_MIME        to payload.mimeType,
-                K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
-                K_CHUNK_COUNT to payload.chunkCount,
-                K_TOTAL_BYTES to payload.totalBytes,
-                K_SHA256      to payload.sha256,
-                K_COLLECTION_ID    to payload.collectionId,
-                K_COLLECTION_LABEL to payload.collectionLabel,
-                K_COLLECTION_TAG   to payload.collectionTag,
-                K_ICON             to payload.icon
-            ))
-        )
-        is TagDropPayload.Chunk -> SCHEME + PATH_C + Base45.encode(
-            MiniCbor.encodeMap(listOf(
-                K_CACHE_ID   to payload.cacheId,
-                K_CHUNK_IDX  to payload.index,
-                K_CHUNK_DATA to payload.data
-            ))
-        )
-        is TagDropPayload.PaperManifest -> SCHEME + PATH_P + Base45.encode(
-            paperManifestCbor(payload)
-        )
+        is TagDropPayload.Single -> SCHEME + PATH_S + Base45.encode(singleCbor(payload))
+        is TagDropPayload.Manifest -> SCHEME + PATH_M + Base45.encode(manifestCbor(payload))
+        is TagDropPayload.Chunk -> SCHEME + PATH_C + Base45.encode(chunkCbor(payload))
+        is TagDropPayload.PaperManifest -> SCHEME + PATH_P + Base45.encode(paperManifestCbor(payload))
         is TagDropPayload.Legacy -> payload.dataUri
+    }
+
+    /** Raw CBOR for a Single payload — useful for on-device CBOR inspection. */
+    fun singleCbor(payload: TagDropPayload.Single): ByteArray =
+        MiniCbor.encodeMap(listOf(
+            K_VERSION     to 1,
+            K_CACHE_ID    to payload.cacheId,
+            K_HINT        to payload.hint,
+            K_FILENAME    to payload.filename,
+            K_MIME        to payload.mimeType,
+            K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
+            K_CONTENT     to payload.content,
+            K_COLLECTION_ID    to payload.collectionId,
+            K_COLLECTION_LABEL to payload.collectionLabel,
+            K_COLLECTION_TAG   to payload.collectionTag,
+            K_ICON             to payload.icon
+        ))
+
+    /** Raw CBOR for a Manifest payload — useful for on-device CBOR inspection. */
+    fun manifestCbor(payload: TagDropPayload.Manifest): ByteArray =
+        MiniCbor.encodeMap(listOf(
+            K_VERSION     to 1,
+            K_CACHE_ID    to payload.cacheId,
+            K_HINT        to payload.hint,
+            K_FILENAME    to payload.filename,
+            K_MIME        to payload.mimeType,
+            K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
+            K_CHUNK_COUNT to payload.chunkCount,
+            K_TOTAL_BYTES to payload.totalBytes,
+            K_SHA256      to payload.sha256,
+            K_COLLECTION_ID    to payload.collectionId,
+            K_COLLECTION_LABEL to payload.collectionLabel,
+            K_COLLECTION_TAG   to payload.collectionTag,
+            K_ICON             to payload.icon
+        ))
+
+    /** Raw CBOR for a Chunk payload — useful for on-device CBOR inspection. */
+    fun chunkCbor(payload: TagDropPayload.Chunk): ByteArray =
+        MiniCbor.encodeMap(listOf(
+            K_CACHE_ID   to payload.cacheId,
+            K_CHUNK_IDX  to payload.index,
+            K_CHUNK_DATA to payload.data
+        ))
+
+    /** Raw CBOR for any payload, or null for [TagDropPayload.Legacy] which has no CBOR form. */
+    fun rawCbor(payload: TagDropPayload): ByteArray? = when (payload) {
+        is TagDropPayload.Single -> singleCbor(payload)
+        is TagDropPayload.Manifest -> manifestCbor(payload)
+        is TagDropPayload.Chunk -> chunkCbor(payload)
+        is TagDropPayload.PaperManifest -> paperManifestCbor(payload)
+        is TagDropPayload.Legacy -> null
     }
 
     /** Raw CBOR for a PaperManifest — use this to compute rootHashOf() and for DB storage. */

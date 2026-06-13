@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -18,6 +20,7 @@ import com.github.mofosyne.tagdrop.data.format.ChunkAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
+import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanIntentResult
 import com.journeyapps.barcodescanner.ScanOptions
@@ -39,6 +42,9 @@ class ReceiveActivity : AppCompatActivity() {
     private val assembler = ChunkAssembler()
     private val legacyChunks = mutableListOf<String>()
     private var lastPaper: TagDropPayload.PaperManifest? = null
+
+    /** The most recently decoded payload, kept for the "Inspect CBOR" diagnostic menu item. */
+    private var lastScannedPayload: TagDropPayload? = null
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
         handleScanResult(result)
@@ -75,6 +81,36 @@ class ReceiveActivity : AppCompatActivity() {
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_receive, menu)
+        return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_inspect_cbor).isEnabled =
+            lastScannedPayload?.let { TagDropCodec.rawCbor(it) } != null
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_inspect_cbor -> { inspectLastScannedCbor(); true }
+        else -> super.onOptionsItemSelected(item)
+    }
+
+    /** Shows the raw CBOR of the most recently scanned QR code, as decoded — pre-decompression/storage. */
+    private fun inspectLastScannedCbor() {
+        val payload = lastScannedPayload ?: return
+        val cbor = TagDropCodec.rawCbor(payload) ?: return
+        val title = when (payload) {
+            is TagDropPayload.Single -> payload.cacheId.toHex()
+            is TagDropPayload.Manifest -> payload.cacheId.toHex()
+            is TagDropPayload.Chunk -> "${payload.cacheId.toHex()} #${payload.index}"
+            is TagDropPayload.PaperManifest -> payload.rootHash.toHex()
+            is TagDropPayload.Legacy -> return
+        }
+        showCborDebugDialog(cbor, title)
+    }
+
     private fun launchScanner() {
         scanLauncher.launch(ScanOptions().apply {
             setPrompt(getString(R.string.scan_prompt))
@@ -90,7 +126,10 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     private fun processScanned(scanned: String) {
-        when (val payload = TagDropCodec.decode(scanned)) {
+        val decoded = TagDropCodec.decode(scanned)
+        lastScannedPayload = decoded
+        invalidateOptionsMenu()
+        when (val payload = decoded) {
             is TagDropPayload.Single -> {
                 val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                 completeSingle(

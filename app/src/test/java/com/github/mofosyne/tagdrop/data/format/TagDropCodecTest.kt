@@ -249,6 +249,90 @@ class TagDropCodecTest {
         assertEquals("readme", decoded.files[0].slug)
     }
 
+    // ── Raw CBOR (diagnostics) ────────────────────────────────────────────────
+
+    @Test fun singleCborMatchesEncodedUri() {
+        val original = TagDropPayload.Single(
+            cacheId     = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            hint        = "under the bridge",
+            filename    = "poem.html",
+            mimeType    = "text/html",
+            compression = TagDropCodec.COMPRESSION_NONE,
+            content     = "<h1>Hello</h1>".toByteArray()
+        )
+        val cbor = TagDropCodec.singleCbor(original)
+        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop://v1/s/"))
+        assertArrayEquals(uriCbor, cbor)
+
+        val decoded = MiniCbor.decodeMap(cbor)
+        assertEquals("under the bridge", decoded[3])
+        assertEquals("text/html", decoded[4])
+    }
+
+    @Test fun manifestCborMatchesEncodedUri() {
+        val original = TagDropPayload.Manifest(
+            cacheId     = byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80.toByte()),
+            hint        = "trail start",
+            filename    = "story.html",
+            mimeType    = "text/html",
+            compression = TagDropCodec.COMPRESSION_NONE,
+            chunkCount  = 4,
+            totalBytes  = 3200,
+            sha256      = ByteArray(32) { it.toByte() }
+        )
+        val cbor = TagDropCodec.manifestCbor(original)
+        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop://v1/m/"))
+        assertArrayEquals(uriCbor, cbor)
+    }
+
+    @Test fun chunkCborMatchesEncodedUri() {
+        val original = TagDropPayload.Chunk(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            index   = 2,
+            data    = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
+        )
+        val cbor = TagDropCodec.chunkCbor(original)
+        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop://v1/c/"))
+        assertArrayEquals(uriCbor, cbor)
+    }
+
+    @Test fun rawCborDispatchesByPayloadType() {
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        assertArrayEquals(TagDropCodec.singleCbor(single), TagDropCodec.rawCbor(single))
+
+        val manifest = TagDropPayload.Manifest(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE,
+            chunkCount = 1, totalBytes = 10, sha256 = ByteArray(32)
+        )
+        assertArrayEquals(TagDropCodec.manifestCbor(manifest), TagDropCodec.rawCbor(manifest))
+
+        val chunk = TagDropPayload.Chunk(cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), index = 0, data = byteArrayOf(1))
+        assertArrayEquals(TagDropCodec.chunkCbor(chunk), TagDropCodec.rawCbor(chunk))
+
+        val paper = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), label = null, set = null, slug = null,
+            files = emptyList(), related = emptyList()
+        )
+        assertArrayEquals(TagDropCodec.paperManifestCbor(paper), TagDropCodec.rawCbor(paper))
+
+        assertNull(TagDropCodec.rawCbor(TagDropPayload.Legacy("data:text/plain;base64,aGk=")))
+    }
+
+    @Test fun singleCborDescribable() {
+        val original = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = "a hint", filename = "f.txt",
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        val text = TagDropCodec.describeCbor(TagDropCodec.singleCbor(original))
+        assertTrue(text.contains("3 (hint/label): \"a hint\""))
+        assertTrue(text.contains("4 (mime_type): \"text/plain\""))
+        assertTrue(text.contains("5 (content):"))
+    }
+
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     @Test fun describeCborIncludesKeyNamesAndValues() {
