@@ -66,6 +66,14 @@
             android:parentActivityName=".MainActivity"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- Multi-file paper layout creator / printable QR sheet -->
+        <activity
+            android:name=".CreatePaperActivity"
+            android:label="@string/title_create_paper"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Collection detail ("map" of a collection's pages) -->
         <activity
             android:name=".CollectionDetailActivity"

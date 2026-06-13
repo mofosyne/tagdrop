@@ -494,6 +494,67 @@ class TagDropCodecTest {
         assertEquals("🌳", payload.icon)
     }
 
+    // ── createPaperManifest factory ──────────────────────────────────────────
+
+    @Test fun createPaperManifestSetsContentAddressedRootHash() {
+        val files = listOf(
+            TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)),
+            TagDropPayload.FileEntry("map",   "image/svg+xml", byteArrayOf(9, 10, 11, 12, 13, 14, 15, 16))
+        )
+        val a = TagDropCodec.createPaperManifest("Trail Stop 3", "sunset-trail", "oak-tree", files)
+        val b = TagDropCodec.createPaperManifest("Trail Stop 3", "sunset-trail", "oak-tree", files)
+        assertEquals(8, a.rootHash.size)
+        assertArrayEquals(a.rootHash, b.rootHash)
+
+        val c = TagDropCodec.createPaperManifest("Trail Stop 4", "sunset-trail", "oak-tree", files)
+        assertFalse(a.rootHash.contentEquals(c.rootHash))
+    }
+
+    @Test fun createPaperManifestRoundTrip() {
+        val files = listOf(
+            TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
+        )
+        val related = listOf(
+            TagDropPayload.RelatedPaper("letterbox 200m north", set = "sunset-trail", slug = "letterbox",
+                lat = -33.8688, lng = 151.2093)
+        )
+        val collectionId = byteArrayOf(1, 1, 2, 2, 3, 3, 4, 4)
+        val original = TagDropCodec.createPaperManifest(
+            label = "Trail Stop 3 — Oak Tree", set = "sunset-trail", slug = "oak-tree",
+            files = files, related = related,
+            collectionId = collectionId, collectionLabel = "Sunset Trail 2026",
+            collectionTag = "sunsettrail", icon = "🌲"
+        )
+
+        val uri = TagDropCodec.encode(original)
+        val decoded = TagDropCodec.decode(uri) as TagDropPayload.PaperManifest
+
+        assertArrayEquals(original.rootHash, decoded.rootHash)
+        assertEquals("Trail Stop 3 — Oak Tree", decoded.label)
+        assertEquals("sunset-trail", decoded.set)
+        assertEquals("oak-tree", decoded.slug)
+        assertEquals(1, decoded.files.size)
+        assertEquals("index", decoded.files[0].slug)
+        assertEquals(1, decoded.related.size)
+        assertEquals("letterbox 200m north", decoded.related[0].hint)
+        assertArrayEquals(collectionId, decoded.collectionId)
+        assertEquals("Sunset Trail 2026", decoded.collectionLabel)
+        assertEquals("sunsettrail", decoded.collectionTag)
+        assertEquals("🌲", decoded.icon)
+    }
+
+    @Test fun createPaperManifestEmptyFilesAndRelated() {
+        val original = TagDropCodec.createPaperManifest(label = null, set = null, slug = null, files = emptyList())
+        assertEquals(8, original.rootHash.size)
+        assertTrue(original.files.isEmpty())
+        assertTrue(original.related.isEmpty())
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.PaperManifest
+        assertArrayEquals(original.rootHash, decoded.rootHash)
+        assertTrue(decoded.files.isEmpty())
+        assertTrue(decoded.related.isEmpty())
+    }
+
     // ── Compression helpers ───────────────────────────────────────────────────
 
     @Test fun compressDecompressRoundTrip() {

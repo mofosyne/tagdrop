@@ -208,8 +208,12 @@ object TagDropCodec {
 
     /** Raw CBOR sequence (envelope + payload) for a PaperManifest — use this to compute rootHashOf() and for DB storage. */
     fun paperManifestCbor(payload: TagDropPayload.PaperManifest): ByteArray =
-        envelope(TYPE_PAPER_MANIFEST, listOf(
-            K_CACHE_ID to payload.rootHash,
+        envelope(TYPE_PAPER_MANIFEST, paperManifestPairs(payload, payload.rootHash))
+
+    /** Builds the PaperManifest payload-map pairs, with [rootHash] standing in for key 2 (null to omit it). */
+    private fun paperManifestPairs(payload: TagDropPayload.PaperManifest, rootHash: ByteArray?): List<Pair<Int, Any?>> =
+        listOf(
+            K_CACHE_ID to rootHash,
             K_HINT     to payload.label,
             K_SET      to payload.set,
             K_SLUG     to payload.slug,
@@ -234,7 +238,30 @@ object TagDropCodec {
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
             K_ICON             to payload.icon
-        ))
+        )
+
+    /**
+     * Build a PaperManifest with an auto-computed content-addressed root hash.
+     *
+     * Two-pass "chicken-and-egg" resolution (SPEC §4.5, same as IPFS CIDs): encode the
+     * manifest without the root-hash field (key 2), hash that CBOR sequence, then return
+     * the manifest with the computed hash as its rootHash.
+     */
+    fun createPaperManifest(
+        label: String?, set: String?, slug: String?,
+        files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null
+    ): TagDropPayload.PaperManifest {
+        val draft = TagDropPayload.PaperManifest(
+            rootHash = ByteArray(8), label = label, set = set, slug = slug,
+            files = files, related = related,
+            collectionId = collectionId, collectionLabel = collectionLabel,
+            collectionTag = collectionTag, icon = icon
+        )
+        val cborNoHash = envelope(TYPE_PAPER_MANIFEST, paperManifestPairs(draft, rootHash = null))
+        return draft.copy(rootHash = rootHashOf(cborNoHash))
+    }
 
     // ── Decoding ──────────────────────────────────────────────────────────────
 

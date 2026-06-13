@@ -9,15 +9,21 @@ immediately, with no internet connection, server, or account required.
 Think of it as a **digital geocache**: instead of a logbook in a box, the
 "cache" is the QR code itself.
 
+<img src="docs/example-qr.png" alt="Example TagDrop QR code encoding a short text message" width="200">
+
+*A real TagDrop code — scan it with the app or the
+[web reader](tools/reader/) to read a short "Hello from TagDrop!" message.*
+
 ## What you can do with it
 
 - **Drop a single page** — encode text, an HTML page, an SVG image, or JSON
-  into one QR code, either in-app (Create screen) or with the
+  into one QR code, either in-app (Create Cache) or with the
   [web generator](tools/generator/).
 - **Drop a whole "paper"** — a printable sheet with a directory QR code (a
-  *paper manifest*) plus one QR per file. Pages can link to each other with
-  ordinary relative links or `tagdrop://<root-hash>/<slug>` links, so a small
-  static site survives being printed and scanned back in.
+  *paper manifest*) plus one QR per file, built in-app (Create Paper) or with
+  the web generator. Pages can link to each other with ordinary relative
+  links or `tagdrop://<root-hash>/<slug>` links, so a small static site
+  survives being printed and scanned back in.
 - **Spread large content across multiple codes** — split a payload too big
   for one QR into a manifest plus chunk codes placed along a trail. The app
   collects chunks in any order and reassembles and verifies them.
@@ -43,7 +49,8 @@ See [SPEC.md](SPEC.md) for the full wire format and design rationale.
 ## Tools
 
 - **Android app** (`app/`) — scan with the camera, browse content offline,
-  create single-code drops, and explore collections, history, and a map of
+  create single-code drops and multi-file paper layouts (with printable QR
+  sheets / PDF export), and explore collections, history, and a map of
   located finds.
 - **[Web generator](tools/generator/)** — build single codes or full
   multi-file "paper" layouts with a printable QR sheet, entirely in the

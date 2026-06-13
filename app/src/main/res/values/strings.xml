@@ -61,6 +61,8 @@
     <!-- Main screen -->
     <string name="menu_create">Create Cache</string>
     <string name="title_create">Create Cache</string>
+    <string name="menu_create_paper">Create Paper</string>
+    <string name="title_create_paper">Create Paper</string>
     <string name="menu_demo_collection">Add Demo Collection</string>
     <string name="demo_collection_label">Demo Trail</string>
     <string name="demo_collection_added">Demo collection added — check Collections, History, and Map.</string>
@@ -80,6 +82,24 @@
     <string name="qr_cache_id">Content ID: %1$s</string>
     <string name="qr_too_large">URI is %1$d chars — may not fit in one QR. Enable compression or reduce content size.</string>
     <string name="qr_encode_error">QR encoding failed. Try reducing content size.</string>
+
+    <!-- Create Paper screen -->
+    <string name="hint_paper_label">Label (optional — name for this paper)</string>
+    <string name="hint_paper_set">Set (optional — trail or network name)</string>
+    <string name="hint_paper_slug">Slug (optional — this paper\'s address within the set)</string>
+    <string name="label_files_on_paper">Files on this Paper</string>
+    <string name="label_file">File</string>
+    <string name="hint_file_slug">File slug, e.g. index.html</string>
+    <string name="hint_file_content">Content (text or HTML)</string>
+    <string name="button_add_file">+ Add File</string>
+    <string name="button_remove_file">Remove</string>
+    <string name="button_generate_paper">Generate Paper Layout</string>
+    <string name="button_print_paper">🖨 Print Paper Layout</string>
+    <string name="paper_no_files_error">Add at least one file.</string>
+    <string name="paper_file_slug_error">Each file needs a slug.</string>
+    <string name="paper_file_content_error">File \"%1$s\" has no content.</string>
+    <string name="paper_root_hash">Root hash: %1$s</string>
+    <string name="paper_manifest_sub">paper manifest</string>
 
     <!-- Paper manifest -->
     <string name="paper_manifest_label">Paper Manifest</string>

@@ -1,9 +1,11 @@
 # TagDrop Example Payloads
 
-`index.html` is a **generated file** containing pre-rendered QR codes for
-testing the TagDrop Android app and the [web reader](../reader/index.html).
-It's fully static — open it directly in a browser, no internet connection
-or JS crypto/compression APIs required.
+`index.html` is a **self-contained page** — like
+[`../generator/index.html`](../generator/index.html) and
+[`../reader/index.html`](../reader/index.html) — containing a fixed set of
+example payloads for testing the TagDrop Android app and the web reader. Open
+it directly in a browser: it encodes each example and renders the resulting
+`tagdrop:` QR codes on page load.
 
 ## Contents
 
@@ -20,26 +22,19 @@ or JS crypto/compression APIs required.
   different location (or with a mock-location app) to see three separate pins
   on the Map tab that still group into one collection.
 
-## Regenerating
+## Editing the examples
 
-The page is built by `generate.mjs` from the example definitions at the top
-of that file. To change the examples or regenerate after editing:
-
-```bash
-cd tools/examples
-npm install
-npm run build
-```
-
-This overwrites `index.html`. Commit the regenerated file along with any
-changes to `generate.mjs`.
+The example payloads are defined as plain JS objects (`STANDALONE_EXAMPLES`,
+`MULTI_CHUNK_EXAMPLE`, `PAPER_EXAMPLE`, `TRAIL_COLLECTION`, `TRAIL_EXAMPLES`)
+near the top of the `<script>` block in `index.html`. Edit them directly —
+there's no build step; just reload the page.
 
 ## How it works
 
-`generate.mjs` re-implements the same Base45/CBOR/SHA-256/DEFLATE encoding
+`index.html` inlines the same Base45/CBOR-sequence/SHA-256/DEFLATE encoding
 used by [`tools/generator/index.html`](../generator/index.html) and the
-Android app (see [`SPEC.md`](../../SPEC.md)), but runs it in Node at build
-time using `node:crypto` and `node:zlib` instead of the browser's
-SubtleCrypto/CompressionStream APIs. QR codes are rendered as inline SVG via
-the [`qrcode`](https://www.npmjs.com/package/qrcode) package, so the output
-page needs no `<canvas>` or CDN script.
+Android app (see [`SPEC.md`](../../SPEC.md)), using the browser's
+SubtleCrypto and CompressionStream APIs. QR codes are rendered onto
+`<canvas>` via the [`qrcode`](https://www.npmjs.com/package/qrcode) CDN
+script — the same one the generator and reader use, so it requires an
+internet connection on first load.
