@@ -1,26 +1,42 @@
 package com.github.mofosyne.tagdrop
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
+import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
+import com.github.mofosyne.tagdrop.util.ContentExporter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 
 class ViewDataUriActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityViewdatauriBinding
     private lateinit var resolver: TagDropLinkResolver
+
+    /** The cached item being viewed, if any — used by the Open/Share/Save menu actions. */
+    private var exportCache: FoundCache? = null
+
+    private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        if (uri != null) writeToUri(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +84,68 @@ class ViewDataUriActivity : AppCompatActivity() {
         }
 
         loadInitial(dataUri)
+
+        val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
+        if (cacheId != null) {
+            lifecycleScope.launch {
+                exportCache = AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(cacheId)
+                invalidateOptionsMenu()
+            }
+        }
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_html_view, menu)
+        return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        val enabled = exportCache?.contentBytes != null
+        menu.findItem(R.id.action_open_external)?.isEnabled = enabled
+        menu.findItem(R.id.action_share)?.isEnabled = enabled
+        menu.findItem(R.id.action_save)?.isEnabled = enabled
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_open_external -> { openExternally(); true }
+        R.id.action_share -> { shareContent(); true }
+        R.id.action_save -> { saveToDevice(); true }
+        else -> super.onOptionsItemSelected(item)
+    }
+
+    /** Opens the cached content in another app via a chooser. */
+    private fun openExternally() {
+        val cache = exportCache ?: return
+        val intent = ContentExporter.openIntent(this, cache) ?: return
+        try {
+            startActivity(Intent.createChooser(intent, getString(R.string.action_open_external)))
+        } catch (e: ActivityNotFoundException) {
+            toast(getString(R.string.export_no_app_found))
+        }
+    }
+
+    /** Shares the cached content via Android's share sheet. */
+    private fun shareContent() {
+        val cache = exportCache ?: return
+        val intent = ContentExporter.shareIntent(this, cache) ?: return
+        startActivity(Intent.createChooser(intent, getString(R.string.share_uri_title)))
+    }
+
+    /** Lets the user pick a destination and saves a copy of the cached content there. */
+    private fun saveToDevice() {
+        val cache = exportCache ?: return
+        saveLauncher.launch(ContentExporter.suggestFilename(cache))
+    }
+
+    private fun writeToUri(uri: Uri) {
+        val bytes = exportCache?.contentBytes ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { it.write(bytes) } }.isSuccess
+            }
+            toast(getString(if (ok) R.string.export_saved else R.string.export_failed))
+        }
     }
 
     /**
@@ -180,5 +258,6 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_DATA_URI = "extra_data_uri"
+        const val EXTRA_CACHE_ID = "extra_cache_id"
     }
 }

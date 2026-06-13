@@ -47,6 +47,8 @@
     <string name="status_not_cached">Not yet scanned</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
+    <string name="related_found">Already in your collection — tap Open</string>
+    <string name="related_not_found">Not yet found — look for it nearby</string>
 
     <!-- Main screen -->
     <string name="menu_create">Create Cache</string>
@@ -86,4 +88,12 @@
     <string name="paper_not_scanned">Paper not found in collection. Scan the paper manifest QR first.</string>
     <string name="link_invalid">Invalid tagdrop:// link.</string>
     <string name="chunk_before_manifest">Chunk received — scan the manifest QR first.</string>
+
+    <!-- Content export (Open / Share / Save) -->
+    <string name="action_open_external">Open with…</string>
+    <string name="action_share">Share</string>
+    <string name="action_save">Save to device</string>
+    <string name="export_no_app_found">No app found to handle this content.</string>
+    <string name="export_saved">Saved to device.</string>
+    <string name="export_failed">Export failed.</string>
 </resources>

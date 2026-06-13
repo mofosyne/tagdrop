@@ -56,19 +56,33 @@ class CollectionDetailActivity : AppCompatActivity() {
     private fun observePaper(db: AppDatabase, rootHash: String, adapter: CollectionDetailAdapter) {
         var latestPaper: ScannedPaper? = null
         var latestCaches: List<FoundCache> = emptyList()
+        var latestPapers: List<ScannedPaper> = emptyList()
 
         fun render() {
             val paper = latestPaper ?: return
-            val files = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)?.files.orEmpty()
+            val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)
+            val files = manifest?.files.orEmpty()
+            val related = manifest?.related.orEmpty()
             val cachesById = latestCaches.associateBy { it.cacheId }
-            val items = files.map { f -> PageItem.PaperFile(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) }
+            val papersByRootHash = latestPapers.associateBy { it.rootHash }
+
+            val fileItems = files.map { f -> PageItem.PaperFile(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) }
+            val items = buildList {
+                addAll(fileItems)
+                if (related.isNotEmpty()) {
+                    add(PageItem.SectionHeader(getString(R.string.paper_related_header)))
+                    related.forEach { r ->
+                        add(PageItem.RelatedHint(r, r.paperId?.toHex()?.let { papersByRootHash[it] }))
+                    }
+                }
+            }
             adapter.submitList(items)
             binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
 
             title = paper.label ?: getString(R.string.paper_manifest_label)
             // Each page may be focused on its own theme, so accumulate every
             // distinct tag seen across the paper and its cached pages.
-            val tags = (listOf(paper.collectionTag) + items.mapNotNull { it.cache?.collectionTag })
+            val tags = (listOf(paper.collectionTag) + fileItems.mapNotNull { it.cache?.collectionTag })
                 .filterNotNull().distinct()
             val info = buildString {
                 if (paper.set != null) append(getString(R.string.paper_set, paper.set))
@@ -96,6 +110,10 @@ class CollectionDetailActivity : AppCompatActivity() {
         }
         db.cacheDao().getAllCaches().observe(this) { caches ->
             latestCaches = caches
+            render()
+        }
+        db.paperDao().getAll().observe(this) { papers ->
+            latestPapers = papers
             render()
         }
     }
@@ -139,6 +157,7 @@ class CollectionDetailActivity : AppCompatActivity() {
         startActivity(
             Intent(this, ViewDataUriActivity::class.java)
                 .putExtra(ViewDataUriActivity.EXTRA_DATA_URI, dataUri)
+                .putExtra(ViewDataUriActivity.EXTRA_CACHE_ID, cache.cacheId)
         )
     }
 

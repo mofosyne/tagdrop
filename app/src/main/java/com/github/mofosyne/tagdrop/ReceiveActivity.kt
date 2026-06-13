@@ -196,7 +196,7 @@ class ReceiveActivity : AppCompatActivity() {
                     icon            = icon
                 )
             )
-            openContent(mimeType, content)
+            openContent(mimeType, content, cacheId)
             clearState()
         }
     }
@@ -219,16 +219,17 @@ class ReceiveActivity : AppCompatActivity() {
         openDataUri(legacyChunks.joinToString(""))
     }
 
-    private fun openContent(mimeType: String, bytes: ByteArray) {
+    private fun openContent(mimeType: String, bytes: ByteArray, cacheId: String? = null) {
         val dataUri = "data:$mimeType;base64," +
             android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-        openDataUri(dataUri)
+        openDataUri(dataUri, cacheId)
     }
 
-    private fun openDataUri(dataUri: String) {
+    private fun openDataUri(dataUri: String, cacheId: String? = null) {
         startActivity(
             Intent(this, ViewDataUriActivity::class.java)
                 .putExtra(ViewDataUriActivity.EXTRA_DATA_URI, dataUri)
+                .apply { cacheId?.let { putExtra(ViewDataUriActivity.EXTRA_CACHE_ID, it) } }
         )
     }
 
