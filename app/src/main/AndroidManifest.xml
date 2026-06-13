@@ -78,7 +78,7 @@
             android:name=".ReadMeActivity"
             android:label="@string/title_activity_read_me"
             android:exported="false"
-            android:parentActivityName=".ReceiveActivity" />
+            android:parentActivityName=".MainActivity" />
 
     </application>
 
