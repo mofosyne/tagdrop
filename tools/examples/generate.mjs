@@ -38,9 +38,21 @@ function writeHead(out, major, n) {
   else { out.push(m | 26, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF); }
 }
 
+// Always written as major type 7, additional info 27 (8-byte IEEE 754 double).
+function cborFloat64(out, v) {
+  out.push((7 << 5) | 27);
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setFloat64(0, v, false);
+  new Uint8Array(buf).forEach(b => out.push(b));
+}
+
+// Wraps a number so cborValue encodes it as a float64 instead of a uint.
+function cfloat(v) { return { __float64: true, value: v }; }
+
 function cborValue(out, v) {
   if (v === null || v === undefined) return;
-  if (typeof v === 'number') { writeHead(out, 0, v); }
+  if (v && v.__float64) { cborFloat64(out, v.value); }
+  else if (typeof v === 'number') { writeHead(out, 0, v); }
   else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
   else if (typeof v === 'string') {
     const b = Buffer.from(v, 'utf8');
@@ -80,7 +92,8 @@ const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
-            FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24 };
+            FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
+            LAT:26, LNG:27 };
 
 // ── Encoding ──────────────────────────────────────────────────────────────
 function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
@@ -146,7 +159,8 @@ function encodePaperManifest({ label, set, slug, files, related, collectionId, c
     [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
   ]));
   const relatedCbor = (related || []).map(r => subMap([
-    [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
+    [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
+    [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
   ]));
   const cborNoHash = cborMap([
     [K.VERSION, 1],
@@ -402,7 +416,7 @@ const TRAIL_EXAMPLES = [
     slug:  'gate',
     icon:  '🚩',
     related: [
-      { hint: 'Next: Duck Pond — follow the path east', set: 'city-park-trail', slug: 'pond' },
+      { hint: 'Next: Duck Pond — follow the path east', set: 'city-park-trail', slug: 'pond', lat: -37.8112, lng: 144.9580 },
     ],
     file: {
       slug: 'index', mimeType: 'text/html', compress: true,
@@ -435,8 +449,8 @@ own pin on the Map tab.</p>
     slug:  'pond',
     icon:  '🦆',
     related: [
-      { hint: 'Back to: Park Gate', set: 'city-park-trail', slug: 'gate' },
-      { hint: 'Next: Lookout Tower — climb the hill', set: 'city-park-trail', slug: 'tower' },
+      { hint: 'Back to: Park Gate', set: 'city-park-trail', slug: 'gate', lat: -37.8102, lng: 144.9568 },
+      { hint: 'Next: Lookout Tower — climb the hill', set: 'city-park-trail', slug: 'tower', lat: -37.8120, lng: 144.9590 },
     ],
     file: {
       slug: 'index', mimeType: 'text/html', compress: true,
@@ -468,7 +482,7 @@ h1{color:#1a1a2e}
     slug:  'tower',
     icon:  '🗼',
     related: [
-      { hint: 'Back to: Duck Pond', set: 'city-park-trail', slug: 'pond' },
+      { hint: 'Back to: Duck Pond', set: 'city-park-trail', slug: 'pond', lat: -37.8112, lng: 144.9580 },
     ],
     file: {
       slug: 'index', mimeType: 'text/html', compress: true,
@@ -650,7 +664,10 @@ async function main() {
     });
 
     const relatedHtml = stop.related
-      .map(r => `<div class="step">→ ${escHtml(r.hint)}</div>`)
+      .map(r => {
+        const coords = (r.lat != null && r.lng != null) ? ` <code>${r.lat}, ${r.lng}</code>` : '';
+        return `<div class="step">→ ${escHtml(r.hint)}${coords}</div>`;
+      })
       .join('');
 
     trailHtml += `

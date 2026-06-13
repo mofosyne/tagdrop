@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream
  *   - Text strings    (major type 3)
  *   - Arrays          (major type 4)
  *   - Maps with integer keys (major type 5)
+ *   - Float64         (major type 7, additional info 27)
  *   - Null (0xf6)
  *
  * Values over 2^32 are not supported. This keeps the implementation compact
@@ -54,6 +55,7 @@ object MiniCbor {
                 writeHead(out, 3, bytes.size.toLong())
                 out.write(bytes)
             }
+            is Double    -> writeFloat64(out, v)
             is List<*>   -> {
                 writeHead(out, 4, v.size.toLong())
                 for (item in v) out.write(encodeValue(item!!))
@@ -69,6 +71,13 @@ object MiniCbor {
             else -> throw IllegalArgumentException("Unsupported CBOR value type: ${v::class.simpleName}")
         }
         return out.toByteArray()
+    }
+
+    /** Always written as major type 7, additional info 27 (8-byte IEEE 754 double), regardless of value. */
+    private fun writeFloat64(out: ByteArrayOutputStream, v: Double) {
+        out.write((7 shl 5) or 27)
+        val bits = java.lang.Double.doubleToLongBits(v)
+        repeat(8) { i -> out.write((bits ushr (56 - i * 8)).toInt() and 0xFF) }
     }
 
     private fun writeHead(out: ByteArrayOutputStream, major: Int, n: Long) {
@@ -115,7 +124,11 @@ object MiniCbor {
             3 -> readBytes(stream, arg.toInt()).toString(Charsets.UTF_8)
             4 -> List(arg.toInt()) { readValue(stream) }
             5 -> readMapFromStream(stream, arg.toInt())
-            7 -> if (b == 0xF6) Unit else throw IllegalArgumentException("Unsupported simple value 0x${b.toString(16)}")
+            7 -> when (b and 0x1F) {
+                22 -> Unit                    // null (0xf6)
+                27 -> Double.fromBits(arg)    // float64 (0xfb)
+                else -> throw IllegalArgumentException("Unsupported simple value 0x${b.toString(16)}")
+            }
             else -> throw IllegalArgumentException("Unsupported CBOR major type $major")
         }
     }

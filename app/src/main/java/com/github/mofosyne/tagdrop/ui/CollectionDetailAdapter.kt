@@ -97,7 +97,14 @@ class CollectionDetailAdapter(
                         binding.textStatus.text = ctx.getString(R.string.related_not_found)
                         binding.buttonOpen.isEnabled = false
                         binding.buttonOpen.setOnClickListener(null)
-                        binding.buttonMap.visibility = View.GONE
+                        val lat = related.lat
+                        val lng = related.lng
+                        if (lat != null && lng != null) {
+                            binding.buttonMap.visibility = View.VISIBLE
+                            binding.buttonMap.setOnClickListener { onMap(lat, lng) }
+                        } else {
+                            binding.buttonMap.visibility = View.GONE
+                        }
                     }
                 }
             }

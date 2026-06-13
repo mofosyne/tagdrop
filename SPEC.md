@@ -106,6 +106,8 @@ Each element is a CBOR map:
 | 13 | `set` | text (opt) |
 | 14 | `slug` | text (opt) |
 | 23 | `paper_id` | bytes (8, opt) — root hash of the related paper |
+| 26 | `lat` | float64 (opt) — latitude of the related paper |
+| 27 | `lng` | float64 (opt) — longitude of the related paper |
 
 ---
 
@@ -185,7 +187,8 @@ CBOR map {
     {20: "map",     21: "image/svg+xml", 22: h'<file_id>'},
   ],
   16: [                             // related — hints to other papers
-    {3: "Next stop: the red letterbox 200m north", 14: "letterbox", 23: h'<paper_id>'},
+    {3: "Next stop: the red letterbox 200m north", 14: "letterbox", 23: h'<paper_id>',
+     26: -33.8688, 27: 151.2093},   // lat/lng — optional, for a placeholder map pin
     {3: "Start of trail: town square notice board"},
   ],
   17: h'<8 random bytes>',          // collection_id — optional, see §7 Collections
@@ -196,6 +199,13 @@ CBOR map {
 ```
 
 `root_hash` (key 2) is computed externally after the rest of the CBOR is finalised — see §4.5.
+
+**Located related papers:** A `related` entry (key 16) may include `lat`/`lng`
+(keys 26/27) — the approximate coordinates of that related paper, if the
+author knows them. The app shows these as a "❓" placeholder pin on the map
+for related papers that haven't been scanned yet, helping the finder navigate
+toward them. Once that paper is scanned, its own `ScannedPaper` location (set
+from the device's GPS at scan time) replaces the placeholder.
 
 **Navigation:** HTML files on the paper can link to other files using:
 ```html
@@ -490,7 +500,7 @@ The `version` field (key 1) is present in Single, Manifest, and PaperManifest pa
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. Keys 1–19, 20–24 (25 reserved). Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. |
+| 1 | Initial release. Keys 1–19, 20–24 (25 reserved). Single/Manifest/Chunk/PaperManifest types. DEFLATE compression. Base45 URI encoding. Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. |
 
 ---
 
@@ -499,7 +509,7 @@ Version history:
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode all payload types; `contentId()`, `rootHashOf()`, `createSingle()`
   - `Base45.kt` — RFC 9285
-  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4) and nested maps
+  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, and float64 (major 7)
   - `ChunkAssembler.kt` — multi-code assembly with SHA-256 verification
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links
 

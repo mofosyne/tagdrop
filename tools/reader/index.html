@@ -184,6 +184,7 @@ function cborDecode(bytes) {
     if (info === 24) return rb();
     if (info === 25) { return rb() * 256 + rb(); }
     if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    if (info === 27) { return rbs(8); } // float64: 8 raw bytes, decoded in readVal
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
   function readVal() {
@@ -198,8 +199,10 @@ function cborDecode(bytes) {
         for (let i = 0; i < a; i++) { const k = readVal(); m[k] = readVal(); }
         return m;
       }
-      case 7: if (b === 0xF6) return null;
-      // falls through to error for unsupported simple values
+      case 7:
+        if (b === 0xF6) return null;
+        if ((b & 0x1F) === 27) return new DataView(a.buffer, a.byteOffset, 8).getFloat64(0);
+        throw new Error('Unsupported CBOR simple value: 0x' + b.toString(16));
       default: throw new Error('Unsupported CBOR major type: ' + major);
     }
   }
@@ -242,7 +245,8 @@ const K = {
   CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_IDX:9, CHUNK_DATA:10,
   FILENAME:11, COMPRESSION:12,
   SET:13, SLUG:14, FILES:15, RELATED:16,
-  FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23
+  FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23,
+  LAT:26, LNG:27
 };
 
 // ── TagDrop URI parser ────────────────────────────────────────────────────
@@ -304,6 +308,8 @@ async function parseUri(uri) {
         set:     r[K.SET]     || null,
         slug:    r[K.SLUG]    || null,
         paperId: r[K.PAPER_ID] ? toHex(r[K.PAPER_ID]) : null,
+        lat:     r[K.LAT] ?? null,
+        lng:     r[K.LNG] ?? null,
       })),
     };
   }

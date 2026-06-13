@@ -151,6 +151,25 @@ class MiniCborTest {
         assertFalse(sub.containsKey(23))
     }
 
+    // ── Float64 ───────────────────────────────────────────────────────────────
+
+    @Test fun float64RoundTrip() {
+        val m = encodeDecodeMap(listOf(26 to -33.8688, 27 to 151.2093))
+        assertEquals(-33.8688, m[26] as Double, 0.0)
+        assertEquals(151.2093, m[27] as Double, 0.0)
+    }
+
+    @Test fun float64Zero() {
+        val m = encodeDecodeMap(listOf(26 to 0.0))
+        assertEquals(0.0, m[26] as Double, 0.0)
+    }
+
+    @Test fun float64NegativeExtremes() {
+        val m = encodeDecodeMap(listOf(26 to -90.0, 27 to -180.0))
+        assertEquals(-90.0, m[26] as Double, 0.0)
+        assertEquals(-180.0, m[27] as Double, 0.0)
+    }
+
     // ── Mixed types in one map ────────────────────────────────────────────────
 
     // ── Truncation / malformed input ─────────────────────────────────────────

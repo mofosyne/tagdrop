@@ -78,7 +78,9 @@ sealed class TagDropPayload {
         val hint: String,              // human-readable description / location hint
         val set: String?    = null,    // which network/trail this paper belongs to
         val slug: String?   = null,    // that paper's address within the set
-        val paperId: ByteArray? = null // root hash of that paper, if pre-computed
+        val paperId: ByteArray? = null,// root hash of that paper, if pre-computed
+        val lat: Double? = null,       // latitude of the related paper, if known
+        val lng: Double? = null        // longitude of the related paper, if known
     ) {
         override fun equals(other: Any?) = other is RelatedPaper && hint == other.hint
         override fun hashCode() = hint.hashCode()

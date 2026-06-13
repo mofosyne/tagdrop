@@ -179,7 +179,8 @@ class TagDropCodecTest {
             ),
             related  = listOf(
                 TagDropPayload.RelatedPaper("letterbox 200m north", set = "sunset-trail", slug = "letterbox",
-                    paperId = byteArrayOf(17, 18, 19, 20, 21, 22, 23, 24)),
+                    paperId = byteArrayOf(17, 18, 19, 20, 21, 22, 23, 24),
+                    lat = -33.8688, lng = 151.2093),
                 TagDropPayload.RelatedPaper("trail start at town square")
             ),
             collectionId    = collectionId,
@@ -212,9 +213,13 @@ class TagDropCodecTest {
         assertEquals("sunset-trail", decoded.related[0].set)
         assertEquals("letterbox", decoded.related[0].slug)
         assertArrayEquals(byteArrayOf(17, 18, 19, 20, 21, 22, 23, 24), decoded.related[0].paperId)
+        assertEquals(-33.8688, decoded.related[0].lat!!, 0.0)
+        assertEquals(151.2093, decoded.related[0].lng!!, 0.0)
         assertEquals("trail start at town square", decoded.related[1].hint)
         assertNull(decoded.related[1].set)
         assertNull(decoded.related[1].paperId)
+        assertNull(decoded.related[1].lat)
+        assertNull(decoded.related[1].lng)
     }
 
     @Test fun paperManifestEmptyFilesAndRelated() {
@@ -252,7 +257,8 @@ class TagDropCodecTest {
                                     0xEE.toByte(), 0xFF.toByte(), 0x11, 0x22),
             label = "Test Paper", set = "test-set", slug = "test-slug",
             files = listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(5, 6, 7, 8, 9, 10, 11, 12))),
-            related = listOf(TagDropPayload.RelatedPaper("hint text", set = "test-set", slug = "other")),
+            related = listOf(TagDropPayload.RelatedPaper("hint text", set = "test-set", slug = "other",
+                lat = -33.8688, lng = 151.2093)),
             icon = "🌳"
         )
         val cbor = TagDropCodec.paperManifestCbor(original)
@@ -266,6 +272,8 @@ class TagDropCodecTest {
         assertTrue(text.contains("20 (slug): \"readme\""))
         assertTrue(text.contains("16 (related): ["))
         assertTrue(text.contains("24 (icon): \"🌳\""))
+        assertTrue(text.contains("26 (lat): -33.8688"))
+        assertTrue(text.contains("27 (lng): 151.2093"))
     }
 
     @Test fun describeCborHandlesMalformedBytes() {

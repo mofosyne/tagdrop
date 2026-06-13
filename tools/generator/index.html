@@ -241,9 +241,21 @@ function writeHead(out, major, n) {
   else { out.push(m | 26, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF); }
 }
 
+// Always written as major type 7, additional info 27 (8-byte IEEE 754 double).
+function cborFloat64(out, v) {
+  out.push((7 << 5) | 27);
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setFloat64(0, v, false);
+  new Uint8Array(buf).forEach(b => out.push(b));
+}
+
+// Wraps a number so cborValue encodes it as a float64 instead of a uint.
+function cfloat(v) { return { __float64: true, value: v }; }
+
 function cborValue(out, v) {
   if (v === null || v === undefined) return;
-  if (typeof v === 'number') { writeHead(out, 0, v); }
+  if (v && v.__float64) { cborFloat64(out, v.value); }
+  else if (typeof v === 'number') { writeHead(out, 0, v); }
   else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
   else if (typeof v === 'string') {
     const b = new TextEncoder().encode(v);
@@ -292,7 +304,7 @@ async function zlibCompress(bytes) {
 // CBOR keys
 const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
-             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23 };
+             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27 };
 
 async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
   let content = rawBytes, compression = null;
@@ -312,7 +324,7 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
 
 async function encodePaperManifest({ label, set, slug, files, related }) {
   // files = [{slug, mimeType, fileId:Uint8Array}]
-  // related = [{hint, set, slug, paperId:Uint8Array|null}]
+  // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null}]
   // root_hash = SHA-256(cbor_without_root_hash)[0:8]
   const cborNoHash = cborMap([
     [K.VERSION,  1],
@@ -323,7 +335,8 @@ async function encodePaperManifest({ label, set, slug, files, related }) {
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
     ]))],
     [K.RELATED,  related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
+      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
+      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
     ]))],
   ]);
   const rootHash = await sha256first8(cborNoHash);
@@ -337,7 +350,8 @@ async function encodePaperManifest({ label, set, slug, files, related }) {
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
     ]))],
     [K.RELATED,  related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null]
+      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
+      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
     ]))],
   ]);
   return { uri: 'tagdrop://v1/p/' + base45Encode(cbor), rootHash };
@@ -459,6 +473,10 @@ function addRelatedEntry() {
     <div class="row">
       <div><label>Set <small>(optional)</small></label><input type="text" id="rset-${id}"></div>
       <div><label>Slug <small>(optional)</small></label><input type="text" id="rslug-${id}"></div>
+    </div>
+    <div class="row">
+      <div><label>Latitude <small>(optional — for a placeholder map pin)</small></label><input type="text" id="rlat-${id}" placeholder="e.g. -33.8688"></div>
+      <div><label>Longitude <small>(optional)</small></label><input type="text" id="rlng-${id}" placeholder="e.g. 151.2093"></div>
     </div>`;
   document.getElementById('p-related').appendChild(div);
 }
@@ -494,12 +512,18 @@ async function generatePaper() {
   }
 
   // Build related list
-  const related = relatedEntries.map(id => ({
-    hint:   document.getElementById('rhint-' + id)?.value.trim() || '(hint)',
-    set:    document.getElementById('rset-' + id)?.value.trim() || null,
-    slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
-    paperId: null,
-  }));
+  const related = relatedEntries.map(id => {
+    const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
+    const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
+    return {
+      hint:   document.getElementById('rhint-' + id)?.value.trim() || '(hint)',
+      set:    document.getElementById('rset-' + id)?.value.trim() || null,
+      slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
+      paperId: null,
+      lat: Number.isFinite(lat) ? lat : null,
+      lng: Number.isFinite(lng) ? lng : null,
+    };
+  });
 
   // Encode paper manifest
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));

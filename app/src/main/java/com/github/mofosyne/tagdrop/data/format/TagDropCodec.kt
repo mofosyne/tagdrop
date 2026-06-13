@@ -52,6 +52,8 @@ import java.util.zip.InflaterInputStream
  *   13 set         text, optional
  *   14 slug        text, optional
  *   23 paper_id    bytes(8), optional
+ *   26 lat         float64, optional — latitude of the related paper
+ *   27 lng         float64, optional — longitude of the related paper
  */
 object TagDropCodec {
 
@@ -89,6 +91,8 @@ object TagDropCodec {
     private const val K_PAPER_ID    = 23
     private const val K_ICON        = 24
     // K_ICON_IMAGE = 25 — reserved for a future small embedded image icon (bytes)
+    private const val K_LAT         = 26
+    private const val K_LNG         = 27
 
     // ── Content addressing (IPFS-inspired) ───────────────────────────────────
 
@@ -199,7 +203,9 @@ object TagDropCodec {
                     K_HINT     to r.hint,
                     K_SET      to r.set,
                     K_SLUG     to r.slug,
-                    K_PAPER_ID to r.paperId
+                    K_PAPER_ID to r.paperId,
+                    K_LAT      to r.lat,
+                    K_LNG      to r.lng
                 ))
             },
             K_COLLECTION_ID    to payload.collectionId,
@@ -280,7 +286,9 @@ object TagDropCodec {
                 hint    = em.text(K_HINT) ?: return@mapNotNull null,
                 set     = em.text(K_SET),
                 slug    = em.text(K_SLUG),
-                paperId = em[K_PAPER_ID] as? ByteArray
+                paperId = em[K_PAPER_ID] as? ByteArray,
+                lat     = em.doubleOrNull(K_LAT),
+                lng     = em.doubleOrNull(K_LNG)
             )
         } ?: emptyList()
 
@@ -327,6 +335,8 @@ object TagDropCodec {
 
     private fun Map<Int, Any>.uint(key: Int): Long? = get(key) as? Long
 
+    private fun Map<Int, Any>.doubleOrNull(key: Int): Double? = get(key) as? Double
+
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /** Human-readable names for TagDrop's CBOR integer keys, used by [describeCbor]. */
@@ -338,7 +348,8 @@ object TagDropCodec {
         K_SET to "set", K_SLUG to "slug", K_FILES to "files", K_RELATED to "related",
         K_COLLECTION_ID to "collection_id", K_COLLECTION_LABEL to "collection_label",
         K_COLLECTION_TAG to "collection_tag", K_FILE_SLUG to "slug", K_FILE_MIME to "mime_type",
-        K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon"
+        K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon",
+        K_LAT to "lat", K_LNG to "lng"
     )
 
     /**
