@@ -1,54 +1,74 @@
-# tagdrop - Tag Dead Drop
+# TagDrop — Tag Dead Drop
 
-Is is a work in progress. The concept is embedding small amount of media physically on paper as 2d QR barcodes. This is unlike current usage of QR codes, where it is normally used to just store plaintext or urls or contacts.
+TagDrop turns small files — text, HTML pages, images, audio, SVGs — into
+self-contained QR codes that work completely offline. Print one on a sticker
+or sheet of paper and leave it somewhere; anyone with the TagDrop app (or any
+QR scanner that follows `tagdrop:` links) can scan it and view the content
+immediately, with no internet connection, server, or account required.
 
-Instead it would be nice if you can store a simple audio soundclip, or a small javascript game, etc...
+Think of it as a **digital geocache**: instead of a logbook in a box, the
+"cache" is the QR code itself.
 
-1. First objective is to decode datauri sent in via intent, and display render via android web browser. e.g. from zxing QR barcode scanner app, or reading it from an NFC tag.
+## What you can do with it
 
-2. Secondary objective, is that for larger files, you want to spread it over multiple QR codes.
-So will need a way to read all these tags an then join it together.
+- **Drop a single page** — encode text, an HTML page, an SVG image, or JSON
+  into one QR code, either in-app (Create screen) or with the
+  [web generator](tools/generator/).
+- **Drop a whole "paper"** — a printable sheet with a directory QR code (a
+  *paper manifest*) plus one QR per file. Pages can link to each other with
+  ordinary relative links or `tagdrop://<root-hash>/<slug>` links, so a small
+  static site survives being printed and scanned back in.
+- **Spread large content across multiple codes** — split a payload too big
+  for one QR into a manifest plus chunk codes placed along a trail. The app
+  collects chunks in any order and reassembles and verifies them.
+- **Build trails and collections** — link papers together with `related`
+  hints (optionally with coordinates), or tag a loose set of stickers with a
+  shared `collection_id` so they group into one card on the home screen and
+  map, even though each code is independently scannable.
+- **Browse offline** — scanned pages render in an in-app WebView. The
+  Collections, History, and Map tabs let you revisit, locate, and manage
+  everything you've found.
 
-# Instructions:
+## How it works
 
-Make sure you have zxing barcode reader installed, otherwise this app will just crash.
+Every code carries a `tagdrop:<base45-cbor-sequence>` URI — a
+[CBOR](https://cbor.io/) sequence (version, type, and payload map),
+[Base45](https://www.rfc-editor.org/rfc/rfc9285)-encoded so it packs
+efficiently into a QR code's alphanumeric mode. Content can optionally be
+DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical
+content always gets the same ID regardless of who created it.
 
-There is two ways to open a datauri:
+See [SPEC.md](SPEC.md) for the full wire format and design rationale.
 
-* For datauris that fit in a single QR code, just scan directly from zxing barcode reader app (<a href="https://f-droid.org/repository/browse/?fdfilter=zxing&fdid=com.google.zxing.client.android">F-Droid</a>, <a href="https://play.google.com/store/apps/details?id=com.google.zxing.client.android">Play Store</a>), press "open browser" and you can start viewing it.
-* For longer datauris split across multiple barcodes, just scan them all in seqence using the main tag dead drop app.
+## Tools
 
-# Status
+- **Android app** (`app/`) — scan with the camera, browse content offline,
+  create single-code drops, and explore collections, history, and a map of
+  located finds.
+- **[Web generator](tools/generator/)** — build single codes or full
+  multi-file "paper" layouts with a printable QR sheet, entirely in the
+  browser, no install needed.
+- **[Web reader](tools/reader/)** — decode and preview `tagdrop:` codes in
+  any browser.
+- **[Examples](tools/examples/)** — pre-rendered sample QR codes for testing
+  the app and the web reader.
 
-* V1.2 - Implemented dumb append scanning. Also added framework to make smarter structured appends, and perhaps a direct binary mode to avoid having to use base64 (with has 30% overhead).
+## Building
 
-* V1.0 - First objective is completed. Secondary objective is not completed, as there is no easy way to split a file across multiple QR codes in an easy to use manner.
+See [DEVELOPING.md](DEVELOPING.md) for getting the Android app building and
+running from source.
 
-## todo
+## Status
 
-* Probbly need a way to "undo" last scan, if the last scan was incorrect. This is possible since I store each barcode content seperately before joining it together for sending as datauri.
+V2.0 — CBOR-sequence envelope encoding (`tagdrop:<base45>`), paper manifests
+with multi-file directories and relative-link navigation, geographic trails
+via `related` hints, ad-hoc collections, an in-app scanner with a live scan
+board, and a Map tab for located finds.
 
-* Need some way to define a manifest QR code, so we can do more funky stuff like store QR codes as direct binary file, or implement compression (in a transparent futureproof mannner). You can think this as similar to a http header.
-
-# Extra
+## Extra
 
 Category: tools
+
 Source: https://github.com/mofosyne/tagdrop
+
 Licence: https://github.com/mofosyne/tagdrop/blob/master/COPYING.txt - GNU GENERAL PUBLIC LICENSE Version 3, 29 June 2007
-
-
-
-# Test
-
-Below is a sample of what was tested. This works with datauris that stores html, or even sound :D  (but you probbly need to split it up to multiple barcodes)!
-
-## Try this for size:
-
-![QR Code Of A Running Man approx 3kb](https://raw.githubusercontent.com/mofosyne/tagdrop/master/exampleBarcodes/denseRunningManQR.png)
-
-
-## Source:
-
-Can't seem to recall where this running man image came from. If anyone knows, let me know in issues and I'll add the source link. To see it in action, just copy and paste to your url field in your webbrowser.
-
-    data:image/gif;base64,R0lGODlhEAAQAPcAAP///wAAAP8AAAD/AP//AAAA//8A/wD//wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQIPQAAACwAAAAAEAAQAAACI4QdecuQ0eKLtK6HK84yz7N9nzNxSndqHFVCKrJe7tZZslUAACH5BAgBAAAALAAAAAAQABAAAAIihB15y5DR4ou0sjcpxnoryX2Lx12k2GyWU1aqRbpQm0JUAQAh+QQIAQAAACwAAAAAEAAQAAACIISPqcHqHNxqsloDo81Ucu1x1QcmZImQl7ixY3YBHVIAACH5BAgBAAAALAAAAAAQABAAAAIdhI+pweoc3GqyWgOjzbry+20ZOIoQeZoUeh3rUQAAIfkECAEAAAAsAAAAABAAEAAAAh+EHXnLkNHii7S2By3OdVuHfZ4WklM3UhsnpWopskcBACH5BAgBAAAALAAAAAAQABAAAAIghB15y5DR4ou0tgctVnVn6nUhOJKTiGmbuooOZyGfUQAAIfkECAEAAAAsAAAAABAAEAAAAiOEHXnLkNHii7SypyzOcvPlOVCjhJVJYZY4adDXsS4Cn6NRAAA7
