@@ -3,6 +3,7 @@ package com.github.mofosyne.tagdrop.ui
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.PopupMenu
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
@@ -19,11 +20,36 @@ class CollectionDetailAdapter(
     private val onOpen: (FoundCache) -> Unit,
     private val onDelete: (FoundCache) -> Unit,
     private val onMap: (Double, Double) -> Unit,
-    private val onInspectCbor: (FoundCache) -> Unit
+    private val onInspectCbor: (FoundCache) -> Unit,
+    private val onShare: (FoundCache) -> Unit
 ) : ListAdapter<PageItem, RecyclerView.ViewHolder>(Diff) {
 
     inner class PageViewHolder(private val binding: ItemPageBinding) :
         RecyclerView.ViewHolder(binding.root) {
+
+        /** Shows the "⋮" overflow menu for a cached item (Map/Share/CBOR, plus Delete when allowed). */
+        private fun showOverflowMenu(cache: FoundCache, canDelete: Boolean) {
+            val popup = PopupMenu(binding.root.context, binding.buttonMore)
+            popup.menuInflater.inflate(R.menu.menu_page_item, popup.menu)
+            popup.menu.findItem(R.id.action_map).isVisible = cache.lat != null && cache.lng != null
+            popup.menu.findItem(R.id.action_share).isVisible = cache.contentBytes != null
+            popup.menu.findItem(R.id.action_delete).isVisible = canDelete
+            popup.setOnMenuItemClickListener { menuItem ->
+                when (menuItem.itemId) {
+                    R.id.action_map -> {
+                        val lat = cache.lat
+                        val lng = cache.lng
+                        if (lat != null && lng != null) onMap(lat, lng)
+                        true
+                    }
+                    R.id.action_share -> { onShare(cache); true }
+                    R.id.action_cbor -> { onInspectCbor(cache); true }
+                    R.id.action_delete -> { onDelete(cache); true }
+                    else -> false
+                }
+            }
+            popup.show()
+        }
 
         fun bind(item: PageItem.Row) {
             val ctx = binding.root.context
@@ -39,26 +65,20 @@ class CollectionDetailAdapter(
                     binding.textTitle.text = item.slug
                     binding.textSubtitle.text = item.mimeType
                     binding.textSubtitle.visibility = View.VISIBLE
-                    binding.buttonDelete.visibility = View.GONE
                     val cache = item.cache
                     if (cache != null) {
                         binding.textStatus.text = ctx.getString(R.string.status_cached)
                         binding.buttonOpen.isEnabled = cache.contentBytes != null
                         binding.buttonOpen.setOnClickListener { onOpen(cache) }
-                        if (cache.lat != null && cache.lng != null) {
-                            binding.buttonMap.visibility = View.VISIBLE
-                            binding.buttonMap.setOnClickListener { onMap(cache.lat, cache.lng) }
-                        } else {
-                            binding.buttonMap.visibility = View.GONE
-                        }
-                        binding.buttonCbor.visibility = View.VISIBLE
-                        binding.buttonCbor.setOnClickListener { onInspectCbor(cache) }
+                        binding.buttonMap.visibility = View.GONE
+                        binding.buttonMore.visibility = View.VISIBLE
+                        binding.buttonMore.setOnClickListener { showOverflowMenu(cache, canDelete = false) }
                     } else {
                         binding.textStatus.text = ctx.getString(R.string.status_not_cached)
                         binding.buttonOpen.isEnabled = false
                         binding.buttonOpen.setOnClickListener(null)
                         binding.buttonMap.visibility = View.GONE
-                        binding.buttonCbor.visibility = View.GONE
+                        binding.buttonMore.visibility = View.GONE
                     }
                 }
                 is PageItem.CacheEntry -> {
@@ -69,16 +89,9 @@ class CollectionDetailAdapter(
                     binding.textStatus.text = DATE_FMT.format(Date(cache.discoveredAt))
                     binding.buttonOpen.isEnabled = cache.contentBytes != null
                     binding.buttonOpen.setOnClickListener { onOpen(cache) }
-                    binding.buttonDelete.visibility = View.VISIBLE
-                    binding.buttonDelete.setOnClickListener { onDelete(cache) }
-                    if (cache.lat != null && cache.lng != null) {
-                        binding.buttonMap.visibility = View.VISIBLE
-                        binding.buttonMap.setOnClickListener { onMap(cache.lat, cache.lng) }
-                    } else {
-                        binding.buttonMap.visibility = View.GONE
-                    }
-                    binding.buttonCbor.visibility = View.VISIBLE
-                    binding.buttonCbor.setOnClickListener { onInspectCbor(cache) }
+                    binding.buttonMap.visibility = View.GONE
+                    binding.buttonMore.visibility = View.VISIBLE
+                    binding.buttonMore.setOnClickListener { showOverflowMenu(cache, canDelete = true) }
                 }
                 is PageItem.RelatedHint -> {
                     val related = item.related
@@ -86,8 +99,7 @@ class CollectionDetailAdapter(
                     val sub = listOfNotNull(related.set, related.slug).joinToString(" / ")
                     binding.textSubtitle.text = sub
                     binding.textSubtitle.visibility = if (sub.isEmpty()) View.GONE else View.VISIBLE
-                    binding.buttonDelete.visibility = View.GONE
-                    binding.buttonCbor.visibility = View.GONE
+                    binding.buttonMore.visibility = View.GONE
 
                     val paper = item.scannedPaper
                     if (paper != null) {

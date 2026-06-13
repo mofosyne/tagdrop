@@ -19,6 +19,7 @@ import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
 import com.github.mofosyne.tagdrop.ui.CollectionDetailAdapter
 import com.github.mofosyne.tagdrop.ui.PageItem
+import com.github.mofosyne.tagdrop.util.ContentExporter
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import kotlinx.coroutines.launch
 
@@ -39,7 +40,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             onOpen = { cache -> openCache(cache) },
             onDelete = { cache -> confirmDelete(cache) },
             onMap = { lat, lng -> jumpToMap(lat, lng) },
-            onInspectCbor = { cache -> inspectCacheCbor(cache) }
+            onInspectCbor = { cache -> inspectCacheCbor(cache) },
+            onShare = { cache -> shareCache(cache) }
         )
         binding.recyclerPages.layoutManager = LinearLayoutManager(this)
         binding.recyclerPages.adapter = adapter
@@ -166,6 +168,11 @@ class CollectionDetailActivity : AppCompatActivity() {
                 .putExtra(ViewDataUriActivity.EXTRA_DATA_URI, dataUri)
                 .putExtra(ViewDataUriActivity.EXTRA_CACHE_ID, cache.cacheId)
         )
+    }
+
+    private fun shareCache(cache: FoundCache) {
+        val intent = ContentExporter.shareIntent(this, cache) ?: return
+        startActivity(Intent.createChooser(intent, getString(R.string.share_uri_title)))
     }
 
     /** Reconstructs the CBOR for a cached page from its decoded fields and shows the debug dialog. */

@@ -45,8 +45,9 @@
     <!-- Collection detail ("map") screen -->
     <string name="button_open">Open</string>
     <string name="button_map">Map</string>
-    <string name="button_cbor">CBOR</string>
     <string name="button_delete">Delete</string>
+    <string name="button_more">⋮</string>
+    <string name="button_more_desc">More actions</string>
     <string name="status_cached">Cached</string>
     <string name="status_not_cached">Not yet scanned</string>
     <string name="delete_confirm_title">Delete item?</string>
