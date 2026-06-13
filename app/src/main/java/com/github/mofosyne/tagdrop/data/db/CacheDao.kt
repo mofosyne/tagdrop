@@ -22,4 +22,7 @@ interface CacheDao {
 
     @Query("SELECT * FROM found_caches WHERE collectionId = :collectionId ORDER BY discoveredAt DESC")
     fun getByCollectionId(collectionId: String): LiveData<List<FoundCache>>
+
+    @Query("DELETE FROM found_caches WHERE collectionId = :collectionId")
+    suspend fun deleteByCollectionId(collectionId: String)
 }

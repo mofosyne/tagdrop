@@ -10,4 +10,8 @@
         android:id="@+id/action_delete_paper"
         android:title="@string/action_delete_paper"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/action_delete_collection"
+        android:title="@string/action_delete_collection"
+        app:showAsAction="never" />
 </menu>
