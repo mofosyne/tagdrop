@@ -19,6 +19,7 @@ import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
+import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
 import com.github.mofosyne.tagdrop.ui.CollectionDetailAdapter
 import com.github.mofosyne.tagdrop.ui.PageItem
@@ -96,7 +97,6 @@ class CollectionDetailActivity : AppCompatActivity() {
             val files = manifest?.files.orEmpty()
             val related = manifest?.related.orEmpty()
             val cachesById = latestCaches.associateBy { it.cacheId }
-            val papersByRootHash = latestPapers.associateBy { it.rootHash }
 
             val fileItems = files.map { f -> PageItem.PaperFile(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) }
             val items = buildList {
@@ -104,7 +104,7 @@ class CollectionDetailActivity : AppCompatActivity() {
                 if (related.isNotEmpty()) {
                     add(PageItem.SectionHeader(getString(R.string.paper_related_header)))
                     related.forEach { r ->
-                        add(PageItem.RelatedHint(r, r.paperId?.toHex()?.let { papersByRootHash[it] }))
+                        add(PageItem.RelatedHint(r, latestPapers.find { r.matchesScannedPaper(it) }))
                     }
                 }
             }

@@ -1,5 +1,7 @@
 package com.github.mofosyne.tagdrop.data.format
 
+import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+
 /**
  * Represents a decoded TagDrop payload from a single scanned QR code.
  *
@@ -117,3 +119,15 @@ sealed class TagDropPayload {
     /** Raw data: URI from the original tagdrop format (backward compatibility). */
     data class Legacy(val dataUri: String) : TagDropPayload()
 }
+
+/**
+ * True if [related] points to [paper] — by precomputed root hash, or by matching set+slug.
+ * set+slug is the durable cross-reference: root hashes change whenever a paper is updated,
+ * but a re-scanned replacement keeps the same set+slug.
+ */
+fun TagDropPayload.RelatedPaper.matchesScannedPaper(paper: ScannedPaper): Boolean {
+    if (paperId != null && paperId.toHex() == paper.rootHash) return true
+    return set != null && slug != null && set == paper.set && slug == paper.slug
+}
+
+private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }

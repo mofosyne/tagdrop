@@ -23,6 +23,7 @@ import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.FragmentMapBinding
 import com.github.mofosyne.tagdrop.util.LocationUtils
 import org.osmdroid.config.Configuration
@@ -172,7 +173,6 @@ class MapFragment : Fragment() {
         }
 
         // Placeholder pins for related papers with a known location that haven't been scanned yet.
-        val scannedRootHashes = latestPapers.map { it.rootHash }.toSet()
         val seenRelatedKeys = mutableSetOf<String>()
         for (paper in latestPapers) {
             val related = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)?.related.orEmpty()
@@ -180,14 +180,17 @@ class MapFragment : Fragment() {
                 val lat = r.lat
                 val lng = r.lng
                 if (lat == null || lng == null) continue
-                val paperIdHex = r.paperId?.toHex()
-                if (paperIdHex != null && paperIdHex in scannedRootHashes) continue
-                if (!seenRelatedKeys.add(paperIdHex ?: "$lat,$lng,${r.hint}")) continue
+                if (latestPapers.any { r.matchesScannedPaper(it) }) continue
+                if (!seenRelatedKeys.add(r.paperId?.toHex() ?: "$lat,$lng,${r.hint}")) continue
                 val point = GeoPoint(lat, lng)
                 points += point
                 val marker = Marker(binding.map).apply {
                     position = point
                     title = r.hint
+                    setOnMarkerClickListener { clickedMarker, _ ->
+                        if (clickedMarker.isInfoWindowShown) clickedMarker.closeInfoWindow() else clickedMarker.showInfoWindow()
+                        true
+                    }
                 }
                 markerFolder.add(marker)
                 markerInfos += MarkerInfo(marker, "❓", r.hint)
