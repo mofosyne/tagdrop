@@ -1,0 +1,9 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:context="com.github.mofosyne.tagdrop.CollectionDetailActivity">
+    <item
+        android:id="@+id/action_delete_paper"
+        android:title="@string/action_delete_paper"
+        app:showAsAction="never" />
+</menu>

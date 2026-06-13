@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Base64
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -24,6 +26,7 @@ import kotlinx.coroutines.launch
 class CollectionDetailActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCollectionDetailBinding
+    private var currentPaper: ScannedPaper? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +65,8 @@ class CollectionDetailActivity : AppCompatActivity() {
 
         fun render() {
             val paper = latestPaper ?: return
+            currentPaper = paper
+            invalidateOptionsMenu()
             val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)
             val files = manifest?.files.orEmpty()
             val related = manifest?.related.orEmpty()
@@ -203,7 +208,36 @@ class CollectionDetailActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun confirmDeletePaper(paper: ScannedPaper) {
+        val label = paper.label ?: paper.rootHash.take(12)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.delete_paper_confirm_title)
+            .setMessage(getString(R.string.delete_paper_confirm_message, label))
+            .setPositiveButton(R.string.button_delete) { _, _ ->
+                lifecycleScope.launch {
+                    AppDatabase.get(this@CollectionDetailActivity).paperDao().delete(paper)
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_collection_detail, menu)
+        return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_delete_paper).isVisible = currentPaper != null
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_delete_paper -> { currentPaper?.let { confirmDeletePaper(it) }; true }
+        else -> super.onOptionsItemSelected(item)
+    }
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
