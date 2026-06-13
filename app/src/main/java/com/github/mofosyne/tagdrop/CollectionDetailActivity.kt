@@ -34,11 +34,21 @@ class CollectionDetailActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCollectionDetailBinding
     private var currentPaper: ScannedPaper? = null
 
+    /** Cached items in this collection that have content and can be bundled into an export zip. */
+    private var exportableCaches: List<FoundCache> = emptyList()
+
     /** The cache awaiting a destination from [saveLauncher]. */
     private var pendingSaveCache: FoundCache? = null
 
+    /** The export zip's content:// URI awaiting a destination from [saveZipLauncher]. */
+    private var pendingExportZipUri: Uri? = null
+
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
+    }
+
+    private val saveZipLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) writeZipToUri(uri)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -100,6 +110,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             }
             adapter.submitList(items)
             binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+            exportableCaches = fileItems.mapNotNull { it.cache }.filter { it.contentBytes != null }
 
             title = paper.label ?: getString(R.string.paper_manifest_label)
             // Each page may be focused on its own theme, so accumulate every
@@ -149,6 +160,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             }
             adapter.submitList(caches.map { PageItem.CacheEntry(it) })
             binding.textEmpty.visibility = View.GONE
+            exportableCaches = caches.filter { it.contentBytes != null }
+            invalidateOptionsMenu()
 
             title = caches.firstOrNull { it.collectionLabel != null }?.collectionLabel
                 ?: getString(R.string.collection_adhoc_default_title, collectionId.take(8))
@@ -199,6 +212,46 @@ class CollectionDetailActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 runCatching { contentResolver.openOutputStream(uri)?.use { it.write(bytes) } }.isSuccess
+            }
+            Toast.makeText(this@CollectionDetailActivity, getString(if (ok) R.string.export_saved else R.string.export_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Bundles every cached item in this collection into a zip and offers to save or share it. */
+    private fun exportCollection() {
+        val uri = ContentExporter.exportZip(this, exportableCaches) ?: return
+        pendingExportZipUri = uri
+        AlertDialog.Builder(this)
+            .setTitle(R.string.action_export_collection)
+            .setMessage(getString(R.string.export_collection_message, exportableCaches.size))
+            .setPositiveButton(R.string.action_save) { _, _ -> saveZipLauncher.launch(exportZipFilename()) }
+            .setNeutralButton(R.string.action_share) { _, _ ->
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(intent, getString(R.string.share_uri_title)))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun exportZipFilename(): String {
+        val base = title?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+            ?.replace(Regex("[\\\\/:*?\"<>|]"), "_") ?: "tagdrop-export"
+        return "$base.zip"
+    }
+
+    private fun writeZipToUri(uri: Uri) {
+        val zipUri = pendingExportZipUri ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    contentResolver.openInputStream(zipUri)?.use { input ->
+                        contentResolver.openOutputStream(uri)?.use { output -> input.copyTo(output) }
+                    }
+                }.isSuccess
             }
             Toast.makeText(this@CollectionDetailActivity, getString(if (ok) R.string.export_saved else R.string.export_failed), Toast.LENGTH_SHORT).show()
         }
@@ -267,11 +320,13 @@ class CollectionDetailActivity : AppCompatActivity() {
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         menu.findItem(R.id.action_delete_paper).isVisible = currentPaper != null
+        menu.findItem(R.id.action_export_collection).isVisible = exportableCaches.size > 1
         return super.onPrepareOptionsMenu(menu)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_delete_paper -> { currentPaper?.let { confirmDeletePaper(it) }; true }
+        R.id.action_export_collection -> { exportCollection(); true }
         else -> super.onOptionsItemSelected(item)
     }
 

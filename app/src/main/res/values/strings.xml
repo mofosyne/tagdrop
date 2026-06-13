@@ -26,6 +26,8 @@
     <string name="action_delete_paper">Delete paper</string>
     <string name="delete_paper_confirm_title">Delete paper?</string>
     <string name="delete_paper_confirm_message">Remove \"%1$s\" and its directory from this device? Cached pages are kept and can still be opened from History. This cannot be undone.</string>
+    <string name="action_export_collection">Export collection</string>
+    <string name="export_collection_message">Bundle %1$d cached item(s) in this collection into a single zip file.</string>
 
     <!-- Receive screen -->
     <string name="scan_prompt">Scan a TagDrop QR code. Press back to cancel.</string>

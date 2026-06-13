@@ -8,6 +8,8 @@ import androidx.core.content.FileProvider
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * Materializes cached content as real files (via [FileProvider]) so it can be opened in
@@ -52,6 +54,34 @@ object ContentExporter {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+    }
+
+    /** Bundles every cached item with content into a single zip and returns a shareable content:// URI, or null if none have content. */
+    fun exportZip(context: Context, caches: List<FoundCache>): Uri? {
+        val withContent = caches.filter { it.contentBytes != null }
+        if (withContent.isEmpty()) return null
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val file = File(dir, "collection-export.zip")
+        val usedNames = mutableSetOf<String>()
+        ZipOutputStream(FileOutputStream(file)).use { zip ->
+            for (cache in withContent) {
+                zip.putNextEntry(ZipEntry(uniqueEntryName(suggestFilename(cache), usedNames)))
+                zip.write(cache.contentBytes)
+                zip.closeEntry()
+            }
+        }
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+
+    /** Disambiguates duplicate filenames within a zip by inserting "-2", "-3", etc. before the extension. */
+    private fun uniqueEntryName(name: String, used: MutableSet<String>): String {
+        if (used.add(name)) return name
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        var i = 2
+        while (!used.add("$base-$i$ext")) i++
+        return "$base-$i$ext"
     }
 
     /** Suggested filename for [cache]: its declared filename or hint, with an extension guessed from its MIME type. */

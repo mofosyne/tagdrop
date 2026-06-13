@@ -3,6 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools"
     tools:context="com.github.mofosyne.tagdrop.CollectionDetailActivity">
     <item
+        android:id="@+id/action_export_collection"
+        android:title="@string/action_export_collection"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_delete_paper"
         android:title="@string/action_delete_paper"
         app:showAsAction="never" />
