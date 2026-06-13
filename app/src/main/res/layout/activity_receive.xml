@@ -55,13 +55,5 @@
             android:layout_marginTop="4dp"
             android:text="@string/button_clear" />
 
-        <Button
-            android:id="@+id/buttonReadme"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/button_readme" />
-
     </LinearLayout>
 </LinearLayout>

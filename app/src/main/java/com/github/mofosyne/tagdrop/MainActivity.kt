@@ -83,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         return when (item.itemId) {
             R.id.action_create -> { startActivity(Intent(this, CreateActivity::class.java)); true }
             R.id.action_demo_collection -> { addDemoCollection(); true }
+            R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }
     }

@@ -64,9 +64,6 @@ class ReceiveActivity : AppCompatActivity() {
         binding.buttonScan.setOnClickListener   { launchScanner() }
         binding.buttonClear.setOnClickListener  { clearState() }
         binding.buttonLaunch.setOnClickListener { launchLegacyContent() }
-        binding.buttonReadme.setOnClickListener {
-            startActivity(Intent(this, ReadMeActivity::class.java))
-        }
 
         // Handle tagdrop:// deep-link if started via intent
         intent?.dataString?.let { uri ->
