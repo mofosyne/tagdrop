@@ -25,13 +25,16 @@ import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanIntentResult
-import com.journeyapps.barcodescanner.ScanOptions
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.ResultPoint
+import com.journeyapps.barcodescanner.BarcodeCallback
+import com.journeyapps.barcodescanner.BarcodeResult
+import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import kotlinx.coroutines.launch
 
 /**
- * Scans one or more QR codes and assembles the TagDrop payload.
+ * Continuously scans QR/Data Matrix/Aztec codes via an embedded camera preview and
+ * assembles the TagDrop payload as each code is decoded.
  *
  * Single-code caches are saved and opened immediately.
  * Multi-code caches accumulate until all chunks + manifest are received
@@ -58,12 +61,29 @@ class ReceiveActivity : AppCompatActivity() {
     /** The most recently decoded payload, kept for the "Inspect CBOR" diagnostic menu item. */
     private var lastScannedPayload: TagDropPayload? = null
 
-    private val scanLauncher = registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
-        handleScanResult(result)
+    /** Debounce so the same code isn't reprocessed on every camera frame it's visible in. */
+    private var lastDecodedText: String? = null
+    private var lastDecodedAt: Long = 0L
+
+    private val barcodeCallback = object : BarcodeCallback {
+        override fun barcodeResult(result: BarcodeResult) {
+            val text = result.text ?: return
+            val now = System.currentTimeMillis()
+            if (text == lastDecodedText && now - lastDecodedAt < SCAN_COOLDOWN_MS) return
+            lastDecodedText = text
+            lastDecodedAt = now
+            processScanned(text)
+        }
+        override fun possibleResultPoints(resultPoints: MutableList<ResultPoint>) {}
     }
 
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
+    private val cameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) binding.barcodeScanner.resume()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,9 +99,16 @@ class ReceiveActivity : AppCompatActivity() {
             locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
 
-        binding.buttonScan.setOnClickListener   { launchScanner() }
         binding.buttonClear.setOnClickListener  { clearState() }
         binding.buttonLaunch.setOnClickListener { launchLegacyContent() }
+
+        binding.barcodeScanner.statusView.visibility = View.GONE
+        binding.barcodeScanner.barcodeView.decoderFactory =
+            DefaultDecoderFactory(listOf(BarcodeFormat.QR_CODE, BarcodeFormat.DATA_MATRIX, BarcodeFormat.AZTEC))
+        binding.barcodeScanner.decodeContinuous(barcodeCallback)
+        if (!hasCameraPermission()) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
 
         binding.recyclerScanBoard.layoutManager = GridLayoutManager(this, SCAN_BOARD_COLUMNS)
         binding.recyclerScanBoard.adapter = scanBoardAdapter
@@ -130,18 +157,17 @@ class ReceiveActivity : AppCompatActivity() {
         showCborDebugDialog(cbor, title)
     }
 
-    private fun launchScanner() {
-        scanLauncher.launch(ScanOptions().apply {
-            setPrompt(getString(R.string.scan_prompt))
-            setBeepEnabled(false)
-            setOrientationLocked(false)
-            setDesiredBarcodeFormats(ScanOptions.QR_CODE, ScanOptions.DATA_MATRIX, "AZTEC")
-        })
+    private fun hasCameraPermission() =
+        ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    override fun onResume() {
+        super.onResume()
+        if (hasCameraPermission()) binding.barcodeScanner.resume()
     }
 
-    private fun handleScanResult(result: ScanIntentResult) {
-        val scanned = result.contents ?: return
-        processScanned(scanned)
+    override fun onPause() {
+        super.onPause()
+        binding.barcodeScanner.pause()
     }
 
     private fun processScanned(scanned: String) {
@@ -160,14 +186,12 @@ class ReceiveActivity : AppCompatActivity() {
                 assembler.add(payload)
                 updateDisplay()
                 toast(getString(R.string.manifest_scanned, payload.chunkCount))
-                launchScanner()
             }
             is TagDropPayload.Chunk -> {
                 when (val state = assembler.add(payload)) {
                     is ChunkAssembler.State.Collecting -> {
                         updateDisplay()
                         toast(getString(R.string.chunk_progress, state.received, state.total))
-                        launchScanner()
                     }
                     is ChunkAssembler.State.Complete -> {
                         completeSingle(
@@ -192,13 +216,11 @@ class ReceiveActivity : AppCompatActivity() {
                 legacyChunks.add(payload.dataUri)
                 updateDisplay()
                 toast(getString(R.string.legacy_fragment, legacyChunks.size))
-                launchScanner()
             }
             null -> {
                 legacyChunks.add(scanned)
                 updateDisplay()
                 toast(getString(R.string.unknown_fragment, legacyChunks.size))
-                launchScanner()
             }
         }
     }
@@ -232,8 +254,8 @@ class ReceiveActivity : AppCompatActivity() {
     /**
      * Cache is complete — save to DB. Outside paper mode this opens the content immediately
      * (openContent/clearState). While scanning a paper's directory, the file is simply added
-     * to the scan board and the scanner relaunches, so scanning a directory's files doesn't
-     * keep bouncing the user into the viewer.
+     * to the scan board — the camera keeps scanning continuously, so this doesn't keep
+     * bouncing the user into the viewer.
      */
     private fun completeSingle(
         cacheId: String, hint: String?, filename: String?,
@@ -263,7 +285,6 @@ class ReceiveActivity : AppCompatActivity() {
                 assembler.reset()
                 val slug = paper.files.find { it.fileId.toHex() == cacheId }?.slug
                 toast(getString(R.string.file_cached, slug ?: hint ?: filename ?: cacheId.take(8)))
-                launchScanner()
             } else {
                 openContent(mimeType, content, cacheId)
                 clearState()
@@ -354,5 +375,8 @@ class ReceiveActivity : AppCompatActivity() {
 
     companion object {
         private const val SCAN_BOARD_COLUMNS = 4
+
+        /** Minimum time before the same code can be reprocessed, to avoid re-decoding it every frame. */
+        private const val SCAN_COOLDOWN_MS = 1500L
     }
 }
