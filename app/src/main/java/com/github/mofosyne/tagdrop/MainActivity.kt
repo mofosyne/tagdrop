@@ -130,10 +130,10 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_FOCUS_LAT = "extra_focus_lat"
         const val EXTRA_FOCUS_LNG = "extra_focus_lng"
 
-        private const val DEMO_COLLECTION_ID = "demo-trail"
+        private const val DEMO_COLLECTION_ID = "0000000000000001"
         private val DEMO_ITEMS = listOf(
             DemoItem(
-                cacheId  = "demo-trailhead",
+                cacheId  = "0000000000000101",
                 hint     = "Trailhead",
                 filename = "trailhead.txt",
                 content  = "Welcome to the TagDrop demo trail!\n\nThis sample page was added so you can " +
@@ -144,7 +144,7 @@ class MainActivity : AppCompatActivity() {
                 icon = "🚩"
             ),
             DemoItem(
-                cacheId  = "demo-lookout",
+                cacheId  = "0000000000000102",
                 hint     = "Lookout Point",
                 filename = "lookout.txt",
                 content  = "Lookout Point — the second stop on the demo trail. Tap its pin on the Map tab to jump back here.",
@@ -153,7 +153,7 @@ class MainActivity : AppCompatActivity() {
                 icon = "🔭"
             ),
             DemoItem(
-                cacheId  = "demo-finish",
+                cacheId  = "0000000000000103",
                 hint     = "Finish Line",
                 filename = "finish.txt",
                 content  = "You've reached the end of the demo trail. Nice work!",

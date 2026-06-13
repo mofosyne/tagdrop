@@ -34,16 +34,11 @@ class ReadMeActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
     private fun readRaw(): String {
-        val out = ByteArrayOutputStream()
-        try {
-            resources.openRawResource(R.raw.readme).use { stream ->
-                var b = stream.read()
-                while (b != -1) { out.write(b); b = stream.read() }
-            }
-        } catch (e: IOException) {
-            e.printStackTrace()
+        return try {
+            resources.openRawResource(R.raw.readme).bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            ""
         }
-        return out.toString()
     }
 
     // ── Markdown-style span formatter (preserved from original ReadMe.java) ──
@@ -70,12 +65,18 @@ class ReadMeActivity : AppCompatActivity() {
         while (true) {
             val start = s.indexOf(target, searchFrom)
             if (start < 0) break
+            
             var lineEnd = s.indexOf("\n", start + target.length)
             if (lineEnd < 0) lineEnd = s.length
             
-            span.setSpan(ForegroundColorSpan(colour), start, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            span.setSpan(RelativeSizeSpan(size),      start, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            span.setSpan(StyleSpan(Typeface.BOLD),    start, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            // If target starts with a newline, don't include it in the styled span
+            val styleStart = if (target.startsWith("\n")) start + 1 else start
+            
+            if (lineEnd > styleStart) {
+                span.setSpan(ForegroundColorSpan(colour), styleStart, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                span.setSpan(RelativeSizeSpan(size),      styleStart, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                span.setSpan(StyleSpan(Typeface.BOLD),    styleStart, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
             
             searchFrom = lineEnd
         }
@@ -91,21 +92,30 @@ class ReadMeActivity : AppCompatActivity() {
             val start = s.indexOf(startTag, searchFrom)
             if (start < 0) break
             
-            var endPos = s.indexOf(endTag, start + startTag.length)
+            var contentStart = start + startTag.length
+            var endPos = s.indexOf(endTag, contentStart)
+            
             if (endAtLine) {
-                val lb = s.indexOf("\n", start + startTag.length)
+                val lb = s.indexOf("\n", contentStart)
                 if (lb in 0 until endPos || endPos < 0) endPos = lb
             }
-            if (endPos < 0) break
             
-            val finalEnd = endPos + endTag.length
-            span.setSpan(ForegroundColorSpan(colour), start, finalEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            span.setSpan(RelativeSizeSpan(size),      start, finalEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            span.setSpan(StyleSpan(typefaceStyle),    start, finalEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            if (fontFamily.isNotEmpty())
-                span.setSpan(TypefaceSpan(fontFamily), start, finalEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (endPos < 0) {
+                searchFrom = contentStart
+                continue
+            }
             
-            searchFrom = finalEnd
+            val styleEnd = if (s.getOrNull(endPos) == '\n') endPos else endPos + endTag.length
+            
+            if (styleEnd > start) {
+                span.setSpan(ForegroundColorSpan(colour), start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                span.setSpan(RelativeSizeSpan(size),      start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                span.setSpan(StyleSpan(typefaceStyle),    start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                if (fontFamily.isNotEmpty())
+                    span.setSpan(TypefaceSpan(fontFamily), start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            
+            searchFrom = styleEnd
         }
     }
 }
