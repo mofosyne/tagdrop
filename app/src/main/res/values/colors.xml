@@ -2,4 +2,8 @@
 
     <color name="black_overlay">#66000000</color>
 
+    <!-- Scan board: blocks "fill in" as paper-directory files get scanned. -->
+    <color name="scan_block_pending">#e0e0e0</color>
+    <color name="scan_block_found">#c8e6c9</color>
+
 </resources>

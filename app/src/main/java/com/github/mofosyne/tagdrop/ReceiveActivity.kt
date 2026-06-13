@@ -7,12 +7,14 @@ import android.location.LocationManager
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.getSystemService
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.GridLayoutManager
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
@@ -20,6 +22,8 @@ import com.github.mofosyne.tagdrop.data.format.ChunkAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
+import com.github.mofosyne.tagdrop.ui.ScanBlock
+import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanIntentResult
@@ -42,6 +46,14 @@ class ReceiveActivity : AppCompatActivity() {
     private val assembler = ChunkAssembler()
     private val legacyChunks = mutableListOf<String>()
     private var lastPaper: TagDropPayload.PaperManifest? = null
+
+    /** All cached items, used to mark a scanned paper's files as found on the scan board. */
+    private var latestCaches: List<FoundCache> = emptyList()
+
+    /** Grid of file "blocks" shown while scanning a paper's directory; fills in as files are found. */
+    private val scanBoardAdapter = ScanBoardAdapter(onOpen = { cache ->
+        openContent(cache.mimeType, cache.contentBytes!!, cache.cacheId)
+    })
 
     /** The most recently decoded payload, kept for the "Inspect CBOR" diagnostic menu item. */
     private var lastScannedPayload: TagDropPayload? = null
@@ -70,6 +82,13 @@ class ReceiveActivity : AppCompatActivity() {
         binding.buttonScan.setOnClickListener   { launchScanner() }
         binding.buttonClear.setOnClickListener  { clearState() }
         binding.buttonLaunch.setOnClickListener { launchLegacyContent() }
+
+        binding.recyclerScanBoard.layoutManager = GridLayoutManager(this, SCAN_BOARD_COLUMNS)
+        binding.recyclerScanBoard.adapter = scanBoardAdapter
+        AppDatabase.get(this).cacheDao().getAllCaches().observe(this) { caches ->
+            latestCaches = caches
+            updateDisplay()
+        }
 
         // Handle tagdrop:// deep-link if started via intent
         intent?.dataString?.let { uri ->
@@ -139,7 +158,6 @@ class ReceiveActivity : AppCompatActivity() {
             }
             is TagDropPayload.Manifest -> {
                 assembler.add(payload)
-                lastPaper = null
                 updateDisplay()
                 toast(getString(R.string.manifest_scanned, payload.chunkCount))
                 launchScanner()
@@ -211,13 +229,19 @@ class ReceiveActivity : AppCompatActivity() {
         toast(getString(R.string.paper_scanned, payload.files.size))
     }
 
-    /** Cache is complete — save to DB, then open. openContent/clearState run after insert. */
+    /**
+     * Cache is complete — save to DB. Outside paper mode this opens the content immediately
+     * (openContent/clearState). While scanning a paper's directory, the file is simply added
+     * to the scan board and the scanner relaunches, so scanning a directory's files doesn't
+     * keep bouncing the user into the viewer.
+     */
     private fun completeSingle(
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray, collectionId: String? = null,
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null
     ) {
         val location = getLastKnownLocation()
+        val paper = lastPaper
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).cacheDao().insert(
                 FoundCache(
@@ -235,8 +259,15 @@ class ReceiveActivity : AppCompatActivity() {
                     icon            = icon
                 )
             )
-            openContent(mimeType, content, cacheId)
-            clearState()
+            if (paper != null) {
+                assembler.reset()
+                val slug = paper.files.find { it.fileId.toHex() == cacheId }?.slug
+                toast(getString(R.string.file_cached, slug ?: hint ?: filename ?: cacheId.take(8)))
+                launchScanner()
+            } else {
+                openContent(mimeType, content, cacheId)
+                clearState()
+            }
         }
     }
 
@@ -280,21 +311,28 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     private fun updateDisplay() {
-        val statusText = when {
-            legacyChunks.isNotEmpty() -> {
-                getString(R.string.status_legacy, legacyChunks.size) + "\n\n" +
-                    legacyChunks.joinToString("").take(300)
-            }
-            lastPaper != null -> buildPaperStatusText(lastPaper!!)
-            !assembler.hasManifest -> getString(R.string.status_ready)
-            else -> {
-                val state = assembler.currentState()
-                if (state is ChunkAssembler.State.Collecting)
-                    getString(R.string.status_collecting, state.received, state.total, state.hint ?: "")
-                else getString(R.string.status_ready)
+        val paper = lastPaper
+        if (paper != null) {
+            binding.textStatus.text = buildPaperStatusText(paper)
+            binding.recyclerScanBoard.visibility = View.VISIBLE
+            val cachesById = latestCaches.associateBy { it.cacheId }
+            scanBoardAdapter.submitList(paper.files.map { f -> ScanBlock(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) })
+        } else {
+            binding.recyclerScanBoard.visibility = View.GONE
+            binding.textStatus.text = when {
+                legacyChunks.isNotEmpty() -> {
+                    getString(R.string.status_legacy, legacyChunks.size) + "\n\n" +
+                        legacyChunks.joinToString("").take(300)
+                }
+                !assembler.hasManifest -> getString(R.string.status_ready)
+                else -> {
+                    val state = assembler.currentState()
+                    if (state is ChunkAssembler.State.Collecting)
+                        getString(R.string.status_collecting, state.received, state.total, state.hint ?: "")
+                    else getString(R.string.status_ready)
+                }
             }
         }
-        binding.textStatus.text = statusText
         binding.buttonLaunch.isEnabled = legacyChunks.isNotEmpty()
     }
 
@@ -302,9 +340,6 @@ class ReceiveActivity : AppCompatActivity() {
         appendLine(paper.label ?: getString(R.string.paper_manifest_label))
         if (paper.set != null) appendLine(getString(R.string.paper_set, paper.set))
         if (paper.slug != null) appendLine("/${paper.slug}")
-        appendLine()
-        appendLine(getString(R.string.paper_files_header, paper.files.size))
-        for (f in paper.files) appendLine("  • ${f.slug}  [${f.mimeType}]")
         if (paper.related.isNotEmpty()) {
             appendLine()
             appendLine(getString(R.string.paper_related_header))
@@ -316,4 +351,8 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+
+    companion object {
+        private const val SCAN_BOARD_COLUMNS = 4
+    }
 }

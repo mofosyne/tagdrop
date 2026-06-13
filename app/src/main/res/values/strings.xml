@@ -87,9 +87,9 @@
     <string name="paper_manifest_label">Paper Manifest</string>
     <string name="paper_scanned">Paper scanned: %1$d file(s) in directory.</string>
     <string name="paper_set">Set: %1$s</string>
-    <string name="paper_files_header">Files (%1$d):</string>
     <string name="paper_related_header">Related papers:</string>
-    <string name="paper_scan_hint">Tap \'Read Barcode\' to scan a file from this paper.</string>
+    <string name="paper_scan_hint">Tap \'Read Barcode\' to scan a file from this paper. Tap a filled block below to open it.</string>
+    <string name="file_cached">✓ Cached: %1$s</string>
 
     <!-- Link resolution (ViewDataUriActivity) -->
     <string name="content_not_stored">Content not saved locally.</string>

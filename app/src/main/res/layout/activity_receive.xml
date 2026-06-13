@@ -24,14 +24,21 @@
         <TextView
             android:id="@+id/textStatus"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
+            android:layout_height="wrap_content"
             android:background="#f5f5f5"
             android:fontFamily="monospace"
             android:padding="12dp"
             android:scrollbars="vertical"
             android:text="@string/status_ready"
             android:textSize="13sp" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerScanBoard"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
 
         <Button
             android:id="@+id/buttonScan"
