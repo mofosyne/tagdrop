@@ -2,11 +2,14 @@ package com.github.mofosyne.tagdrop
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -21,13 +24,22 @@ import com.github.mofosyne.tagdrop.ui.CollectionDetailAdapter
 import com.github.mofosyne.tagdrop.ui.PageItem
 import com.github.mofosyne.tagdrop.util.ContentExporter
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** "Map" screen for one collection: lists its pages and lets you open or delete cached ones. */
 class CollectionDetailActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCollectionDetailBinding
     private var currentPaper: ScannedPaper? = null
+
+    /** The cache awaiting a destination from [saveLauncher]. */
+    private var pendingSaveCache: FoundCache? = null
+
+    private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        if (uri != null) writeToUri(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,7 +53,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             onDelete = { cache -> confirmDelete(cache) },
             onMap = { lat, lng -> jumpToMap(lat, lng) },
             onInspectCbor = { cache -> inspectCacheCbor(cache) },
-            onShare = { cache -> shareCache(cache) }
+            onShare = { cache -> shareCache(cache) },
+            onSave = { cache -> saveCache(cache) }
         )
         binding.recyclerPages.layoutManager = LinearLayoutManager(this)
         binding.recyclerPages.adapter = adapter
@@ -173,6 +186,22 @@ class CollectionDetailActivity : AppCompatActivity() {
     private fun shareCache(cache: FoundCache) {
         val intent = ContentExporter.shareIntent(this, cache) ?: return
         startActivity(Intent.createChooser(intent, getString(R.string.share_uri_title)))
+    }
+
+    /** Lets the user pick a destination and saves a copy of the cached content there. */
+    private fun saveCache(cache: FoundCache) {
+        pendingSaveCache = cache
+        saveLauncher.launch(ContentExporter.suggestFilename(cache))
+    }
+
+    private fun writeToUri(uri: Uri) {
+        val bytes = pendingSaveCache?.contentBytes ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { it.write(bytes) } }.isSuccess
+            }
+            Toast.makeText(this@CollectionDetailActivity, getString(if (ok) R.string.export_saved else R.string.export_failed), Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** Reconstructs the CBOR for a cached page from its decoded fields and shows the debug dialog. */

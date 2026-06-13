@@ -9,6 +9,10 @@
         android:title="@string/action_share"
         app:showAsAction="never" />
     <item
+        android:id="@+id/action_save"
+        android:title="@string/action_save"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_cbor"
         android:title="@string/action_view_raw_cbor"
         app:showAsAction="never" />
