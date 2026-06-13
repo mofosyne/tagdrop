@@ -9,6 +9,11 @@ immediately, with no internet connection, server, or account required.
 Think of it as a **digital geocache**: instead of a logbook in a box, the
 "cache" is the QR code itself.
 
+<img src="docs/example-qr.png" alt="Example TagDrop QR code encoding a short text message" width="200">
+
+*A real TagDrop code — scan it with the app or the
+[web reader](tools/reader/) to read a short "Hello from TagDrop!" message.*
+
 ## What you can do with it
 
 - **Drop a single page** — encode text, an HTML page, an SVG image, or JSON

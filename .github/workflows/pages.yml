@@ -27,18 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Regenerate the static example gallery so it's never stale.
-      - name: Build examples gallery
-        working-directory: tools/examples
-        run: |
-          npm install
-          npm run build
-
       # Assemble the site: homepage at the root, web tools as subdirectories.
       - name: Assemble site
         run: |

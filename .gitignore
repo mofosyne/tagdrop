@@ -1,8 +1,5 @@
 .gradle
 /local.properties
-
-# Node tooling for tools/examples/ build script
-tools/examples/node_modules/
 /.idea/workspace.xml
 /.idea/libraries
 .DS_Store
