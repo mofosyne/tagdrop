@@ -207,8 +207,9 @@ class CollectionDetailActivity : AppCompatActivity() {
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
-    private fun String.hexToBytes(): ByteArray =
+    private fun String.hexToBytes(): ByteArray = runCatching {
         ByteArray(length / 2) { i -> ((this[i * 2].digitToInt(16) shl 4) or this[i * 2 + 1].digitToInt(16)).toByte() }
+    }.getOrElse { this.encodeToByteArray() }
 
     companion object {
         const val EXTRA_ROOT_HASH = "extra_root_hash"
