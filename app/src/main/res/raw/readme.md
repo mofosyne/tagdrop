@@ -26,8 +26,10 @@ Tap the scan button to open the camera and point it at a TagDrop QR code
 # Creating your own
 
 Use **Create Cache** to turn typed or pasted text, HTML, SVG, or JSON into a
-QR code you can share or print. For multi-file "paper" layouts and printable
-sheets, use the web generator in the TagDrop repository.
+QR code you can share or print. Use **Create Paper** to build a multi-file
+"paper" — a manifest QR plus one QR per file — and print the whole sheet (or
+save it as a PDF) straight from the app. For larger or more elaborate
+layouts, use the web generator in the TagDrop repository.
 
 ---
 

@@ -1,8 +1,6 @@
 package com.github.mofosyne.tagdrop
 
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Color
 import android.os.Bundle
 import android.print.PrintAttributes
 import android.print.PrintManager
@@ -13,10 +11,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.databinding.ActivityCreateBinding
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.EncodeHintType
+import com.github.mofosyne.tagdrop.util.QrUtils
 import com.google.zxing.WriterException
-import com.google.zxing.qrcode.QRCodeWriter
 
 /**
  * Creates a TagDrop Single-code cache from typed or pasted content.
@@ -70,7 +66,7 @@ class CreateActivity : AppCompatActivity() {
         if (uri.length > 2000) toast(getString(R.string.qr_too_large, uri.length))
 
         try {
-            binding.imageQr.setImageBitmap(encodeQr(uri, 640))
+            binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
             val idHex = payload.cacheId.joinToString("") { "%02x".format(it) }
             binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
             binding.textUri.text = uri
@@ -78,18 +74,6 @@ class CreateActivity : AppCompatActivity() {
         } catch (e: WriterException) {
             toast(getString(R.string.qr_encode_error))
         }
-    }
-
-    private fun encodeQr(text: String, sizePx: Int): Bitmap {
-        val matrix = QRCodeWriter().encode(
-            text, BarcodeFormat.QR_CODE, sizePx, sizePx,
-            mapOf(EncodeHintType.CHARACTER_SET to "UTF-8", EncodeHintType.MARGIN to 2)
-        )
-        val bmp = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.RGB_565)
-        for (x in 0 until matrix.width)
-            for (y in 0 until matrix.height)
-                bmp.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
-        return bmp
     }
 
     private fun shareUri() {
@@ -109,7 +93,7 @@ class CreateActivity : AppCompatActivity() {
         val label = lastPayloadHint ?: getString(R.string.app_name)
 
         // Render a clean print page: label + QR as a data URI image + raw URI text
-        val qrDataUri = bitmapToDataUri(encodeQr(lastUri, 512))
+        val qrDataUri = QrUtils.bitmapToDataUri(QrUtils.encodeQr(lastUri, 512))
         val html = buildPrintHtml(label, qrDataUri, lastUri)
 
         val webView = WebView(this)
@@ -137,13 +121,6 @@ class CreateActivity : AppCompatActivity() {
         </p>
         </body></html>
     """.trimIndent()
-
-    private fun bitmapToDataUri(bmp: Bitmap): String {
-        val out = java.io.ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-        val b64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
-        return "data:image/png;base64,$b64"
-    }
 
     private fun setResultsVisible(visible: Boolean) {
         val v = if (visible) View.VISIBLE else View.GONE
