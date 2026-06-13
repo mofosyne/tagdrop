@@ -218,8 +218,12 @@ function cborDecodeSequence(bytes) {
 async function zlibDecompress(bytes) {
   const ds = new DecompressionStream('deflate');
   const writer = ds.writable.getWriter();
-  await writer.write(bytes);
-  await writer.close();
+  // Don't await write()/close() here — DecompressionStream's writable side has
+  // backpressure (highWaterMark 1), so they won't resolve until the readable
+  // side below is read. Fire-and-forget (swallow errors here; a malformed
+  // stream surfaces via the reader.read() rejection below instead).
+  writer.write(bytes).catch(() => {});
+  writer.close().catch(() => {});
   const chunks = [];
   const reader = ds.readable.getReader();
   for (;;) {

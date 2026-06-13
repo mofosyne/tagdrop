@@ -35,6 +35,7 @@ there's no build step; just reload the page.
 used by [`tools/generator/index.html`](../generator/index.html) and the
 Android app (see [`SPEC.md`](../../SPEC.md)), using the browser's
 SubtleCrypto and CompressionStream APIs. QR codes are rendered onto
-`<canvas>` via the [`qrcode`](https://www.npmjs.com/package/qrcode) CDN
-script — the same one the generator and reader use, so it requires an
-internet connection on first load.
+`<canvas>` via the [`qrcode`](https://www.npmjs.com/package/qrcode) package,
+dynamically imported from a CDN as an ES module on first use — the same one
+the generator and reader use, so it requires an internet connection on first
+load.
