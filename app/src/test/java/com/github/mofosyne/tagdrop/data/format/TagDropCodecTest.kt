@@ -17,7 +17,8 @@ class TagDropCodecTest {
             content     = "<h1>Hello</h1>".toByteArray()
         )
         val uri = TagDropCodec.encode(original)
-        assertTrue(uri.startsWith("tagdrop://v1/s/"))
+        assertTrue(uri.startsWith("tagdrop:"))
+        assertFalse(uri.startsWith("tagdrop://"))
 
         val decoded = TagDropCodec.decode(uri) as TagDropPayload.Single
         assertArrayEquals(original.cacheId, decoded.cacheId)
@@ -115,7 +116,8 @@ class TagDropCodecTest {
             sha256      = sha256
         )
         val uri = TagDropCodec.encode(original)
-        assertTrue(uri.startsWith("tagdrop://v1/m/"))
+        assertTrue(uri.startsWith("tagdrop:"))
+        assertFalse(uri.startsWith("tagdrop://"))
 
         val decoded = TagDropCodec.decode(uri) as TagDropPayload.Manifest
         assertArrayEquals(original.cacheId, decoded.cacheId)
@@ -154,7 +156,8 @@ class TagDropCodecTest {
             data    = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
         )
         val uri = TagDropCodec.encode(original)
-        assertTrue(uri.startsWith("tagdrop://v1/c/"))
+        assertTrue(uri.startsWith("tagdrop:"))
+        assertFalse(uri.startsWith("tagdrop://"))
 
         val decoded = TagDropCodec.decode(uri) as TagDropPayload.Chunk
         assertArrayEquals(original.cacheId, decoded.cacheId)
@@ -190,7 +193,8 @@ class TagDropCodecTest {
         )
 
         val uri = TagDropCodec.encode(original)
-        assertTrue(uri.startsWith("tagdrop://v1/p/"))
+        assertTrue(uri.startsWith("tagdrop:"))
+        assertFalse(uri.startsWith("tagdrop://"))
 
         val decoded = TagDropCodec.decode(uri) as TagDropPayload.PaperManifest
         assertArrayEquals(rootHash, decoded.rootHash)
@@ -261,10 +265,14 @@ class TagDropCodecTest {
             content     = "<h1>Hello</h1>".toByteArray()
         )
         val cbor = TagDropCodec.singleCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop://v1/s/"))
+        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
 
-        val decoded = MiniCbor.decodeMap(cbor)
+        val items = MiniCbor.decodeSequence(cbor)
+        assertEquals(1L, items[0])  // version
+        assertEquals(0L, items[1])  // type = Single
+        @Suppress("UNCHECKED_CAST")
+        val decoded = items[2] as Map<Int, Any>
         assertEquals("under the bridge", decoded[3])
         assertEquals("text/html", decoded[4])
     }
@@ -281,7 +289,7 @@ class TagDropCodecTest {
             sha256      = ByteArray(32) { it.toByte() }
         )
         val cbor = TagDropCodec.manifestCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop://v1/m/"))
+        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
     }
 
@@ -292,7 +300,7 @@ class TagDropCodecTest {
             data    = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
         )
         val cbor = TagDropCodec.chunkCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop://v1/c/"))
+        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
     }
 
@@ -322,6 +330,30 @@ class TagDropCodecTest {
         assertNull(TagDropCodec.rawCbor(TagDropPayload.Legacy("data:text/plain;base64,aGk=")))
     }
 
+    @Test fun envelopeIsTwoBytesForEveryType() {
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        assertArrayEquals(byteArrayOf(0x01, 0x00), TagDropCodec.singleCbor(single).copyOf(2))
+
+        val manifest = TagDropPayload.Manifest(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE,
+            chunkCount = 1, totalBytes = 10, sha256 = ByteArray(32)
+        )
+        assertArrayEquals(byteArrayOf(0x01, 0x01), TagDropCodec.manifestCbor(manifest).copyOf(2))
+
+        val chunk = TagDropPayload.Chunk(cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), index = 0, data = byteArrayOf(1))
+        assertArrayEquals(byteArrayOf(0x01, 0x02), TagDropCodec.chunkCbor(chunk).copyOf(2))
+
+        val paper = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), label = null, set = null, slug = null,
+            files = emptyList(), related = emptyList()
+        )
+        assertArrayEquals(byteArrayOf(0x01, 0x03), TagDropCodec.paperManifestCbor(paper).copyOf(2))
+    }
+
     @Test fun singleCborDescribable() {
         val original = TagDropPayload.Single(
             cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = "a hint", filename = "f.txt",
@@ -349,7 +381,8 @@ class TagDropCodecTest {
         val text = TagDropCodec.describeCbor(cbor)
 
         assertTrue(text.contains("${cbor.size} bytes"))
-        assertTrue(text.contains("1 (version): 1"))
+        assertTrue(text.contains("version: 1"))
+        assertTrue(text.contains("type: 3 (PaperManifest)"))
         assertTrue(text.contains("2 (cache_id/root_hash): aa bb cc dd ee ff 11 22 (8 bytes)"))
         assertTrue(text.contains("3 (hint/label): \"Test Paper\""))
         assertTrue(text.contains("15 (files): ["))
@@ -362,7 +395,7 @@ class TagDropCodecTest {
 
     @Test fun describeCborHandlesMalformedBytes() {
         val text = TagDropCodec.describeCbor(byteArrayOf(0x01))
-        assertTrue(text.contains("Failed to decode as CBOR map"))
+        assertTrue(text.contains("Failed to decode as CBOR sequence"))
     }
 
     // ── Legacy ────────────────────────────────────────────────────────────────
@@ -376,12 +409,22 @@ class TagDropCodecTest {
 
     @Test fun unknownSchemeReturnsNull() {
         assertNull(TagDropCodec.decode("https://example.com"))
-        assertNull(TagDropCodec.decode("tagdrop://v1/x/ABCD"))
         assertNull(TagDropCodec.decode(""))
     }
 
+    @Test fun navigationLinkReturnsNull() {
+        // tagdrop://<rootHash>/<slug> is a navigation link (SPEC §2), not an encoding URI.
+        assertNull(TagDropCodec.decode("tagdrop://ABCD/some-slug"))
+    }
+
     @Test fun malformedBase45ReturnsNull() {
-        assertNull(TagDropCodec.decode("tagdrop://v1/s/!!!!INVALID!!!!"))
+        assertNull(TagDropCodec.decode("tagdrop:!!!!INVALID!!!!"))
+    }
+
+    @Test fun unsupportedVersionReturnsNull() {
+        val payload = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val seq = MiniCbor.encodeUInt(2) + MiniCbor.encodeUInt(0) + payload  // version 2 — unsupported
+        assertNull(TagDropCodec.decode("tagdrop:" + Base45.encode(seq)))
     }
 
     // ── Content addressing ────────────────────────────────────────────────────

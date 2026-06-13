@@ -5,11 +5,12 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 /**
  * Represents a decoded TagDrop payload from a single scanned QR code.
  *
- * Encoding URIs: tagdrop://v1/<type>/<base45-cbor>
- *   s = single-code cache (complete content in one QR)
- *   m = manifest (header for a multi-code cache)
- *   c = chunk  (one segment of a multi-code cache)
- *   p = paper manifest (directory of files on a physical paper)
+ * Encoding URIs: tagdrop:<base45-cbor-sequence>
+ *   <base45-cbor-sequence> = Base45( CBOR(version) || CBOR(type) || CBOR(payload) )
+ *   type: 0 = single-code cache (complete content in one QR)
+ *         1 = manifest (header for a multi-code cache)
+ *         2 = chunk  (one segment of a multi-code cache)
+ *         3 = paper manifest (directory of files on a physical paper)
  *
  * Navigation links (not QR payloads):
  *   tagdrop://<rootHash-base45>/<slug>  resolved by TagDropLinkResolver

@@ -35,6 +35,13 @@ class CollectionDetailActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCollectionDetailBinding
     private var currentPaper: ScannedPaper? = null
 
+    /** Ad-hoc mode only: the collection_id shared by every cache shown, and those caches. */
+    private var currentCollectionId: String? = null
+    private var currentAdHocCaches: List<FoundCache> = emptyList()
+
+    /** Loose mode only: the single cache shown. */
+    private var currentLooseCache: FoundCache? = null
+
     /** Cached items in this collection that have content and can be bundled into an export zip. */
     private var exportableCaches: List<FoundCache> = emptyList()
 
@@ -153,6 +160,7 @@ class CollectionDetailActivity : AppCompatActivity() {
 
     /** Ad-hoc mode: all caches sharing a collection_id. */
     private fun observeAdHoc(db: AppDatabase, collectionId: String, adapter: CollectionDetailAdapter) {
+        currentCollectionId = collectionId
         db.cacheDao().getByCollectionId(collectionId).observe(this) { caches ->
             if (caches.isEmpty()) {
                 finish()
@@ -161,6 +169,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             adapter.submitList(caches.map { PageItem.CacheEntry(it) })
             binding.textEmpty.visibility = View.GONE
             exportableCaches = caches.filter { it.contentBytes != null }
+            currentAdHocCaches = caches
             invalidateOptionsMenu()
 
             title = caches.firstOrNull { it.collectionLabel != null }?.collectionLabel
@@ -182,6 +191,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             binding.textEmpty.visibility = View.GONE
             binding.textInfo.visibility = View.GONE
             title = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
+            currentLooseCache = cache
+            invalidateOptionsMenu()
         }
     }
 
@@ -297,6 +308,27 @@ class CollectionDetailActivity : AppCompatActivity() {
             .show()
     }
 
+    /** Ad-hoc mode: deletes every cached item in this collection. Loose mode: deletes the one cache. */
+    private fun confirmDeleteCollection() {
+        val collectionId = currentCollectionId
+        if (collectionId != null) {
+            val label = currentAdHocCaches.firstOrNull { it.collectionLabel != null }?.collectionLabel
+                ?: getString(R.string.collection_adhoc_default_title, collectionId.take(8))
+            AlertDialog.Builder(this)
+                .setTitle(R.string.delete_collection_confirm_title)
+                .setMessage(getString(R.string.delete_collection_confirm_message, label, currentAdHocCaches.size))
+                .setPositiveButton(R.string.button_delete) { _, _ ->
+                    lifecycleScope.launch {
+                        AppDatabase.get(this@CollectionDetailActivity).cacheDao().deleteByCollectionId(collectionId)
+                    }
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+        currentLooseCache?.let { confirmDelete(it) }
+    }
+
     private fun confirmDeletePaper(paper: ScannedPaper) {
         val label = paper.label ?: paper.rootHash.take(12)
         AlertDialog.Builder(this)
@@ -321,12 +353,14 @@ class CollectionDetailActivity : AppCompatActivity() {
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         menu.findItem(R.id.action_delete_paper).isVisible = currentPaper != null
         menu.findItem(R.id.action_export_collection).isVisible = exportableCaches.size > 1
+        menu.findItem(R.id.action_delete_collection).isVisible = currentCollectionId != null || currentLooseCache != null
         return super.onPrepareOptionsMenu(menu)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_delete_paper -> { currentPaper?.let { confirmDeletePaper(it) }; true }
         R.id.action_export_collection -> { exportCollection(); true }
+        R.id.action_delete_collection -> { confirmDeleteCollection(); true }
         else -> super.onOptionsItemSelected(item)
     }
 

@@ -215,4 +215,29 @@ class MiniCborTest {
         assertEquals("text/html", m[4])
         assertEquals(3L, m[6])
     }
+
+    // ── CBOR Sequences (RFC 8742) ─────────────────────────────────────────────
+
+    @Test fun encodeUIntIsOneByteForSmallValues() {
+        assertArrayEquals(byteArrayOf(0x01), MiniCbor.encodeUInt(1))
+        assertArrayEquals(byteArrayOf(0x00), MiniCbor.encodeUInt(0))
+        assertArrayEquals(byteArrayOf(0x17), MiniCbor.encodeUInt(23))
+    }
+
+    @Test fun decodeSequenceEmpty() {
+        assertEquals(emptyList<Any>(), MiniCbor.decodeSequence(ByteArray(0)))
+    }
+
+    @Test fun decodeSequenceVersionTypePayload() {
+        val payload = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 3 to "hint"))
+        val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0) + payload
+
+        val items = MiniCbor.decodeSequence(seq)
+        assertEquals(3, items.size)
+        assertEquals(1L, items[0])
+        assertEquals(0L, items[1])
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertEquals("hint", map[3])
+    }
 }
