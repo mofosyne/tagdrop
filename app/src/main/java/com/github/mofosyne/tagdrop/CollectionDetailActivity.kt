@@ -33,7 +33,8 @@ class CollectionDetailActivity : AppCompatActivity() {
 
         val adapter = CollectionDetailAdapter(
             onOpen = { cache -> openCache(cache) },
-            onDelete = { cache -> confirmDelete(cache) }
+            onDelete = { cache -> confirmDelete(cache) },
+            onMap = { lat, lng -> jumpToMap(lat, lng) }
         )
         binding.recyclerPages.layoutManager = LinearLayoutManager(this)
         binding.recyclerPages.adapter = adapter
@@ -150,6 +151,15 @@ class CollectionDetailActivity : AppCompatActivity() {
             .setView(view)
             .setPositiveButton(android.R.string.ok, null)
             .show()
+    }
+
+    private fun jumpToMap(lat: Double, lng: Double) {
+        val intent = Intent(this, MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_FOCUS_LAT, lat)
+            .putExtra(MainActivity.EXTRA_FOCUS_LNG, lng)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        startActivity(intent)
+        finish()
     }
 
     private fun confirmDelete(cache: FoundCache) {

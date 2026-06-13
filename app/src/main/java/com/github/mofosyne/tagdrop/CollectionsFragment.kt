@@ -6,6 +6,7 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.fragment.app.activityViewModels
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
@@ -18,6 +19,7 @@ class CollectionsFragment : Fragment() {
 
     private var _binding: FragmentCollectionsBinding? = null
     private val binding get() = _binding!!
+    private val viewModel: MainViewModel by activityViewModels()
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -29,7 +31,13 @@ class CollectionsFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val adapter = CollectionListAdapter { item -> openCollection(item) }
+        val adapter = CollectionListAdapter(
+            onClick = { item -> openCollection(item) },
+            onMap = { lat, lng ->
+                viewModel.focusOnMap(lat, lng)
+                (activity as? MainActivity)?.switchToMap()
+            }
+        )
         binding.recyclerCollections.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerCollections.adapter = adapter
 

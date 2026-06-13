@@ -13,7 +13,8 @@ import java.util.Date
 import java.util.Locale
 
 class HistoryAdapter(
-    private val onClick: (HistoryItem) -> Unit
+    private val onClick: (HistoryItem) -> Unit,
+    private val onMap: (Double, Double) -> Unit
 ) : ListAdapter<HistoryItem, HistoryAdapter.ViewHolder>(Diff) {
 
     inner class ViewHolder(private val binding: ItemCollectionBinding) :
@@ -37,6 +38,12 @@ class HistoryAdapter(
                         if (cache.collectionTag != null) append("#${cache.collectionTag}  ·  ")
                         append(DATE_FMT.format(Date(cache.discoveredAt)))
                     }
+                    if (cache.lat != null && cache.lng != null) {
+                        binding.buttonMap.visibility = View.VISIBLE
+                        binding.buttonMap.setOnClickListener { onMap(cache.lat, cache.lng) }
+                    } else {
+                        binding.buttonMap.visibility = View.GONE
+                    }
                 }
                 is HistoryItem.PaperScan -> {
                     val paper = item.paper
@@ -49,6 +56,12 @@ class HistoryAdapter(
                     binding.textMeta.text = buildString {
                         if (paper.collectionTag != null) append("#${paper.collectionTag}  ·  ")
                         append(DATE_FMT.format(Date(paper.scannedAt)))
+                    }
+                    if (paper.lat != null && paper.lng != null) {
+                        binding.buttonMap.visibility = View.VISIBLE
+                        binding.buttonMap.setOnClickListener { onMap(paper.lat, paper.lng) }
+                    } else {
+                        binding.buttonMap.visibility = View.GONE
                     }
                 }
             }

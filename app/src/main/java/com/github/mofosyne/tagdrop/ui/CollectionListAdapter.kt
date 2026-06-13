@@ -13,7 +13,8 @@ import java.util.Date
 import java.util.Locale
 
 class CollectionListAdapter(
-    private val onClick: (CollectionItem) -> Unit
+    private val onClick: (CollectionItem) -> Unit,
+    private val onMap: (Double, Double) -> Unit
 ) : ListAdapter<CollectionItem, CollectionListAdapter.ViewHolder>(Diff) {
 
     inner class ViewHolder(private val binding: ItemCollectionBinding) :
@@ -41,6 +42,12 @@ class CollectionListAdapter(
                         if (isNotEmpty()) append("  ·  ")
                         append(item.paper.rootHash.take(12))
                     }
+                    if (item.paper.lat != null && item.paper.lng != null) {
+                        binding.buttonMap.visibility = View.VISIBLE
+                        binding.buttonMap.setOnClickListener { onMap(item.paper.lat, item.paper.lng) }
+                    } else {
+                        binding.buttonMap.visibility = View.GONE
+                    }
                 }
                 is CollectionItem.AdHoc -> {
                     binding.textType.text = ctx.getString(R.string.collection_type_adhoc)
@@ -51,6 +58,13 @@ class CollectionListAdapter(
                         if (item.tags.isNotEmpty()) append(item.tags.joinToString(" ") { "#$it" } + "  ·  ")
                         append(DATE_FMT.format(Date(item.timestamp)))
                     }
+                    val firstLoc = item.items.firstOrNull { it.lat != null && it.lng != null }
+                    if (firstLoc != null) {
+                        binding.buttonMap.visibility = View.VISIBLE
+                        binding.buttonMap.setOnClickListener { onMap(firstLoc.lat!!, firstLoc.lng!!) }
+                    } else {
+                        binding.buttonMap.visibility = View.GONE
+                    }
                 }
                 is CollectionItem.Loose -> {
                     binding.textType.text = ctx.getString(R.string.collection_type_loose)
@@ -59,6 +73,12 @@ class CollectionListAdapter(
                         ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = item.cache.mimeType
                     binding.textMeta.text = DATE_FMT.format(Date(item.cache.discoveredAt))
+                    if (item.cache.lat != null && item.cache.lng != null) {
+                        binding.buttonMap.visibility = View.VISIBLE
+                        binding.buttonMap.setOnClickListener { onMap(item.cache.lat, item.cache.lng) }
+                    } else {
+                        binding.buttonMap.visibility = View.GONE
+                    }
                 }
             }
             binding.root.setOnClickListener { onClick(item) }

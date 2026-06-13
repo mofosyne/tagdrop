@@ -73,6 +73,17 @@
                     android:text="@string/button_open" />
 
                 <Button
+                    android:id="@+id/buttonMap"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:textSize="16sp"
+                    android:textAllCaps="false"
+                    android:text="@string/button_map"
+                    android:visibility="gone" />
+
+                <Button
                     android:id="@+id/buttonDelete"
                     style="@style/Widget.MaterialComponents.Button.TextButton"
                     android:layout_width="wrap_content"

@@ -68,6 +68,18 @@
                 android:textColor="#aaaaaa"
                 android:textSize="12sp" />
 
+            <Button
+                android:id="@+id/buttonMap"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:paddingStart="0dp"
+                android:text="@string/button_map"
+                android:textAllCaps="false"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
         </LinearLayout>
 
     </LinearLayout>

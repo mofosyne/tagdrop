@@ -15,7 +15,8 @@ import java.util.Locale
 
 class CollectionDetailAdapter(
     private val onOpen: (FoundCache) -> Unit,
-    private val onDelete: (FoundCache) -> Unit
+    private val onDelete: (FoundCache) -> Unit,
+    private val onMap: (Double, Double) -> Unit
 ) : ListAdapter<PageItem, CollectionDetailAdapter.ViewHolder>(Diff) {
 
     inner class ViewHolder(private val binding: ItemPageBinding) :
@@ -39,10 +40,17 @@ class CollectionDetailAdapter(
                         binding.textStatus.text = ctx.getString(R.string.status_cached)
                         binding.buttonOpen.isEnabled = cache.contentBytes != null
                         binding.buttonOpen.setOnClickListener { onOpen(cache) }
+                        if (cache.lat != null && cache.lng != null) {
+                            binding.buttonMap.visibility = View.VISIBLE
+                            binding.buttonMap.setOnClickListener { onMap(cache.lat, cache.lng) }
+                        } else {
+                            binding.buttonMap.visibility = View.GONE
+                        }
                     } else {
                         binding.textStatus.text = ctx.getString(R.string.status_not_cached)
                         binding.buttonOpen.isEnabled = false
                         binding.buttonOpen.setOnClickListener(null)
+                        binding.buttonMap.visibility = View.GONE
                     }
                 }
                 is PageItem.CacheEntry -> {
@@ -54,6 +62,12 @@ class CollectionDetailAdapter(
                     binding.buttonOpen.setOnClickListener { onOpen(cache) }
                     binding.buttonDelete.visibility = View.VISIBLE
                     binding.buttonDelete.setOnClickListener { onDelete(cache) }
+                    if (cache.lat != null && cache.lng != null) {
+                        binding.buttonMap.visibility = View.VISIBLE
+                        binding.buttonMap.setOnClickListener { onMap(cache.lat, cache.lng) }
+                    } else {
+                        binding.buttonMap.visibility = View.GONE
+                    }
                 }
             }
         }

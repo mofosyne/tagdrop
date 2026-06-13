@@ -6,15 +6,18 @@ import android.view.Menu
 import android.view.MenuItem
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.databinding.ActivityMainBinding
+import com.github.mofosyne.tagdrop.util.LocationUtils
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -23,9 +26,19 @@ class MainActivity : AppCompatActivity() {
         setSupportActionBar(binding.toolbar)
 
         if (savedInstanceState == null) {
-            supportFragmentManager.beginTransaction()
-                .replace(R.id.fragmentContainer, CollectionsFragment())
-                .commit()
+            val lat = intent.getDoubleExtra(EXTRA_FOCUS_LAT, Double.NaN)
+            val lng = intent.getDoubleExtra(EXTRA_FOCUS_LNG, Double.NaN)
+            if (!lat.isNaN() && !lng.isNaN()) {
+                viewModel.focusOnMap(lat, lng)
+                binding.bottomNav.selectedItemId = R.id.nav_map
+                supportFragmentManager.beginTransaction()
+                    .replace(R.id.fragmentContainer, MapFragment())
+                    .commit()
+            } else {
+                supportFragmentManager.beginTransaction()
+                    .replace(R.id.fragmentContainer, CollectionsFragment())
+                    .commit()
+            }
         }
 
         binding.bottomNav.setOnItemSelectedListener { item ->
@@ -44,6 +57,21 @@ class MainActivity : AppCompatActivity() {
         binding.fabScan.setOnClickListener {
             startActivity(Intent(this, ReceiveActivity::class.java))
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val lat = intent.getDoubleExtra(EXTRA_FOCUS_LAT, Double.NaN)
+        val lng = intent.getDoubleExtra(EXTRA_FOCUS_LNG, Double.NaN)
+        if (!lat.isNaN() && !lng.isNaN()) {
+            viewModel.focusOnMap(lat, lng)
+            switchToMap()
+        }
+    }
+
+    fun switchToMap() {
+        binding.bottomNav.selectedItemId = R.id.nav_map
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -70,7 +98,12 @@ class MainActivity : AppCompatActivity() {
             val cacheDao = AppDatabase.get(this@MainActivity).cacheDao()
             val now = System.currentTimeMillis()
             val label = getString(R.string.demo_collection_label)
+            val userLoc = LocationUtils.lastKnownLocation(this@MainActivity)
+
             DEMO_ITEMS.forEachIndexed { index, item ->
+                val lat = userLoc?.latitude?.plus(item.latOffset) ?: item.fallbackLat
+                val lng = userLoc?.longitude?.plus(item.lngOffset) ?: item.fallbackLng
+
                 cacheDao.insert(
                     FoundCache(
                         cacheId         = item.cacheId,
@@ -82,8 +115,8 @@ class MainActivity : AppCompatActivity() {
                         collectionId    = DEMO_COLLECTION_ID,
                         collectionLabel = label,
                         collectionTag   = "demo",
-                        lat             = item.lat,
-                        lng             = item.lng,
+                        lat             = lat,
+                        lng             = lng,
                         icon            = item.icon
                     )
                 )
@@ -93,6 +126,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        const val EXTRA_FOCUS_LAT = "extra_focus_lat"
+        const val EXTRA_FOCUS_LNG = "extra_focus_lng"
+
         private const val DEMO_COLLECTION_ID = "demo-trail"
         private val DEMO_ITEMS = listOf(
             DemoItem(
@@ -102,7 +138,8 @@ class MainActivity : AppCompatActivity() {
                 content  = "Welcome to the TagDrop demo trail!\n\nThis sample page was added so you can " +
                     "preview the Collections, History, and Map tabs without scanning a real code. " +
                     "Delete it any time from this collection's detail screen.",
-                lat = 37.7694, lng = -122.4862,
+                latOffset = 0.0, lngOffset = 0.0,
+                fallbackLat = 37.7694, fallbackLng = -122.4862,
                 icon = "🚩"
             ),
             DemoItem(
@@ -110,7 +147,8 @@ class MainActivity : AppCompatActivity() {
                 hint     = "Lookout Point",
                 filename = "lookout.txt",
                 content  = "Lookout Point — the second stop on the demo trail. Tap its pin on the Map tab to jump back here.",
-                lat = 37.8024, lng = -122.4058,
+                latOffset = 0.005, lngOffset = 0.005,
+                fallbackLat = 37.8024, fallbackLng = -122.4058,
                 icon = "🔭"
             ),
             DemoItem(
@@ -118,7 +156,8 @@ class MainActivity : AppCompatActivity() {
                 hint     = "Finish Line",
                 filename = "finish.txt",
                 content  = "You've reached the end of the demo trail. Nice work!",
-                lat = 37.8199, lng = -122.4783,
+                latOffset = 0.01, lngOffset = 0.0,
+                fallbackLat = 37.8199, fallbackLng = -122.4783,
                 icon = "🏁"
             )
         )
@@ -130,7 +169,9 @@ private data class DemoItem(
     val hint: String,
     val filename: String,
     val content: String,
-    val lat: Double,
-    val lng: Double,
+    val latOffset: Double,
+    val lngOffset: Double,
+    val fallbackLat: Double,
+    val fallbackLng: Double,
     val icon: String? = null
 )

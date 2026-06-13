@@ -18,10 +18,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.getSystemService
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.databinding.FragmentMapBinding
+import com.github.mofosyne.tagdrop.util.LocationUtils
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapListener
 import org.osmdroid.events.ScrollEvent
@@ -39,6 +41,7 @@ class MapFragment : Fragment() {
 
     private var _binding: FragmentMapBinding? = null
     private val binding get() = _binding!!
+    private val viewModel: MainViewModel by activityViewModels()
 
     private var hasCentered = false
     private var deviceLocation: GeoPoint? = null
@@ -53,7 +56,7 @@ class MapFragment : Fragment() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             if (results.any { it.value }) {
                 setupMyLocation()
-                deviceLocation = lastKnownLocation()
+                deviceLocation = LocationUtils.lastKnownLocation(requireContext())
                 render()
             }
         }
@@ -96,7 +99,7 @@ class MapFragment : Fragment() {
 
         if (hasCoarse || hasFine) {
             setupMyLocation()
-            deviceLocation = lastKnownLocation()
+            deviceLocation = LocationUtils.lastKnownLocation(requireContext())
         } else {
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
         }
@@ -109,6 +112,14 @@ class MapFragment : Fragment() {
         db.cacheDao().getAllCaches().observe(viewLifecycleOwner) { caches ->
             latestCaches = caches
             render()
+        }
+
+        viewModel.mapFocusPoint.observe(viewLifecycleOwner) { point ->
+            if (point != null) {
+                binding.map.controller.setZoom(18.0)
+                binding.map.controller.animateTo(point)
+                viewModel.clearFocus()
+            }
         }
     }
 
@@ -198,7 +209,7 @@ class MapFragment : Fragment() {
             myLocationOverlay.runOnFirstFix {
                 activity?.runOnUiThread {
                     if (!hasCentered && _binding != null) {
-                        deviceLocation = myLocationOverlay.myLocation
+                        deviceLocation = myLocationOverlay.myLocation ?: LocationUtils.lastKnownLocation(requireContext())
                         render()
                     }
                 }
@@ -266,22 +277,6 @@ class MapFragment : Fragment() {
 
         val anchorV = if (hasIcon && label != null) (iconHeight / 2f) / height else 0.5f
         return BitmapDrawable(resources, bitmap) to anchorV
-    }
-
-    /** Best-known device location, or null if unavailable/permission not granted. */
-    private fun lastKnownLocation(): GeoPoint? {
-        val hasCoarse = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val hasFine = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!hasCoarse && !hasFine) return null
-
-        val locationManager = requireContext().getSystemService<LocationManager>() ?: return null
-        return listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
-            .filter { locationManager.isProviderEnabled(it) }
-            .mapNotNull {
-                try { locationManager.getLastKnownLocation(it) } catch (e: SecurityException) { null }
-            }
-            .maxByOrNull { it.time }
-            ?.let { GeoPoint(it.latitude, it.longitude) }
     }
 
     override fun onResume() {
