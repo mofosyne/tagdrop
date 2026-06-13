@@ -280,6 +280,29 @@ function cborMap(pairs) {
 // Nested map (inside an array value)
 function subMap(pairs) { return { __map: true, pairs }; }
 
+// ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
+// tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
+const ENVELOPE_VERSION = 1;
+const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
+
+function cborUInt(n) {
+  const out = [];
+  writeHead(out, 0, n);
+  return new Uint8Array(out);
+}
+
+function concatBytes(...arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+function cborSequence(type, payload) {
+  return concatBytes(cborUInt(ENVELOPE_VERSION), cborUInt(type), payload);
+}
+
 // ── SHA-256 ───────────────────────────────────────────────────────────────
 async function sha256first8(bytes) {
   const hash = await crypto.subtle.digest('SHA-256', bytes);
@@ -301,8 +324,8 @@ async function zlibCompress(bytes) {
 }
 
 // ── TagDrop encoding ──────────────────────────────────────────────────────
-// CBOR keys
-const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+// CBOR payload-map keys (key 1 "version" is retired — it lives in the envelope)
+const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
              FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27 };
 
@@ -310,8 +333,7 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
   const cacheId = await sha256first8(rawBytes);
-  const cbor = cborMap([
-    [K.VERSION,     1],
+  const payload = cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
     [K.FILENAME,    filename || null],
@@ -319,42 +341,37 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
   ]);
-  return { uri: 'tagdrop://v1/s/' + base45Encode(cbor), cacheId };
+  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
 
 async function encodePaperManifest({ label, set, slug, files, related }) {
   // files = [{slug, mimeType, fileId:Uint8Array}]
   // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null}]
-  // root_hash = SHA-256(cbor_without_root_hash)[0:8]
-  const cborNoHash = cborMap([
-    [K.VERSION,  1],
+  // root_hash = SHA-256(envelope+payload CBOR sequence without root_hash)[0:8]
+  const filesField = files.map(f => subMap([
+    [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
+  ]));
+  const relatedField = related.map(r => subMap([
+    [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
+    [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
+  ]));
+  const payloadNoHash = cborMap([
     [K.HINT,     label || null],
     [K.SET,      set || null],
     [K.SLUG,     slug || null],
-    [K.FILES,    files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
-    ]))],
-    [K.RELATED,  related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
-    ]))],
+    [K.FILES,    filesField],
+    [K.RELATED,  relatedField],
   ]);
-  const rootHash = await sha256first8(cborNoHash);
-  const cbor = cborMap([
-    [K.VERSION,  1],
+  const rootHash = await sha256first8(cborSequence(TYPE_PAPER_MANIFEST, payloadNoHash));
+  const payload = cborMap([
     [K.CACHE_ID, rootHash],
     [K.HINT,     label || null],
     [K.SET,      set || null],
     [K.SLUG,     slug || null],
-    [K.FILES,    files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
-    ]))],
-    [K.RELATED,  related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
-    ]))],
+    [K.FILES,    filesField],
+    [K.RELATED,  relatedField],
   ]);
-  return { uri: 'tagdrop://v1/p/' + base45Encode(cbor), rootHash };
+  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }

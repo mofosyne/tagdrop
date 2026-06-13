@@ -76,6 +76,29 @@ function cborMap(pairs) {
 
 function subMap(pairs) { return { __map: true, pairs }; }
 
+// ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
+// tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
+const ENVELOPE_VERSION = 1;
+const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
+
+function cborUInt(n) {
+  const out = [];
+  writeHead(out, 0, n);
+  return new Uint8Array(out);
+}
+
+function concatBytes(...arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+function cborSequence(type, payload) {
+  return concatBytes(cborUInt(ENVELOPE_VERSION), cborUInt(type), payload);
+}
+
 // ── SHA-256 ───────────────────────────────────────────────────────────────
 function sha256first8(bytes) {
   const hash = createHash('sha256').update(bytes).digest();
@@ -88,7 +111,8 @@ function zlibCompress(bytes) {
 }
 
 // ── TagDrop CBOR keys ─────────────────────────────────────────────────────
-const K = { VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+// key 1 ("version") is retired — it lives in the envelope, not the payload map
+const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
@@ -100,8 +124,7 @@ function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
   let content = rawBytes, compression = null;
   if (compress) { content = zlibCompress(rawBytes); compression = 1; }
   const cacheId = sha256first8(rawBytes);
-  const cbor = cborMap([
-    [K.VERSION,     1],
+  const payload = cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
     [K.FILENAME,    filename || null],
@@ -109,14 +132,15 @@ function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
   ]);
-  return { uri: 'tagdrop://v1/s/' + base45Encode(cbor), cacheId };
+  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
 
 /**
- * Split content too large for one QR into a Manifest (v1/m) plus a series of
- * Chunks (v1/c). cache_id is content-addressed from the *original* bytes, so
- * a Single and a Manifest+Chunks encoding of the same content share an ID.
- * sha256 covers the assembled bytes (post-compression, pre-decompression).
+ * Split content too large for one QR into a Manifest (type=1) plus a series
+ * of Chunks (type=2). cache_id is content-addressed from the *original*
+ * bytes, so a Single and a Manifest+Chunks encoding of the same content
+ * share an ID. sha256 covers the assembled bytes (post-compression,
+ * pre-decompression).
  */
 function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, chunkCount }) {
   const cacheId = sha256first8(rawBytes);
@@ -125,8 +149,7 @@ function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, chunkC
   const sha256Full = new Uint8Array(createHash('sha256').update(Buffer.from(assembled)).digest());
   const totalBytes = assembled.length;
 
-  const manifestCbor = cborMap([
-    [K.VERSION,     1],
+  const manifestPayload = cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
     [K.FILENAME,    filename || null],
@@ -136,19 +159,19 @@ function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, chunkC
     [K.TOTAL_BYTES, totalBytes],
     [K.SHA256,      sha256Full],
   ]);
-  const manifestUri = 'tagdrop://v1/m/' + base45Encode(manifestCbor);
+  const manifestUri = 'tagdrop:' + base45Encode(cborSequence(TYPE_MANIFEST, manifestPayload));
 
   const chunkSize = Math.ceil(totalBytes / chunkCount);
   const chunks = [];
   for (let i = 0; i < chunkCount; i++) {
     const start = i * chunkSize;
     const data  = assembled.slice(start, Math.min(start + chunkSize, totalBytes));
-    const chunkCbor = cborMap([
+    const chunkPayload = cborMap([
       [K.CACHE_ID,    cacheId],
       [K.CHUNK_INDEX, i],
       [K.CHUNK_DATA,  data],
     ]);
-    chunks.push({ index: i, size: data.length, uri: 'tagdrop://v1/c/' + base45Encode(chunkCbor) });
+    chunks.push({ index: i, size: data.length, uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_CHUNK, chunkPayload)) });
   }
 
   return { manifestUri, chunks, cacheId, totalBytes, sha256: sha256Full, chunkCount, compression };
@@ -162,8 +185,7 @@ function encodePaperManifest({ label, set, slug, files, related, collectionId, c
     [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
     [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
   ]));
-  const cborNoHash = cborMap([
-    [K.VERSION, 1],
+  const payloadNoHash = cborMap([
     [K.HINT,    label || null],
     [K.SET,     set   || null],
     [K.SLUG,    slug  || null],
@@ -174,9 +196,8 @@ function encodePaperManifest({ label, set, slug, files, related, collectionId, c
     [K.COLLECTION_TAG,   collectionTag   || null],
     [K.ICON,             icon            || null],
   ]);
-  const rootHash = sha256first8(cborNoHash);
-  const cbor = cborMap([
-    [K.VERSION,  1],
+  const rootHash = sha256first8(cborSequence(TYPE_PAPER_MANIFEST, payloadNoHash));
+  const payload = cborMap([
     [K.CACHE_ID, rootHash],
     [K.HINT,     label || null],
     [K.SET,      set   || null],
@@ -188,7 +209,7 @@ function encodePaperManifest({ label, set, slug, files, related, collectionId, c
     [K.COLLECTION_TAG,   collectionTag   || null],
     [K.ICON,             icon            || null],
   ]);
-  return { uri: 'tagdrop://v1/p/' + base45Encode(cbor), rootHash };
+  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
 }
 
 function toHex(u8) {
@@ -239,7 +260,7 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
 <body>
 <h1>Welcome to TagDrop</h1>
 <p>This HTML page was stored inside a QR code and rendered entirely offline.</p>
-<p>No internet, no server — just a <code>tagdrop://</code> URI decoded from the QR.</p>
+<p>No internet, no server — just a <code>tagdrop:</code> URI decoded from the QR.</p>
 <hr>
 <p><small>Payload type: <code>text/html</code> · Encoding: DEFLATE compressed</small></p>
 </body>
@@ -277,7 +298,7 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
 ];
 
 // Content too large for a single QR (~800 bytes recommended max) — split into
-// a Manifest (v1/m) plus several Chunks (v1/c) per SPEC.md §4.2-4.3.
+// a Manifest (type=1) plus several Chunks (type=2) per SPEC.md §4.2-4.3.
 const MULTI_CHUNK_EXAMPLE = {
   label: 'Sunset Trail story',
   hint: 'Sunset Trail — collect all 3 markers',

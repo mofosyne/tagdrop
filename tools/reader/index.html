@@ -169,7 +169,10 @@ function base45Decode(s) {
 }
 
 // ── CBOR decoder ──────────────────────────────────────────────────────────
-function cborDecode(bytes) {
+// Decodes a CBOR Sequence (RFC 8742): concatenated top-level data items with no
+// enclosing array/map, read until input is exhausted. Used for the version/type/
+// payload envelope (SPEC §2).
+function cborDecodeSequence(bytes) {
   let pos = 0;
   function rb() {
     if (pos >= bytes.length) throw new Error('Unexpected end of CBOR');
@@ -206,7 +209,9 @@ function cborDecode(bytes) {
       default: throw new Error('Unsupported CBOR major type: ' + major);
     }
   }
-  return readVal();
+  const items = [];
+  while (pos < bytes.length) items.push(readVal());
+  return items;
 }
 
 // ── Decompression ─────────────────────────────────────────────────────────
@@ -239,9 +244,9 @@ function escHtml(s) {
                   .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ── CBOR keys ─────────────────────────────────────────────────────────────
+// ── CBOR payload-map keys (key 1 "version" is retired — it lives in the envelope) ──
 const K = {
-  VERSION:1, CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+  CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
   CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_IDX:9, CHUNK_DATA:10,
   FILENAME:11, COMPRESSION:12,
   SET:13, SLUG:14, FILES:15, RELATED:16,
@@ -249,12 +254,17 @@ const K = {
   LAT:26, LNG:27
 };
 
+// CBOR-sequence envelope (SPEC §2): tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
+const ENVELOPE_VERSION = 1;
+const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
+
 // ── TagDrop URI parser ────────────────────────────────────────────────────
 async function parseUri(uri) {
-  if (!uri.startsWith('tagdrop://')) return null;
+  if (!uri.startsWith('tagdrop:')) return null;
 
-  // Navigation link: tagdrop://ROOTHASH_B45[/slug] — no 'v1/' component
-  if (!uri.startsWith('tagdrop://v1/')) {
+  // Navigation link: tagdrop://ROOTHASH_B45[/slug] — disambiguated from encoding
+  // URIs by the "//" (SPEC §2): a 2+ byte Base45 string can never start with "/".
+  if (uri.startsWith('tagdrop://')) {
     const rest = uri.slice('tagdrop://'.length);
     const slash = rest.indexOf('/');
     const rhB45 = slash < 0 ? rest : rest.slice(0, slash);
@@ -266,19 +276,19 @@ async function parseUri(uri) {
     }
   }
 
-  // Encoding URI: tagdrop://v1/<kind>/<base45-cbor>
-  const after = uri.slice('tagdrop://v1/'.length);
-  const slash = after.indexOf('/');
-  if (slash < 0) return null;
-  const kind = after.slice(0, slash);
-
-  let cbor;
-  try { cbor = base45Decode(after.slice(slash + 1)); }
+  // Encoding URI: tagdrop:<base45-cbor-sequence>
+  let seq;
+  try { seq = base45Decode(uri.slice('tagdrop:'.length)); }
   catch (e) { return { type: 'invalid' }; }
 
-  const m = cborDecode(cbor);
+  let items;
+  try { items = cborDecodeSequence(seq); }
+  catch (e) { return { type: 'invalid' }; }
+  if (items.length < 3) return { type: 'invalid' };
+  const [version, kind, m] = items;
+  if (version !== ENVELOPE_VERSION) return { type: 'invalid' };
 
-  if (kind === 's') {
+  if (kind === TYPE_SINGLE) {
     let content = m[K.CONTENT];
     if (m[K.COMPRESSION] === 1) content = await zlibDecompress(content);
     return {
@@ -290,7 +300,7 @@ async function parseUri(uri) {
       content,
     };
   }
-  if (kind === 'p') {
+  if (kind === TYPE_PAPER_MANIFEST) {
     return {
       type:     'paper',
       rootHash: toHex(m[K.CACHE_ID]),
@@ -313,7 +323,7 @@ async function parseUri(uri) {
       })),
     };
   }
-  if (kind === 'm') {
+  if (kind === TYPE_MANIFEST) {
     return {
       type:        'manifest',
       cacheId:     toHex(m[K.CACHE_ID]),
@@ -325,7 +335,7 @@ async function parseUri(uri) {
       sha256:      m[K.SHA256],
     };
   }
-  if (kind === 'c') {
+  if (kind === TYPE_CHUNK) {
     return {
       type:    'chunk',
       cacheId: toHex(m[K.CACHE_ID]),
