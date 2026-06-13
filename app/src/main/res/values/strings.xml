@@ -1,14 +1,106 @@
 <resources>
     <string name="app_name">tagdrop</string>
+    <string name="title_activity_read_me">Read Me</string>
+    <string name="title_scan">Scan Tag</string>
 
-    <string name="hello_world">Hello world!</string>
-    <string name="action_settings">Settings</string>
+    <!-- Bottom navigation tabs -->
+    <string name="tab_collections">Collections</string>
+    <string name="tab_history">History</string>
+    <string name="tab_map">Map</string>
 
-    <string name="title_activity_htmlview">htmlview</string>
-    <string name="dummy_button">Dummy Button</string>
-    <string name="dummy_content">DUMMY\nCONTENT</string>
-    <string name="title_activity_html_view">htmlView</string>
-    <string name="title_activity_read_me">ReadMe</string>
-    <string name="readMe">Read Me</string>
-    <string name="title_activity_main">main</string>
+    <!-- Main screen -->
+    <string name="empty_collection">No collections yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="empty_history">No scans yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="map_no_locations">No located scans yet.\nGrant location access and scan a TagDrop to see it here.</string>
+    <string name="scan_fab_desc">Scan QR code</string>
+    <string name="title_collection_detail">Collection</string>
+    <string name="collection_type_paper">Paper</string>
+    <string name="collection_type_adhoc">Collection</string>
+    <string name="collection_type_loose">Scan</string>
+    <string name="collection_cached_progress">Cached %1$d / %2$d</string>
+    <string name="collection_item_count">%1$d item(s)</string>
+    <string name="collection_adhoc_default_title">Collection #%1$s</string>
+    <string name="collection_untitled">Untitled</string>
+    <string name="action_view_raw_cbor">View raw CBOR</string>
+    <string name="cbor_debug_title">Raw CBOR — %1$s</string>
+    <string name="action_delete_paper">Delete paper</string>
+    <string name="delete_paper_confirm_title">Delete paper?</string>
+    <string name="delete_paper_confirm_message">Remove \"%1$s\" and its directory from this device? Cached pages are kept and can still be opened from History. This cannot be undone.</string>
+    <string name="action_export_collection">Export collection</string>
+    <string name="export_collection_message">Bundle %1$d cached item(s) in this collection into a single zip file.</string>
+
+    <!-- Receive screen -->
+    <string name="scan_prompt">Scan a TagDrop QR code. Press back to cancel.</string>
+    <string name="button_scan">Read Barcode</string>
+    <string name="button_launch">Launch Content (legacy)</string>
+    <string name="button_clear">Clear</string>
+    <string name="button_readme">About / Read Me</string>
+    <string name="status_ready">Ready to scan.\n\nTap \'Read Barcode\' to start.</string>
+    <string name="status_collecting">Collecting chunks: %1$d / %2$d\nHint: %3$s\n\nScan the next code.</string>
+    <string name="status_legacy">Legacy mode: %1$d fragment(s) accumulated.\n\nTap \'Launch Content\' when done.</string>
+    <string name="manifest_scanned">Manifest scanned (%1$d chunks expected). Scan chunks now.</string>
+    <string name="chunk_progress">Chunk %1$d of %2$d received.</string>
+    <string name="hash_mismatch">Assembly failed: integrity check failed. Try rescanning.</string>
+    <string name="legacy_fragment">Legacy fragment %1$d received. Scan more or tap Launch.</string>
+    <string name="unknown_fragment">Fragment %1$d added. Scan more or tap Launch.</string>
+
+    <!-- Collection detail ("map") screen -->
+    <string name="button_open">Open</string>
+    <string name="button_map">Map</string>
+    <string name="button_delete">Delete</string>
+    <string name="button_more">⋮</string>
+    <string name="button_more_desc">More actions</string>
+    <string name="status_cached">Cached</string>
+    <string name="status_not_cached">Not yet scanned</string>
+    <string name="delete_confirm_title">Delete item?</string>
+    <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
+    <string name="related_found">Already in your collection — tap Open</string>
+    <string name="related_not_found">Not yet found — look for it nearby</string>
+
+    <!-- Main screen -->
+    <string name="menu_create">Create Cache</string>
+    <string name="title_create">Create Cache</string>
+    <string name="menu_demo_collection">Add Demo Collection</string>
+    <string name="demo_collection_label">Demo Trail</string>
+    <string name="demo_collection_added">Demo collection added — check Collections, History, and Map.</string>
+
+    <!-- Create screen -->
+    <string name="hint_hint">Placement hint (optional)</string>
+    <string name="hint_filename">Filename, e.g. readme.html (optional)</string>
+    <string name="hint_icon">Icon emoji, e.g. 🌳 (optional)</string>
+    <string name="hint_content">Content (text or HTML)</string>
+    <string name="label_mime_type">MIME type</string>
+    <string name="label_compression">Compress with DEFLATE (saves space for HTML/text)</string>
+    <string name="button_generate">Generate QR Code</string>
+    <string name="button_share_uri">Share URI</string>
+    <string name="button_print">Print</string>
+    <string name="share_uri_title">Share TagDrop URI</string>
+    <string name="content_empty_error">Content cannot be empty.</string>
+    <string name="qr_cache_id">Content ID: %1$s</string>
+    <string name="qr_too_large">URI is %1$d chars — may not fit in one QR. Enable compression or reduce content size.</string>
+    <string name="qr_encode_error">QR encoding failed. Try reducing content size.</string>
+
+    <!-- Paper manifest -->
+    <string name="paper_manifest_label">Paper Manifest</string>
+    <string name="paper_scanned">Paper scanned: %1$d file(s) in directory.</string>
+    <string name="paper_set">Set: %1$s</string>
+    <string name="paper_files_header">Files (%1$d):</string>
+    <string name="paper_related_header">Related papers:</string>
+    <string name="paper_scan_hint">Tap \'Read Barcode\' to scan a file from this paper.</string>
+
+    <!-- Link resolution (ViewDataUriActivity) -->
+    <string name="content_not_stored">Content not saved locally.</string>
+    <string name="file_not_scanned">File \'%1$s\' not yet scanned. Find and scan its QR code.</string>
+    <string name="slug_not_found">No file named \'%1$s\' in this paper\'s directory.</string>
+    <string name="paper_not_scanned">Paper not found in collection. Scan the paper manifest QR first.</string>
+    <string name="link_invalid">Invalid tagdrop:// link.</string>
+    <string name="chunk_before_manifest">Chunk received — scan the manifest QR first.</string>
+
+    <!-- Content export (Open / Share / Save) -->
+    <string name="action_open_external">Open with…</string>
+    <string name="action_share">Share</string>
+    <string name="action_save">Save to device</string>
+    <string name="export_no_app_found">No app found to handle this content.</string>
+    <string name="export_saved">Saved to device.</string>
+    <string name="export_failed">Export failed.</string>
 </resources>

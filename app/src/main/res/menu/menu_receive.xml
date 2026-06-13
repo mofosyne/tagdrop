@@ -1,7 +1,9 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
-    tools:context="com.github.mofosyne.tagdrop.Receive">
-    <item android:id="@+id/action_readme" android:title="readme"
-        android:orderInCategory="100" app:showAsAction="never" />
+    tools:context="com.github.mofosyne.tagdrop.ReceiveActivity">
+    <item
+        android:id="@+id/action_inspect_cbor"
+        android:title="@string/action_view_raw_cbor"
+        app:showAsAction="never" />
 </menu>
