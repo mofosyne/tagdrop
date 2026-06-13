@@ -8,11 +8,9 @@
   Static HTML generator for TagDrop QR codes.
   No server required — open this file directly in a browser.
 
-  Requires internet for QR rendering (loads qrcode library from CDN).
-  For fully offline use: download browser.min.js and place it next to this file,
-  then change the <script src> below to point to the local copy.
+  Requires internet for QR rendering (dynamically imports the qrcode library
+  from a CDN as an ES module on first use).
 -->
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/lib/browser.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
   body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
@@ -314,7 +312,10 @@ async function sha256first8(bytes) {
 async function zlibCompress(bytes) {
   const cs = new CompressionStream('deflate');
   const w = cs.writable.getWriter();
-  await w.write(bytes); await w.close();
+  // Don't await write()/close() here — CompressionStream's writable side has
+  // backpressure (highWaterMark 1), so they won't resolve until the readable
+  // side below is read. Fire-and-forget, then drain the reader.
+  w.write(bytes); w.close();
   const chunks = [];
   const r = cs.readable.getReader();
   for (;;) { const { done, value } = await r.read(); if (done) break; chunks.push(value); }
@@ -378,7 +379,16 @@ async function encodePaperManifest({ label, set, slug, files, related }) {
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
 
 // ── QR rendering ──────────────────────────────────────────────────────────
-function renderQr(container, uri) {
+// Dynamically imported on first use (the npm "qrcode" package ships no
+// browser-ready UMD bundle, so we load jsDelivr's ES-module build instead).
+let qrcodeModulePromise;
+function loadQRCode() {
+  if (!qrcodeModulePromise) qrcodeModulePromise = import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm');
+  return qrcodeModulePromise;
+}
+
+async function renderQr(container, uri) {
+  const QRCode = await loadQRCode();
   return new Promise((resolve, reject) => {
     container.innerHTML = '';
     QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width: 220 }, (err, canvas) => {

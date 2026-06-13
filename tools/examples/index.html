@@ -11,10 +11,9 @@
   optional DEFLATE, see ../../SPEC.md) and rendered as a QR code on page load.
 
   Requires a modern browser (WebCrypto SubtleCrypto, CompressionStream) and an
-  internet connection on first load, to fetch the qrcode library from a CDN —
-  same requirements as the generator and reader.
+  internet connection on first load, to dynamically import the qrcode library
+  from a CDN — same requirements as the generator and reader.
 -->
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/lib/browser.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
   body   { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
@@ -235,7 +234,10 @@ async function sha256first8(bytes) {
 async function zlibCompress(bytes) {
   const cs = new CompressionStream('deflate');
   const w = cs.writable.getWriter();
-  await w.write(bytes); await w.close();
+  // Don't await write()/close() here — CompressionStream's writable side has
+  // backpressure (highWaterMark 1), so they won't resolve until the readable
+  // side below is read. Fire-and-forget, then drain the reader.
+  w.write(bytes); w.close();
   const chunks = [];
   const r = cs.readable.getReader();
   for (;;) { const { done, value } = await r.read(); if (done) break; chunks.push(value); }
@@ -661,7 +663,16 @@ each with its own icon.</p>
 ];
 
 // ── QR rendering ──────────────────────────────────────────────────────────
-function renderQr(container, uri) {
+// Dynamically imported on first use (the npm "qrcode" package ships no
+// browser-ready UMD bundle, so we load jsDelivr's ES-module build instead).
+let qrcodeModulePromise;
+function loadQRCode() {
+  if (!qrcodeModulePromise) qrcodeModulePromise = import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm');
+  return qrcodeModulePromise;
+}
+
+async function renderQr(container, uri) {
+  const QRCode = await loadQRCode();
   return new Promise((resolve, reject) => {
     QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width: 200 }, (err, canvas) => {
       if (err) { reject(err); return; }
