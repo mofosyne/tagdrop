@@ -7,7 +7,10 @@ QR scanner that follows `tagdrop:` links) can scan it and view the content
 immediately, with no internet connection, server, or account required.
 
 Think of it as a **digital geocache**: instead of a logbook in a box, the
-"cache" is the QR code itself.
+"cache" is the QR code itself. [Geocaching](https://www.geocaching.com/)
+(since 2000) was the original inspiration — hide a "cache," let people find
+and log it — TagDrop just swaps the physical container and logbook for a
+printed code and on-screen content.
 
 The name and offline, anonymous, leave-it-in-the-wild spirit are inspired by
 [Dead Drops](https://deaddrops.com/) (Aram Bartholl, 2010) — an ongoing
