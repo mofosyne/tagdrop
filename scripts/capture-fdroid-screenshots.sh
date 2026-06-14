@@ -52,9 +52,11 @@ screenshot() {
 
 # --- Main screen: seed demo content, then capture each bottom-nav tab ---
 adb shell am start -W -n "$APP_ID/.MainActivity" >/dev/null
-sleep 2
+sleep 3
 
-tap_text "More options"
+# KEYCODE_MENU opens the toolbar's options menu even when there's no visible
+# overflow icon — more reliable across devices than tapping "More options".
+adb shell input keyevent KEYCODE_MENU
 sleep 1
 tap_text "Add Demo Collection"
 sleep 2
