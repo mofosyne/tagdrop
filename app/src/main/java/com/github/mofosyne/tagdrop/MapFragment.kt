@@ -219,8 +219,12 @@ class MapFragment : Fragment() {
                 val south = focusPoints.minOf { it.latitude }
                 val east = focusPoints.maxOf { it.longitude }
                 val west = focusPoints.minOf { it.longitude }
+                // Pad the fit: the extreme points define the bounding box edges, so
+                // without padding their pins would be drawn right at — or clipped past —
+                // the viewport edge (e.g. under the bottom nav bar).
+                val paddingPx = (MAP_FIT_PADDING_DP * resources.displayMetrics.density).toInt()
                 binding.map.post {
-                    binding.map.zoomToBoundingBox(BoundingBox(north, east, south, west), true)
+                    binding.map.zoomToBoundingBox(BoundingBox(north, east, south, west), true, paddingPx)
                 }
             }
         }
@@ -338,5 +342,8 @@ class MapFragment : Fragment() {
         private const val NEARBY_RADIUS_METERS = 50_000.0
         // Show text labels once zoomed in to roughly street level.
         private const val LABEL_ZOOM_THRESHOLD = 15.0
+        // Margin kept between the fitted points and the viewport edge when framing
+        // multiple pins, so edge-most pins aren't drawn at/past the edge.
+        private const val MAP_FIT_PADDING_DP = 48
     }
 }
