@@ -2,6 +2,7 @@ package com.github.mofosyne.tagdrop
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -10,7 +11,9 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -54,13 +57,19 @@ class MapFragment : Fragment() {
     private val markerInfos = mutableListOf<MarkerInfo>()
     private var labelsShown = false
 
+    /** True once a location permission request has been made this fragment instance — used to tell
+     *  "never asked yet" apart from "permanently denied" when offering the recovery prompt. */
+    private var locationRequested = false
+
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            locationRequested = true
             if (results.any { it.value }) {
                 setupMyLocation()
                 deviceLocation = LocationUtils.lastKnownLocation(requireContext())
                 render()
             }
+            updateLocationPrompt()
         }
 
     override fun onCreateView(
@@ -103,8 +112,10 @@ class MapFragment : Fragment() {
             setupMyLocation()
             deviceLocation = LocationUtils.lastKnownLocation(requireContext())
         } else {
+            locationRequested = true
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
         }
+        updateLocationPrompt()
 
         val db = AppDatabase.get(requireContext())
         db.paperDao().getAll().observe(viewLifecycleOwner) { papers ->
@@ -229,6 +240,39 @@ class MapFragment : Fragment() {
             }
         }
         binding.map.invalidate()
+    }
+
+    /**
+     * Shows a recovery button at the top of the map when location access isn't granted,
+     * so the map isn't stuck centered on the ocean with no way to fix it. Re-requests the
+     * permission if it can still be asked for, otherwise sends the user to app Settings
+     * (where permanently-denied permissions must be re-enabled).
+     */
+    private fun updateLocationPrompt() {
+        if (_binding == null) return
+        val hasCoarse = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasFine = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (hasCoarse || hasFine) {
+            binding.buttonEnableLocation.visibility = View.GONE
+            return
+        }
+        val canRequest = !locationRequested ||
+            ActivityCompat.shouldShowRequestPermissionRationale(requireActivity(), Manifest.permission.ACCESS_COARSE_LOCATION)
+        binding.buttonEnableLocation.text = getString(if (canRequest) R.string.button_enable_location else R.string.button_open_settings)
+        binding.buttonEnableLocation.setOnClickListener {
+            if (canRequest) {
+                locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
+            } else {
+                openAppSettings()
+            }
+        }
+        binding.buttonEnableLocation.visibility = View.VISIBLE
+    }
+
+    private fun openAppSettings() {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", requireContext().packageName, null))
+        )
     }
 
     private fun setupMyLocation() {

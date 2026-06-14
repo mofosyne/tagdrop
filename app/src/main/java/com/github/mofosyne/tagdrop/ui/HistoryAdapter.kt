@@ -31,7 +31,9 @@ class HistoryAdapter(
             when (item) {
                 is HistoryItem.CacheScan -> {
                     val cache = item.cache
-                    binding.textType.text = ctx.getString(R.string.collection_type_loose)
+                    binding.textType.text = ctx.getString(
+                        if (cache.createdByMe) R.string.collection_type_loose_created else R.string.collection_type_loose
+                    )
                     binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = cache.mimeType
                     binding.textMeta.text = buildString {
@@ -47,7 +49,9 @@ class HistoryAdapter(
                 }
                 is HistoryItem.PaperScan -> {
                     val paper = item.paper
-                    binding.textType.text = ctx.getString(R.string.collection_type_paper)
+                    binding.textType.text = ctx.getString(
+                        if (paper.createdByMe) R.string.collection_type_paper_created else R.string.collection_type_paper
+                    )
                     binding.textTitle.text = paper.label ?: ctx.getString(R.string.paper_manifest_label)
                     binding.textSubtitle.text = buildString {
                         if (paper.set != null) append(ctx.getString(R.string.paper_set, paper.set))

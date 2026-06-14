@@ -31,7 +31,9 @@ class CollectionListAdapter(
             binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
             when (item) {
                 is CollectionItem.Paper -> {
-                    binding.textType.text = ctx.getString(R.string.collection_type_paper)
+                    binding.textType.text = ctx.getString(
+                        if (item.paper.createdByMe) R.string.collection_type_paper_created else R.string.collection_type_paper
+                    )
                     binding.textTitle.text = item.paper.label ?: ctx.getString(R.string.paper_manifest_label)
                     binding.textSubtitle.text = ctx.getString(
                         R.string.collection_cached_progress, item.cachedFiles, item.totalFiles
@@ -67,7 +69,9 @@ class CollectionListAdapter(
                     }
                 }
                 is CollectionItem.Loose -> {
-                    binding.textType.text = ctx.getString(R.string.collection_type_loose)
+                    binding.textType.text = ctx.getString(
+                        if (item.cache.createdByMe) R.string.collection_type_loose_created else R.string.collection_type_loose
+                    )
                     binding.textTitle.text = item.cache.hint
                         ?: item.cache.filename
                         ?: ctx.getString(R.string.collection_untitled)

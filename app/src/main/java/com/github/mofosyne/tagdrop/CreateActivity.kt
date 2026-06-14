@@ -9,10 +9,14 @@ import android.webkit.WebView
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import com.github.mofosyne.tagdrop.data.db.AppDatabase
+import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.databinding.ActivityCreateBinding
 import com.github.mofosyne.tagdrop.util.QrUtils
 import com.google.zxing.WriterException
+import kotlinx.coroutines.launch
 
 /**
  * Creates a TagDrop Single-code cache from typed or pasted content.
@@ -57,8 +61,9 @@ class CreateActivity : AppCompatActivity() {
         val mimeType = mimeTypes[binding.spinnerMime.selectedItemPosition]
         val compress = binding.checkCompress.isChecked
 
+        val rawContent = content.toByteArray(Charsets.UTF_8)
         val payload = TagDropCodec.createSingle(hint, filename, mimeType,
-                          content.toByteArray(Charsets.UTF_8), compress, icon = icon)
+                          rawContent, compress, icon = icon)
         val uri = TagDropCodec.encode(payload)
         lastUri = uri
         lastPayloadHint = hint ?: filename
@@ -71,8 +76,30 @@ class CreateActivity : AppCompatActivity() {
             binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
             binding.textUri.text = uri
             setResultsVisible(true)
+            saveToMyDrops(idHex, hint, filename, mimeType, rawContent, icon)
         } catch (e: WriterException) {
             toast(getString(R.string.qr_encode_error))
+        }
+    }
+
+    /** Persists the generated cache to the local DB (My Drops) so it can be revisited, re-shared, or re-printed later. */
+    private fun saveToMyDrops(
+        cacheId: String, hint: String?, filename: String?, mimeType: String, content: ByteArray, icon: String?
+    ) {
+        lifecycleScope.launch {
+            AppDatabase.get(this@CreateActivity).cacheDao().insert(
+                FoundCache(
+                    cacheId      = cacheId,
+                    discoveredAt = System.currentTimeMillis(),
+                    hint         = hint,
+                    filename     = filename,
+                    mimeType     = mimeType,
+                    contentBytes = content,
+                    icon         = icon,
+                    createdByMe  = true
+                )
+            )
+            toast(getString(R.string.cache_saved))
         }
     }
 

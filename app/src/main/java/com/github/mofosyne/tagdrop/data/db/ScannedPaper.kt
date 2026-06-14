@@ -16,7 +16,8 @@ data class ScannedPaper(
     val collectionTag: String? = null,   // hashtag-style cross-collection tag
     val lat: Double? = null,             // latitude where this was scanned, if available
     val lng: Double? = null,             // longitude where this was scanned, if available
-    val icon: String? = null             // optional emoji icon
+    val icon: String? = null,            // optional emoji icon
+    val createdByMe: Boolean = false     // true if authored in-app (Create Paper), not scanned
 ) {
     override fun equals(other: Any?) = other is ScannedPaper && rootHash == other.rootHash
     override fun hashCode() = rootHash.hashCode()

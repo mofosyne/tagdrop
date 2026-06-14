@@ -16,7 +16,8 @@ data class FoundCache(
     val collectionTag: String? = null,    // hashtag-style cross-collection tag
     val lat: Double? = null,              // latitude where this was scanned, if available
     val lng: Double? = null,              // longitude where this was scanned, if available
-    val icon: String? = null              // optional emoji icon
+    val icon: String? = null,             // optional emoji icon
+    val createdByMe: Boolean = false      // true if authored in-app (Create Cache/Paper), not scanned
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()

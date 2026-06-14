@@ -4,12 +4,15 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.getSystemService
@@ -82,7 +85,12 @@ class ReceiveActivity : AppCompatActivity() {
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) binding.barcodeScanner.resume()
+            if (granted) {
+                restoreScannerUi()
+                binding.barcodeScanner.resume()
+            } else {
+                showCameraPermissionDenied()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -96,7 +104,7 @@ class ReceiveActivity : AppCompatActivity() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            requestLocationPermission()
         }
 
         binding.buttonClear.setOnClickListener  { clearState() }
@@ -162,12 +170,64 @@ class ReceiveActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (hasCameraPermission()) binding.barcodeScanner.resume()
+        if (hasCameraPermission()) {
+            restoreScannerUi()
+            binding.barcodeScanner.resume()
+        } else {
+            showCameraPermissionDenied()
+        }
     }
 
     override fun onPause() {
         super.onPause()
         binding.barcodeScanner.pause()
+    }
+
+    /** Shown when camera access is denied: hides the (otherwise blank) preview and explains how to fix it. */
+    private fun showCameraPermissionDenied() {
+        binding.barcodeScanner.visibility = View.GONE
+        binding.recyclerScanBoard.visibility = View.GONE
+        binding.buttonLaunch.visibility = View.GONE
+        binding.buttonClear.visibility = View.GONE
+        binding.textStatus.text = getString(R.string.camera_permission_denied)
+        binding.textStatus.setOnClickListener { openAppSettings() }
+    }
+
+    /** Restores the normal scanning UI once camera access is granted. */
+    private fun restoreScannerUi() {
+        binding.barcodeScanner.visibility = View.VISIBLE
+        binding.buttonLaunch.visibility = View.VISIBLE
+        binding.buttonClear.visibility = View.VISIBLE
+        binding.textStatus.setOnClickListener(null)
+        updateDisplay()
+    }
+
+    private fun openAppSettings() {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+        )
+    }
+
+    /**
+     * Explains why TagDrop wants location access before showing the system permission
+     * dialog. The explanation is shown only once per install — after that, re-requests
+     * (e.g. on later scans) go straight to the system dialog as before.
+     */
+    private fun requestLocationPermission() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (prefs.getBoolean(PREF_LOCATION_RATIONALE_SHOWN, false)) {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            return
+        }
+        prefs.edit().putBoolean(PREF_LOCATION_RATIONALE_SHOWN, true).apply()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.location_permission_title)
+            .setMessage(R.string.location_permission_message)
+            .setPositiveButton(R.string.location_permission_allow) { _, _ ->
+                locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            .setNegativeButton(R.string.location_permission_not_now, null)
+            .show()
     }
 
     private fun processScanned(scanned: String) {
@@ -217,10 +277,16 @@ class ReceiveActivity : AppCompatActivity() {
                 updateDisplay()
                 toast(getString(R.string.legacy_fragment, legacyChunks.size))
             }
-            null -> {
-                legacyChunks.add(scanned)
-                updateDisplay()
-                toast(getString(R.string.unknown_fragment, legacyChunks.size))
+            null -> when {
+                // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
+                scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
+                // tagdrop:... that failed to decode: unsupported version or corrupted data — not a legacy fragment.
+                scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
+                else -> {
+                    legacyChunks.add(scanned)
+                    updateDisplay()
+                    toast(getString(R.string.unknown_fragment, legacyChunks.size))
+                }
             }
         }
     }
@@ -265,7 +331,9 @@ class ReceiveActivity : AppCompatActivity() {
         val location = getLastKnownLocation()
         val paper = lastPaper
         lifecycleScope.launch {
-            AppDatabase.get(this@ReceiveActivity).cacheDao().insert(
+            val cacheDao = AppDatabase.get(this@ReceiveActivity).cacheDao()
+            val alreadyFound = cacheDao.getById(cacheId) != null
+            cacheDao.insert(
                 FoundCache(
                     cacheId         = cacheId,
                     discoveredAt    = System.currentTimeMillis(),
@@ -286,6 +354,7 @@ class ReceiveActivity : AppCompatActivity() {
                 val slug = paper.files.find { it.fileId.toHex() == cacheId }?.slug
                 toast(getString(R.string.file_cached, slug ?: hint ?: filename ?: cacheId.take(8)))
             } else {
+                if (alreadyFound) toast(getString(R.string.already_found))
                 openContent(mimeType, content, cacheId)
                 clearState()
             }
@@ -378,5 +447,8 @@ class ReceiveActivity : AppCompatActivity() {
 
         /** Minimum time before the same code can be reprocessed, to avoid re-decoding it every frame. */
         private const val SCAN_COOLDOWN_MS = 1500L
+
+        private const val PREFS_NAME = "tagdrop_prefs"
+        private const val PREF_LOCATION_RATIONALE_SHOWN = "location_rationale_shown"
     }
 }
