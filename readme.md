@@ -35,6 +35,39 @@ Think of it as a **digital geocache**: instead of a logbook in a box, the
   Collections, History, and Map tabs let you revisit, locate, and manage
   everything you've found.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" alt="Collections tab showing a 'Demo Trail' collection card" width="200"><br>
+      <sub>Collections</sub>
+    </td>
+    <td align="center">
+      <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" alt="Collection detail screen listing three scanned trail stops" width="200"><br>
+      <sub>Collection detail</sub>
+    </td>
+    <td align="center">
+      <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" alt="Map tab showing scanned locations on OpenStreetMap" width="200"><br>
+      <sub>Map</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/7.png" alt="QR scanner viewfinder with a live scan line" width="200"><br>
+      <sub>Scan</sub>
+    </td>
+    <td align="center">
+      <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/5.png" alt="Create Cache screen for a single QR drop" width="200"><br>
+      <sub>Create Cache</sub>
+    </td>
+    <td align="center">
+      <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/6.png" alt="Create Paper screen for building a multi-file paper layout" width="200"><br>
+      <sub>Create Paper</sub>
+    </td>
+  </tr>
+</table>
+
 ## How it works
 
 Every code carries a `tagdrop:<base45-cbor-sequence>` URI — a
