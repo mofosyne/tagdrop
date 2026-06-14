@@ -60,6 +60,16 @@ object TagDropCodec {
     const val COMPRESSION_NONE    = 0
     const val COMPRESSION_DEFLATE = 1
 
+    /** Encoded URI length that reliably fits in one QR code (CreateActivity/CreatePaperActivity warn past this). */
+    const val MAX_URI_LENGTH = 2000
+
+    /**
+     * Max payload bytes (post-compression) per Chunk so its encoded `tagdrop:` URI stays
+     * under [MAX_URI_LENGTH]: ~20 bytes of CBOR/envelope overhead per chunk, and Base45
+     * expands 2 bytes to 3 chars.
+     */
+    private const val MAX_CHUNK_DATA_BYTES = 1300
+
     private const val SCHEME         = "tagdrop:"
     private const val NAV_LINK_PREFIX = "tagdrop://"
 
@@ -136,6 +146,58 @@ object TagDropCodec {
             collectionTag   = collectionTag,
             icon            = icon
         )
+    }
+
+    /** Number of Chunks needed to keep each chunk's encoded URI under [MAX_URI_LENGTH]. */
+    fun chunkCountForBytes(totalBytes: Int): Int =
+        maxOf(1, (totalBytes + MAX_CHUNK_DATA_BYTES - 1) / MAX_CHUNK_DATA_BYTES)
+
+    /**
+     * Build a Manifest + [chunkCount] Chunks for content too large for a single QR —
+     * mirrors the web generator's encodeMultiChunk (tools/examples/index.html). cache_id
+     * is content-addressed from [rawContent], so a Single and a Manifest+Chunks encoding
+     * of the same content share an ID. The manifest's sha256 covers the assembled
+     * (possibly compressed) bytes; chunks split those bytes into equal-sized pieces
+     * (the last one may be shorter).
+     */
+    fun createManifestAndChunks(
+        hint: String?, filename: String?, mimeType: String,
+        rawContent: ByteArray, compress: Boolean = false, chunkCount: Int,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null
+    ): Pair<TagDropPayload.Manifest, List<TagDropPayload.Chunk>> {
+        require(chunkCount >= 1) { "chunkCount must be >= 1" }
+        val cacheId = contentId(rawContent)
+        val (assembled, compression) = if (compress) {
+            compress(rawContent) to COMPRESSION_DEFLATE
+        } else {
+            rawContent to COMPRESSION_NONE
+        }
+        val totalBytes = assembled.size
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(assembled)
+
+        val manifest = TagDropPayload.Manifest(
+            cacheId         = cacheId,
+            hint            = hint,
+            filename        = filename,
+            mimeType        = mimeType,
+            compression     = compression,
+            chunkCount      = chunkCount,
+            totalBytes      = totalBytes,
+            sha256          = sha256,
+            collectionId    = collectionId,
+            collectionLabel = collectionLabel,
+            collectionTag   = collectionTag,
+            icon            = icon
+        )
+
+        val chunkSize = (totalBytes + chunkCount - 1) / chunkCount
+        val chunks = (0 until chunkCount).map { i ->
+            val start = minOf(i * chunkSize, totalBytes)
+            val end = minOf(start + chunkSize, totalBytes)
+            TagDropPayload.Chunk(cacheId = cacheId, index = i, data = assembled.copyOfRange(start, end))
+        }
+        return manifest to chunks
     }
 
     // ── Encoding ──────────────────────────────────────────────────────────────

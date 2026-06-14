@@ -124,4 +124,11 @@
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>
+
+    <!-- Share via QR screen -->
+    <string name="action_share_qr">Share via QR</string>
+    <string name="title_share_qr">Share via QR</string>
+    <string name="share_qr_progress">%1$d / %2$d</string>
+    <string name="button_pause">Pause</string>
+    <string name="button_resume">Resume</string>
 </resources>

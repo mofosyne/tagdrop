@@ -72,7 +72,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             onMap = { lat, lng -> jumpToMap(lat, lng) },
             onInspectCbor = { cache -> inspectCacheCbor(cache) },
             onShare = { cache -> shareCache(cache) },
-            onSave = { cache -> saveCache(cache) }
+            onSave = { cache -> saveCache(cache) },
+            onShareQr = { cache -> shareCacheViaQr(cache) }
         )
         binding.recyclerPages.layoutManager = LinearLayoutManager(this)
         binding.recyclerPages.adapter = adapter
@@ -210,6 +211,10 @@ class CollectionDetailActivity : AppCompatActivity() {
     private fun shareCache(cache: FoundCache) {
         val intent = ContentExporter.shareIntent(this, cache) ?: return
         startActivity(Intent.createChooser(intent, getString(R.string.share_uri_title)))
+    }
+
+    private fun shareCacheViaQr(cache: FoundCache) {
+        startActivity(Intent(this, ShareQrActivity::class.java).putExtra(ShareQrActivity.EXTRA_CACHE_ID, cache.cacheId))
     }
 
     /** Lets the user pick a destination and saves a copy of the cached content there. */

@@ -22,18 +22,20 @@ class CollectionDetailAdapter(
     private val onMap: (Double, Double) -> Unit,
     private val onInspectCbor: (FoundCache) -> Unit,
     private val onShare: (FoundCache) -> Unit,
-    private val onSave: (FoundCache) -> Unit
+    private val onSave: (FoundCache) -> Unit,
+    private val onShareQr: (FoundCache) -> Unit
 ) : ListAdapter<PageItem, RecyclerView.ViewHolder>(Diff) {
 
     inner class PageViewHolder(private val binding: ItemPageBinding) :
         RecyclerView.ViewHolder(binding.root) {
 
-        /** Shows the "⋮" overflow menu for a cached item (Map/Share/Save/CBOR, plus Delete when allowed). */
+        /** Shows the "⋮" overflow menu for a cached item (Map/Share/Share via QR/Save/CBOR, plus Delete when allowed). */
         private fun showOverflowMenu(cache: FoundCache, canDelete: Boolean) {
             val popup = PopupMenu(binding.root.context, binding.buttonMore)
             popup.menuInflater.inflate(R.menu.menu_page_item, popup.menu)
             popup.menu.findItem(R.id.action_map).isVisible = cache.lat != null && cache.lng != null
             popup.menu.findItem(R.id.action_share).isVisible = cache.contentBytes != null
+            popup.menu.findItem(R.id.action_share_qr).isVisible = cache.contentBytes != null
             popup.menu.findItem(R.id.action_save).isVisible = cache.contentBytes != null
             popup.menu.findItem(R.id.action_delete).isVisible = canDelete
             popup.setOnMenuItemClickListener { menuItem ->
@@ -45,6 +47,7 @@ class CollectionDetailAdapter(
                         true
                     }
                     R.id.action_share -> { onShare(cache); true }
+                    R.id.action_share_qr -> { onShareQr(cache); true }
                     R.id.action_save -> { onSave(cache); true }
                     R.id.action_cbor -> { onInspectCbor(cache); true }
                     R.id.action_delete -> { onDelete(cache); true }

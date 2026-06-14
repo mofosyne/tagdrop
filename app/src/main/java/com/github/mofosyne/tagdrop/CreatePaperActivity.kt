@@ -86,7 +86,7 @@ class CreatePaperActivity : AppCompatActivity() {
             files.add(TagDropPayload.FileEntry(fileSlug, mimeType, payload.cacheId))
             fileEntries.add(QrEntry(fileSlug, mimeType, hex(payload.cacheId), uri))
 
-            if (uri.length > 2000) toast(getString(R.string.qr_too_large, uri.length))
+            if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
         }
 
         val manifest = TagDropCodec.createPaperManifest(label, set, slug, files)

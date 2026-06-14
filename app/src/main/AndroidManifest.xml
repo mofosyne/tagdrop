@@ -81,6 +81,13 @@
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 
+        <!-- Cycling QR display for sharing a cached item to another device's scanner -->
+        <activity
+            android:name=".ShareQrActivity"
+            android:label="@string/title_share_qr"
+            android:exported="false"
+            android:parentActivityName=".CollectionDetailActivity" />
+
         <!-- In-app README viewer -->
         <activity
             android:name=".ReadMeActivity"
