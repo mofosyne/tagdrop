@@ -16,6 +16,9 @@ class ChunkAssembler {
     private var manifest: TagDropPayload.Manifest? = null
     private val chunks = mutableMapOf<Int, ByteArray>()
 
+    /** Set once a `key_material` (SPEC §9) successfully decrypts the assembled bytes. */
+    private var resolvedContent: ByteArray? = null
+
     sealed class State {
         /** No manifest scanned yet. */
         object WaitingForManifest : State()
@@ -29,7 +32,7 @@ class ChunkAssembler {
             val hint: String?,
             val filename: String?,
             val mimeType: String,
-            val content: ByteArray,  // already decompressed
+            val content: ByteArray,  // already decrypted (if needed) and decompressed
             val collectionId: ByteArray?,
             val collectionLabel: String?,
             val collectionTag: String?,
@@ -38,12 +41,21 @@ class ChunkAssembler {
 
         /** All chunks received but assembly failed integrity check. */
         object HashMismatch : State()
+
+        /**
+         * All chunks received and SHA-256 verified, but the assembled bytes are
+         * encrypted (SPEC §9) and no `key_material` tried so far has decrypted them.
+         * Call [ChunkAssembler.tryKey] when a candidate key becomes available —
+         * scan order between key and content doesn't matter.
+         */
+        data class AwaitingKey(val cacheId: ByteArray, val hint: String?, val nonce: ByteArray) : State()
     }
 
     fun add(payload: TagDropPayload): State = when (payload) {
         is TagDropPayload.Manifest -> {
             manifest = payload
             chunks.clear()
+            resolvedContent = null
             computeState()
         }
         is TagDropPayload.Chunk -> {
@@ -58,6 +70,32 @@ class ChunkAssembler {
 
     fun currentState(): State = computeState()
 
+    /**
+     * Tries [keyMaterial] against the assembled (verified) ciphertext, per SPEC §9's
+     * "discovery, not declaration" matching. If it authenticates, the content is
+     * decrypted and cached, resolving an [State.AwaitingKey]. Returns the resulting
+     * state either way — a non-matching key leaves [State.AwaitingKey] unchanged.
+     */
+    fun tryKey(keyMaterial: ByteArray): State {
+        val m = manifest
+        if (m == null || m.encryption != TagDropCodec.ENCRYPTION_AES256GCM || resolvedContent != null) {
+            return currentState()
+        }
+        val nonce = m.nonce ?: return currentState()
+        val assembled = assembledAndVerified() ?: return currentState()
+        TagDropCodec.decryptAesGcm(assembled, keyMaterial, nonce)?.let { resolvedContent = it }
+        return computeState()
+    }
+
+    /** Joins all chunks in order and checks `sha256`, or returns null if incomplete or hash-mismatched. */
+    private fun assembledAndVerified(): ByteArray? {
+        val m = manifest ?: return null
+        if (chunks.size < m.chunkCount) return null
+        val assembled = (0 until m.chunkCount).map { idx -> chunks[idx] ?: return null }.reduce(ByteArray::plus)
+        if (!MessageDigest.getInstance("SHA-256").digest(assembled).contentEquals(m.sha256)) return null
+        return assembled
+    }
+
     private fun computeState(): State {
         val m = manifest ?: return State.WaitingForManifest
 
@@ -70,18 +108,25 @@ class ChunkAssembler {
             chunks[idx] ?: return State.Collecting(chunks.size, m.chunkCount, m.cacheId, m.hint)
         }.reduce(ByteArray::plus)
 
-        // Integrity check
+        // Integrity check — covers the fully-transmitted bytes, i.e. after compression AND encryption (SPEC §9)
         if (!MessageDigest.getInstance("SHA-256").digest(assembled).contentEquals(m.sha256)) {
             return State.HashMismatch
         }
 
-        val content = TagDropCodec.decompressPayload(assembled, m.compression)
+        val plain = if (m.encryption == TagDropCodec.ENCRYPTION_AES256GCM) {
+            resolvedContent ?: return State.AwaitingKey(m.cacheId, m.hint, m.nonce ?: return State.HashMismatch)
+        } else {
+            assembled
+        }
+
+        val content = TagDropCodec.decompressPayload(plain, m.compression)
         return State.Complete(m.cacheId, m.hint, m.filename, m.mimeType, content, m.collectionId, m.collectionLabel, m.collectionTag, m.icon)
     }
 
     fun reset() {
         manifest = null
         chunks.clear()
+        resolvedContent = null
     }
 
     val hasManifest get() = manifest != null
