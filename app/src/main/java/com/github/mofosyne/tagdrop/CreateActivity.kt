@@ -63,7 +63,7 @@ class CreateActivity : AppCompatActivity() {
         lastUri = uri
         lastPayloadHint = hint ?: filename
 
-        if (uri.length > 2000) toast(getString(R.string.qr_too_large, uri.length))
+        if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
 
         try {
             binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))

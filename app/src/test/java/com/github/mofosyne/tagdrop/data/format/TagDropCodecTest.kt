@@ -2,6 +2,7 @@ package com.github.mofosyne.tagdrop.data.format
 
 import org.junit.Assert.*
 import org.junit.Test
+import java.security.MessageDigest
 
 class TagDropCodecTest {
 
@@ -492,6 +493,105 @@ class TagDropCodecTest {
     @Test fun createSingleWithIcon() {
         val payload = TagDropCodec.createSingle(null, null, "text/plain", "hi".toByteArray(), icon = "🌳")
         assertEquals("🌳", payload.icon)
+    }
+
+    // ── createManifestAndChunks factory ──────────────────────────────────────
+
+    @Test fun createManifestAndChunksSharesCacheIdWithSingle() {
+        val content = "Hello, TagDrop!".repeat(200).toByteArray()
+        val single = TagDropCodec.createSingle(null, null, "text/plain", content)
+        val (manifest, _) = TagDropCodec.createManifestAndChunks(
+            null, null, "text/plain", content, chunkCount = 3
+        )
+        assertArrayEquals(single.cacheId, manifest.cacheId)
+    }
+
+    @Test fun createManifestAndChunksSplitsIntoRequestedCount() {
+        val content = ByteArray(3000) { it.toByte() }
+        val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
+            "trail start", "story.html", "text/html", content, chunkCount = 3
+        )
+        assertEquals(3, manifest.chunkCount)
+        assertEquals(content.size, manifest.totalBytes)
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(content), manifest.sha256)
+        assertEquals(3, chunks.size)
+        chunks.forEachIndexed { i, chunk ->
+            assertEquals(i, chunk.index)
+            assertArrayEquals(manifest.cacheId, chunk.cacheId)
+        }
+        // Reassembling the chunks in order reproduces the original content.
+        val assembled = chunks.sortedBy { it.index }.fold(ByteArray(0)) { acc, c -> acc + c.data }
+        assertArrayEquals(content, assembled)
+    }
+
+    @Test fun createManifestAndChunksRoundTripViaChunkAssembler() {
+        val content = "The quick brown fox jumps over the lazy dog. ".repeat(100).toByteArray()
+        val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
+            "hint", "fox.txt", "text/plain", content, compress = true,
+            chunkCount = TagDropCodec.chunkCountForBytes(TagDropCodec.compress(content).size)
+        )
+        assertEquals(TagDropCodec.COMPRESSION_DEFLATE, manifest.compression)
+
+        // Round-trip every piece through encode/decode, like a real scan would.
+        val decodedManifest = TagDropCodec.decode(TagDropCodec.encode(manifest)) as TagDropPayload.Manifest
+        val decodedChunks = chunks.map { TagDropCodec.decode(TagDropCodec.encode(it)) as TagDropPayload.Chunk }
+
+        val assembler = ChunkAssembler()
+        assembler.add(decodedManifest)
+        decodedChunks.shuffled(java.util.Random(42)).forEach { assembler.add(it) }
+
+        val state = assembler.currentState()
+        assertTrue(state is ChunkAssembler.State.Complete)
+        assertArrayEquals(content, (state as ChunkAssembler.State.Complete).content)
+        assertEquals("hint", state.hint)
+        assertEquals("fox.txt", state.filename)
+    }
+
+    @Test fun createManifestAndChunksWithCollectionAndIcon() {
+        val collectionId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val content = ByteArray(100) { it.toByte() }
+        val (manifest, _) = TagDropCodec.createManifestAndChunks(
+            "hint", "f.bin", "application/octet-stream", content, chunkCount = 2,
+            collectionId = collectionId, collectionLabel = "Trail", collectionTag = "trail2026", icon = "🌲"
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(manifest)) as TagDropPayload.Manifest
+        assertArrayEquals(collectionId, decoded.collectionId)
+        assertEquals("Trail", decoded.collectionLabel)
+        assertEquals("trail2026", decoded.collectionTag)
+        assertEquals("🌲", decoded.icon)
+    }
+
+    @Test fun createManifestAndChunksSingleChunkRoundTrip() {
+        val content = "short".toByteArray()
+        val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
+            null, null, "text/plain", content, chunkCount = 1
+        )
+        assertEquals(1, chunks.size)
+        assertArrayEquals(content, chunks[0].data)
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(content), manifest.sha256)
+    }
+
+    // ── chunkCountForBytes ────────────────────────────────────────────────────
+
+    @Test fun chunkCountForBytesIsAtLeastOne() {
+        assertEquals(1, TagDropCodec.chunkCountForBytes(0))
+        assertEquals(1, TagDropCodec.chunkCountForBytes(1))
+    }
+
+    @Test fun chunkCountForBytesKeepsEachChunkUriUnderLimit() {
+        for (totalBytes in listOf(1, 100, 1300, 1301, 2600, 10_000, 100_000)) {
+            val chunkCount = TagDropCodec.chunkCountForBytes(totalBytes)
+            val (_, chunks) = TagDropCodec.createManifestAndChunks(
+                null, null, "application/octet-stream", ByteArray(totalBytes), chunkCount = chunkCount
+            )
+            for (chunk in chunks) {
+                val uriLength = TagDropCodec.encode(chunk).length
+                assertTrue(
+                    "chunk of ${chunk.data.size} bytes (total $totalBytes, $chunkCount chunks) encoded to $uriLength chars",
+                    uriLength <= TagDropCodec.MAX_URI_LENGTH
+                )
+            }
+        }
     }
 
     // ── createPaperManifest factory ──────────────────────────────────────────

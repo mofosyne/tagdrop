@@ -16,6 +16,11 @@ it directly in a browser: it encodes each example and renders the resulting
   the chunks (any order) to test reassembly and SHA-256 verification.
 - **Paper set** — a manifest QR plus three file QRs (`readme`, `note`,
   `badge`) demonstrating a multi-file paper drop. Scan the manifest first.
+- **Mini e-book** — "The Lighthouse Keeper's Almanac": a manifest plus a
+  `style.css`, a Markdown cover/table-of-contents (`index.md`), and three
+  Markdown chapters that link to each other and the cover via ordinary
+  relative links, all sharing the stylesheet (SPEC.md §7). Scan the manifest
+  and every file, then open `index.md` and tap through the chapters.
 - **Multi-location trail** — three independent paper manifests ("Park Gate",
   "Duck Pond", "Lookout Tower"), each with its own icon and `related` hints to
   its neighbours, sharing one `collection_id`/label/tag. Scan each stop at a
@@ -25,9 +30,9 @@ it directly in a browser: it encodes each example and renders the resulting
 ## Editing the examples
 
 The example payloads are defined as plain JS objects (`STANDALONE_EXAMPLES`,
-`MULTI_CHUNK_EXAMPLE`, `PAPER_EXAMPLE`, `TRAIL_COLLECTION`, `TRAIL_EXAMPLES`)
-near the top of the `<script>` block in `index.html`. Edit them directly —
-there's no build step; just reload the page.
+`MULTI_CHUNK_EXAMPLE`, `PAPER_EXAMPLE`, `BOOK_EXAMPLE`, `TRAIL_COLLECTION`,
+`TRAIL_EXAMPLES`) near the top of the `<script>` block in `index.html`. Edit
+them directly — there's no build step; just reload the page.
 
 ## How it works
 
