@@ -47,7 +47,10 @@ tap_text() {
 
 screenshot() {
   echo "Capturing $1.png..."
-  adb exec-out screencap -p > "$OUT_DIR/$1.png"
+  # Write to device storage and pull, rather than `adb exec-out ... > file`,
+  # which can corrupt binary output (e.g. CRLF translation on Windows/Git Bash).
+  adb shell screencap -p /data/local/tmp/screenshot.png
+  adb pull /data/local/tmp/screenshot.png "$OUT_DIR/$1.png" >/dev/null
 }
 
 # --- Main screen: seed demo content, then capture each bottom-nav tab ---
