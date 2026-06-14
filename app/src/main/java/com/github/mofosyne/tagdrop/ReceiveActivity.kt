@@ -12,6 +12,7 @@ import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.getSystemService
@@ -103,7 +104,7 @@ class ReceiveActivity : AppCompatActivity() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            requestLocationPermission()
         }
 
         binding.buttonClear.setOnClickListener  { clearState() }
@@ -207,6 +208,28 @@ class ReceiveActivity : AppCompatActivity() {
         )
     }
 
+    /**
+     * Explains why TagDrop wants location access before showing the system permission
+     * dialog. The explanation is shown only once per install — after that, re-requests
+     * (e.g. on later scans) go straight to the system dialog as before.
+     */
+    private fun requestLocationPermission() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (prefs.getBoolean(PREF_LOCATION_RATIONALE_SHOWN, false)) {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            return
+        }
+        prefs.edit().putBoolean(PREF_LOCATION_RATIONALE_SHOWN, true).apply()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.location_permission_title)
+            .setMessage(R.string.location_permission_message)
+            .setPositiveButton(R.string.location_permission_allow) { _, _ ->
+                locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            .setNegativeButton(R.string.location_permission_not_now, null)
+            .show()
+    }
+
     private fun processScanned(scanned: String) {
         val decoded = TagDropCodec.decode(scanned)
         lastScannedPayload = decoded
@@ -308,7 +331,9 @@ class ReceiveActivity : AppCompatActivity() {
         val location = getLastKnownLocation()
         val paper = lastPaper
         lifecycleScope.launch {
-            AppDatabase.get(this@ReceiveActivity).cacheDao().insert(
+            val cacheDao = AppDatabase.get(this@ReceiveActivity).cacheDao()
+            val alreadyFound = cacheDao.getById(cacheId) != null
+            cacheDao.insert(
                 FoundCache(
                     cacheId         = cacheId,
                     discoveredAt    = System.currentTimeMillis(),
@@ -329,6 +354,7 @@ class ReceiveActivity : AppCompatActivity() {
                 val slug = paper.files.find { it.fileId.toHex() == cacheId }?.slug
                 toast(getString(R.string.file_cached, slug ?: hint ?: filename ?: cacheId.take(8)))
             } else {
+                if (alreadyFound) toast(getString(R.string.already_found))
                 openContent(mimeType, content, cacheId)
                 clearState()
             }
@@ -421,5 +447,8 @@ class ReceiveActivity : AppCompatActivity() {
 
         /** Minimum time before the same code can be reprocessed, to avoid re-decoding it every frame. */
         private const val SCAN_COOLDOWN_MS = 1500L
+
+        private const val PREFS_NAME = "tagdrop_prefs"
+        private const val PREF_LOCATION_RATIONALE_SHOWN = "location_rationale_shown"
     }
 }

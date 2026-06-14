@@ -21,4 +21,12 @@
         android:textSize="16sp"
         android:visibility="gone" />
 
+    <Button
+        android:id="@+id/buttonEnableLocation"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_margin="12dp"
+        android:visibility="gone" />
+
 </FrameLayout>

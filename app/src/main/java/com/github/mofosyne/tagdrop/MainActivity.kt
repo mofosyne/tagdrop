@@ -4,6 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
+import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.viewModels
@@ -57,6 +59,22 @@ class MainActivity : AppCompatActivity() {
         binding.fabScan.setOnClickListener {
             startActivity(Intent(this, ReceiveActivity::class.java))
         }
+
+        binding.fabCreate.setOnClickListener { showCreateMenu(it) }
+    }
+
+    /** Lets the user jump straight to Create Cache / Create Paper from the main screen. */
+    private fun showCreateMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menuInflater.inflate(R.menu.menu_create_fab, popup.menu)
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                R.id.action_create -> { startActivity(Intent(this, CreateActivity::class.java)); true }
+                R.id.action_create_paper -> { startActivity(Intent(this, CreatePaperActivity::class.java)); true }
+                else -> false
+            }
+        }
+        popup.show()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -81,8 +99,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
-            R.id.action_create -> { startActivity(Intent(this, CreateActivity::class.java)); true }
-            R.id.action_create_paper -> { startActivity(Intent(this, CreatePaperActivity::class.java)); true }
             R.id.action_demo_collection -> { addDemoCollection(); true }
             R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)

@@ -52,18 +52,77 @@ class CreatePaperActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.title_create_paper)
 
-        addFileEntry()
-
         binding.buttonAddFile.setOnClickListener { addFileEntry() }
         binding.buttonGeneratePaper.setOnClickListener { generatePaper() }
         binding.buttonPrintPaper.setOnClickListener { printPaper() }
+
+        if (savedInstanceState != null) restoreState(savedInstanceState) else addFileEntry()
     }
 
-    private fun addFileEntry() {
+    /**
+     * Rebuilds the form (dynamically-added file entries included) from a previous
+     * [onSaveInstanceState], so rotating the device doesn't discard everything the
+     * user typed. If a layout had already been generated, regenerates it too.
+     */
+    private fun restoreState(state: Bundle) {
+        binding.editPaperLabel.setText(state.getString(KEY_LABEL))
+        binding.editPaperSet.setText(state.getString(KEY_SET))
+        binding.editPaperSlug.setText(state.getString(KEY_SLUG))
+
+        val slugs = state.getStringArrayList(KEY_FILE_SLUGS) ?: arrayListOf("")
+        val mimeIndices = state.getIntegerArrayList(KEY_FILE_MIME_INDICES) ?: arrayListOf(0)
+        val compressFlags = state.getBooleanArray(KEY_FILE_COMPRESS) ?: booleanArrayOf(false)
+        val contents = state.getStringArrayList(KEY_FILE_CONTENTS) ?: arrayListOf("")
+
+        for (i in slugs.indices) {
+            addFileEntry(
+                slug = slugs[i],
+                mimeIndex = mimeIndices.getOrElse(i) { 0 },
+                compress = compressFlags.getOrElse(i) { false },
+                content = contents.getOrElse(i) { "" }
+            )
+        }
+
+        if (state.getBoolean(KEY_GENERATED)) generatePaper()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(KEY_LABEL, binding.editPaperLabel.text?.toString())
+        outState.putString(KEY_SET, binding.editPaperSet.text?.toString())
+        outState.putString(KEY_SLUG, binding.editPaperSlug.text?.toString())
+
+        val slugs = ArrayList<String>()
+        val mimeIndices = ArrayList<Int>()
+        val compressFlags = BooleanArray(binding.containerFiles.childCount)
+        val contents = ArrayList<String>()
+        for (i in 0 until binding.containerFiles.childCount) {
+            val entry = ItemPaperFileEntryBinding.bind(binding.containerFiles.getChildAt(i))
+            slugs.add(entry.editFileSlug.text?.toString() ?: "")
+            mimeIndices.add(entry.spinnerFileMime.selectedItemPosition)
+            compressFlags[i] = entry.checkFileCompress.isChecked
+            contents.add(entry.editFileContent.text?.toString() ?: "")
+        }
+        outState.putStringArrayList(KEY_FILE_SLUGS, slugs)
+        outState.putIntegerArrayList(KEY_FILE_MIME_INDICES, mimeIndices)
+        outState.putBooleanArray(KEY_FILE_COMPRESS, compressFlags)
+        outState.putStringArrayList(KEY_FILE_CONTENTS, contents)
+        outState.putBoolean(KEY_GENERATED, lastManifest != null)
+    }
+
+    private fun addFileEntry(slug: String = "", mimeIndex: Int = 0, compress: Boolean = false, content: String = "") {
         val entry = ItemPaperFileEntryBinding.inflate(layoutInflater, binding.containerFiles, false)
+        // Every inflated entry reuses the same view IDs, so let onSaveInstanceState/restoreState
+        // (below) own this state instead of the default by-ID view hierarchy save/restore,
+        // which would garble entries when more than one shares an ID.
+        entry.root.isSaveFromParentEnabled = false
         entry.spinnerFileMime.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_item, mimeTypes
         ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        entry.editFileSlug.setText(slug)
+        entry.spinnerFileMime.setSelection(mimeIndex)
+        entry.checkFileCompress.isChecked = compress
+        entry.editFileContent.setText(content)
         entry.buttonRemoveFile.setOnClickListener { binding.containerFiles.removeView(entry.root) }
         binding.containerFiles.addView(entry.root)
     }
@@ -235,4 +294,15 @@ class CreatePaperActivity : AppCompatActivity() {
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
+
+    companion object {
+        private const val KEY_LABEL = "label"
+        private const val KEY_SET = "set"
+        private const val KEY_SLUG = "slug"
+        private const val KEY_FILE_SLUGS = "file_slugs"
+        private const val KEY_FILE_MIME_INDICES = "file_mime_indices"
+        private const val KEY_FILE_COMPRESS = "file_compress"
+        private const val KEY_FILE_CONTENTS = "file_contents"
+        private const val KEY_GENERATED = "generated"
+    }
 }
