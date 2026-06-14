@@ -15,8 +15,10 @@
     <string name="scan_fab_desc">Scan QR code</string>
     <string name="title_collection_detail">Collection</string>
     <string name="collection_type_paper">Paper</string>
+    <string name="collection_type_paper_created">My Paper</string>
     <string name="collection_type_adhoc">Collection</string>
     <string name="collection_type_loose">Scan</string>
+    <string name="collection_type_loose_created">My Drop</string>
     <string name="collection_cached_progress">Cached %1$d / %2$d</string>
     <string name="collection_item_count">%1$d item(s)</string>
     <string name="collection_adhoc_default_title">Collection #%1$s</string>
@@ -44,6 +46,9 @@
     <string name="hash_mismatch">Assembly failed: integrity check failed. Try rescanning.</string>
     <string name="legacy_fragment">Legacy fragment %1$d received. Scan more or tap Launch.</string>
     <string name="unknown_fragment">Fragment %1$d added. Scan more or tap Launch.</string>
+    <string name="nav_link_scanned">That\'s a link for use inside a page, not a code to scan directly.</string>
+    <string name="unsupported_code">This TagDrop code can\'t be read — it may use an unsupported version or be corrupted.</string>
+    <string name="camera_permission_denied">Camera access is needed to scan codes.\nTap here to enable it in Settings.</string>
 
     <!-- Collection detail ("map") screen -->
     <string name="button_open">Open</string>
@@ -82,6 +87,7 @@
     <string name="qr_cache_id">Content ID: %1$s</string>
     <string name="qr_too_large">URI is %1$d chars — may not fit in one QR. Enable compression or reduce content size.</string>
     <string name="qr_encode_error">QR encoding failed. Try reducing content size.</string>
+    <string name="cache_saved">Saved — find it anytime in Collections or History.</string>
 
     <!-- Create Paper screen -->
     <string name="hint_paper_label">Label (optional — name for this paper)</string>

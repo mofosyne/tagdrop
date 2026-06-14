@@ -30,6 +30,13 @@ sealed class CollectionItem {
         override val timestamp get() = cache.discoveredAt
     }
 
+    /** True if this collection was authored in-app (Create Cache/Paper) rather than scanned from someone else's drop. */
+    val createdByMe: Boolean get() = when (this) {
+        is Paper -> paper.createdByMe
+        is AdHoc -> false
+        is Loose -> cache.createdByMe
+    }
+
     companion object {
         /**
          * Builds the home-screen collection list from all scanned papers and cached items.

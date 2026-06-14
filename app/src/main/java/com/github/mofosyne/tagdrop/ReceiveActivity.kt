@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -82,7 +84,12 @@ class ReceiveActivity : AppCompatActivity() {
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) binding.barcodeScanner.resume()
+            if (granted) {
+                restoreScannerUi()
+                binding.barcodeScanner.resume()
+            } else {
+                showCameraPermissionDenied()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -162,12 +169,42 @@ class ReceiveActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (hasCameraPermission()) binding.barcodeScanner.resume()
+        if (hasCameraPermission()) {
+            restoreScannerUi()
+            binding.barcodeScanner.resume()
+        } else {
+            showCameraPermissionDenied()
+        }
     }
 
     override fun onPause() {
         super.onPause()
         binding.barcodeScanner.pause()
+    }
+
+    /** Shown when camera access is denied: hides the (otherwise blank) preview and explains how to fix it. */
+    private fun showCameraPermissionDenied() {
+        binding.barcodeScanner.visibility = View.GONE
+        binding.recyclerScanBoard.visibility = View.GONE
+        binding.buttonLaunch.visibility = View.GONE
+        binding.buttonClear.visibility = View.GONE
+        binding.textStatus.text = getString(R.string.camera_permission_denied)
+        binding.textStatus.setOnClickListener { openAppSettings() }
+    }
+
+    /** Restores the normal scanning UI once camera access is granted. */
+    private fun restoreScannerUi() {
+        binding.barcodeScanner.visibility = View.VISIBLE
+        binding.buttonLaunch.visibility = View.VISIBLE
+        binding.buttonClear.visibility = View.VISIBLE
+        binding.textStatus.setOnClickListener(null)
+        updateDisplay()
+    }
+
+    private fun openAppSettings() {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+        )
     }
 
     private fun processScanned(scanned: String) {
@@ -217,10 +254,16 @@ class ReceiveActivity : AppCompatActivity() {
                 updateDisplay()
                 toast(getString(R.string.legacy_fragment, legacyChunks.size))
             }
-            null -> {
-                legacyChunks.add(scanned)
-                updateDisplay()
-                toast(getString(R.string.unknown_fragment, legacyChunks.size))
+            null -> when {
+                // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
+                scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
+                // tagdrop:... that failed to decode: unsupported version or corrupted data — not a legacy fragment.
+                scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
+                else -> {
+                    legacyChunks.add(scanned)
+                    updateDisplay()
+                    toast(getString(R.string.unknown_fragment, legacyChunks.size))
+                }
             }
         }
     }
