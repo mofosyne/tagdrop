@@ -95,12 +95,17 @@ The `payload` map — the third item of the envelope sequence (§2) — uses **i
 | 29 | `nonce` | bytes (12, opt) | S, M |
 | 30 | `key_material` | bytes (32, opt) | S, M, P |
 | 31 | `retain_key` | bool (opt, default `true`) | S, M, P |
+| 32 | `signature_algorithm` | uint (opt) | S, M, P |
+| 33 | `signature` | bytes (2420, opt) | S, M, P |
+| 34 | `signer_pubkey` | bytes (1312, opt) | S, M, P |
+| 35 | `signer_id` | bytes (8, opt) | S, M, P |
+| 36 | `signer_label` | text (opt) | S, M, P |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
 Key 25 is reserved for a future small embedded image icon (raw bytes), as an
 alternative to the emoji `icon` field above. Keys 28–31 are defined in §9
-(Encryption).
+(Encryption); keys 32–36 are defined in §10 (Verified Authorship).
 
 ### File entry sub-keys (elements of key 15)
 
@@ -620,7 +625,121 @@ requests undermines them regardless of what the bytes on the wire look like.
 
 ---
 
-## 10. Backward Compatibility: Legacy `data:` URIs
+## 10. Verified Authorship (Signatures)
+
+A payload may optionally be **signed**, proving "the holder of a particular
+private key produced this exact payload." Signing is orthogonal to
+encryption (§9) and to content-addressing (§3, §4.5) — a signed code has the
+same `cache_id` / `root_hash` and `sha256` as its unsigned equivalent, and
+signing is **opt-in**: most TagDrop codes (stickers, treasure hunts, paper
+backups) need no signature at all.
+
+| `signature_algorithm` value | Algorithm |
+|---|---|
+| 0 (or absent) | Unsigned |
+| 1 | ML-DSA-44 (Dilithium2, FIPS 204) |
+| 2–255 | Reserved |
+
+| Key | Field | Type | Used in |
+|---|---|---|---|
+| 32 | `signature_algorithm` | uint (opt) | S, M, P |
+| 33 | `signature` | bytes (2420, opt) | S, M, P |
+| 34 | `signer_pubkey` | bytes (1312, opt) | S, M, P |
+| 35 | `signer_id` | bytes (8, opt) | S, M, P |
+| 36 | `signer_label` | text (opt) | S, M, P |
+
+**Implementation status:** specified for forward-compatibility, not yet
+implemented in either reference implementation (§15). ML-DSA-44 is not
+available in `java.security`/Android's crypto providers or in
+`SubtleCrypto` (Web Crypto), so adding it requires a new dependency in both
+— e.g. BouncyCastle for the Kotlin app, and a pure-JS PQC library (such as
+`@noble/post-quantum`) for the browser tools, which currently depend on
+nothing but a QR CDN script. Readers that don't recognise keys 32–36 ignore
+them per §3's forward-compatibility rule and treat the code as unsigned.
+
+**Why post-quantum, not ECDSA/Ed25519?** Shor's algorithm breaks the
+discrete-log and elliptic-curve problems outright — a future quantum
+computer doesn't just weaken ECDSA/Ed25519, it forges signatures under those
+schemes entirely. By contrast, Grover's algorithm only *halves* AES's
+effective key length, which is why AES-256-GCM (§9) needs no change for
+quantum resistance. A signature scheme adopted now should not be one that a
+sufficiently large quantum computer invalidates retroactively for every code
+ever signed with it. ML-DSA-44 (Dilithium2, NIST security category 2, FIPS
+204, standardized 2024) is a lattice-based scheme with no known efficient
+quantum attack, and its sizes are **fixed regardless of message length** —
+2420-byte signature, 1312-byte public key, 2560-byte private key (never
+transmitted). For small codes (a few hundred bytes) that's significant
+overhead; for content already spanning multiple chunks (§4.2) — e.g. an
+essay of a few KB — a constant ~2.4 KB signature is proportionally minor,
+and the public key (§ below) is amortized across an entire trail or
+collection.
+
+**Signed message:** `SHA-256(envelope || payload)` where `payload` is the
+CBOR map with keys 32–36 *absent* — i.e. the SHA-256 of the exact bytes an
+unsigned code would encode to. For a Paper Manifest (type 3), `root_hash`
+(key 2) is computed first per §4.5 (also with keys 32–36 absent), and the
+signature is then computed over the payload map *including* that final
+`root_hash` but still excluding keys 32–36. In both cases, signing happens
+last and feeds back into nothing — `cache_id`/`root_hash`/`sha256` are
+identical whether or not keys 32–36 are subsequently added.
+
+**Verification:** a verifier strips keys 32–36, recomputes the same
+SHA-256, and checks `signature` (key 33) against that hash using
+`signer_pubkey` (key 34) via ML-DSA-44 `Verify`. `signer_id` (key 35) =
+`SHA-256(signer_pubkey)[0:8]` — the same truncated-SHA-256-prefix convention
+as `cache_id`/`collection_id`/`paper_id` (§3).
+
+**Key caching (amortizing the ~3.7 KB first-use cost):** `signer_id` is
+present on every signed payload, but `signer_pubkey` (1312 bytes) only needs
+to be included on the *first* signed code an app encounters from a given
+`signer_id` — the app caches `signer_id → (signer_pubkey, signer_label)`.
+Subsequent codes from the same signer omit `signer_pubkey` and cost only
+`signature` + `signer_id` (~2428 bytes). If a code omits `signer_pubkey` and
+the verifier has no cached entry for its `signer_id`, the signature can't
+yet be checked — it's held pending, and verified retroactively once a code
+carrying that `signer_pubkey` is scanned, the same "complete opportunistically,
+in any order" pattern as chunk assembly (§5) and key matching (§9).
+
+**Trust model:** trust-on-first-use (TOFU), like SSH host keys — there is no
+PKI, certificate authority, or revocation. A verified signature proves "the
+same private key signed this as everything else cached under this
+`signer_id`," not a real-world identity. `signer_label` (key 36, free text)
+lets an author attach a human-readable name (e.g. "City Parks Dept.
+Trail"); it is self-asserted and meaningful only as a consistent label
+across that signer's codes, exactly like a comment in `~/.ssh/known_hosts`.
+
+**Downgrade:** stripping keys 32–36 from a signed code yields a valid
+unsigned code with the same `cache_id`/`sha256` — content-addressing doesn't
+distinguish "never signed" from "signature removed." This is an accepted
+limitation: a signature can be *removed* but not *forged* or *retargeted*
+(ML-DSA verification ties `signature`, `signer_pubkey`, and the exact
+payload bytes together), so the only thing an attacker can do is strip an
+authorship claim, never add or substitute one.
+
+**Interaction with §9's privacy properties:** a signature is an explicit,
+persistent identity marker — the opposite of plausible deniability. Authors
+relying on §9's privacy properties (encrypted content, key-only codes,
+deniable framing) SHOULD NOT sign that content: a repeated `signer_id`
+links codes to the same author even when their content is unreadable.
+Verified Authorship and §9's privacy properties are intended as alternative
+use cases of the same format, not a combination.
+
+```
+payload map {
+  2: h'<8 random bytes>',         // cache_id
+  4: "text/markdown",
+  5: h'<content bytes>',
+  32: 1,                           // signature_algorithm: ML-DSA-44
+  33: h'<2420-byte signature>',
+  34: h'<1312-byte public key>',   // only on first code from this signer
+  35: h'<8-byte signer_id>',
+  36: "Alice's Trail",              // optional human-readable label
+}
+```
+
+---
+
+## 11. Backward Compatibility: Legacy `data:` URIs
 
 Codes containing a raw `data:` URI (without the `tagdrop:` scheme) are recognised and handled in **legacy mode**:
 
@@ -631,7 +750,7 @@ New content should use the `tagdrop:` scheme. Legacy support will be maintained 
 
 ---
 
-## 11. NFC Transport (future)
+## 12. NFC Transport (future)
 
 The CBOR sequence (`version`, `type`, `payload` — §2; the same bytes that get Base45-encoded into the `tagdrop:` URI) can be stored directly in an NFC NDEF record with:
 
@@ -647,7 +766,7 @@ A NFC-NDEF capable multi-tag sequence would use the same manifest/chunk split, w
 
 ---
 
-## 12. Alternative Carriers
+## 13. Alternative Carriers
 
 The format is carrier-agnostic. Any medium that can carry a UTF-8 string supports the `tagdrop:` URI form. Any medium that carries raw bytes supports the raw CBOR sequence form.
 
@@ -662,18 +781,18 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 
 ---
 
-## 13. Version Negotiation
+## 14. Version Negotiation
 
 `version` is the first item of the envelope sequence (§2) — a single CBOR integer, decodable independently of everything that follows it. A reader encountering an unsupported `version` should stop immediately and show a human-readable "unsupported format version" message, without attempting to decode `type` or `payload` — a future version is free to redefine either, even to something other than CBOR.
 
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. Optional AES-256-GCM encryption (`encryption`/`nonce`, keys 28/29) applied after compression, and optional `key_material`/`retain_key` (keys 30/31) carried inline or via `related` entries, matched by trial decryption rather than declared targets — see §9. |
+| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. Optional AES-256-GCM encryption (`encryption`/`nonce`, keys 28/29) applied after compression, and optional `key_material`/`retain_key` (keys 30/31) carried inline or via `related` entries, matched by trial decryption rather than declared targets — see §9. Optional ML-DSA-44 post-quantum signatures (`signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label`, keys 32–36), additive over the unsigned payload and not affecting `cache_id`/`root_hash`/`sha256` — see §10 (not yet implemented in reference implementations). |
 
 ---
 
-## 14. Reference Implementations
+## 15. Reference Implementations
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode all payload types; `contentId()`, `rootHashOf()`, `createSingle()`
@@ -690,13 +809,13 @@ Version history:
 
 ---
 
-## 15. Design Notes and Alternatives Considered
+## 16. Design Notes and Alternatives Considered
 
 **Why not extend `data:` URI syntax?** (issues #2, #4, #13) Adding parameters like `;seq-id=`, `;seq-total=`, `;crc=` to the data URI was the original approach. It fails because data: URIs are opaque to QR readers — there's no way to route them to the app by scheme. The `tagdrop:` scheme gives us OS-level routing and a clean separation between the envelope and payload.
 
-**Why a version/type envelope instead of URI path segments or per-map keys?** An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §10/§11) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every payload with a 2-item CBOR Sequence (RFC 8742) — `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — makes the same bytes self-describing on every carrier: Base45-encode them for `tagdrop:<base45>`, or store them raw in an NDEF record, with identical decode logic either way. It also lets the URI collapse to `tagdrop:<base45>` (no `//`, no `/<type>/` segment), gives a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — costs one less byte than `[version, type, payload]` and doesn't require `payload` to be CBOR-wrapped, leaving room for a non-CBOR `payload` in a future version. `version` lives *only* in the envelope, not redundantly inside `payload` too: two fields claiming to describe the same fact can disagree, forcing a reader to pick which one to trust — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. CBOR's own self-describing-data convention (the tag-55799 "magic number", RFC 8949 §3.4.5.3) is likewise an external prefix rather than a duplicated internal field, reinforcing that self-description belongs in the envelope.
+**Why a version/type envelope instead of URI path segments or per-map keys?** An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §12/§13) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every payload with a 2-item CBOR Sequence (RFC 8742) — `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — makes the same bytes self-describing on every carrier: Base45-encode them for `tagdrop:<base45>`, or store them raw in an NDEF record, with identical decode logic either way. It also lets the URI collapse to `tagdrop:<base45>` (no `//`, no `/<type>/` segment), gives a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — costs one less byte than `[version, type, payload]` and doesn't require `payload` to be CBOR-wrapped, leaving room for a non-CBOR `payload` in a future version. `version` lives *only* in the envelope, not redundantly inside `payload` too: two fields claiming to describe the same fact can disagree, forcing a reader to pick which one to trust — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. CBOR's own self-describing-data convention (the tag-55799 "magic number", RFC 8949 §3.4.5.3) is likewise an external prefix rather than a duplicated internal field, reinforcing that self-description belongs in the envelope.
 
-**Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§11).
+**Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§12).
 
 **Binary mode vs alphanumeric Base45:** Raw binary QR codes store 8 bits/char. Alphanumeric Base45 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable.
 
