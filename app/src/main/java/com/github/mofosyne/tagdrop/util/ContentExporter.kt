@@ -21,6 +21,8 @@ object ContentExporter {
     private val FALLBACK_EXTENSIONS = mapOf(
         "text/html" to "html",
         "text/plain" to "txt",
+        "text/markdown" to "md",
+        "text/css" to "css",
         "application/json" to "json",
         "image/svg+xml" to "svg",
         "audio/midi" to "mid",

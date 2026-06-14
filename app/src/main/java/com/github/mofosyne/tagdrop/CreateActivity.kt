@@ -28,7 +28,7 @@ class CreateActivity : AppCompatActivity() {
     private var lastUri: String = ""
     private var lastPayloadHint: String? = null
 
-    private val mimeTypes = listOf("text/plain", "text/html", "application/json", "image/svg+xml")
+    private val mimeTypes = listOf("text/plain", "text/html", "text/markdown", "application/json", "image/svg+xml")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

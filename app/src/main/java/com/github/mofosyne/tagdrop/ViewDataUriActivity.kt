@@ -16,6 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
@@ -167,17 +168,28 @@ class ViewDataUriActivity : AppCompatActivity() {
             binding.htmldisp.loadUrl(dataUri)
             return
         }
-        if (!mimeType.startsWith("text/html")) {
-            binding.htmldisp.loadUrl(dataUri)
-            return
-        }
-        lifecycleScope.launch {
-            val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
-            if (context != null) {
-                loadHtml(String(bytes, Charsets.UTF_8), context.rootHashHex, context.slug)
-            } else {
-                binding.htmldisp.loadUrl(dataUri)
+        if (mimeType.startsWith("text/html")) {
+            lifecycleScope.launch {
+                val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
+                if (context != null) {
+                    loadHtml(String(bytes, Charsets.UTF_8), context.rootHashHex, context.slug)
+                } else {
+                    binding.htmldisp.loadUrl(dataUri)
+                }
             }
+        } else if (mimeType.startsWith("text/markdown")) {
+            lifecycleScope.launch {
+                val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
+                val css = context?.let { resolver.findStylesheet(it.rootHashHex) }
+                val html = MarkdownRenderer.toHtmlDocument(String(bytes, Charsets.UTF_8), css)
+                if (context != null) {
+                    loadHtml(html, context.rootHashHex, context.slug)
+                } else {
+                    binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                }
+            }
+        } else {
+            binding.htmldisp.loadUrl(dataUri)
         }
     }
 
@@ -211,12 +223,19 @@ class ViewDataUriActivity : AppCompatActivity() {
                 is TagDropLinkResolver.Resolution.FileFound -> {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
-                    if (result.cache.mimeType.startsWith("text/html")) {
-                        loadHtml(String(content, Charsets.UTF_8), result.paper.rootHash, result.slug)
-                    } else {
-                        val dataUri = "data:${result.cache.mimeType};base64," +
-                            android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
-                        binding.htmldisp.loadUrl(dataUri)
+                    when {
+                        result.cache.mimeType.startsWith("text/html") ->
+                            loadHtml(String(content, Charsets.UTF_8), result.paper.rootHash, result.slug)
+                        result.cache.mimeType.startsWith("text/markdown") -> {
+                            val css = resolver.findStylesheet(result.paper.rootHash)
+                            val html = MarkdownRenderer.toHtmlDocument(String(content, Charsets.UTF_8), css)
+                            loadHtml(html, result.paper.rootHash, result.slug)
+                        }
+                        else -> {
+                            val dataUri = "data:${result.cache.mimeType};base64," +
+                                android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
+                            binding.htmldisp.loadUrl(dataUri)
+                        }
                     }
                 }
                 is TagDropLinkResolver.Resolution.FileNotCached ->

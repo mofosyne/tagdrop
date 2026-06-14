@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# Captures F-Droid phone screenshots from a running emulator or connected
+# device, using the same "Add Demo Collection" seed data that's already in
+# the app (Main menu -> Add Demo Collection) so Collections/History/Map
+# aren't empty.
+#
+# Requires: adb (Android SDK platform-tools) and python3 on PATH, plus a
+# booted emulator or a device with USB debugging enabled. Run from anywhere;
+# it cds to the repo root itself. On Windows, run via Git Bash or WSL.
+#
+# Usage:
+#   scripts/capture-fdroid-screenshots.sh
+#
+# Output goes to fastlane/metadata/android/en-US/images/phoneScreenshots/ as
+# 1.png, 2.png, ... (F-Droid's fastlane ordering convention), overwriting any
+# existing files there. Review afterwards and delete any you don't want —
+# but note that gaps in the numbering may confuse F-Droid's ordering, so
+# renumber the rest if you remove one.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+APP_ID="com.github.mofosyne.tagdrop"
+OUT_DIR="fastlane/metadata/android/en-US/images/phoneScreenshots"
+HELPER="$(dirname "$0")/_ui_tap.py"
+
+mkdir -p "$OUT_DIR"
+
+echo "Waiting for a device..."
+adb wait-for-device
+
+echo "Building and installing debug APK..."
+./gradlew installDebug
+
+# Pre-grant the camera permission so the scanner screenshot doesn't need a
+# dialog dismissed. Deliberately do NOT grant (and explicitly revoke) location
+# permissions: without them, the demo collection falls back to its built-in
+# San Francisco-area placeholder coordinates instead of this device's real
+# location, and the Map tab won't show a "my location" dot.
+adb shell pm grant "$APP_ID" android.permission.CAMERA >/dev/null 2>&1 || true
+adb shell pm revoke "$APP_ID" android.permission.ACCESS_FINE_LOCATION >/dev/null 2>&1 || true
+adb shell pm revoke "$APP_ID" android.permission.ACCESS_COARSE_LOCATION >/dev/null 2>&1 || true
+
+adb shell am force-stop "$APP_ID"
+
+tap_text() {
+  echo "Tapping '$1'..."
+  python3 "$HELPER" "$1"
+}
+
+# Like tap_text, but doesn't fail the script if none of the given texts are
+# found — for dismissing dialogs whose wording varies by Android version.
+try_tap_text() {
+  echo "Tapping (if present) $*..."
+  python3 "$HELPER" --optional "$@"
+}
+
+screenshot() {
+  echo "Capturing $1.png..."
+  # Write to device storage and pull, rather than `adb exec-out ... > file`,
+  # which can corrupt binary output (e.g. CRLF translation on Windows/Git Bash).
+  # Don't pass -d: on at least one foldable, display 0 isn't a valid id, and
+  # the unqualified default has worked fine (just prints a harmless warning
+  # about multiple displays).
+  adb shell screencap -p /data/local/tmp/screenshot.png
+  adb pull /data/local/tmp/screenshot.png "$OUT_DIR/$1.png" >/dev/null
+}
+
+# --- Main screen: seed demo content, then capture each bottom-nav tab ---
+adb shell am start -W -n "$APP_ID/.MainActivity" >/dev/null
+sleep 3
+
+# KEYCODE_MENU opens the toolbar's options menu even when there's no visible
+# overflow icon — more reliable across devices than tapping "More options".
+adb shell input keyevent KEYCODE_MENU
+sleep 1
+tap_text "Add Demo Collection"
+sleep 5
+
+screenshot "1"
+
+tap_text "History"
+sleep 1
+screenshot "2"
+
+tap_text "Map"
+sleep 1
+# Without location permission, the Map tab prompts for it; dismiss that so
+# it doesn't cover the map (wording varies by Android version).
+try_tap_text "Don't allow" "Deny" "No thanks"
+sleep 5
+screenshot "3"
+
+tap_text "Collections"
+sleep 1
+tap_text "Demo Trail"
+sleep 1
+screenshot "4"
+
+# --- Create screens: CreateActivity/CreatePaperActivity aren't exported, so
+# `am start -n` for them is rejected by the platform from the shell. Navigate
+# via the options menu instead, like "Add Demo Collection" above. ---
+adb shell input keyevent KEYCODE_BACK   # back to MainActivity from collection detail
+sleep 1
+
+adb shell input keyevent KEYCODE_MENU
+sleep 1
+tap_text "Create Cache"
+sleep 1
+screenshot "5"
+
+adb shell input keyevent KEYCODE_BACK   # back to MainActivity
+sleep 1
+
+adb shell input keyevent KEYCODE_MENU
+sleep 1
+tap_text "Create Paper"
+sleep 1
+screenshot "6"
+
+adb shell input keyevent KEYCODE_BACK   # back to MainActivity
+sleep 1
+
+# --- Scanner screen (ReceiveActivity is exported, so am start works) ---
+adb shell am start -W -n "$APP_ID/.ReceiveActivity" >/dev/null
+sleep 2
+screenshot "7"
+
+echo
+echo "Done. Screenshots saved to $OUT_DIR/"
+echo "Review and delete any you don't want — but renumber the rest if you do,"
+echo "so there are no gaps (F-Droid uses the numbering for ordering)."

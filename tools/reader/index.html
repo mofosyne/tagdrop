@@ -11,6 +11,9 @@
   QR decoding uses jsQR (CDN). For fully offline use, download
   https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js and change the
   script src below to a relative path.
+
+  Rendering text/markdown content dynamically imports marked (CDN) on
+  first use; if that fails (e.g. offline), it falls back to plain text.
 -->
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <style>
@@ -474,7 +477,7 @@ async function handleScanned(raw) {
         content: parsed.content, hint: parsed.hint, filename: parsed.filename,
       });
       showMsg('Loaded: ' + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
-      showContent(parsed.mimeType, parsed.content, parsed.filename || parsed.hint || parsed.mimeType);
+      await showContent(parsed.mimeType, parsed.content, parsed.filename || parsed.hint || parsed.mimeType, parsed.cacheId);
       // Refresh directory if this file belongs to the active paper
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
@@ -530,7 +533,7 @@ async function handleScanned(raw) {
       delete assemblies[a.manifest.cacheId];
       hideAssemblyProgress();
       showMsg('All chunks assembled!', 'ok');
-      showContent(a.manifest.mimeType, content, a.manifest.filename || a.manifest.hint || a.manifest.mimeType);
+      await showContent(a.manifest.mimeType, content, a.manifest.filename || a.manifest.hint || a.manifest.mimeType, a.manifest.cacheId);
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
     }
@@ -570,7 +573,7 @@ async function resolveNavLink(rootHashHex, slug) {
     showMsg("File '" + slug + "' not yet scanned — find and scan its QR.", 'warn');
     return;
   }
-  showContent(cached.mimeType, cached.content, slug);
+  await showContent(cached.mimeType, cached.content, slug, fileEntry.fileId);
 }
 
 // ── Paper directory ───────────────────────────────────────────────────────
@@ -612,29 +615,82 @@ async function renderPaper(rootHash) {
   document.getElementById('contentSection').classList.add('hidden');
 }
 
+// ── Markdown rendering ────────────────────────────────────────────────────
+// Dynamically imported on first use (same pattern as the generator's qrcode import).
+let markedModulePromise;
+function loadMarked() {
+  if (!markedModulePromise) markedModulePromise = import('https://cdn.jsdelivr.net/npm/marked@18.0.5/+esm');
+  return markedModulePromise;
+}
+
+// Finds the paper (if any) that lists fileId in its files, returning {paper, slug} or
+// null — mirrors TagDropLinkResolver.findPaperContext on the Android side.
+async function findPaperContext(fileId) {
+  for (const paper of await dbGetAll('papers')) {
+    const file = paper.files.find(f => f.fileId === fileId);
+    if (file) return { paper, slug: file.slug };
+  }
+  return null;
+}
+
+// Looks up the paper-wide stylesheet sibling (SPEC §7 convention: a file with slug
+// "style.css" and mimeType "text/css"), returning its cached text content, or null.
+async function findStylesheet(paper) {
+  const cssFile = paper.files.find(f => f.slug === 'style.css' && f.mimeType === 'text/css');
+  if (!cssFile) return null;
+  const cached = await dbGet('caches', cssFile.fileId);
+  return cached ? new TextDecoder().decode(cached.content) : null;
+}
+
 // ── Content rendering ─────────────────────────────────────────────────────
-function showContent(mimeType, content, title) {
+// Renders an HTML document in a sandboxed iframe, with a postMessage relay for
+// tagdrop:// link clicks. sandbox="allow-scripts" (no allow-same-origin) so the
+// iframe cannot access parent storage or DOM — only postMessage works cross-sandbox.
+function renderHtmlInIframe(area, html) {
+  const relay =
+    `<script>document.addEventListener('click',function(e){` +
+    `var a=e.target.closest('a');` +
+    `if(a&&a.href.startsWith('tagdrop://')){` +
+    `e.preventDefault();window.parent.postMessage({type:'tagdrop-nav',uri:a.href},'*');}` +
+    `});<\/script>`;
+  html = html.includes('</head>') ? html.replace('</head>', relay + '</head>') : relay + html;
+  const frame = document.createElement('iframe');
+  frame.sandbox  = 'allow-scripts';
+  frame.srcdoc   = html;
+  frame.style.cssText = 'width:100%;height:75vh;border:none;display:block;background:#fff;';
+  area.appendChild(frame);
+}
+
+async function showContent(mimeType, content, title, cacheId) {
   const area = document.getElementById('contentArea');
   area.innerHTML = '';
   document.getElementById('contentTitle').textContent = title;
 
   if (mimeType.startsWith('text/html')) {
-    // Inject a postMessage relay for tagdrop:// link clicks.
-    // sandbox="allow-scripts" (no allow-same-origin) so the iframe cannot
-    // access parent storage or DOM — only postMessage works cross-sandbox.
-    const relay =
-      `<script>document.addEventListener('click',function(e){` +
-      `var a=e.target.closest('a');` +
-      `if(a&&a.href.startsWith('tagdrop://')){` +
-      `e.preventDefault();window.parent.postMessage({type:'tagdrop-nav',uri:a.href},'*');}` +
-      `});<\/script>`;
-    let html = new TextDecoder().decode(content);
-    html = html.includes('</head>') ? html.replace('</head>', relay + '</head>') : relay + html;
-    const frame = document.createElement('iframe');
-    frame.sandbox  = 'allow-scripts';
-    frame.srcdoc   = html;
-    frame.style.cssText = 'width:100%;height:75vh;border:none;display:block;background:#fff;';
-    area.appendChild(frame);
+    renderHtmlInIframe(area, new TextDecoder().decode(content));
+  } else if (mimeType.startsWith('text/markdown')) {
+    const markdownText = new TextDecoder().decode(content);
+    let body;
+    try {
+      const { marked } = await loadMarked();
+      body = marked.parse(markdownText);
+    } catch (e) {
+      showMsg('Markdown renderer failed to load (offline?) — showing raw text.', 'warn');
+      const pre = document.createElement('pre');
+      pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';
+      pre.textContent = markdownText;
+      area.appendChild(pre);
+      document.getElementById('contentSection').classList.remove('hidden');
+      return;
+    }
+    let css = null;
+    if (cacheId) {
+      const ctx = await findPaperContext(cacheId);
+      if (ctx) css = await findStylesheet(ctx.paper);
+    }
+    const style = css ? '<style>' + css + '</style>' : '';
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8">' + style + '</head><body>' + body + '</body></html>';
+    renderHtmlInIframe(area, html);
   } else if (mimeType.startsWith('text/')) {
     const pre = document.createElement('pre');
     pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';
@@ -713,7 +769,7 @@ document.getElementById('fileList').addEventListener('click', async e => {
   const btn = e.target.closest('.open-file');
   if (!btn) return;
   const cached = await dbGet('caches', btn.dataset.id);
-  if (cached) showContent(cached.mimeType, cached.content, btn.dataset.slug);
+  if (cached) await showContent(cached.mimeType, cached.content, btn.dataset.slug, btn.dataset.id);
   else showMsg('Not cached yet — scan its QR code.', 'warn');
 });
 
