@@ -9,6 +9,12 @@ immediately, with no internet connection, server, or account required.
 Think of it as a **digital geocache**: instead of a logbook in a box, the
 "cache" is the QR code itself.
 
+The name and offline, anonymous, leave-it-in-the-wild spirit are inspired by
+[Dead Drops](https://deaddrops.com/) (Aram Bartholl, 2010) — an ongoing
+project embedding USB drives in public walls for anonymous offline file
+sharing. TagDrop applies the same idea to printed QR codes: no device,
+network, or account needed to read or write a drop.
+
 <img src="docs/example-qr.png" alt="Example TagDrop QR code encoding a short text message" width="200">
 
 *A real TagDrop code — scan it with the app or the
