@@ -477,7 +477,7 @@ icon slot in the app's UI is designed to host either form.
 | `compression` value | Algorithm |
 |---|---|
 | 0 (or absent) | None |
-| 1 | DEFLATE (RFC 1951, raw, no zlib header) |
+| 1 | DEFLATE, zlib-wrapped (RFC 1950) |
 | 2–255 | Reserved |
 
 Compression is applied to the complete assembled payload (in multi-code) or the content field directly (in single-code). The `sha256` in the manifest is over the **compressed** assembled bytes (before decompression), so integrity can be verified before decompression.
@@ -552,7 +552,7 @@ Version history:
 - **Android database:** `app/src/main/java/com/github/mofosyne/tagdrop/data/db/`
   - `FoundCache.kt` — Room entity for scanned file caches
   - `ScannedPaper.kt` — Room entity for scanned paper manifests
-  - `AppDatabase.kt` — Room DB v4 with migrations
+  - `AppDatabase.kt` — Room database with migrations
 
 ---
 
