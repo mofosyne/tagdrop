@@ -121,6 +121,19 @@
     <div class="qr-grid" id="paper-grid"></div>
   </section>
 
+  <section id="sec-book">
+    <h2>Mini E-Book (Markdown Pages)</h2>
+    <p class="section-desc">
+      A paper of <code>text/markdown</code> pages — a cover/table-of-contents and three
+      chapters — that link to each other with ordinary relative links and share one
+      <code>style.css</code> (SPEC.md §7's stylesheet convention). Scan the manifest, then
+      every file, then open <strong>index.md</strong> and tap through: about as close to an
+      e-book as a sheet of paper gets.
+    </p>
+    <div class="paper-info" id="book-info"></div>
+    <div class="qr-grid" id="book-grid"></div>
+  </section>
+
   <section id="sec-trail">
     <h2>Multi-Location Trail (Multiple Papers)</h2>
     <p class="section-desc">
@@ -549,6 +562,123 @@ Slug:  note
   ],
 };
 
+// Mini e-book: a paper of text/markdown pages (a cover/TOC plus three short
+// chapters) that link to each other with ordinary relative links and share
+// one style.css sibling (SPEC.md §7 "Markdown content" stylesheet
+// convention). Demonstrates a "near-EPUB" experience built from QR codes.
+const BOOK_EXAMPLE = {
+  label: "The Lighthouse Keeper's Almanac",
+  set:   'tagdrop-tests',
+  slug:  'lighthouse-almanac',
+  files: [
+    {
+      slug:     'style.css',
+      mimeType: 'text/css',
+      compress: false,
+      content:
+`/* Shared stylesheet for "The Lighthouse Keeper's Almanac" mini e-book.
+   SPEC.md §7 convention: a sibling file with slug "style.css" and
+   mimeType "text/css" is inlined into every text/markdown page on this
+   paper, so the cover and all chapters share this look. */
+body {
+  font-family: Georgia, 'Times New Roman', serif;
+  max-width: 34em;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+  line-height: 1.7;
+  color: #2b2722;
+  background: #fdfbf6;
+}
+h1 { color: #1a1a2e; font-size: 1.5em; margin-bottom: 0.4em; }
+h1 + p::first-letter {
+  font-size: 2.6em;
+  line-height: 0.85;
+  float: left;
+  padding: 0.05em 0.1em 0 0;
+  font-weight: bold;
+  color: #1a1a2e;
+}
+a { color: #1a1a2e; text-decoration: none; border-bottom: 1px dotted #1a1a2e; }
+a:hover { border-bottom-style: solid; }
+ol { padding-left: 1.3em; }
+hr { border: none; border-top: 1px solid #e0ddd4; margin: 1.5em 0; }`,
+    },
+    {
+      slug:     'index.md',
+      mimeType: 'text/markdown',
+      compress: false,
+      content:
+`# The Lighthouse Keeper's Almanac
+
+A tiny three-chapter story, each page its own QR code on one paper, all
+sharing one stylesheet (\`style.css\`) — about as close to an e-book as a
+sheet of paper gets.
+
+## Contents
+
+1. [The Light](chapter1.md)
+2. [The Storm](chapter2.md)
+3. [The Logbook](chapter3.md)
+
+---
+
+Scan the manifest, then \`style.css\`, \`index.md\`, and the three chapters.
+Tap a link above — TagDrop loads each page with a shared same-paper base
+URL, so these relative links (and the shared stylesheet) work just like a
+real e-book, entirely offline.`,
+    },
+    {
+      slug:     'chapter1.md',
+      mimeType: 'text/markdown',
+      compress: false,
+      content:
+`# Chapter 1 — The Light
+
+Every evening at dusk, the keeper climbed the spiral stair, lit the lamp,
+and wound the clockwork that turned it. The beam swept the dark water in a
+slow, patient circle — five seconds of light, five of shadow, all night,
+every night, for as long as anyone could remember.
+
+---
+
+[« Cover](index.md) · [Chapter 2: The Storm »](chapter2.md)`,
+    },
+    {
+      slug:     'chapter2.md',
+      mimeType: 'text/markdown',
+      compress: false,
+      content:
+`# Chapter 2 — The Storm
+
+One night in late autumn the wind turned. Rain hammered the glass and the
+sea rose in long grey ridges, white at the crests. The keeper checked the
+lamp twice that hour instead of once, and again before dawn — not because
+the mechanism had ever failed, but because somewhere out there, someone was
+watching for exactly this light.
+
+---
+
+[« Chapter 1: The Light](chapter1.md) · [Cover](index.md) · [Chapter 3: The Logbook »](chapter3.md)`,
+    },
+    {
+      slug:     'chapter3.md',
+      mimeType: 'text/markdown',
+      compress: false,
+      content:
+`# Chapter 3 — The Logbook
+
+In the morning the keeper wrote one line in the logbook, as always: *Lamp
+lit at dusk, extinguished at dawn, no faults.* Eighty years of these lines
+filled the shelf behind the door — a quiet, unbroken record of a light that
+never went out.
+
+---
+
+[« Chapter 2: The Storm](chapter2.md) · [Back to Cover](index.md)`,
+    },
+  ],
+};
+
 // Multi-location trail: three *separate* paper manifests (one per "stop"),
 // simulating a trail where each paper is placed at a different physical
 // location. Each carries an icon, set/slug, related-paper hints to its
@@ -798,6 +928,44 @@ async function main() {
   });
   for (const f of encodedFiles) {
     await addCard(paperGrid, {
+      label: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
+      id: toHex(f.fileId), uri: f.uri, isManifest: false,
+    });
+  }
+
+  // Mini e-book: a paper of text/markdown pages that link to each other and
+  // share one style.css (SPEC.md §7 "Markdown content" stylesheet convention).
+  const book = BOOK_EXAMPLE;
+  const bookFiles = [];
+  for (const f of book.files) {
+    const rawBytes = new TextEncoder().encode(f.content);
+    const enc = await encodeSingle({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
+    bookFiles.push({ slug: f.slug, mimeType: f.mimeType, uri: enc.uri, fileId: enc.cacheId, compress: f.compress });
+  }
+  const bookManifestFiles = bookFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
+  const bookManifestEnc = await encodePaperManifest({ label: book.label, set: book.set, slug: book.slug, files: bookManifestFiles, related: [] });
+
+  const bookRootHashHex = toHex(bookManifestEnc.rootHash);
+  const bookRootHashB45 = base45Encode(bookManifestEnc.rootHash);
+
+  document.getElementById('book-info').innerHTML = `
+    <strong>${escHtml(book.label)}</strong>
+    — set: <code>${escHtml(book.set)}</code>, slug: <code>${escHtml(book.slug)}</code><br>
+    Root hash: <code>${bookRootHashHex}</code><br>
+    Navigation link base: <code>tagdrop://${escHtml(bookRootHashB45)}/${escHtml(book.slug)}</code>
+    <div class="step">① Scan the <strong>manifest</strong>, then <code>style.css</code> and each markdown page.</div>
+    <div class="step">② Open <strong>index.md</strong> — its table of contents links to each chapter.</div>
+    <div class="step">③ Each chapter links back to the cover and to its neighbours, and every page
+      picks up <code>style.css</code> automatically — three short stories' worth of QR codes,
+      reading like one small cross-linked book.</div>`;
+
+  const bookGrid = document.getElementById('book-grid');
+  await addCard(bookGrid, {
+    label: book.label, mime: 'paper manifest', extraBadge: null,
+    id: bookRootHashHex, uri: bookManifestEnc.uri, isManifest: true,
+  });
+  for (const f of bookFiles) {
+    await addCard(bookGrid, {
       label: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
       id: toHex(f.fileId), uri: f.uri, isManifest: false,
     });
