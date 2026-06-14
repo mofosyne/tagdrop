@@ -60,7 +60,9 @@ screenshot() {
   echo "Capturing $1.png..."
   # Write to device storage and pull, rather than `adb exec-out ... > file`,
   # which can corrupt binary output (e.g. CRLF translation on Windows/Git Bash).
-  adb shell screencap -p /data/local/tmp/screenshot.png
+  # -d 0 pins the capture to the main display, since foldables report
+  # multiple displays and the default pick isn't guaranteed consistent.
+  adb shell screencap -p -d 0 /data/local/tmp/screenshot.png
   adb pull /data/local/tmp/screenshot.png "$OUT_DIR/$1.png" >/dev/null
 }
 
@@ -95,16 +97,31 @@ tap_text "Demo Trail"
 sleep 1
 screenshot "4-collection-detail"
 
-# --- Create screens (no seed data needed) ---
-adb shell am start -W -n "$APP_ID/.CreateActivity" >/dev/null
+# --- Create screens: CreateActivity/CreatePaperActivity aren't exported, so
+# `am start -n` for them is rejected by the platform from the shell. Navigate
+# via the options menu instead, like "Add Demo Collection" above. ---
+adb shell input keyevent KEYCODE_BACK   # back to MainActivity from collection detail
+sleep 1
+
+adb shell input keyevent KEYCODE_MENU
+sleep 1
+tap_text "Create Cache"
 sleep 1
 screenshot "5-create"
 
-adb shell am start -W -n "$APP_ID/.CreatePaperActivity" >/dev/null
+adb shell input keyevent KEYCODE_BACK   # back to MainActivity
+sleep 1
+
+adb shell input keyevent KEYCODE_MENU
+sleep 1
+tap_text "Create Paper"
 sleep 1
 screenshot "6-create-paper"
 
-# --- Scanner screen ---
+adb shell input keyevent KEYCODE_BACK   # back to MainActivity
+sleep 1
+
+# --- Scanner screen (ReceiveActivity is exported, so am start works) ---
 adb shell am start -W -n "$APP_ID/.ReceiveActivity" >/dev/null
 sleep 2
 screenshot "7-scan"
