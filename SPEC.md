@@ -720,7 +720,12 @@ authorship claim, never add or substitute one.
 persistent identity marker — the opposite of plausible deniability. Authors
 relying on §9's privacy properties (encrypted content, key-only codes,
 deniable framing) SHOULD NOT sign that content: a repeated `signer_id`
-links codes to the same author even when their content is unreadable.
+links codes to the same author even when their content is unreadable. Worse,
+signing is **non-repudiable and retroactive** — a private key seized later
+(device confiscation, coercion) lets an adversary prove authorship of every
+code ever signed with it, including ones distributed long before the key was
+compromised. For an author whose safety depends on deniability, a signing
+key is a standing liability with no way to "take back" past signatures.
 Verified Authorship and §9's privacy properties are intended as alternative
 use cases of the same format, not a combination.
 
