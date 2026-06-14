@@ -73,7 +73,7 @@ sleep 3
 adb shell input keyevent KEYCODE_MENU
 sleep 1
 tap_text "Add Demo Collection"
-sleep 2
+sleep 5
 
 screenshot "1-collections"
 
@@ -86,7 +86,7 @@ sleep 1
 # Without location permission, the Map tab prompts for it; dismiss that so
 # it doesn't cover the map (wording varies by Android version).
 try_tap_text "Don't allow" "Deny" "No thanks"
-sleep 3
+sleep 5
 screenshot "3-map"
 
 tap_text "Collections"
