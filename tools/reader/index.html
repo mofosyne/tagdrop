@@ -33,6 +33,7 @@ button.secondary { padding: 7px 14px; background: #fff; border: 1px solid #ccc;
 button.secondary:hover { background: #f0f0f0; }
 button.ghost { background: none; border: 1px solid rgba(255,255,255,0.3); color: #fff;
                padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+button.ghost:disabled { opacity: 0.35; cursor: default; }
 
 /* Scanner overlay */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85);
@@ -88,6 +89,16 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 
 .paper-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* CBOR debug dialog */
+.cbor-box { background: #fff; border-radius: 10px; padding: 16px;
+            width: min(640px, 96vw); max-height: 80vh;
+            display: flex; flex-direction: column; gap: 12px; }
+.cbor-box h2 { margin: 0; font-size: 0.95rem; font-family: monospace;
+               color: #333; word-break: break-all; }
+#cborDump { margin: 0; overflow: auto; font-size: 0.78rem; line-height: 1.4;
+            white-space: pre-wrap; word-break: break-all;
+            background: #f5f5f5; border-radius: 6px; padding: 12px; flex: 1; }
+
 /* Content viewer */
 #contentSection { background: #fff; border-radius: 10px;
                   box-shadow: 0 1px 4px rgba(0,0,0,0.08); overflow: hidden; }
@@ -104,8 +115,19 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 
 <header>
   <h1>TagDrop Reader</h1>
-  <button id="btnClear" class="ghost">Clear cache</button>
+  <div style="display:flex; gap:8px;">
+    <button id="btnCbor" class="ghost" disabled>🔍 CBOR</button>
+    <button id="btnClear" class="ghost">Clear cache</button>
+  </div>
 </header>
+
+<div id="cborOverlay" class="overlay hidden">
+  <div class="cbor-box">
+    <h2 id="cborTitle"></h2>
+    <pre id="cborDump"></pre>
+    <button id="btnCloseCbor" class="secondary">Close</button>
+  </div>
+</div>
 
 <div id="scanOverlay" class="overlay hidden">
   <div class="scan-box">
@@ -265,6 +287,67 @@ const K = {
 const ENVELOPE_VERSION = 1;
 const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
 
+// ── CBOR debug ────────────────────────────────────────────────────────────
+// Mirrors TagDropCodec.describeCbor/describeMap (Kotlin) for the "View raw CBOR"
+// debug view: hex dump, version/type envelope, key-by-key payload breakdown.
+const TYPE_NAMES = { 0: 'Single', 1: 'Manifest', 2: 'Chunk', 3: 'PaperManifest' };
+const KEY_NAMES = {
+  2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
+  6: 'chunk_count', 7: 'total_bytes', 8: 'sha256', 9: 'chunk_index', 10: 'chunk_data',
+  11: 'filename', 12: 'compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
+  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
+  20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
+  26: 'lat', 27: 'lng'
+};
+
+function toHexDump(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+/** Pretty-prints a raw TagDrop CBOR sequence: hex dump, version/type envelope, and a
+ *  key-by-key breakdown of the payload map annotated with KEY_NAMES. */
+function describeCbor(bytes) {
+  let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  try {
+    const items = cborDecodeSequence(bytes);
+    if (items.length < 3) throw new Error('Expected version, type, payload — got ' + items.length + ' item(s)');
+    const [version, type, payload] = items;
+    out += 'version: ' + version + '\n';
+    out += 'type: ' + type + ' (' + (TYPE_NAMES[type] || 'unknown') + ')\n\n';
+    out += describeMap(payload, 0);
+  } catch (e) {
+    out += 'Failed to decode as CBOR sequence: ' + e.message;
+  }
+  return out;
+}
+
+function describeMap(map, indent) {
+  const pad = '  '.repeat(indent);
+  let out = '';
+  for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
+    const value = map[key];
+    const label = KEY_NAMES[key] ? key + ' (' + KEY_NAMES[key] + ')' : String(key);
+    if (value instanceof Uint8Array) {
+      out += pad + label + ': ' + toHexDump(value) + ' (' + value.length + ' bytes)\n';
+    } else if (typeof value === 'string') {
+      out += pad + label + ': "' + value + '"\n';
+    } else if (Array.isArray(value)) {
+      out += pad + label + ': [\n';
+      for (const item of value) {
+        if (item !== null && typeof item === 'object' && !(item instanceof Uint8Array) && !Array.isArray(item)) {
+          out += pad + '  {\n' + describeMap(item, indent + 2) + pad + '  }\n';
+        } else {
+          out += pad + '  ' + item + '\n';
+        }
+      }
+      out += pad + ']\n';
+    } else {
+      out += pad + label + ': ' + value + '\n';
+    }
+  }
+  return out;
+}
+
 // ── TagDrop URI parser ────────────────────────────────────────────────────
 async function parseUri(uri) {
   if (!uri.startsWith('tagdrop:')) return null;
@@ -305,6 +388,7 @@ async function parseUri(uri) {
       filename: m[K.FILENAME] || null,
       mimeType: m[K.MIME],
       content,
+      cbor: seq,
     };
   }
   if (kind === TYPE_PAPER_MANIFEST) {
@@ -315,6 +399,7 @@ async function parseUri(uri) {
       set:      m[K.SET]  || null,
       slug:     m[K.SLUG] || null,
       scannedAt: Date.now(),
+      cbor: seq,
       files: (m[K.FILES] || []).map(f => ({
         slug:     f[K.FILE_SLUG],
         mimeType: f[K.FILE_MIME],
@@ -340,6 +425,7 @@ async function parseUri(uri) {
       compression: m[K.COMPRESSION] || 0,
       chunkCount:  m[K.CHUNK_COUNT],
       sha256:      m[K.SHA256],
+      cbor: seq,
     };
   }
   if (kind === TYPE_CHUNK) {
@@ -348,6 +434,7 @@ async function parseUri(uri) {
       cacheId: toHex(m[K.CACHE_ID]),
       index:   m[K.CHUNK_IDX],
       data:    m[K.CHUNK_DATA],
+      cbor: seq,
     };
   }
   return null;
@@ -462,6 +549,12 @@ function tickScan(video, canvas, stream) {
 
 // ── Main scan handler ─────────────────────────────────────────────────────
 let activePaperHash = null;
+let lastScannedCbor = null;
+let lastScannedTitle = null;
+
+function updateCborButton() {
+  document.getElementById('btnCbor').disabled = !lastScannedCbor;
+}
 
 async function handleScanned(raw) {
   let parsed;
@@ -476,6 +569,9 @@ async function handleScanned(raw) {
         cacheId: parsed.cacheId, mimeType: parsed.mimeType,
         content: parsed.content, hint: parsed.hint, filename: parsed.filename,
       });
+      lastScannedCbor = parsed.cbor;
+      lastScannedTitle = parsed.cacheId;
+      updateCborButton();
       showMsg('Loaded: ' + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
       await showContent(parsed.mimeType, parsed.content, parsed.filename || parsed.hint || parsed.mimeType, parsed.cacheId);
       // Refresh directory if this file belongs to the active paper
@@ -485,12 +581,18 @@ async function handleScanned(raw) {
     case 'paper':
       await dbPut('papers', parsed);
       activePaperHash = parsed.rootHash;
+      lastScannedCbor = parsed.cbor;
+      lastScannedTitle = parsed.rootHash;
+      updateCborButton();
       showMsg('Paper: ' + (parsed.label || 'untitled') + ' — ' + parsed.files.length + ' file(s)', 'ok');
       await renderPaper(parsed.rootHash);
       break;
 
     case 'manifest':
       assemblies[parsed.cacheId] = { manifest: parsed, chunks: new Map() };
+      lastScannedCbor = parsed.cbor;
+      lastScannedTitle = parsed.cacheId;
+      updateCborButton();
       showMsg('Manifest scanned — need ' + parsed.chunkCount + ' chunk(s). Scan them now.', 'info');
       showAssemblyProgress(parsed.cacheId, 0, parsed.chunkCount);
       break;
@@ -501,6 +603,9 @@ async function handleScanned(raw) {
         showMsg('Chunk received but no manifest yet — scan the manifest QR first.', 'warn');
         return;
       }
+      lastScannedCbor = parsed.cbor;
+      lastScannedTitle = parsed.cacheId + ' #' + parsed.index;
+      updateCborButton();
       a.chunks.set(parsed.index, parsed.data);
       const got = a.chunks.size, need = a.manifest.chunkCount;
       if (got < need) {
@@ -773,6 +878,17 @@ document.getElementById('fileList').addEventListener('click', async e => {
   else showMsg('Not cached yet — scan its QR code.', 'warn');
 });
 
+document.getElementById('btnCbor').onclick = () => {
+  if (!lastScannedCbor) return;
+  document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + lastScannedTitle;
+  document.getElementById('cborDump').textContent = describeCbor(lastScannedCbor);
+  document.getElementById('cborOverlay').classList.remove('hidden');
+};
+
+document.getElementById('btnCloseCbor').onclick = () => {
+  document.getElementById('cborOverlay').classList.add('hidden');
+};
+
 document.getElementById('btnClear').onclick = async () => {
   if (!confirm('Clear all cached TagDrop content from this browser?')) return;
   await dbClear();
@@ -789,6 +905,11 @@ document.getElementById('btnClear').onclick = async () => {
   // Show the most recently scanned paper
   const latest = papers.reduce((a, b) => ((b.scannedAt || 0) > (a.scannedAt || 0) ? b : a));
   activePaperHash = latest.rootHash;
+  if (latest.cbor) {
+    lastScannedCbor = latest.cbor;
+    lastScannedTitle = latest.rootHash;
+    updateCborButton();
+  }
   await renderPaper(latest.rootHash);
 })();
 </script>
