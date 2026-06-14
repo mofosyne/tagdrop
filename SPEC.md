@@ -91,11 +91,16 @@ The `payload` map — the third item of the envelope sequence (§2) — uses **i
 | 18 | `collection_label` | text (opt) | S, M, P |
 | 19 | `collection_tag` | text (opt) | S, M, P |
 | 24 | `icon` | text (opt) | S, M, P |
+| 28 | `encryption` | uint (opt) | S, M |
+| 29 | `nonce` | bytes (12, opt) | S, M |
+| 30 | `key_material` | bytes (32, opt) | S, M, P |
+| 31 | `retain_key` | bool (opt, default `true`) | S, M, P |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
 Key 25 is reserved for a future small embedded image icon (raw bytes), as an
-alternative to the emoji `icon` field above.
+alternative to the emoji `icon` field above. Keys 28–31 are defined in §9
+(Encryption).
 
 ### File entry sub-keys (elements of key 15)
 
@@ -119,6 +124,8 @@ Each element is a CBOR map:
 | 23 | `paper_id` | bytes (8, opt) — root hash of the related paper |
 | 26 | `lat` | float64 (opt) — latitude of the related paper |
 | 27 | `lng` | float64 (opt) — longitude of the related paper |
+| 30 | `key_material` | bytes (32, opt) — decryption key for the related paper's content, see §9 |
+| 31 | `retain_key` | bool (opt, default `true`) — see §9 |
 
 ---
 
@@ -261,7 +268,7 @@ Paper (root hash)
 2. **Scan chunks** in any order. The app tracks which `chunk_index` values have been collected.
 3. When `chunks_received == chunk_count`: assemble in ascending `chunk_index` order → concatenate bytes.
 4. Verify: `SHA-256(assembled) == sha256` from manifest. Reject on mismatch.
-5. Decompress if `compression != 0`.
+5. Decrypt if `encryption != 0` (§9), then decompress if `compression != 0`.
 6. Deliver MIME-typed content to the viewer.
 
 **Resumability (issue #14):** Because assembly only needs the CBOR map stored in each QR, a partially-collected set can be saved to a database and resumed later. Each chunk carries `cache_id` so the app can match newly-scanned chunks to a pending collection.
@@ -486,7 +493,134 @@ DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively
 
 ---
 
-## 9. Backward Compatibility: Legacy `data:` URIs
+## 9. Encryption
+
+`content` (key 5) and the assembled chunk bytes (§5) may optionally be
+encrypted, independently of compression (§8).
+
+| `encryption` value | Algorithm |
+|---|---|
+| 0 (or absent) | None |
+| 1 | AES-256-GCM |
+| 2–255 | Reserved |
+
+| Key | Field | Type | Used in |
+|---|---|---|---|
+| 28 | `encryption` | uint (opt) | S, M |
+| 29 | `nonce` | bytes (12, opt) | S, M |
+| 30 | `key_material` | bytes (32, opt) | S, M, P, `related` entries |
+| 31 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
+
+**Order of operations:** compress (§8) first, then encrypt — encrypted bytes
+are high-entropy and don't compress further, so encryption is always the
+last transform applied before transmission, and the first reversed on
+receipt. `sha256` (key 8, §5) continues to cover the assembled bytes exactly
+as transmitted, i.e. after compression *and* encryption, so a partially- or
+incorrectly-assembled multi-code cache can be detected before a decryption
+key is even available.
+
+**AES-256-GCM:** `nonce` (key 29) is the 12-byte GCM nonce, and MUST be
+unique for every encryption performed under a given key — a reused nonce
+breaks AES-GCM's confidentiality entirely. `content` / assembled-chunk
+bytes, when `encryption = 1`, are `ciphertext || 16-byte authentication tag`
+(tag appended) — the default output of both `javax.crypto.Cipher`
+("AES/GCM/NoPadding") on Android and `SubtleCrypto.encrypt()` in browsers,
+so no extra framing is needed in either reference implementation.
+
+```
+payload map {
+  2: h'<8 random bytes>',
+  4: "text/html",
+  5: h'<ciphertext || 16-byte GCM tag>',
+  12: 1,                    // compression — applied before encryption
+  28: 1,                    // encryption: AES-256-GCM
+  29: h'<12-byte nonce>',
+}
+```
+
+### Decryption keys
+
+A decryption key is **32 raw bytes** (`key_material`, key 30) — an
+AES-256-GCM key, used directly with no passphrase or key-derivation step. It
+can appear:
+
+- on any Single, Manifest, or Paper Manifest payload, as a top-level field —
+  "this code also carries a key for other content," independent of whatever
+  `content` (if any) the code itself carries; or
+- on an element of a Paper Manifest's `related` array (key 16, §4.4) —
+  "scanning this paper reveals a key for the related paper," for trails
+  meant to be discovered in sequence.
+
+A Single payload containing `key_material` may omit `content` and
+`mime_type` entirely (otherwise required for Single payloads, §4.1) — a code
+can be *just a key*, with no displayable content of its own:
+
+```
+payload map {
+  30: h'<32-byte AES-256 key>',
+  31: false,                 // retain_key — use once against what's cached now, then forget
+}
+```
+
+`retain_key` (key 31, default `true`) is the author's recommendation for
+whether the app should remember this key for future matches across scanning
+sessions (`true`), or use it only against content already cached *right now*
+and then discard it (`false`). It's a recommendation, not an enforceable
+guarantee — an app or user can always choose to remember a key regardless.
+
+**Discovery, not declaration:** no field says which content a given
+`key_material` decrypts, and no field says a given encrypted `content`
+requires a particular key. Instead, whenever the app learns a new
+`key_material`, it attempts AES-256-GCM decryption (using each candidate's
+`nonce`) against every encrypted `content`/assembled-chunk blob it has
+cached but couldn't previously open — a successful authentication-tag check
+is the match. Symmetrically, whenever a new encrypted payload is cached,
+it's tried against every previously-seen `key_material` (subject to that
+key's `retain_key`). This is cheap — AES-GCM decryption of a few KB against
+a handful of candidates is negligible — and means **scan order doesn't
+matter**: the key first, the content first, or either in a later session,
+the app reconciles them whichever order they arrive in.
+
+### Privacy properties
+
+A few of the choices above double as standard **plausible deniability**
+measures — the inability for an observer to distinguish "this contains
+something hidden" from "this is just opaque data," even with some of the
+format in plain view. The same property underlies things like VeraCrypt's
+hidden volumes or OTR's deniable authentication.
+
+- **Ciphertext is indistinguishable from random.** AES-GCM ciphertext with a
+  fresh nonce is computationally indistinguishable from random bytes. The
+  only fields visible without the key are the envelope (`version`, `type`)
+  and whatever metadata the author chose to leave in the clear — `content`
+  itself reveals nothing about what it decrypts to, or whether any
+  particular `key_material` unlocks it.
+- **Decoders tolerate trailing bytes.** A CBOR Sequence (RFC 8742, §2) is
+  self-delimiting — a decoder reads exactly as many bytes as the known items
+  require and stops. TagDrop decoders MUST NOT treat additional bytes after
+  a complete, valid envelope+payload sequence as an error. A code can
+  therefore carry a second, independent envelope+payload sequence after the
+  first, encrypted under a different key — to a decoder that doesn't know to
+  look for it, indistinguishable from padding.
+- **Keys and content are the same shape.** As above, a `key_material`-only
+  code and a small encrypted Single code look identical — both are short,
+  high-entropy CBOR maps. Nothing marks "this is a key."
+- **Ephemeral-by-default caching is recommended.** Implementations SHOULD
+  NOT persist encrypted content they cannot yet decrypt beyond the current
+  session, unless a `key_material` scanned alongside it has
+  `retain_key = true`. Storage with no record of "content I can't open"
+  reveals less than storage that has one.
+
+None of this is mandatory, and most uses of TagDrop (sticker trails,
+treasure hunts) won't need any of it — but the format doesn't preclude it,
+and each property above is a deliberate small design choice rather than an
+afterthought. These are properties of the *format*; an implementation that
+logs scan history, retains keys against a user's wishes, or makes network
+requests undermines them regardless of what the bytes on the wire look like.
+
+---
+
+## 10. Backward Compatibility: Legacy `data:` URIs
 
 Codes containing a raw `data:` URI (without the `tagdrop:` scheme) are recognised and handled in **legacy mode**:
 
@@ -497,7 +631,7 @@ New content should use the `tagdrop:` scheme. Legacy support will be maintained 
 
 ---
 
-## 10. NFC Transport (future)
+## 11. NFC Transport (future)
 
 The CBOR sequence (`version`, `type`, `payload` — §2; the same bytes that get Base45-encoded into the `tagdrop:` URI) can be stored directly in an NFC NDEF record with:
 
@@ -513,7 +647,7 @@ A NFC-NDEF capable multi-tag sequence would use the same manifest/chunk split, w
 
 ---
 
-## 11. Alternative Carriers
+## 12. Alternative Carriers
 
 The format is carrier-agnostic. Any medium that can carry a UTF-8 string supports the `tagdrop:` URI form. Any medium that carries raw bytes supports the raw CBOR sequence form.
 
@@ -528,18 +662,18 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 
 ---
 
-## 12. Version Negotiation
+## 13. Version Negotiation
 
 `version` is the first item of the envelope sequence (§2) — a single CBOR integer, decodable independently of everything that follows it. A reader encountering an unsupported `version` should stop immediately and show a human-readable "unsupported format version" message, without attempting to decode `type` or `payload` — a future version is free to redefine either, even to something other than CBOR.
 
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. |
+| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. Optional AES-256-GCM encryption (`encryption`/`nonce`, keys 28/29) applied after compression, and optional `key_material`/`retain_key` (keys 30/31) carried inline or via `related` entries, matched by trial decryption rather than declared targets — see §9. |
 
 ---
 
-## 13. Reference Implementations
+## 14. Reference Implementations
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode all payload types; `contentId()`, `rootHashOf()`, `createSingle()`
@@ -556,13 +690,13 @@ Version history:
 
 ---
 
-## 14. Design Notes and Alternatives Considered
+## 15. Design Notes and Alternatives Considered
 
 **Why not extend `data:` URI syntax?** (issues #2, #4, #13) Adding parameters like `;seq-id=`, `;seq-total=`, `;crc=` to the data URI was the original approach. It fails because data: URIs are opaque to QR readers — there's no way to route them to the app by scheme. The `tagdrop:` scheme gives us OS-level routing and a clean separation between the envelope and payload.
 
 **Why a version/type envelope instead of URI path segments or per-map keys?** An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §10/§11) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every payload with a 2-item CBOR Sequence (RFC 8742) — `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — makes the same bytes self-describing on every carrier: Base45-encode them for `tagdrop:<base45>`, or store them raw in an NDEF record, with identical decode logic either way. It also lets the URI collapse to `tagdrop:<base45>` (no `//`, no `/<type>/` segment), gives a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — costs one less byte than `[version, type, payload]` and doesn't require `payload` to be CBOR-wrapped, leaving room for a non-CBOR `payload` in a future version. `version` lives *only* in the envelope, not redundantly inside `payload` too: two fields claiming to describe the same fact can disagree, forcing a reader to pick which one to trust — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. CBOR's own self-describing-data convention (the tag-55799 "magic number", RFC 8949 §3.4.5.3) is likewise an external prefix rather than a duplicated internal field, reinforcing that self-description belongs in the envelope.
 
-**Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§10).
+**Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§11).
 
 **Binary mode vs alphanumeric Base45:** Raw binary QR codes store 8 bits/char. Alphanumeric Base45 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable.
 
