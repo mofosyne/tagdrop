@@ -112,7 +112,8 @@ running from source.
 V2.0 — CBOR-sequence envelope encoding (`tagdrop:<base45>`), paper manifests
 with multi-file directories and relative-link navigation, geographic trails
 via `related` hints, ad-hoc collections, an in-app scanner with a live scan
-board, and a Map tab for located finds.
+board, a Map tab for located finds, and optional AES-256-GCM encryption with
+separate key codes.
 
 ## Extra
 
