@@ -179,4 +179,100 @@ class ChunkAssemblerTest {
         // ChunkAssembler decompresses internally; content should be the raw bytes
         assertArrayEquals(raw, state.content)
     }
+
+    // ── Encryption (SPEC §9) ──────────────────────────────────────────────────
+
+    private fun encryptedManifest(cacheId: ByteArray, ciphertext: ByteArray, nonce: ByteArray, chunkCount: Int) =
+        TagDropPayload.Manifest(
+            cacheId     = cacheId,
+            hint        = "test hint",
+            filename    = "secret.txt",
+            mimeType    = "text/plain",
+            compression = TagDropCodec.COMPRESSION_NONE,
+            chunkCount  = chunkCount,
+            totalBytes  = ciphertext.size,
+            sha256      = sha256(ciphertext),
+            encryption  = TagDropCodec.ENCRYPTION_AES256GCM,
+            nonce       = nonce
+        )
+
+    @Test fun encryptedManifestAwaitsKeyOnceChunksComplete() {
+        val key       = TagDropCodec.generateKeyMaterial()
+        val nonce     = TagDropCodec.generateNonce()
+        val content   = "secret trail notes".toByteArray()
+        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
+        val cacheId   = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts     = chunks(cacheId, ciphertext, 8)
+
+        val a = ChunkAssembler()
+        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        for (chunk in parts.dropLast(1)) {
+            assertTrue(a.add(chunk) is ChunkAssembler.State.Collecting)
+        }
+
+        val final = a.add(parts.last())
+        assertTrue(final is ChunkAssembler.State.AwaitingKey)
+        assertArrayEquals(cacheId, (final as ChunkAssembler.State.AwaitingKey).cacheId)
+        assertArrayEquals(nonce, final.nonce)
+    }
+
+    @Test fun tryKeyWithWrongKeyStaysAwaitingKey() {
+        val key        = TagDropCodec.generateKeyMaterial()
+        val wrongKey   = TagDropCodec.generateKeyMaterial()
+        val nonce      = TagDropCodec.generateNonce()
+        val content    = "secret trail notes".toByteArray()
+        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
+        val cacheId    = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts      = chunks(cacheId, ciphertext, 8)
+
+        val a = ChunkAssembler()
+        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        parts.forEach { a.add(it) }
+        assertTrue(a.currentState() is ChunkAssembler.State.AwaitingKey)
+
+        assertTrue(a.tryKey(wrongKey) is ChunkAssembler.State.AwaitingKey)
+    }
+
+    @Test fun tryKeyWithCorrectKeyResolvesToComplete() {
+        val key        = TagDropCodec.generateKeyMaterial()
+        val nonce      = TagDropCodec.generateNonce()
+        val content    = "secret trail notes".toByteArray()
+        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
+        val cacheId    = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts      = chunks(cacheId, ciphertext, 8)
+
+        val a = ChunkAssembler()
+        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        parts.forEach { a.add(it) }
+
+        val state = a.tryKey(key)
+        assertTrue(state is ChunkAssembler.State.Complete)
+        assertArrayEquals(content, (state as ChunkAssembler.State.Complete).content)
+        assertEquals("test hint", state.hint)
+        assertEquals("secret.txt", state.filename)
+    }
+
+    @Test fun tryKeyBeforeChunksCompleteHasNoEffectButOrderIsIndependent() {
+        val key        = TagDropCodec.generateKeyMaterial()
+        val nonce      = TagDropCodec.generateNonce()
+        val content    = "secret trail notes".toByteArray()
+        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
+        val cacheId    = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts      = chunks(cacheId, ciphertext, 8)
+
+        val a = ChunkAssembler()
+        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+
+        // The key can be scanned before all chunks have arrived — trying it then
+        // has no effect yet (nothing to decrypt), but isn't an error either.
+        assertTrue(a.tryKey(key) is ChunkAssembler.State.Collecting)
+
+        parts.forEach { a.add(it) }
+        assertTrue(a.currentState() is ChunkAssembler.State.AwaitingKey)
+
+        // Trying the same key again now that chunks are complete resolves it.
+        val state = a.tryKey(key)
+        assertTrue(state is ChunkAssembler.State.Complete)
+        assertArrayEquals(content, (state as ChunkAssembler.State.Complete).content)
+    }
 }

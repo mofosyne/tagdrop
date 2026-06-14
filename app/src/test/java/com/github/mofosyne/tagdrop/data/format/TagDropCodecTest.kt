@@ -674,4 +674,169 @@ class TagDropCodecTest {
         val compressed = TagDropCodec.compress(original)
         assertArrayEquals(original, TagDropCodec.decompressPayload(compressed, TagDropCodec.COMPRESSION_DEFLATE))
     }
+
+    // ── Encryption (SPEC §9) ──────────────────────────────────────────────────
+
+    @Test fun encryptAesGcmRoundTrip() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val nonce = TagDropCodec.generateNonce()
+        assertEquals(32, key.size)
+        assertEquals(12, nonce.size)
+
+        val plaintext = "secret message".toByteArray()
+        val ciphertext = TagDropCodec.encryptAesGcm(plaintext, key, nonce)
+        assertArrayEquals(plaintext, TagDropCodec.decryptAesGcm(ciphertext, key, nonce))
+    }
+
+    @Test fun decryptAesGcmWrongKeyReturnsNull() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val wrongKey = TagDropCodec.generateKeyMaterial()
+        val nonce = TagDropCodec.generateNonce()
+        val ciphertext = TagDropCodec.encryptAesGcm("secret".toByteArray(), key, nonce)
+        assertNull(TagDropCodec.decryptAesGcm(ciphertext, wrongKey, nonce))
+    }
+
+    @Test fun decryptAesGcmWrongNonceReturnsNull() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val nonce = TagDropCodec.generateNonce()
+        val wrongNonce = TagDropCodec.generateNonce()
+        val ciphertext = TagDropCodec.encryptAesGcm("secret".toByteArray(), key, nonce)
+        assertNull(TagDropCodec.decryptAesGcm(ciphertext, key, wrongNonce))
+    }
+
+    @Test fun createSingleUnencryptedHasNoEncryptionFields() {
+        val content = "plain content".toByteArray()
+        val payload = TagDropCodec.createSingle(null, null, "text/plain", content)
+        assertEquals(TagDropCodec.ENCRYPTION_NONE, payload.encryption)
+        assertNull(payload.nonce)
+        assertArrayEquals(TagDropCodec.contentId(content), payload.cacheId)
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
+        assertEquals(TagDropCodec.ENCRYPTION_NONE, decoded.encryption)
+        assertNull(decoded.nonce)
+        assertNull(decoded.keyMaterial)
+    }
+
+    @Test fun createSingleEncryptedRoundTrip() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val content = "Hello, encrypted TagDrop!".toByteArray()
+        val payload = TagDropCodec.createSingle(null, null, "text/plain", content, encryptionKey = key)
+
+        assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, payload.encryption)
+        assertEquals(12, payload.nonce?.size)
+        // Encrypted content uses a random cache_id, not a content-addressed one (SPEC §9).
+        assertFalse(payload.cacheId.contentEquals(TagDropCodec.contentId(content)))
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
+        assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, decoded.encryption)
+        assertArrayEquals(payload.nonce, decoded.nonce)
+        assertArrayEquals(payload.cacheId, decoded.cacheId)
+        assertArrayEquals(payload.content, decoded.content)
+
+        assertArrayEquals(content, TagDropCodec.resolveContent(decoded, key))
+        assertNull(TagDropCodec.resolveContent(decoded, TagDropCodec.generateKeyMaterial()))
+        assertNull(TagDropCodec.resolveContent(decoded, null))
+    }
+
+    @Test fun createSingleEncryptedWithCompression() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val content = "<html><body>Hello!</body></html>".repeat(20).toByteArray()
+        val payload = TagDropCodec.createSingle(null, null, "text/html", content, compress = true, encryptionKey = key)
+        assertEquals(TagDropCodec.COMPRESSION_DEFLATE, payload.compression)
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
+        assertArrayEquals(content, TagDropCodec.resolveContent(decoded, key))
+    }
+
+    // ── createKeyCode factory ─────────────────────────────────────────────────
+
+    @Test fun createKeyCodeRoundTrip() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val payload = TagDropCodec.createKeyCode(key, hint = "key for the trailhead box")
+        assertEquals("", payload.mimeType)
+        assertTrue(payload.content.isEmpty())
+        assertEquals(8, payload.cacheId.size)
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
+        assertArrayEquals(key, decoded.keyMaterial)
+        assertEquals("key for the trailhead box", decoded.hint)
+        assertEquals("", decoded.mimeType)
+        assertTrue(decoded.content.isEmpty())
+        assertTrue(decoded.retainKey)
+    }
+
+    @Test fun createKeyCodeOmitsMimeAndContentFromCbor() {
+        val payload = TagDropCodec.createKeyCode(TagDropCodec.generateKeyMaterial())
+        val cbor = TagDropCodec.singleCbor(payload)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertFalse("mime_type (4) should be omitted for key-only codes", map.containsKey(4))
+        assertFalse("content (5) should be omitted for key-only codes", map.containsKey(5))
+        assertTrue("key_material (30) should be present", map.containsKey(30))
+    }
+
+    @Test fun createKeyCodeWithRetainKeyFalse() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val payload = TagDropCodec.createKeyCode(key, retainKey = false)
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
+        assertFalse(decoded.retainKey)
+    }
+
+    @Test fun retainKeyDefaultTrueOmittedFromCbor() {
+        val payload = TagDropCodec.createKeyCode(TagDropCodec.generateKeyMaterial())  // retainKey = true (default)
+        val cbor = TagDropCodec.singleCbor(payload)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertFalse("retain_key (31) defaults to true and should be omitted", map.containsKey(31))
+    }
+
+    // ── createManifestAndChunks with encryption ──────────────────────────────
+
+    @Test fun createManifestAndChunksWithEncryptionUsesRandomCacheId() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val content = "Hello, TagDrop!".repeat(200).toByteArray()
+        val (manifest, _) = TagDropCodec.createManifestAndChunks(
+            null, null, "text/plain", content, chunkCount = 3, encryptionKey = key
+        )
+        assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, manifest.encryption)
+        assertEquals(12, manifest.nonce?.size)
+        assertFalse(manifest.cacheId.contentEquals(TagDropCodec.contentId(content)))
+    }
+
+    @Test fun createManifestAndChunksWithEncryptionRoundTripViaChunkAssembler() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val content = "The quick brown fox jumps over the lazy dog. ".repeat(100).toByteArray()
+        val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
+            "hint", "fox.txt", "text/plain", content, compress = true,
+            chunkCount = TagDropCodec.chunkCountForBytes(TagDropCodec.compress(content).size),
+            encryptionKey = key
+        )
+        assertEquals(TagDropCodec.COMPRESSION_DEFLATE, manifest.compression)
+        assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, manifest.encryption)
+
+        // Round-trip every piece through encode/decode, like a real scan would.
+        val decodedManifest = TagDropCodec.decode(TagDropCodec.encode(manifest)) as TagDropPayload.Manifest
+        val decodedChunks = chunks.map { TagDropCodec.decode(TagDropCodec.encode(it)) as TagDropPayload.Chunk }
+
+        val assembler = ChunkAssembler()
+        assembler.add(decodedManifest)
+        decodedChunks.shuffled(java.util.Random(42)).forEach { assembler.add(it) }
+
+        // All chunks present and hash-verified, but content is still encrypted.
+        val awaiting = assembler.currentState()
+        assertTrue(awaiting is ChunkAssembler.State.AwaitingKey)
+        assertArrayEquals(manifest.nonce, (awaiting as ChunkAssembler.State.AwaitingKey).nonce)
+
+        // A non-matching key leaves the state unchanged (SPEC §9 "discovery, not declaration").
+        assertTrue(assembler.tryKey(TagDropCodec.generateKeyMaterial()) is ChunkAssembler.State.AwaitingKey)
+
+        // The correct key resolves to the original, decompressed content.
+        val complete = assembler.tryKey(key)
+        assertTrue(complete is ChunkAssembler.State.Complete)
+        assertArrayEquals(content, (complete as ChunkAssembler.State.Complete).content)
+        assertEquals("hint", complete.hint)
+        assertEquals("fox.txt", complete.filename)
+    }
 }

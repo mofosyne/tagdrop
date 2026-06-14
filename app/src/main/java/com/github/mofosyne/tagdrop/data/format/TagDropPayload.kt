@@ -19,12 +19,16 @@ sealed class TagDropPayload {
 
     /** Complete cache encoded in a single QR. */
     data class Single(
-        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8] — content-addressed
+        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8] — content-addressed; random if encrypted (SPEC §9)
         val hint: String?,
         val filename: String?,
-        val mimeType: String,
+        val mimeType: String,     // empty for a key-only code (SPEC §9)
         val compression: Int,     // 0 = none, 1 = deflate
-        val content: ByteArray,   // raw (possibly compressed) payload bytes
+        val content: ByteArray,   // raw (possibly compressed+encrypted) payload bytes; empty for a key-only code
+        val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM (SPEC §9)
+        val nonce: ByteArray? = null,           // 12-byte AES-GCM nonce, present iff encryption != 0 (SPEC §9)
+        val keyMaterial: ByteArray? = null,     // optional — a decryption key for OTHER content (SPEC §9)
+        val retainKey: Boolean = true,          // recommendation for whether keyMaterial should be remembered (SPEC §9)
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
         val collectionLabel: String? = null,    // optional — human-readable name for the collection
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
@@ -39,14 +43,18 @@ sealed class TagDropPayload {
      * Designed for geographic distribution: each chunk can be at a different location.
      */
     data class Manifest(
-        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8]
+        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8]; random if encrypted (SPEC §9)
         val hint: String?,
         val filename: String?,
         val mimeType: String,
         val compression: Int,
         val chunkCount: Int,
         val totalBytes: Int,
-        val sha256: ByteArray,    // SHA-256 of the assembled (uncompressed) content
+        val sha256: ByteArray,    // SHA-256 of the assembled, compressed AND encrypted bytes (SPEC §9)
+        val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM (SPEC §9)
+        val nonce: ByteArray? = null,           // 12-byte AES-GCM nonce, present iff encryption != 0 (SPEC §9)
+        val keyMaterial: ByteArray? = null,     // optional — a decryption key for OTHER content (SPEC §9)
+        val retainKey: Boolean = true,          // recommendation for whether keyMaterial should be remembered (SPEC §9)
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
         val collectionLabel: String? = null,    // optional — human-readable name for the collection
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
@@ -83,7 +91,9 @@ sealed class TagDropPayload {
         val slug: String?   = null,    // that paper's address within the set
         val paperId: ByteArray? = null,// root hash of that paper, if pre-computed
         val lat: Double? = null,       // latitude of the related paper, if known
-        val lng: Double? = null        // longitude of the related paper, if known
+        val lng: Double? = null,       // longitude of the related paper, if known
+        val keyMaterial: ByteArray? = null,  // optional — a decryption key for the related paper (SPEC §9)
+        val retainKey: Boolean = true        // recommendation for whether keyMaterial should be remembered (SPEC §9)
     ) {
         override fun equals(other: Any?) = other is RelatedPaper && hint == other.hint
         override fun hashCode() = hint.hashCode()
@@ -111,7 +121,9 @@ sealed class TagDropPayload {
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
         val collectionLabel: String? = null,    // optional — human-readable name for the collection
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
-        val icon: String? = null                // optional — emoji icon for this page/collection
+        val icon: String? = null,               // optional — emoji icon for this page/collection
+        val keyMaterial: ByteArray? = null,     // optional — a decryption key for OTHER content (SPEC §9)
+        val retainKey: Boolean = true           // recommendation for whether keyMaterial should be remembered (SPEC §9)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is PaperManifest && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()

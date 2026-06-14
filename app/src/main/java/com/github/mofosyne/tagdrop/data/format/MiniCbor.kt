@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream
  *   - Text strings    (major type 3)
  *   - Arrays          (major type 4)
  *   - Maps with integer keys (major type 5)
+ *   - Booleans        (major type 7, additional info 20/21)
  *   - Float64         (major type 7, additional info 27)
  *   - Null (0xf6)
  *
@@ -54,6 +55,7 @@ object MiniCbor {
         when (v) {
             is Int       -> writeHead(out, 0, v.toLong())
             is Long      -> writeHead(out, 0, v)
+            is Boolean   -> out.write(if (v) 0xF5 else 0xF4) // true (0xf5) / false (0xf4)
             is ByteArray -> { writeHead(out, 2, v.size.toLong()); out.write(v) }
             is String    -> {
                 val bytes = v.toByteArray(Charsets.UTF_8)
@@ -144,6 +146,8 @@ object MiniCbor {
             4 -> List(arg.toInt()) { readValue(stream) }
             5 -> readMapFromStream(stream, arg.toInt())
             7 -> when (b and 0x1F) {
+                20 -> false                   // false (0xf4)
+                21 -> true                    // true (0xf5)
                 22 -> Unit                    // null (0xf6)
                 27 -> Double.fromBits(arg)    // float64 (0xfb)
                 else -> throw IllegalArgumentException("Unsupported simple value 0x${b.toString(16)}")

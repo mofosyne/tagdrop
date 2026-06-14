@@ -3,8 +3,12 @@ package com.github.mofosyne.tagdrop.data.format
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.zip.DeflaterOutputStream
 import java.util.zip.InflaterInputStream
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Encodes and decodes TagDrop QR payloads.
@@ -41,6 +45,10 @@ import java.util.zip.InflaterInputStream
  *   19 collection_tag   text, optional      (Single, Manifest, PaperManifest)
  *   24 icon              text, optional      (Single, Manifest, PaperManifest) — emoji icon
  *   25 reserved for future image icon (bytes — small embedded icon image)
+ *   28 encryption    uint, optional   0=none 1=AES-256-GCM (Single, Manifest) — SPEC §9
+ *   29 nonce         bytes(12), optional, present iff encryption != 0 (Single, Manifest) — SPEC §9
+ *   30 key_material  bytes(32), optional — a decryption key for OTHER content (Single, Manifest, PaperManifest) — SPEC §9
+ *   31 retain_key    bool, optional, default true — wherever key_material appears — SPEC §9
  *
  * File entry sub-keys (within key 15 elements):
  *   20 slug        text
@@ -54,11 +62,20 @@ import java.util.zip.InflaterInputStream
  *   23 paper_id    bytes(8), optional
  *   26 lat         float64, optional — latitude of the related paper
  *   27 lng         float64, optional — longitude of the related paper
+ *   30 key_material bytes(32), optional — decryption key for the related paper — SPEC §9
+ *   31 retain_key   bool, optional, default true — SPEC §9
  */
 object TagDropCodec {
 
     const val COMPRESSION_NONE    = 0
     const val COMPRESSION_DEFLATE = 1
+
+    const val ENCRYPTION_NONE      = 0
+    const val ENCRYPTION_AES256GCM = 1
+
+    private const val AES_KEY_BYTES   = 32
+    private const val GCM_NONCE_BYTES = 12
+    private const val GCM_TAG_BITS    = 128
 
     /** Encoded URI length that reliably fits in one QR code (CreateActivity/CreatePaperActivity warn past this). */
     const val MAX_URI_LENGTH = 2000
@@ -106,6 +123,10 @@ object TagDropCodec {
     // K_ICON_IMAGE = 25 — reserved for a future small embedded image icon (bytes)
     private const val K_LAT         = 26
     private const val K_LNG         = 27
+    private const val K_ENCRYPTION    = 28
+    private const val K_NONCE         = 29
+    private const val K_KEY_MATERIAL  = 30
+    private const val K_RETAIN_KEY    = 31
 
     // ── Content addressing (IPFS-inspired) ───────────────────────────────────
 
@@ -121,30 +142,126 @@ object TagDropCodec {
     fun rootHashOf(paperManifestCbor: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(paperManifestCbor).copyOf(8)
 
+    /**
+     * 8 random bytes — `cache_id` for encrypted content (SPEC §9). Encrypted content
+     * uses a random ID rather than [contentId] so the ID itself can't be used as a
+     * content-equality oracle against a known plaintext.
+     */
+    fun randomCacheId(): ByteArray = ByteArray(8).also { SecureRandom().nextBytes(it) }
+
+    // ── Encryption (SPEC §9) ──────────────────────────────────────────────────
+
+    /** Generates a fresh 32-byte AES-256-GCM key (`key_material`, SPEC §9). */
+    fun generateKeyMaterial(): ByteArray = ByteArray(AES_KEY_BYTES).also { SecureRandom().nextBytes(it) }
+
+    /** Generates a fresh 12-byte AES-GCM nonce. MUST be unique per encryption under a given key (SPEC §9). */
+    fun generateNonce(): ByteArray = ByteArray(GCM_NONCE_BYTES).also { SecureRandom().nextBytes(it) }
+
+    /** AES-256-GCM encrypt; returns `ciphertext || 16-byte tag` (SPEC §9). */
+    fun encryptAesGcm(plaintext: ByteArray, key: ByteArray, nonce: ByteArray): ByteArray {
+        require(key.size == AES_KEY_BYTES) { "AES-256-GCM key_material must be $AES_KEY_BYTES bytes" }
+        require(nonce.size == GCM_NONCE_BYTES) { "AES-GCM nonce must be $GCM_NONCE_BYTES bytes" }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+        return cipher.doFinal(plaintext)
+    }
+
+    /**
+     * AES-256-GCM decrypt of `ciphertext || tag`. Returns null if [key]/[nonce] don't
+     * authenticate — per SPEC §9 this is the "discovery" match test: a failed auth tag
+     * just means this candidate key doesn't apply to this content, not an error.
+     */
+    fun decryptAesGcm(ciphertextAndTag: ByteArray, key: ByteArray, nonce: ByteArray): ByteArray? {
+        require(key.size == AES_KEY_BYTES) { "AES-256-GCM key_material must be $AES_KEY_BYTES bytes" }
+        require(nonce.size == GCM_NONCE_BYTES) { "AES-GCM nonce must be $GCM_NONCE_BYTES bytes" }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+        return runCatching { cipher.doFinal(ciphertextAndTag) }.getOrNull()
+    }
+
+    /**
+     * Decompresses (and decrypts, if [payload] is encrypted) its content. Returns null
+     * if the content is encrypted and [key] is missing or doesn't authenticate (SPEC §9).
+     */
+    fun resolveContent(payload: TagDropPayload.Single, key: ByteArray? = null): ByteArray? {
+        val raw = if (payload.encryption == ENCRYPTION_AES256GCM) {
+            val nonce = payload.nonce ?: return null
+            val decrypted = key?.let { decryptAesGcm(payload.content, it, nonce) } ?: return null
+            decrypted
+        } else {
+            payload.content
+        }
+        return decompressPayload(raw, payload.compression)
+    }
+
     // ── Factory helpers ───────────────────────────────────────────────────────
 
-    /** Build a Single payload with an auto-computed content-addressed ID. */
+    /**
+     * Build a Single payload with an auto-computed content-addressed ID.
+     *
+     * If [encryptionKey] is given (32 bytes, see [generateKeyMaterial]), the
+     * (possibly-compressed) content is AES-256-GCM encrypted under a fresh nonce
+     * (SPEC §9), `encryption`/`nonce` are set, and `cacheId` is random rather than
+     * content-addressed — see [randomCacheId].
+     */
     fun createSingle(
         hint: String?, filename: String?, mimeType: String,
         rawContent: ByteArray, compress: Boolean = false, collectionId: ByteArray? = null,
-        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null
+        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
+        encryptionKey: ByteArray? = null
     ): TagDropPayload.Single {
-        val (content, compression) = if (compress) {
+        val (compressed, compression) = if (compress) {
             compress(rawContent) to COMPRESSION_DEFLATE
         } else {
             rawContent to COMPRESSION_NONE
         }
+        val cacheId: ByteArray
+        val content: ByteArray
+        val encryption: Int
+        val nonce: ByteArray?
+        if (encryptionKey != null) {
+            nonce = generateNonce()
+            content = encryptAesGcm(compressed, encryptionKey, nonce)
+            encryption = ENCRYPTION_AES256GCM
+            cacheId = randomCacheId()
+        } else {
+            content = compressed
+            encryption = ENCRYPTION_NONE
+            nonce = null
+            cacheId = contentId(rawContent)
+        }
         return TagDropPayload.Single(
-            cacheId         = contentId(rawContent),
+            cacheId         = cacheId,
             hint            = hint,
             filename        = filename,
             mimeType        = mimeType,
             compression     = compression,
             content         = content,
+            encryption      = encryption,
+            nonce           = nonce,
             collectionId    = collectionId,
             collectionLabel = collectionLabel,
             collectionTag   = collectionTag,
             icon            = icon
+        )
+    }
+
+    /**
+     * Build a "key-only" Single payload (SPEC §9): carries [keyMaterial] for other
+     * content, with no `content`/`mime_type` of its own. `cacheId` is random — there's
+     * no content to address.
+     */
+    fun createKeyCode(keyMaterial: ByteArray, retainKey: Boolean = true, hint: String? = null): TagDropPayload.Single {
+        require(keyMaterial.size == AES_KEY_BYTES) { "key_material must be $AES_KEY_BYTES bytes" }
+        return TagDropPayload.Single(
+            cacheId     = randomCacheId(),
+            hint        = hint,
+            filename    = null,
+            mimeType    = "",
+            compression = COMPRESSION_NONE,
+            content     = ByteArray(0),
+            keyMaterial = keyMaterial,
+            retainKey   = retainKey
         )
     }
 
@@ -159,19 +276,40 @@ object TagDropCodec {
      * of the same content share an ID. The manifest's sha256 covers the assembled
      * (possibly compressed) bytes; chunks split those bytes into equal-sized pieces
      * (the last one may be shorter).
+     *
+     * If [encryptionKey] is given (32 bytes, see [generateKeyMaterial]), the assembled
+     * (possibly-compressed) bytes are AES-256-GCM encrypted under a fresh nonce (SPEC
+     * §9) before being split into chunks, `encryption`/`nonce` are set on the manifest,
+     * `sha256` covers the encrypted bytes, and `cacheId` is random rather than
+     * content-addressed — see [randomCacheId].
      */
     fun createManifestAndChunks(
         hint: String?, filename: String?, mimeType: String,
         rawContent: ByteArray, compress: Boolean = false, chunkCount: Int,
         collectionId: ByteArray? = null, collectionLabel: String? = null,
-        collectionTag: String? = null, icon: String? = null
+        collectionTag: String? = null, icon: String? = null,
+        encryptionKey: ByteArray? = null
     ): Pair<TagDropPayload.Manifest, List<TagDropPayload.Chunk>> {
         require(chunkCount >= 1) { "chunkCount must be >= 1" }
-        val cacheId = contentId(rawContent)
-        val (assembled, compression) = if (compress) {
+        val (compressed, compression) = if (compress) {
             compress(rawContent) to COMPRESSION_DEFLATE
         } else {
             rawContent to COMPRESSION_NONE
+        }
+        val cacheId: ByteArray
+        val assembled: ByteArray
+        val encryption: Int
+        val nonce: ByteArray?
+        if (encryptionKey != null) {
+            nonce = generateNonce()
+            assembled = encryptAesGcm(compressed, encryptionKey, nonce)
+            encryption = ENCRYPTION_AES256GCM
+            cacheId = randomCacheId()
+        } else {
+            assembled = compressed
+            encryption = ENCRYPTION_NONE
+            nonce = null
+            cacheId = contentId(rawContent)
         }
         val totalBytes = assembled.size
         val sha256 = MessageDigest.getInstance("SHA-256").digest(assembled)
@@ -185,6 +323,8 @@ object TagDropCodec {
             chunkCount      = chunkCount,
             totalBytes      = totalBytes,
             sha256          = sha256,
+            encryption      = encryption,
+            nonce           = nonce,
             collectionId    = collectionId,
             collectionLabel = collectionLabel,
             collectionTag   = collectionTag,
@@ -220,19 +360,26 @@ object TagDropCodec {
     }
 
     /** Raw CBOR sequence (envelope + payload) for a Single payload — useful for on-device inspection. */
-    fun singleCbor(payload: TagDropPayload.Single): ByteArray =
-        envelope(TYPE_SINGLE, listOf(
+    fun singleCbor(payload: TagDropPayload.Single): ByteArray {
+        // A key-only code (SPEC §9) omits content/mime_type entirely rather than encoding them empty.
+        val keyOnly = payload.keyMaterial != null && payload.content.isEmpty() && payload.mimeType.isEmpty()
+        return envelope(TYPE_SINGLE, listOf(
             K_CACHE_ID    to payload.cacheId,
             K_HINT        to payload.hint,
             K_FILENAME    to payload.filename,
-            K_MIME        to payload.mimeType,
+            K_MIME        to payload.mimeType.takeIf { !keyOnly },
             K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
-            K_CONTENT     to payload.content,
+            K_CONTENT     to payload.content.takeIf { !keyOnly },
+            K_ENCRYPTION  to payload.encryption.takeIf { it != ENCRYPTION_NONE },
+            K_NONCE       to payload.nonce,
             K_COLLECTION_ID    to payload.collectionId,
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
-            K_ICON             to payload.icon
+            K_ICON             to payload.icon,
+            K_KEY_MATERIAL to payload.keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
         ))
+    }
 
     /** Raw CBOR sequence (envelope + payload) for a Manifest payload — useful for on-device inspection. */
     fun manifestCbor(payload: TagDropPayload.Manifest): ByteArray =
@@ -245,10 +392,14 @@ object TagDropCodec {
             K_CHUNK_COUNT to payload.chunkCount,
             K_TOTAL_BYTES to payload.totalBytes,
             K_SHA256      to payload.sha256,
+            K_ENCRYPTION  to payload.encryption.takeIf { it != ENCRYPTION_NONE },
+            K_NONCE       to payload.nonce,
             K_COLLECTION_ID    to payload.collectionId,
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
-            K_ICON             to payload.icon
+            K_ICON             to payload.icon,
+            K_KEY_MATERIAL to payload.keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
         ))
 
     /** Raw CBOR sequence (envelope + payload) for a Chunk payload — useful for on-device inspection. */
@@ -293,13 +444,17 @@ object TagDropCodec {
                     K_SLUG     to r.slug,
                     K_PAPER_ID to r.paperId,
                     K_LAT      to r.lat,
-                    K_LNG      to r.lng
+                    K_LNG      to r.lng,
+                    K_KEY_MATERIAL to r.keyMaterial,
+                    K_RETAIN_KEY   to false.takeIf { r.keyMaterial != null && !r.retainKey }
                 ))
             },
             K_COLLECTION_ID    to payload.collectionId,
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
-            K_ICON             to payload.icon
+            K_ICON             to payload.icon,
+            K_KEY_MATERIAL to payload.keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
         )
 
     /**
@@ -313,13 +468,15 @@ object TagDropCodec {
         label: String?, set: String?, slug: String?,
         files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
         collectionId: ByteArray? = null, collectionLabel: String? = null,
-        collectionTag: String? = null, icon: String? = null
+        collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true
     ): TagDropPayload.PaperManifest {
         val draft = TagDropPayload.PaperManifest(
             rootHash = ByteArray(8), label = label, set = set, slug = slug,
             files = files, related = related,
             collectionId = collectionId, collectionLabel = collectionLabel,
-            collectionTag = collectionTag, icon = icon
+            collectionTag = collectionTag, icon = icon,
+            keyMaterial = keyMaterial, retainKey = retainKey
         )
         val cborNoHash = envelope(TYPE_PAPER_MANIFEST, paperManifestPairs(draft, rootHash = null))
         return draft.copy(rootHash = rootHashOf(cborNoHash))
@@ -371,9 +528,13 @@ object TagDropCodec {
         cacheId         = m.bytes(K_CACHE_ID),
         hint            = m.text(K_HINT),
         filename        = m.text(K_FILENAME),
-        mimeType        = m.text(K_MIME)!!,
+        mimeType        = m.text(K_MIME) ?: "",
         compression     = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
-        content         = m.bytes(K_CONTENT),
+        content         = m.bytesOrNull(K_CONTENT) ?: ByteArray(0),
+        encryption      = m.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
+        nonce           = m.bytesOrNull(K_NONCE),
+        keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
+        retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true,
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
         collectionLabel = m.text(K_COLLECTION_LABEL),
         collectionTag   = m.text(K_COLLECTION_TAG),
@@ -389,6 +550,10 @@ object TagDropCodec {
         chunkCount      = m.uint(K_CHUNK_COUNT)!!.toInt(),
         totalBytes      = m.uint(K_TOTAL_BYTES)!!.toInt(),
         sha256          = m.bytes(K_SHA256),
+        encryption      = m.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
+        nonce           = m.bytesOrNull(K_NONCE),
+        keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
+        retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true,
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
         collectionLabel = m.text(K_COLLECTION_LABEL),
         collectionTag   = m.text(K_COLLECTION_TAG),
@@ -415,12 +580,14 @@ object TagDropCodec {
         val related = (m[K_RELATED] as? List<*>)?.mapNotNull { entry ->
             val em = entry as? Map<Int, Any> ?: return@mapNotNull null
             TagDropPayload.RelatedPaper(
-                hint    = em.text(K_HINT) ?: return@mapNotNull null,
-                set     = em.text(K_SET),
-                slug    = em.text(K_SLUG),
-                paperId = em[K_PAPER_ID] as? ByteArray,
-                lat     = em.doubleOrNull(K_LAT),
-                lng     = em.doubleOrNull(K_LNG)
+                hint        = em.text(K_HINT) ?: return@mapNotNull null,
+                set         = em.text(K_SET),
+                slug        = em.text(K_SLUG),
+                paperId     = em[K_PAPER_ID] as? ByteArray,
+                lat         = em.doubleOrNull(K_LAT),
+                lng         = em.doubleOrNull(K_LNG),
+                keyMaterial = em.bytesOrNull(K_KEY_MATERIAL),
+                retainKey   = em.boolOrNull(K_RETAIN_KEY) ?: true
             )
         } ?: emptyList()
 
@@ -434,7 +601,9 @@ object TagDropCodec {
             collectionId    = m.bytesOrNull(K_COLLECTION_ID),
             collectionLabel = m.text(K_COLLECTION_LABEL),
             collectionTag   = m.text(K_COLLECTION_TAG),
-            icon            = m.text(K_ICON)
+            icon            = m.text(K_ICON),
+            keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
+            retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true
         )
     }
 
@@ -469,6 +638,8 @@ object TagDropCodec {
 
     private fun Map<Int, Any>.doubleOrNull(key: Int): Double? = get(key) as? Double
 
+    private fun Map<Int, Any>.boolOrNull(key: Int): Boolean? = get(key) as? Boolean
+
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /** Human-readable names for TagDrop's CBOR payload-map integer keys, used by [describeCbor]. */
@@ -481,7 +652,9 @@ object TagDropCodec {
         K_COLLECTION_ID to "collection_id", K_COLLECTION_LABEL to "collection_label",
         K_COLLECTION_TAG to "collection_tag", K_FILE_SLUG to "slug", K_FILE_MIME to "mime_type",
         K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon",
-        K_LAT to "lat", K_LNG to "lng"
+        K_LAT to "lat", K_LNG to "lng",
+        K_ENCRYPTION to "encryption", K_NONCE to "nonce",
+        K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key"
     )
 
     /** Human-readable names for the envelope's `type` values, used by [describeCbor]. */

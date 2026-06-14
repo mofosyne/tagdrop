@@ -45,6 +45,8 @@
     border-radius: 12px; font-size: 0.7rem; background: #e8eaf6; color: #3949ab;
   }
   .qr-card .qr-badge.compress { background: #e8f5e9; color: #2e7d32; }
+  .qr-card .qr-badge.encrypted { background: #fce4ec; color: #ad1457; }
+  .qr-card .qr-badge.key        { background: #fff3e0; color: #e65100; }
   .qr-card .qr-id   { font-family: monospace; font-size: 0.65rem; color: #aaa; margin-top: 4px; word-break: break-all; }
   .qr-card .qr-uri  { margin-top: 8px; width: 100%; }
   .qr-card .qr-uri input {
@@ -97,6 +99,20 @@
       Scan any one with the <a href="../reader/index.html">web reader</a> or the Android app.
     </p>
     <div class="qr-grid" id="standalone-grid"></div>
+  </section>
+
+  <section id="sec-encrypted">
+    <h2>Encrypted Content (SPEC §9)</h2>
+    <p class="section-desc">
+      AES-256-GCM encrypted content, plus a separate <strong>key code</strong>.
+      Scan either one first — the reader hash-verifies the content code right away but
+      keeps it locked until the key code is also scanned (in either order), per SPEC §9's
+      "discovery, not declaration": no field declares which content a key unlocks, so the
+      reader tries it by trial decryption. The content code's <code>cache_id</code> is
+      random rather than content-addressed, so it can't be used as a content-equality oracle.
+    </p>
+    <div class="paper-info" id="encryption-info"></div>
+    <div class="qr-grid" id="encryption-grid"></div>
   </section>
 
   <section id="sec-multi">
@@ -189,6 +205,7 @@ function cfloat(v) { return { __float64: true, value: v }; }
 function cborValue(out, v) {
   if (v === null || v === undefined) return;
   if (v && v.__float64) { cborFloat64(out, v.value); }
+  else if (typeof v === 'boolean') { out.push(v ? 0xF5 : 0xF4); } // true (0xf5) / false (0xf4)
   else if (typeof v === 'number') { writeHead(out, 0, v); }
   else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
   else if (typeof v === 'string') {
@@ -267,13 +284,42 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
-            LAT:26, LNG:27 };
+            LAT:26, LNG:27,
+            ENCRYPTION:28, NONCE:29, KEY_MATERIAL:30, RETAIN_KEY:31 };
+
+// ── Encryption (SPEC §9) ────────────────────────────────────────────────────
+function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
+function generateNonce() { return crypto.getRandomValues(new Uint8Array(12)); }
+
+// 8 random bytes — cache_id for encrypted content (SPEC §9): random rather than
+// content-addressed, so the ID itself can't be used as a content-equality oracle.
+function randomCacheId() { return crypto.getRandomValues(new Uint8Array(8)); }
+
+// AES-256-GCM encrypt; returns ciphertext || 16-byte tag (SPEC §9).
+async function encryptAesGcm(plaintext, key, nonce) {
+  const cryptoKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
+  return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cryptoKey, plaintext));
+}
 
 // ── Encoding ──────────────────────────────────────────────────────────────
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
+/**
+ * If encryptionKey is given (32 bytes), the (possibly-compressed) content is
+ * AES-256-GCM encrypted under a fresh nonce (or the given one, for reproducible
+ * examples), encryption/nonce are set, and cache_id is random rather than
+ * content-addressed (SPEC §9).
+ */
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey, nonce }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
-  const cacheId = await sha256first8(rawBytes);
+  let cacheId, encryption = null, usedNonce = null;
+  if (encryptionKey) {
+    usedNonce = nonce || generateNonce();
+    content = await encryptAesGcm(content, encryptionKey, usedNonce);
+    encryption = 1;
+    cacheId = randomCacheId();
+  } else {
+    cacheId = await sha256first8(rawBytes);
+  }
   const payload = cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
@@ -281,6 +327,26 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
     [K.MIME,        mimeType],
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
+    [K.ENCRYPTION,  encryption],
+    [K.NONCE,       usedNonce],
+  ]);
+  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId, encryption, nonce: usedNonce };
+}
+
+/**
+ * Builds a "key-only" Single payload (SPEC §9): carries keyMaterial for other
+ * content, with no content/mime_type of its own. cache_id is random — there's
+ * no content to address. Per SPEC §9's "discovery, not declaration", no field
+ * says which content this key unlocks — a reader tries it against any encrypted
+ * content it has cached.
+ */
+function encodeKeyCode({ keyMaterial, hint, retainKey }) {
+  const cacheId = randomCacheId();
+  const payload = cborMap([
+    [K.CACHE_ID,     cacheId],
+    [K.HINT,         hint || null],
+    [K.KEY_MATERIAL, keyMaterial],
+    [K.RETAIN_KEY,   retainKey === false ? false : null],
   ]);
   return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
@@ -439,6 +505,27 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
     }, null, 2),
   },
 ];
+
+// Encrypted content (SPEC §9) — AES-256-GCM. The key/nonce are generated fresh
+// on each page load (see main()), so the two QR codes below differ between
+// reloads but always pair correctly with each other.
+const ENCRYPTED_EXAMPLE = {
+  label: 'Encrypted note',
+  mimeType: 'text/plain',
+  compress: false,
+  hint: 'Encrypted — scan the key code too',
+  keyHint: 'Key for "Encrypted note"',
+  filename: 'secret.txt',
+  content:
+`This message is encrypted with AES-256-GCM (SPEC §9).
+
+If you're reading this in the TagDrop app or web reader, you scanned both
+this content code and its separate key code — in either order — and the
+reader matched them by trial decryption ("discovery, not declaration").
+
+The cache_id on this code is random, not derived from this content, so it
+can't be used to test whether you already have a copy of this message.`,
+};
 
 // Content too large for a single QR (~800 bytes recommended max) — split into
 // a Manifest (type=1) plus several Chunks (type=2) per SPEC.md §4.2-4.3.
@@ -815,13 +902,13 @@ async function renderQr(container, uri) {
 // ── Card rendering ────────────────────────────────────────────────────────
 const messages = document.getElementById('page-messages');
 
-async function addCard(grid, { label, mime, extraBadge, id, uri, isManifest }) {
+async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isManifest }) {
   const div = document.createElement('div');
   div.className = 'qr-card' + (isManifest ? ' manifest' : '');
   const qrSlot = document.createElement('div');
   div.appendChild(qrSlot);
   const mimeBadge = `<span class="qr-badge">${escHtml(mime)}</span>`;
-  const extra = extraBadge ? ` <span class="qr-badge compress">${escHtml(extraBadge)}</span>` : '';
+  const extra = extraBadge ? ` <span class="qr-badge ${badgeClass || 'compress'}">${escHtml(extraBadge)}</span>` : '';
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
     <div>${mimeBadge}${extra}</div>
@@ -869,6 +956,34 @@ async function main() {
       isManifest: false,
     });
   }
+
+  // Encrypted content + key code (SPEC §9)
+  const ee = ENCRYPTED_EXAMPLE;
+  const eeRawBytes = new TextEncoder().encode(ee.content);
+  const eeKey = generateKeyMaterial();
+  const eeEncoded = await encodeSingle({
+    hint: ee.hint, filename: ee.filename, mimeType: ee.mimeType,
+    rawBytes: eeRawBytes, compress: ee.compress, encryptionKey: eeKey,
+  });
+  const eeKeyCode = encodeKeyCode({ keyMaterial: eeKey, hint: ee.keyHint });
+
+  document.getElementById('encryption-info').innerHTML = `
+    <strong>${escHtml(ee.label)}</strong>
+    — ${escHtml(ee.mimeType)}, AES-256-GCM encrypted<br>
+    Cache ID: <code>${toHex(eeEncoded.cacheId)}</code> (random — not content-addressed)<br>
+    Nonce: <code>${toHex(eeEncoded.nonce)}</code>
+    <div class="step">① Scan the <strong>content</strong> code — it hash-verifies but stays locked ("awaiting key").</div>
+    <div class="step">② Scan the <strong>key</strong> code, in any order. The reader tries it against cached ciphertext and unlocks a match.</div>`;
+
+  const encryptionGrid = document.getElementById('encryption-grid');
+  await addCard(encryptionGrid, {
+    label: ee.label, mime: ee.mimeType, extraBadge: 'encrypted', badgeClass: 'encrypted',
+    id: toHex(eeEncoded.cacheId), uri: eeEncoded.uri, isManifest: false,
+  });
+  await addCard(encryptionGrid, {
+    label: 'Key code', mime: 'key_material', extraBadge: 'key', badgeClass: 'key',
+    id: toHex(eeKeyCode.cacheId), uri: eeKeyCode.uri, isManifest: false,
+  });
 
   // Multi-code cache: Manifest + Chunks
   const mc = MULTI_CHUNK_EXAMPLE;
