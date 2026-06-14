@@ -1,0 +1,21 @@
+TagDrop turns small files — text, HTML pages, images, audio, SVGs — into self-contained QR codes that work completely offline. Print one on a sticker or sheet of paper and leave it somewhere; anyone with the TagDrop app (or any QR scanner that follows tagdrop: links) can scan it and view the content immediately, with no internet connection, server, or account required.
+
+Think of it as a digital geocache: instead of a logbook in a box, the "cache" is the QR code itself.
+
+<b>What you can do with it</b>
+
+<ul>
+<li>Drop a single page — encode text, an HTML page, an SVG image, or JSON into one QR code, either in-app (Create Cache) or with the web generator.</li>
+<li>Drop a whole "paper" — a printable sheet with a directory QR code (a paper manifest) plus one QR per file, built in-app (Create Paper) or with the web generator. Pages can link to each other with ordinary relative links, so a small static site survives being printed and scanned back in.</li>
+<li>Spread large content across multiple codes — split a payload too big for one QR into a manifest plus chunk codes placed along a trail. The app collects chunks in any order and reassembles and verifies them.</li>
+<li>Build trails and collections — link papers together with location hints, or tag a loose set of stickers with a shared collection so they group into one card on the home screen and map, even though each code is independently scannable.</li>
+<li>Browse offline — scanned pages render in an in-app viewer. The Collections, History, and Map tabs let you revisit, locate, and manage everything you've found.</li>
+</ul>
+
+<b>How it works</b>
+
+Every code carries a tagdrop: URI — a CBOR sequence (version, type, and payload map), Base45-encoded so it packs efficiently into a QR code's alphanumeric mode. Content can optionally be DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical content always gets the same ID regardless of who created it.
+
+<b>Status</b>
+
+V2.0 — CBOR-sequence envelope encoding, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, an in-app scanner with a live scan board, and a Map tab for located finds.

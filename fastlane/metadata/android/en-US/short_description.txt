@@ -1,0 +1,1 @@
+Encode text, pages and files into offline QR codes — a digital geocache
