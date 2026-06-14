@@ -524,6 +524,17 @@ as transmitted, i.e. after compression *and* encryption, so a partially- or
 incorrectly-assembled multi-code cache can be detected before a decryption
 key is even available.
 
+**`cache_id` for encrypted content is random, not content-addressed.**
+§4.5 defines `cache_id = SHA-256(uncompressed content)[0:8]` so that
+identical content always gets the same ID — useful for deduplication, but
+exactly the wrong property for encrypted content: it would let anyone
+compute the `cache_id` of a known plaintext and check whether any encrypted
+code in the wild carries it, confirming "this hidden content equals known
+document X" without the key. When `encryption != 0`, `cache_id` (key 2)
+MUST instead be 8 random bytes, independent of the plaintext — deliberately
+giving up cross-author deduplication for encrypted content in exchange for
+not leaking a content-equality oracle.
+
 **AES-256-GCM:** `nonce` (key 29) is the 12-byte GCM nonce, and MUST be
 unique for every encryption performed under a given key — a reused nonce
 breaks AES-GCM's confidentiality entirely. `content` / assembled-chunk
