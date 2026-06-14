@@ -13,9 +13,10 @@
 #   scripts/capture-fdroid-screenshots.sh
 #
 # Output goes to fastlane/metadata/android/en-US/images/phoneScreenshots/ as
-# descriptively-named PNGs. Review them, delete any you don't want, and
-# rename the ones you're keeping to 1.png, 2.png, ... in the order they
-# should appear on the store listing.
+# 1.png, 2.png, ... (F-Droid's fastlane ordering convention), overwriting any
+# existing files there. Review afterwards and delete any you don't want —
+# but note that gaps in the numbering may confuse F-Droid's ordering, so
+# renumber the rest if you remove one.
 
 set -euo pipefail
 
@@ -78,11 +79,11 @@ sleep 1
 tap_text "Add Demo Collection"
 sleep 5
 
-screenshot "1-collections"
+screenshot "1"
 
 tap_text "History"
 sleep 1
-screenshot "2-history"
+screenshot "2"
 
 tap_text "Map"
 sleep 1
@@ -90,13 +91,13 @@ sleep 1
 # it doesn't cover the map (wording varies by Android version).
 try_tap_text "Don't allow" "Deny" "No thanks"
 sleep 5
-screenshot "3-map"
+screenshot "3"
 
 tap_text "Collections"
 sleep 1
 tap_text "Demo Trail"
 sleep 1
-screenshot "4-collection-detail"
+screenshot "4"
 
 # --- Create screens: CreateActivity/CreatePaperActivity aren't exported, so
 # `am start -n` for them is rejected by the platform from the shell. Navigate
@@ -108,7 +109,7 @@ adb shell input keyevent KEYCODE_MENU
 sleep 1
 tap_text "Create Cache"
 sleep 1
-screenshot "5-create"
+screenshot "5"
 
 adb shell input keyevent KEYCODE_BACK   # back to MainActivity
 sleep 1
@@ -117,7 +118,7 @@ adb shell input keyevent KEYCODE_MENU
 sleep 1
 tap_text "Create Paper"
 sleep 1
-screenshot "6-create-paper"
+screenshot "6"
 
 adb shell input keyevent KEYCODE_BACK   # back to MainActivity
 sleep 1
@@ -125,8 +126,9 @@ sleep 1
 # --- Scanner screen (ReceiveActivity is exported, so am start works) ---
 adb shell am start -W -n "$APP_ID/.ReceiveActivity" >/dev/null
 sleep 2
-screenshot "7-scan"
+screenshot "7"
 
 echo
 echo "Done. Screenshots saved to $OUT_DIR/"
-echo "Review, drop any you don't want, and rename the keepers to 1.png, 2.png, ..."
+echo "Review and delete any you don't want — but renumber the rest if you do,"
+echo "so there are no gaps (F-Droid uses the numbering for ordering)."
