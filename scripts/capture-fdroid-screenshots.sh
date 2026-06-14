@@ -60,9 +60,10 @@ screenshot() {
   echo "Capturing $1.png..."
   # Write to device storage and pull, rather than `adb exec-out ... > file`,
   # which can corrupt binary output (e.g. CRLF translation on Windows/Git Bash).
-  # -d 0 pins the capture to the main display, since foldables report
-  # multiple displays and the default pick isn't guaranteed consistent.
-  adb shell screencap -p -d 0 /data/local/tmp/screenshot.png
+  # Don't pass -d: on at least one foldable, display 0 isn't a valid id, and
+  # the unqualified default has worked fine (just prints a harmless warning
+  # about multiple displays).
+  adb shell screencap -p /data/local/tmp/screenshot.png
   adb pull /data/local/tmp/screenshot.png "$OUT_DIR/$1.png" >/dev/null
 }
 
