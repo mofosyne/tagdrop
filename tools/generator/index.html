@@ -62,6 +62,13 @@
   .qr-label { font-weight: 600; font-size: 0.9rem; word-break: break-all; }
   .qr-sub   { font-size: 0.75rem; color: #888; margin-top: 2px; }
   .qr-id    { font-family: monospace; font-size: 0.7rem; color: #aaa; margin-top: 4px; }
+  .qr-badge {
+    display: inline-block; margin: 2px 0; padding: 2px 8px;
+    border-radius: 12px; font-size: 0.7rem; background: #e8eaf6; color: #3949ab;
+  }
+  .qr-badge.encrypted { background: #fce4ec; color: #ad1457; }
+  .qr-badge.key       { background: #fff3e0; color: #e65100; }
+  .qr-item.key-item   { border: 2px dashed #e65100; }
 
   .warn { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px;
           border-radius: 4px; margin-top: 12px; font-size: 0.85rem; }
@@ -136,6 +143,14 @@
         <label style="margin:0">
           <input type="checkbox" id="s-compress"> Compress with DEFLATE
           <small style="display:block;color:#888;margin-top:2px">Saves ~50–70% for HTML/text</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-encrypt"> 🔒 Encrypt this content (AES-256-GCM)
+          <small style="display:block;color:#888;margin-top:2px">Generates a separate key code (SPEC §9) — print or share it apart from the content code</small>
         </label>
       </div>
     </div>
@@ -255,6 +270,7 @@ function cfloat(v) { return { __float64: true, value: v }; }
 function cborValue(out, v) {
   if (v === null || v === undefined) return;
   if (v && v.__float64) { cborFloat64(out, v.value); }
+  else if (typeof v === 'boolean') { out.push(v ? 0xF5 : 0xF4); } // true (0xf5) / false (0xf4)
   else if (typeof v === 'number') { writeHead(out, 0, v); }
   else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
   else if (typeof v === 'string') {
@@ -330,12 +346,40 @@ async function zlibCompress(bytes) {
 // CBOR payload-map keys (key 1 "version" is retired — it lives in the envelope)
 const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
-             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27 };
+             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27,
+             ENCRYPTION:28, NONCE:29, KEY_MATERIAL:30, RETAIN_KEY:31 };
 
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
+// ── Encryption (SPEC §9) ────────────────────────────────────────────────────
+function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
+function generateNonce() { return crypto.getRandomValues(new Uint8Array(12)); }
+
+// 8 random bytes — cache_id for encrypted content (SPEC §9): random rather than
+// content-addressed, so the ID itself can't be used as a content-equality oracle.
+function randomCacheId() { return crypto.getRandomValues(new Uint8Array(8)); }
+
+// AES-256-GCM encrypt; returns ciphertext || 16-byte tag (SPEC §9).
+async function encryptAesGcm(plaintext, key, nonce) {
+  const cryptoKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
+  return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cryptoKey, plaintext));
+}
+
+/**
+ * If encryptionKey is given (32 bytes), the (possibly-compressed) content is
+ * AES-256-GCM encrypted under a fresh nonce, encryption/nonce are set, and
+ * cache_id is random rather than content-addressed (SPEC §9).
+ */
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
-  const cacheId = await sha256first8(rawBytes);
+  let cacheId, encryption = null, nonce = null;
+  if (encryptionKey) {
+    nonce = generateNonce();
+    content = await encryptAesGcm(content, encryptionKey, nonce);
+    encryption = 1;
+    cacheId = randomCacheId();
+  } else {
+    cacheId = await sha256first8(rawBytes);
+  }
   const payload = cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
@@ -343,6 +387,25 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress }) {
     [K.MIME,        mimeType],
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
+    [K.ENCRYPTION,  encryption],
+    [K.NONCE,       nonce],
+  ]);
+  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId, encryption, nonce };
+}
+
+/**
+ * Builds a "key-only" Single payload (SPEC §9): carries keyMaterial for other
+ * content, with no content/mime_type of its own. cache_id is random — there's
+ * no content to address. Per SPEC §9's "discovery, not declaration", no field
+ * says which content this key unlocks — a reader tries it against any encrypted
+ * content it has cached.
+ */
+function encodeKeyCode({ keyMaterial, hint }) {
+  const cacheId = randomCacheId();
+  const payload = cborMap([
+    [K.CACHE_ID,     cacheId],
+    [K.HINT,         hint || null],
+    [K.KEY_MATERIAL, keyMaterial],
   ]);
   return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
@@ -400,6 +463,30 @@ async function renderQr(container, uri) {
   });
 }
 
+// Builds one QR card (canvas + label/sub/id + print/copy actions) and appends it to grid.
+// `label` is inserted as-is (escape before calling); `sub`/`id` are escaped here.
+async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, itemClass }) {
+  const item = document.createElement('div');
+  item.className = 'qr-item' + (itemClass ? ' ' + itemClass : '');
+  const qrDiv = document.createElement('div');
+  item.appendChild(qrDiv);
+  const badgeHtml = badge ? ` <span class="qr-badge ${badgeClass || ''}">${escHtml(badge)}</span>` : '';
+  item.insertAdjacentHTML('beforeend', `
+    <div class="qr-label">${label}</div>
+    <div class="qr-sub">${escHtml(sub)}${badgeHtml}</div>
+    <div class="qr-id">ID: ${escHtml(id)}</div>`);
+  grid.appendChild(item);
+
+  await renderQr(qrDiv, uri); // throws on failure — caller handles
+
+  const actionRow = document.createElement('div');
+  actionRow.className = 'action-row';
+  actionRow.innerHTML = `
+    <button class="secondary" onclick="window.print()">🖨 Print</button>
+    <button class="secondary" onclick="copyToClipboard('${uri.replace(/'/g,"\\'")}')">Copy URI</button>`;
+  item.appendChild(actionRow);
+}
+
 // ── Single-file generator ─────────────────────────────────────────────────
 async function generateSingle() {
   const msgs   = document.getElementById('s-messages');
@@ -411,41 +498,58 @@ async function generateSingle() {
   const mimeType = document.getElementById('s-mime').value;
   const text     = document.getElementById('s-content').value;
   const compress = document.getElementById('s-compress').checked;
+  const encrypt  = document.getElementById('s-encrypt').checked;
 
   if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
 
   const rawBytes = new TextEncoder().encode(text);
+  const encryptionKey = encrypt ? generateKeyMaterial() : null;
   let encoded;
-  try { encoded = await encodeSingle({ hint, filename, mimeType, rawBytes, compress }); }
+  try { encoded = await encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey }); }
   catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
 
   if (encoded.uri.length > 2000)
-    msgs.innerHTML = `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
+    msgs.innerHTML += `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
       Enable compression or reduce content size.</div>`;
+  if (encrypt)
+    msgs.innerHTML += `<div class="warn">🔒 Two QR codes generated: the <strong>content</strong> code and a
+      separate <strong>key</strong> code (SPEC §9). Keep them apart — print or share on different paper —
+      since anyone with both can decrypt the content.</div>`;
 
-  const item = document.createElement('div');
-  item.className = 'qr-item';
-  const qrDiv = document.createElement('div');
-  item.appendChild(qrDiv);
-  item.innerHTML += `<div class="qr-label">${hint ? escHtml(hint) : (filename ? escHtml(filename) : 'TagDrop')}</div>
-    <div class="qr-sub">${mimeType}${compress ? ' · deflate' : ''}</div>
-    <div class="qr-id">ID: ${toHex(encoded.cacheId)}</div>`;
   result.innerHTML = '<div class="qr-grid"></div>';
-  result.querySelector('.qr-grid').appendChild(item);
-  item.insertBefore(qrDiv, item.firstChild);
+  const grid = result.querySelector('.qr-grid');
+
   try {
-    await renderQr(qrDiv, encoded.uri);
-  } catch(e) {
+    await addGeneratorQrCard(grid, {
+      label: hint ? escHtml(hint) : (filename ? escHtml(filename) : 'TagDrop'),
+      sub: `${mimeType}${compress ? ' · deflate' : ''}`,
+      badge: encrypt ? 'encrypted' : null,
+      badgeClass: 'encrypted',
+      id: toHex(encoded.cacheId),
+      uri: encoded.uri,
+    });
+  } catch (e) {
     msgs.innerHTML += `<div class="err">QR rendering failed. Is the qrcode library loaded? (requires internet on first use)</div>`;
     return;
   }
 
-  const actionRow = document.createElement('div');
-  actionRow.className = 'action-row';
-  actionRow.innerHTML = `
-    <button class="secondary" onclick="window.print()">🖨 Print</button>
-    <button class="secondary" onclick="copyToClipboard('${encoded.uri.replace(/'/g,"\\'")}')">Copy URI</button>`;
-  result.appendChild(actionRow);
+  if (encrypt) {
+    const keyHint = hint ? `Key for: ${hint}` : (filename ? `Key for: ${filename}` : 'TagDrop key');
+    const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
+    try {
+      await addGeneratorQrCard(grid, {
+        label: escHtml(keyHint),
+        sub: 'key_material (AES-256-GCM)',
+        badge: 'key',
+        badgeClass: 'key',
+        id: toHex(keyEncoded.cacheId),
+        uri: keyEncoded.uri,
+        itemClass: 'key-item',
+      });
+    } catch (e) {
+      msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
+    }
+  }
 }
 
 // ── Paper layout generator ─────────────────────────────────────────────────

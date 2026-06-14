@@ -229,6 +229,8 @@ function cborDecodeSequence(bytes) {
       }
       case 7:
         if (b === 0xF6) return null;
+        if (b === 0xF4) return false;
+        if (b === 0xF5) return true;
         if ((b & 0x1F) === 27) return new DataView(a.buffer, a.byteOffset, 8).getFloat64(0);
         throw new Error('Unsupported CBOR simple value: 0x' + b.toString(16));
       default: throw new Error('Unsupported CBOR major type: ' + major);
@@ -263,6 +265,17 @@ async function zlibDecompress(bytes) {
   return out;
 }
 
+// ── Encryption (SPEC §9) ──────────────────────────────────────────────────
+// AES-256-GCM decrypt; returns null on authentication failure (wrong key/nonce).
+async function decryptAesGcm(ciphertextAndTag, key, nonce) {
+  try {
+    const cryptoKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, cryptoKey, ciphertextAndTag));
+  } catch (e) {
+    return null;
+  }
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────
 function toHex(u8) {
   return Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -280,7 +293,8 @@ const K = {
   FILENAME:11, COMPRESSION:12,
   SET:13, SLUG:14, FILES:15, RELATED:16,
   FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23,
-  LAT:26, LNG:27
+  LAT:26, LNG:27,
+  ENCRYPTION:28, NONCE:29, KEY_MATERIAL:30, RETAIN_KEY:31
 };
 
 // CBOR-sequence envelope (SPEC §2): tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
@@ -297,7 +311,8 @@ const KEY_NAMES = {
   11: 'filename', 12: 'compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
-  26: 'lat', 27: 'lng'
+  26: 'lat', 27: 'lng',
+  28: 'encryption', 29: 'nonce', 30: 'key_material', 31: 'retain_key'
 };
 
 function toHexDump(bytes) {
@@ -379,15 +394,29 @@ async function parseUri(uri) {
   if (version !== ENVELOPE_VERSION) return { type: 'invalid' };
 
   if (kind === TYPE_SINGLE) {
-    let content = m[K.CONTENT];
-    if (m[K.COMPRESSION] === 1) content = await zlibDecompress(content);
+    // Key-only code (SPEC §9): carries key_material for other content, no content/mime
+    // of its own. Per "discovery, not declaration", nothing says which content it unlocks.
+    const keyMaterial = m[K.KEY_MATERIAL];
+    if (keyMaterial) {
+      return {
+        type: 'key',
+        cacheId:    toHex(m[K.CACHE_ID]),
+        hint:       m[K.HINT] || null,
+        keyMaterial,
+        retainKey:  m[K.RETAIN_KEY] !== false,
+        cbor: seq,
+      };
+    }
     return {
       type: 'single',
-      cacheId:  toHex(m[K.CACHE_ID]),
-      hint:     m[K.HINT]     || null,
-      filename: m[K.FILENAME] || null,
-      mimeType: m[K.MIME],
-      content,
+      cacheId:     toHex(m[K.CACHE_ID]),
+      hint:        m[K.HINT]     || null,
+      filename:    m[K.FILENAME] || null,
+      mimeType:    m[K.MIME],
+      content:     m[K.CONTENT],
+      compression: m[K.COMPRESSION] || 0,
+      encryption:  m[K.ENCRYPTION]  || 0,
+      nonce:       m[K.NONCE] || null,
       cbor: seq,
     };
   }
@@ -423,6 +452,8 @@ async function parseUri(uri) {
       filename:    m[K.FILENAME] || null,
       mimeType:    m[K.MIME],
       compression: m[K.COMPRESSION] || 0,
+      encryption:  m[K.ENCRYPTION]  || 0,
+      nonce:       m[K.NONCE] || null,
       chunkCount:  m[K.CHUNK_COUNT],
       sha256:      m[K.SHA256],
       cbor: seq,
@@ -445,13 +476,15 @@ let _db;
 async function getDb() {
   if (_db) return _db;
   return new Promise((res, rej) => {
-    const req = indexedDB.open('tagdrop-reader', 1);
+    const req = indexedDB.open('tagdrop-reader', 2);
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('caches'))
         d.createObjectStore('caches', { keyPath: 'cacheId' });
       if (!d.objectStoreNames.contains('papers'))
         d.createObjectStore('papers', { keyPath: 'rootHash' });
+      if (!d.objectStoreNames.contains('keys'))
+        d.createObjectStore('keys', { keyPath: 'id' });
     };
     req.onsuccess = e => { _db = e.target.result; res(_db); };
     req.onerror = () => rej(req.error);
@@ -485,18 +518,49 @@ async function dbGetAll(store) {
 }
 async function dbClear() {
   const d = await getDb();
-  return new Promise((res, rej) => {
-    const tx = d.transaction(['caches', 'papers'], 'readwrite');
+  await new Promise((res, rej) => {
+    const tx = d.transaction(['caches', 'papers', 'keys'], 'readwrite');
     tx.objectStore('caches').clear();
     tx.objectStore('papers').clear();
+    tx.objectStore('keys').clear();
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
   });
+  for (const id of Object.keys(pendingEncrypted)) delete pendingEncrypted[id];
 }
 
 // ── Chunk assembly ────────────────────────────────────────────────────────
 // In-memory only — multi-code sets must be scanned in one session.
 const assemblies = {};
+
+// ── Encrypted content awaiting a key (SPEC §9) ───────────────────────────
+// In-memory only, keyed by cacheId hex: hash-verified ciphertext that has no
+// matching key_material yet. Resolved when a 'key' code is scanned (or was
+// already retained from a previous scan).
+const pendingEncrypted = {};
+
+/**
+ * Decrypts (if encrypted) and decompresses verified bytes, storing the result in
+ * the 'caches' store. If encrypted and no retained key matches, stashes the
+ * ciphertext in pendingEncrypted and returns null — resolved later by a 'key' scan.
+ */
+async function resolveAndStore(cacheId, bytes, { encryption, nonce, compression, mimeType, hint, filename }) {
+  if (encryption === 1) { // AES-256-GCM (SPEC §9)
+    for (const k of await dbGetAll('keys')) {
+      const plain = await decryptAesGcm(bytes, k.keyMaterial, nonce);
+      if (plain !== null) {
+        const content = compression === 1 ? await zlibDecompress(plain) : plain;
+        await dbPut('caches', { cacheId, mimeType, content, hint, filename });
+        return content;
+      }
+    }
+    pendingEncrypted[cacheId] = { ciphertext: bytes, nonce, compression, mimeType, hint, filename };
+    return null;
+  }
+  const content = compression === 1 ? await zlibDecompress(bytes) : bytes;
+  await dbPut('caches', { cacheId, mimeType, content, hint, filename });
+  return content;
+}
 
 // ── Camera / QR scanner ───────────────────────────────────────────────────
 let scanning = false;
@@ -564,19 +628,47 @@ async function handleScanned(raw) {
 
   switch (parsed.type) {
 
-    case 'single':
-      await dbPut('caches', {
-        cacheId: parsed.cacheId, mimeType: parsed.mimeType,
-        content: parsed.content, hint: parsed.hint, filename: parsed.filename,
-      });
+    case 'single': {
       lastScannedCbor = parsed.cbor;
       lastScannedTitle = parsed.cacheId;
       updateCborButton();
+      const content = await resolveAndStore(parsed.cacheId, parsed.content, parsed);
+      if (content === null) {
+        showMsg('🔒 Encrypted content received — scan its key code to unlock.', 'info');
+        if (activePaperHash) await renderPaper(activePaperHash);
+        return;
+      }
       showMsg('Loaded: ' + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
-      await showContent(parsed.mimeType, parsed.content, parsed.filename || parsed.hint || parsed.mimeType, parsed.cacheId);
+      await showContent(parsed.mimeType, content, parsed.filename || parsed.hint || parsed.mimeType, parsed.cacheId);
       // Refresh directory if this file belongs to the active paper
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
+    }
+
+    case 'key': {
+      lastScannedCbor = parsed.cbor;
+      lastScannedTitle = parsed.cacheId;
+      updateCborButton();
+      if (parsed.retainKey) {
+        await dbPut('keys', { id: toHex(parsed.keyMaterial), keyMaterial: parsed.keyMaterial, hint: parsed.hint });
+      }
+      let unlockedAny = false;
+      for (const [cacheId, entry] of Object.entries(pendingEncrypted)) {
+        const plain = await decryptAesGcm(entry.ciphertext, parsed.keyMaterial, entry.nonce);
+        if (plain === null) continue;
+        const content = entry.compression === 1 ? await zlibDecompress(plain) : plain;
+        await dbPut('caches', { cacheId, mimeType: entry.mimeType, content, hint: entry.hint, filename: entry.filename });
+        delete pendingEncrypted[cacheId];
+        unlockedAny = true;
+        showMsg('Decrypted: ' + (entry.filename || entry.hint || entry.mimeType), 'ok');
+        await showContent(entry.mimeType, content, entry.filename || entry.hint || entry.mimeType, cacheId);
+      }
+      if (!unlockedAny) {
+        showMsg('Key code scanned' + (parsed.retainKey ? ' and stored' : '') + ' — scan its content code to unlock.', 'info');
+      }
+      if (activePaperHash) await renderPaper(activePaperHash);
+      break;
+    }
 
     case 'paper':
       await dbPut('papers', parsed);
@@ -630,13 +722,14 @@ async function handleScanned(raw) {
       let ok = expected && hashBytes.length === expected.length;
       if (ok) for (let i = 0; i < hashBytes.length; i++) if (hashBytes[i] !== expected[i]) { ok = false; break; }
       if (!ok) { showMsg('Integrity check failed — try rescanning all chunks.', 'err'); return; }
-      const content = a.manifest.compression === 1 ? await zlibDecompress(raw) : raw;
-      await dbPut('caches', {
-        cacheId: a.manifest.cacheId, mimeType: a.manifest.mimeType,
-        content, hint: a.manifest.hint, filename: a.manifest.filename,
-      });
+      const content = await resolveAndStore(a.manifest.cacheId, raw, a.manifest);
       delete assemblies[a.manifest.cacheId];
       hideAssemblyProgress();
+      if (content === null) {
+        showMsg('🔒 All chunks assembled and verified — scan the key code to unlock.', 'info');
+        if (activePaperHash) await renderPaper(activePaperHash);
+        break;
+      }
       showMsg('All chunks assembled!', 'ok');
       await showContent(a.manifest.mimeType, content, a.manifest.filename || a.manifest.hint || a.manifest.mimeType, a.manifest.cacheId);
       if (activePaperHash) await renderPaper(activePaperHash);
@@ -708,10 +801,11 @@ async function renderPaper(rootHash) {
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
         '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>';
     } else {
+      const label = pendingEncrypted[f.fileId] ? '🔒 needs key' : 'not scanned';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
-        '<span class="missing-label">not scanned</span>';
+        '<span class="missing-label">' + label + '</span>';
     }
     list.appendChild(li);
   }
