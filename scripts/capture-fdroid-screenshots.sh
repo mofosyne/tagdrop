@@ -33,16 +33,27 @@ adb wait-for-device
 echo "Building and installing debug APK..."
 ./gradlew installDebug
 
-# Pre-grant runtime permissions so dialogs don't block automation.
+# Pre-grant the camera permission so the scanner screenshot doesn't need a
+# dialog dismissed. Deliberately do NOT grant (and explicitly revoke) location
+# permissions: without them, the demo collection falls back to its built-in
+# San Francisco-area placeholder coordinates instead of this device's real
+# location, and the Map tab won't show a "my location" dot.
 adb shell pm grant "$APP_ID" android.permission.CAMERA >/dev/null 2>&1 || true
-adb shell pm grant "$APP_ID" android.permission.ACCESS_FINE_LOCATION >/dev/null 2>&1 || true
-adb shell pm grant "$APP_ID" android.permission.ACCESS_COARSE_LOCATION >/dev/null 2>&1 || true
+adb shell pm revoke "$APP_ID" android.permission.ACCESS_FINE_LOCATION >/dev/null 2>&1 || true
+adb shell pm revoke "$APP_ID" android.permission.ACCESS_COARSE_LOCATION >/dev/null 2>&1 || true
 
 adb shell am force-stop "$APP_ID"
 
 tap_text() {
   echo "Tapping '$1'..."
   python3 "$HELPER" "$1"
+}
+
+# Like tap_text, but doesn't fail the script if none of the given texts are
+# found — for dismissing dialogs whose wording varies by Android version.
+try_tap_text() {
+  echo "Tapping (if present) $*..."
+  python3 "$HELPER" --optional "$@"
 }
 
 screenshot() {
@@ -71,6 +82,10 @@ sleep 1
 screenshot "2-history"
 
 tap_text "Map"
+sleep 1
+# Without location permission, the Map tab prompts for it; dismiss that so
+# it doesn't cover the map (wording varies by Android version).
+try_tap_text "Don't allow" "Deny" "No thanks"
 sleep 3
 screenshot "3-map"
 

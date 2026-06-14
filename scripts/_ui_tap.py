@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Tap the center of the first on-screen element whose text or
-content-description contains the given string (case-insensitive),
+content-description contains one of the given strings (case-insensitive),
 via `adb shell uiautomator dump` + `adb shell input tap`.
 
-If nothing matches, prints every visible text/content-desc on screen
-(for debugging) and exits non-zero.
+If nothing matches: with --optional, exit 0 (no-op); otherwise print every
+visible text/content-desc on screen (for debugging) and exit non-zero.
 
-Usage: _ui_tap.py <text>
+Usage: _ui_tap.py [--optional] <text> [<text> ...]
 """
 import re
 import subprocess
@@ -30,9 +30,15 @@ def dump_tree():
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit("usage: _ui_tap.py <text>")
-    needle = sys.argv[1].lower()
+    args = sys.argv[1:]
+    optional = False
+    if args and args[0] == "--optional":
+        optional = True
+        args = args[1:]
+    if not args:
+        sys.exit("usage: _ui_tap.py [--optional] <text> [<text> ...]")
+
+    needles = [a.lower() for a in args]
 
     tree = None
     for attempt in range(3):
@@ -40,7 +46,8 @@ def main():
         for node in tree.iter("node"):
             text = node.get("text", "")
             desc = node.get("content-desc", "")
-            if needle in text.lower() or needle in desc.lower():
+            haystack = f"{text} {desc}".lower()
+            if any(needle in haystack for needle in needles):
                 bounds = node.get("bounds", "")
                 m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
                 if not m:
@@ -51,6 +58,9 @@ def main():
                 return
         time.sleep(1)
 
+    if optional:
+        return
+
     labels = set()
     for node in tree.iter("node"):
         for attr in ("text", "content-desc"):
@@ -58,7 +68,7 @@ def main():
             if val:
                 labels.add(val)
 
-    print(f"No UI element found matching '{sys.argv[1]}'.", file=sys.stderr)
+    print(f"No UI element found matching any of {args!r}.", file=sys.stderr)
     print("Visible text/content-desc on screen:", file=sys.stderr)
     for label in sorted(labels):
         print(f"  - {label!r}", file=sys.stderr)
