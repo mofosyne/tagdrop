@@ -99,6 +99,19 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         return null
     }
 
+    /**
+     * Looks up the paper-wide stylesheet sibling for the paper identified by [rootHashHex]
+     * (SPEC §7 convention: a file with slug "style.css" and mimeType "text/css"), returning
+     * its cached content as text, or null if the paper, file, or its content isn't available.
+     */
+    suspend fun findStylesheet(rootHashHex: String): String? {
+        val paper = db.paperDao().getByRootHash(rootHashHex) ?: return null
+        val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes) ?: return null
+        val cssFile = manifest.files.find { it.slug == STYLESHEET_SLUG && it.mimeType == "text/css" } ?: return null
+        val cache = db.cacheDao().getById(cssFile.fileId.toHex()) ?: return null
+        return cache.contentBytes?.let { String(it, Charsets.UTF_8) }
+    }
+
     private data class Ref(val rootHashHex: String, val slug: String?)
 
     /** Splits "<head>/<tail>" into (head, tail); tail is null if absent or empty. */
@@ -118,6 +131,9 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         /** Synthetic host used as a same-paper base URL — see class doc. */
         const val SYNTHETIC_HOST = "paper.tagdrop.invalid"
         const val SYNTHETIC_BASE = "https://$SYNTHETIC_HOST/"
+
+        /** Slug convention (SPEC §7) for a paper-wide CSS stylesheet, inlined into rendered Markdown. */
+        const val STYLESHEET_SLUG = "style.css"
 
         private val HEX_ROOT_HASH = Regex("[0-9a-f]{16}")
     }

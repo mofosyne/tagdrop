@@ -60,6 +60,9 @@ dependencies {
     // OSMDroid map (OpenStreetMap tiles — no API key or Play Services required)
     implementation 'org.osmdroid:osmdroid-android:6.1.20'
 
+    // Markdown rendering for text/markdown content (pure Kotlin/Java, no native deps)
+    implementation 'org.commonmark:commonmark:0.24.0'
+
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
     testImplementation 'junit:junit:4.13.2'

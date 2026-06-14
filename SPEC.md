@@ -371,6 +371,23 @@ relative links) can be zipped, fed to the generator, and turned into a set of
 QR codes where the relative links keep working once scanned into the app —
 no rewriting of the authored HTML required.
 
+### Markdown content (`text/markdown`)
+
+`mime_type` (key 4) is a free-form string — `text/markdown` is rendered as
+HTML (via [CommonMark](https://commonmark.org/)) and displayed through the
+same WebView/iframe path as `text/html`, so `tagdrop://` links and relative
+same-paper links inside the rendered Markdown work identically to the
+"Relative links" section above.
+
+**Stylesheet convention:** if the paper a Markdown file belongs to also has a
+file entry with slug `style.css` and `mime_type` `text/css`, and that file has
+been scanned/cached, its content is inlined as a `<style>` tag in the `<head>`
+of the generated HTML document. This is a pure naming convention — no
+envelope or payload-map changes — so a Markdown page picks up paper-wide
+styling just by the paper manifest listing a `style.css` file alongside the
+`.md` files. Markdown files that don't belong to any scanned paper (standalone
+single-code scans) render without a stylesheet.
+
 ### Sets and slugs
 
 Papers can belong to named **sets** (trails, networks, exhibitions). Within a set, each paper has a unique `slug`. This enables relative addressing:
@@ -529,7 +546,8 @@ Version history:
   - `Base45.kt` — RFC 9285
   - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742) for the version/type envelope
   - `ChunkAssembler.kt` — multi-code assembly with SHA-256 verification
-  - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links
+  - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
+  - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark
 
 - **Android database:** `app/src/main/java/com/github/mofosyne/tagdrop/data/db/`
   - `FoundCache.kt` — Room entity for scanned file caches

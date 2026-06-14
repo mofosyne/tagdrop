@@ -29,7 +29,7 @@ class CreatePaperActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCreatePaperBinding
 
-    private val mimeTypes = listOf("text/plain", "text/html", "application/json", "image/svg+xml")
+    private val mimeTypes = listOf("text/plain", "text/html", "text/markdown", "text/css", "application/json", "image/svg+xml")
 
     private data class QrEntry(val label: String, val sub: String, val idHex: String, val uri: String)
 
