@@ -115,4 +115,16 @@
         android:visibility="gone"
         android:contentDescription="@string/lock_badge_desc" />
 
+    <!-- Homepage convention: shown for the paper file marking its landing page. -->
+    <TextView
+        android:id="@+id/textHomeBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:padding="6dp"
+        android:text="🏠"
+        android:textSize="16sp"
+        android:visibility="gone"
+        android:contentDescription="@string/home_badge_desc" />
+
 </androidx.cardview.widget.CardView>

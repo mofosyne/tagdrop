@@ -83,14 +83,15 @@ optional follow-up.
 Ideas raised and assessed but deliberately deferred — revisit if they come up
 again or a concrete need emerges.
 
-- **Paper "homepage" via `index` slug convention** (assessed: *later*).
-  When browsing a paper manifest, let a file whose `slug` is `index`,
-  `index.html`, or `index.md` be treated as the paper's default/landing
-  page (auto-open it, or highlight it as the primary "Open" action in the
-  paper detail view / `renderPaper()`-equivalent), instead of just listing
-  all files with no preferred entry point. No SPEC.md changes needed — pure
-  convention, mirrors the existing `style.css` stylesheet convention. Small,
-  non-blocking; do whenever someone wants nicer paper browsing.
+- ~~**Paper "homepage" via `index` slug convention**~~ — **done.** A file
+  whose `slug` is `index`, `index.html`, or `index.md` is now highlighted as
+  the paper's primary "Open" action: `tools/reader/index.html`'s
+  `renderPaper()` shows a "🏠 Open homepage" button in the paper header (and
+  a 🏠 badge on its row) when that file is cached; the Android
+  `CollectionDetailActivity`/`CollectionDetailAdapter` shows the same 🏠
+  badge on the matching `PageItem.PaperFile` row, via
+  `TagDropLinkResolver.HOME_SLUGS`. Pure naming convention, no SPEC.md
+  change.
 - **Collection "default" via `collection_home` field** (assessed:
   *later, possibly never*). A boolean field (CBOR key TBD), set on one
   paper/cache within a `collection_id` group, marking it as that

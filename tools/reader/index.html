@@ -933,19 +933,32 @@ async function resolveNavLink(rootHashHex, slug) {
 }
 
 // ── Paper directory ───────────────────────────────────────────────────────
+// Slugs treated as a paper's homepage/landing page (see renderPaper below).
+const HOME_SLUGS = ['index', 'index.html', 'index.md'];
+
 async function renderPaper(rootHash) {
   const paper = await dbGet('papers', rootHash);
   if (!paper) return;
+
+  // Which files are already cached?
+  const allCaches = await dbGetAll('caches');
+  const cacheById = new Map(allCaches.map(c => [c.cacheId, c]));
 
   // Build header
   let hdr = '<strong>' + escHtml(paper.label || 'Untitled Paper') + '</strong>';
   if (paper.set)  hdr += ' <span class="chip">' + escHtml(paper.set) + '</span>';
   if (paper.slug) hdr += ' <span class="chip">/' + escHtml(paper.slug) + '</span>';
-  document.getElementById('paperHeader').innerHTML = hdr;
 
-  // Which files are already cached?
-  const allCaches = await dbGetAll('caches');
-  const cacheById = new Map(allCaches.map(c => [c.cacheId, c]));
+  // Homepage convention: a file with slug "index", "index.html", or "index.md" is this
+  // paper's landing page — surfaced as a primary "Open" action once cached (mirrors the
+  // style.css stylesheet convention; pure naming convention, no SPEC.md change needed).
+  const homeFile  = paper.files.find(f => HOME_SLUGS.includes(f.slug));
+  const homeCache = homeFile && cacheById.get(homeFile.fileId);
+  if (homeCache) {
+    hdr += ' <button class="secondary open-home" data-id="' + escHtml(homeFile.fileId) +
+      '" data-slug="' + escHtml(homeFile.slug) + '">🏠 Open homepage</button>';
+  }
+  document.getElementById('paperHeader').innerHTML = hdr;
 
   const list = document.getElementById('fileList');
   list.innerHTML = '';
@@ -957,8 +970,9 @@ async function renderPaper(rootHash) {
       // SPEC §9: a pending override blob means this file's cover content is shown but a
       // later key could "self-correct" hint/filename/mime_type/content.
       const lock = cache.pendingOverrideBlob ? ' 🔒' : '';
+      const home = HOME_SLUGS.includes(f.slug) ? ' 🏠' : '';
       li.innerHTML =
-        '<span class="slug">' + escHtml(f.slug) + lock + '</span>' +
+        '<span class="slug">' + escHtml(f.slug) + lock + home + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
         '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>';
     } else {
@@ -1131,6 +1145,13 @@ document.getElementById('fileList').addEventListener('click', async e => {
   const cached = await dbGet('caches', btn.dataset.id);
   if (cached) await showContent(cached.mimeType, cached.content, btn.dataset.slug, btn.dataset.id);
   else showMsg('Not cached yet — scan its QR code.', 'warn');
+});
+
+document.getElementById('paperHeader').addEventListener('click', async e => {
+  const btn = e.target.closest('.open-home');
+  if (!btn) return;
+  const cached = await dbGet('caches', btn.dataset.id);
+  if (cached) await showContent(cached.mimeType, cached.content, btn.dataset.slug, btn.dataset.id);
 });
 
 document.getElementById('btnCbor').onclick = () => {

@@ -11,6 +11,7 @@ import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
 import com.github.mofosyne.tagdrop.data.db.isOpenable
+import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
 import com.github.mofosyne.tagdrop.openCollectionDetail
@@ -74,6 +75,8 @@ class CollectionDetailAdapter(
                 is PageItem.RelatedHint -> null
             }
             binding.textLockBadge.visibility = if (cacheForBadge?.hasPendingOverride == true) View.VISIBLE else View.GONE
+            binding.textHomeBadge.visibility =
+                if (item is PageItem.PaperFile && item.slug in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug

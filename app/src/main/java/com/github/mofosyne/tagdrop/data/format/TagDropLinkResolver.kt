@@ -135,6 +135,13 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         /** Slug convention (SPEC §7) for a paper-wide CSS stylesheet, inlined into rendered Markdown. */
         const val STYLESHEET_SLUG = "style.css"
 
+        /**
+         * Slug convention: a paper file with one of these slugs is its homepage/landing page,
+         * highlighted as the primary "Open" action (mirrors [STYLESHEET_SLUG] above — pure
+         * naming convention, no SPEC.md change needed).
+         */
+        val HOME_SLUGS = setOf("index", "index.html", "index.md")
+
         private val HEX_ROOT_HASH = Regex("[0-9a-f]{16}")
     }
 }
