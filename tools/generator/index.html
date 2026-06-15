@@ -82,6 +82,8 @@
           border-radius: 4px; margin-top: 12px; font-size: 0.85rem; }
   .err  { background: #fdecea; border-left: 4px solid #e53935; padding: 10px 14px;
           border-radius: 4px; margin-top: 12px; font-size: 0.85rem; }
+  .ok   { background: #e8f5e9; border-left: 4px solid #43a047; padding: 10px 14px;
+          border-radius: 4px; margin-top: 12px; font-size: 0.85rem; }
 
   .file-entry { border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; margin-top: 10px; }
   .file-entry-header { display: flex; align-items: center; justify-content: space-between; }
@@ -162,6 +164,9 @@
         </label>
       </div>
     </div>
+    <label>Or upload a file <small>(fills in filename, MIME type, and content below — binary
+      files are stored as base64, matching the "(paste base64)" MIME options)</small></label>
+    <input type="file" id="s-upload">
     <label>Content</label>
     <textarea id="s-content" placeholder="Paste your HTML, text, JSON, or SVG here…"></textarea>
     <button class="primary" onclick="generateSingle()">Generate QR Code</button>
@@ -210,7 +215,13 @@
       (e.g. <code>images/photo.jpg</code>) — they are matched as plain strings.
     </p>
     <div id="p-files"></div>
-    <button class="secondary" style="margin-top:10px" onclick="addFileEntry()">+ Add File</button>
+    <div class="action-row">
+      <button class="secondary" onclick="addFileEntry()">+ Add File</button>
+      <button class="secondary" onclick="document.getElementById('p-upload-files').click()">📁 Upload File(s)</button>
+      <button class="secondary" onclick="document.getElementById('p-upload-zip').click()">📦 Upload ZIP Archive</button>
+    </div>
+    <input type="file" id="p-upload-files" multiple style="display:none">
+    <input type="file" id="p-upload-zip" accept=".zip,application/zip" style="display:none">
   </div>
 
   <div class="card controls">
@@ -495,6 +506,132 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   item.appendChild(actionRow);
 }
 
+// ── File / ZIP upload helpers ───────────────────────────────────────────────
+// Extension → MIME type, for files the browser doesn't recognise (e.g. .md).
+const EXT_MIME = {
+  html: 'text/html', htm: 'text/html',
+  css: 'text/css',
+  js: 'text/javascript', mjs: 'text/javascript',
+  json: 'application/json',
+  md: 'text/markdown', markdown: 'text/markdown',
+  txt: 'text/plain',
+  svg: 'image/svg+xml',
+  xml: 'application/xml',
+  png: 'image/png',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  mp3: 'audio/mpeg',
+  mid: 'audio/midi', midi: 'audio/midi',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  pdf: 'application/pdf',
+};
+
+function guessMimeType(filename, fileType) {
+  const ext = filename.split('.').pop().toLowerCase();
+  return EXT_MIME[ext] || fileType || 'application/octet-stream';
+}
+
+// MIME types whose content textarea holds text (everything else holds base64,
+// matching the "(paste base64)" MIME dropdown options).
+function isTextMime(mime) { return mime.startsWith('text/') || /[/+](xml|json)$/.test(mime); }
+
+function base64ToBytes(b64) {
+  const bin = atob(b64.replace(/\s+/g, ''));
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+
+function bytesToBase64(bytes) {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+// Converts a file entry's textarea content to raw bytes per its MIME type:
+// text MIME types are UTF-8 encoded, everything else is decoded from base64.
+function bytesFromContent(text, mimeType) {
+  return isTextMime(mimeType) ? new TextEncoder().encode(text) : base64ToBytes(text);
+}
+
+// Adds `mimeType` as a <select> option if not already present, and selects it.
+function setMimeSelect(selectEl, mimeType) {
+  if (!Array.from(selectEl.options).some(o => o.value === mimeType)) {
+    const opt = document.createElement('option');
+    opt.value = mimeType; opt.textContent = mimeType;
+    selectEl.appendChild(opt);
+  }
+  selectEl.value = mimeType;
+}
+
+// Reads `file` into a filename input (optional), a MIME <select>, and a
+// content <textarea> — used by both the Single File upload and per-file
+// uploads on the Paper Layout tab.
+async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId) {
+  const mime = guessMimeType(file.name, file.type);
+  if (filenameId) document.getElementById(filenameId).value = file.name;
+  setMimeSelect(document.getElementById(mimeSelectId), mime);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  document.getElementById(contentId).value = isTextMime(mime)
+    ? new TextDecoder().decode(bytes)
+    : bytesToBase64(bytes);
+}
+
+// Minimal ZIP reader: Stored and Deflate entries only, no ZIP64. Reads the
+// central directory (which has correct sizes even for streamed entries) and
+// decompresses each entry's data with DecompressionStream('deflate-raw').
+async function parseZip(buf) {
+  const view = new DataView(buf), bytes = new Uint8Array(buf);
+  const EOCD_SIG = 0x06054b50, CD_SIG = 0x02014b50, LFH_SIG = 0x04034b50;
+
+  let eocdOffset = -1;
+  const searchFrom = Math.max(0, bytes.length - 22 - 0xFFFF);
+  for (let i = bytes.length - 22; i >= searchFrom; i--) {
+    if (view.getUint32(i, true) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset < 0) throw new Error('not a valid ZIP file (no end-of-central-directory record found)');
+
+  const totalEntries = view.getUint16(eocdOffset + 10, true);
+  const cdOffset     = view.getUint32(eocdOffset + 16, true);
+  if (totalEntries === 0xFFFF || cdOffset === 0xFFFFFFFF) throw new Error('ZIP64 archives are not supported');
+
+  const entries = [];
+  let p = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (view.getUint32(p, true) !== CD_SIG) throw new Error('malformed ZIP central directory');
+    const method           = view.getUint16(p + 10, true);
+    const compressedSize   = view.getUint32(p + 20, true);
+    const uncompressedSize = view.getUint32(p + 24, true);
+    const nameLen    = view.getUint16(p + 28, true);
+    const extraLen   = view.getUint16(p + 30, true);
+    const commentLen = view.getUint16(p + 32, true);
+    const localOffset = view.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+
+    // Skip directories and common macOS archive cruft.
+    if (name.endsWith('/') || name.startsWith('__MACOSX/') || name.split('/').pop() === '.DS_Store') continue;
+
+    if (view.getUint32(localOffset, true) !== LFH_SIG) throw new Error(`malformed ZIP entry "${name}"`);
+    const lfhNameLen  = view.getUint16(localOffset + 26, true);
+    const lfhExtraLen = view.getUint16(localOffset + 28, true);
+    const dataStart = localOffset + 30 + lfhNameLen + lfhExtraLen;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+
+    let data;
+    if (method === 0) {
+      data = compressed.slice(0, uncompressedSize);
+    } else if (method === 8) {
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      data = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else {
+      throw new Error(`"${name}" uses unsupported ZIP compression method ${method} (only Stored and Deflate are supported)`);
+    }
+    entries.push({ name, bytes: data });
+  }
+  return entries;
+}
+
 // ── Single-file generator ─────────────────────────────────────────────────
 async function generateSingle() {
   const msgs   = document.getElementById('s-messages');
@@ -510,7 +647,10 @@ async function generateSingle() {
 
   if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
 
-  const rawBytes = new TextEncoder().encode(text);
+  let rawBytes;
+  try { rawBytes = bytesFromContent(text, mimeType); }
+  catch (e) { msgs.innerHTML = `<div class="err">Content isn't valid base64 for MIME type "${escHtml(mimeType)}".</div>`; return; }
+
   const encryptionKey = encrypt ? generateKeyMaterial() : null;
   let encoded;
   try { encoded = await encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey }); }
@@ -564,8 +704,12 @@ async function generateSingle() {
 let fileEntries   = [];
 let relatedEntries = [];
 
+// Monotonic counter (not Date.now()) so ids stay unique even when several
+// entries are added in the same millisecond, e.g. looping over uploaded files.
+let nextFileEntryId = 0;
+
 function addFileEntry() {
-  const id = Date.now();
+  const id = ++nextFileEntryId;
   fileEntries.push(id);
   const div = document.createElement('div');
   div.className = 'file-entry'; div.id = 'file-' + id;
@@ -590,7 +734,7 @@ function addFileEntry() {
           <option value="image/svg+xml">image/svg+xml</option>
           <option value="image/jpeg">image/jpeg (paste base64)</option>
           <option value="image/png">image/png (paste base64)</option>
-          <option value="audio/midi">audio/midi</option>
+          <option value="audio/midi">audio/midi (paste base64)</option>
           <option value="audio/mpeg">audio/mpeg (paste base64)</option>
         </select>
       </div>
@@ -599,6 +743,17 @@ function addFileEntry() {
     <label>Content</label>
     <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
   document.getElementById('p-files').appendChild(div);
+  return id;
+}
+
+// Adds a new file entry pre-filled from already-read bytes (e.g. a ZIP entry).
+function addFileEntryFromBytes(name, bytes, mimeType) {
+  const id = addFileEntry();
+  document.getElementById('fslug-' + id).value = name;
+  setMimeSelect(document.getElementById('fmime-' + id), mimeType);
+  document.getElementById('fcontent-' + id).value = isTextMime(mimeType)
+    ? new TextDecoder().decode(bytes)
+    : bytesToBase64(bytes);
 }
 
 function addRelatedEntry() {
@@ -647,7 +802,9 @@ async function generatePaper() {
     const fcontent = document.getElementById('fcontent-' + id)?.value;
     if (!fslug) { msgs.innerHTML = '<div class="err">Each file needs a slug.</div>'; return; }
     if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" has no content.</div>`; return; }
-    const rawBytes = new TextEncoder().encode(fcontent);
+    let rawBytes;
+    try { rawBytes = bytesFromContent(fcontent, fmime); }
+    catch (e) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" content isn't valid base64 for MIME type "${escHtml(fmime)}".</div>`; return; }
     try {
       const enc = await encodeSingle({ hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr });
       encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
@@ -740,6 +897,46 @@ function copyToClipboard(text) {
 document.getElementById('tab-paper').addEventListener('click', function once() {
   if (fileEntries.length === 0) addFileEntry();
   this.removeEventListener('click', once);
+});
+
+// ── File / ZIP upload event handlers ────────────────────────────────────────
+document.getElementById('s-upload').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (file) await loadFileIntoFields(file, 's-filename', 's-mime', 's-content');
+});
+
+document.getElementById('p-upload-files').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  for (const file of files) {
+    const id = addFileEntry();
+    document.getElementById('fslug-' + id).value = file.name;
+    await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id);
+  }
+});
+
+document.getElementById('p-upload-zip').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const msgs = document.getElementById('p-messages');
+  msgs.innerHTML = '';
+  let entries;
+  try {
+    entries = await parseZip(await file.arrayBuffer());
+  } catch (err) {
+    msgs.innerHTML = `<div class="err">Couldn't read "${escHtml(file.name)}": ${escHtml(err.message)}</div>`;
+    return;
+  }
+  if (entries.length === 0) {
+    msgs.innerHTML = '<div class="warn">ZIP archive has no files.</div>';
+    return;
+  }
+  for (const entry of entries) {
+    addFileEntryFromBytes(entry.name, entry.bytes, guessMimeType(entry.name, ''));
+  }
+  msgs.innerHTML = `<div class="ok">Added ${entries.length} file(s) from "${escHtml(file.name)}".</div>`;
 });
 </script>
 </body>
