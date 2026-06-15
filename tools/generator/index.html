@@ -509,14 +509,20 @@ async function renderQr(container, uri) {
 }
 
 // Re-renders the QR at a higher resolution than the on-screen 220px preview — better for
-// printing or pasting elsewhere — and triggers a browser download as a PNG file.
+// printing or pasting elsewhere — and triggers a browser download as a PNG file. If the
+// content is too large to fit in a QR at all, alerts rather than failing silently (the
+// per-card button is also removed when the on-screen render itself fails — see callers).
 async function downloadQrPng(uri, filename) {
-  const QRCode = await loadQRCode();
-  const canvas = await qrToCanvas(QRCode, uri, 512);
-  const a = document.createElement('a');
-  a.href = canvas.toDataURL('image/png');
-  a.download = filename;
-  a.click();
+  try {
+    const QRCode = await loadQRCode();
+    const canvas = await qrToCanvas(QRCode, uri, 512);
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('PNG export failed: ' + e.message);
+  }
 }
 
 // Builds one QR card (canvas + label/sub/id + print/download/copy actions) and appends it to grid.
@@ -914,7 +920,11 @@ async function generatePaper() {
   const mItem = makeQrItem(`📋 ${label || 'Manifest'}`, 'paper manifest', toHex(manifestEnc.rootHash), manifestEnc.uri);
   grid.appendChild(mItem.div);
   try { await renderQr(mItem.qrDiv, manifestEnc.uri); }
-  catch(e) { msgs.innerHTML = '<div class="err">QR rendering failed — is the qrcode library loaded?</div>'; return; }
+  catch(e) {
+    mItem.div.querySelector('.action-row')?.remove();
+    msgs.innerHTML = '<div class="err">QR rendering failed — is the qrcode library loaded?</div>';
+    return;
+  }
 
   // File QRs
   for (const f of encodedFiles) {
@@ -923,7 +933,10 @@ async function generatePaper() {
     if (f.uri.length > 2000)
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
     try { await renderQr(fItem.qrDiv, f.uri); }
-    catch(e) { fItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed</div>'); }
+    catch(e) {
+      fItem.div.querySelector('.action-row')?.remove();
+      fItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed — content too large for a single QR code</div>');
+    }
   }
 
   // Navigation link info
