@@ -366,7 +366,7 @@ async function zlibCompress(bytes) {
 const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
              FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27,
-             ENCRYPTION:28, NONCE:29, KEY_MATERIAL:30, RETAIN_KEY:31 };
+             ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31 };
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -383,23 +383,45 @@ async function encryptAesGcm(plaintext, key, nonce) {
 }
 
 /**
- * If encryptionKey is given (32 bytes), the (possibly-compressed) content is
- * AES-256-GCM encrypted under a fresh nonce, encryption/nonce are set, and
- * cache_id is random rather than content-addressed (SPEC §9).
+ * Encrypts `override` as a self-contained nonce(12) || ciphertext || tag(16) blob
+ * (SPEC §9): the override map's CBOR bytes are compressed per `compression` (the same
+ * value the clear map declares for its own content/assembled bytes), then
+ * AES-256-GCM-encrypted under a fresh nonce.
  */
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey }) {
+async function encryptOverrideMap(override, key, compression) {
+  const cbor = cborMap([
+    [K.HINT,     override.hint ?? null],
+    [K.MIME,     override.mimeType ?? null],
+    [K.CONTENT,  override.content ?? null],
+    [K.FILENAME, override.filename ?? null],
+  ]);
+  const plaintext = compression === 1 ? await zlibCompress(cbor) : cbor;
+  const nonce = generateNonce();
+  return concatBytes(nonce, await encryptAesGcm(plaintext, key, nonce));
+}
+
+/**
+ * `hint`/`filename`/`mimeType`/`rawBytes` are the clear map's own fields — shown until a
+ * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
+ * or genuine unremarkable content with no relation to `override`.
+ *
+ * If `override` is given (with `encryptionKey`, 32 bytes), it's AES-256-GCM-encrypted into
+ * a self-contained blob (SPEC §9) carried as raw trailing bytes after this payload's CBOR
+ * sequence. `cacheId` becomes random rather than content-addressed, and `encryption` is
+ * set to the AES-256-GCM hint unless `declareEncryption` is false (cosmetic only — SPEC §9).
+ */
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, declareEncryption = true }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
-  let cacheId, encryption = null, nonce = null;
-  if (encryptionKey) {
-    nonce = generateNonce();
-    content = await encryptAesGcm(content, encryptionKey, nonce);
-    encryption = 1;
+  let cacheId, overrideBlob = null, encryption = null;
+  if (override) {
+    overrideBlob = await encryptOverrideMap(override, encryptionKey, compression || 0);
     cacheId = randomCacheId();
+    encryption = declareEncryption ? 1 : null;
   } else {
     cacheId = await sha256first8(rawBytes);
   }
-  const payload = cborMap([
+  const seq = cborSequence(TYPE_SINGLE, cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
     [K.FILENAME,    filename || null],
@@ -407,9 +429,9 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, encr
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
     [K.ENCRYPTION,  encryption],
-    [K.NONCE,       nonce],
-  ]);
-  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId, encryption, nonce };
+  ]));
+  const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
+  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption };
 }
 
 /**
@@ -651,27 +673,46 @@ async function generateSingle() {
   try { rawBytes = bytesFromContent(text, mimeType); }
   catch (e) { msgs.innerHTML = `<div class="err">Content isn't valid base64 for MIME type "${escHtml(mimeType)}".</div>`; return; }
 
-  const encryptionKey = encrypt ? generateKeyMaterial() : null;
+  // When "Encrypt" is checked, the user's real hint/filename/mimeType/content become a
+  // hidden override map (SPEC §9), and a generic placeholder cover is shown/printed
+  // instead — the printed label must never reveal the hidden content.
+  let encodeArgs, encryptionKey = null;
+  if (encrypt) {
+    encryptionKey = generateKeyMaterial();
+    encodeArgs = {
+      hint: '🔒 Locked content',
+      filename: null,
+      mimeType: 'text/plain',
+      rawBytes: new TextEncoder().encode('This content is locked. Scan the matching key code to unlock.'),
+      compress,
+      override: { hint, mimeType, content: rawBytes, filename },
+      encryptionKey,
+    };
+  } else {
+    encodeArgs = { hint, filename, mimeType, rawBytes, compress };
+  }
+
   let encoded;
-  try { encoded = await encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey }); }
+  try { encoded = await encodeSingle(encodeArgs); }
   catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
 
   if (encoded.uri.length > 2000)
     msgs.innerHTML += `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
       Enable compression or reduce content size.</div>`;
   if (encrypt)
-    msgs.innerHTML += `<div class="warn">🔒 Two QR codes generated: the <strong>content</strong> code and a
-      separate <strong>key</strong> code (SPEC §9). Keep them apart — print or share on different paper —
-      since anyone with both can decrypt the content.</div>`;
+    msgs.innerHTML += `<div class="warn">🔒 The real hint/filename/content are hidden inside this code as an
+      encrypted override map (SPEC §9) — the QR and its printed label show only the generic cover below.
+      A separate <strong>key</strong> code is also generated; keep it apart from the cover — print or share
+      on different paper — since anyone with both can unlock the hidden content.</div>`;
 
   result.innerHTML = '<div class="qr-grid"></div>';
   const grid = result.querySelector('.qr-grid');
 
   try {
     await addGeneratorQrCard(grid, {
-      label: hint ? escHtml(hint) : (filename ? escHtml(filename) : 'TagDrop'),
-      sub: `${mimeType}${compress ? ' · deflate' : ''}`,
-      badge: encrypt ? 'encrypted' : null,
+      label: encodeArgs.hint ? escHtml(encodeArgs.hint) : (encodeArgs.filename ? escHtml(encodeArgs.filename) : 'TagDrop'),
+      sub: `${encodeArgs.mimeType}${compress ? ' · deflate' : ''}`,
+      badge: encrypt ? 'hidden content' : null,
       badgeClass: 'encrypted',
       id: toHex(encoded.cacheId),
       uri: encoded.uri,
@@ -682,7 +723,7 @@ async function generateSingle() {
   }
 
   if (encrypt) {
-    const keyHint = hint ? `Key for: ${hint}` : (filename ? `Key for: ${filename}` : 'TagDrop key');
+    const keyHint = 'TagDrop key';
     const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
     try {
       await addGeneratorQrCard(grid, {
@@ -697,6 +738,18 @@ async function generateSingle() {
     } catch (e) {
       msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
     }
+
+    // Screen-only reference for the person generating this code — never printed
+    // (the printed cards above must show only the generic cover, per SPEC §9).
+    result.insertAdjacentHTML('beforeend', `
+      <div class="card" id="no-print" style="margin-top:8px">
+        <strong>🔒 Hidden inside the code above (SPEC §9):</strong>
+        <div style="margin-top:4px">
+          <small style="color:#555">hint:</small> ${hint ? escHtml(hint) : '<em>(none)</em>'}<br>
+          <small style="color:#555">filename:</small> ${filename ? escHtml(filename) : '<em>(none)</em>'}<br>
+          <small style="color:#555">mime_type:</small> ${escHtml(mimeType)}
+        </div>
+      </div>`);
   }
 }
 

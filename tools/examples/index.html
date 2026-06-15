@@ -110,14 +110,17 @@
   </section>
 
   <section id="sec-encrypted">
-    <h2>Encrypted Content (SPEC §9)</h2>
+    <h2>Hidden Content (SPEC §9)</h2>
     <p class="section-desc">
-      AES-256-GCM encrypted content, plus a separate <strong>key code</strong>.
-      Scan either one first — the reader hash-verifies the content code right away but
-      keeps it locked until the key code is also scanned (in either order), per SPEC §9's
-      "discovery, not declaration": no field declares which content a key unlocks, so the
-      reader tries it by trial decryption. The content code's <code>cache_id</code> is
-      random rather than content-addressed, so it can't be used as a content-equality oracle.
+      A content code whose visible "cover" is a generic placeholder, plus a hidden
+      <strong>override map</strong> — AES-256-GCM encrypted and carried as trailing bytes —
+      and a separate <strong>key code</strong>. Scan either one first: the content code
+      decodes immediately to its cover, while the override stays locked until the key code
+      is also scanned (in either order), per SPEC §9's "discovery, not declaration": no field
+      declares which content a key unlocks, so the reader tries it by trial decryption and,
+      on a match, replaces the cover with the hidden fields. The content code's
+      <code>cache_id</code> is random rather than content-addressed, so it can't be used as a
+      content-equality oracle.
     </p>
     <div class="paper-info" id="encryption-info"></div>
     <div class="qr-grid" id="encryption-grid"></div>
@@ -293,7 +296,7 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
             LAT:26, LNG:27,
-            ENCRYPTION:28, NONCE:29, KEY_MATERIAL:30, RETAIN_KEY:31 };
+            ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31 };
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -311,24 +314,45 @@ async function encryptAesGcm(plaintext, key, nonce) {
 
 // ── Encoding ──────────────────────────────────────────────────────────────
 /**
- * If encryptionKey is given (32 bytes), the (possibly-compressed) content is
- * AES-256-GCM encrypted under a fresh nonce (or the given one, for reproducible
- * examples), encryption/nonce are set, and cache_id is random rather than
- * content-addressed (SPEC §9).
+ * Encrypts `override` as a self-contained nonce(12) || ciphertext || tag(16) blob
+ * (SPEC §9): the override map's CBOR bytes are compressed per `compression` (the same
+ * value the clear map declares for its own content/assembled bytes), then
+ * AES-256-GCM-encrypted under a fresh nonce.
  */
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, encryptionKey, nonce }) {
+async function encryptOverrideMap(override, key, compression) {
+  const cbor = cborMap([
+    [K.HINT,     override.hint ?? null],
+    [K.MIME,     override.mimeType ?? null],
+    [K.CONTENT,  override.content ?? null],
+    [K.FILENAME, override.filename ?? null],
+  ]);
+  const plaintext = compression === 1 ? await zlibCompress(cbor) : cbor;
+  const nonce = generateNonce();
+  return concatBytes(nonce, await encryptAesGcm(plaintext, key, nonce));
+}
+
+/**
+ * `hint`/`filename`/`mimeType`/`rawBytes` are the clear map's own fields — shown until a
+ * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
+ * or genuine unremarkable content with no relation to `override`.
+ *
+ * If `override` is given (with `encryptionKey`, 32 bytes), it's AES-256-GCM-encrypted into
+ * a self-contained blob (SPEC §9) carried as raw trailing bytes after this payload's CBOR
+ * sequence. `cacheId` becomes random rather than content-addressed, and `encryption` is
+ * set to the AES-256-GCM hint unless `declareEncryption` is false (cosmetic only — SPEC §9).
+ */
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, declareEncryption = true }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
-  let cacheId, encryption = null, usedNonce = null;
-  if (encryptionKey) {
-    usedNonce = nonce || generateNonce();
-    content = await encryptAesGcm(content, encryptionKey, usedNonce);
-    encryption = 1;
+  let cacheId, overrideBlob = null, encryption = null;
+  if (override) {
+    overrideBlob = await encryptOverrideMap(override, encryptionKey, compression || 0);
     cacheId = randomCacheId();
+    encryption = declareEncryption ? 1 : null;
   } else {
     cacheId = await sha256first8(rawBytes);
   }
-  const payload = cborMap([
+  const seq = cborSequence(TYPE_SINGLE, cborMap([
     [K.CACHE_ID,    cacheId],
     [K.HINT,        hint || null],
     [K.FILENAME,    filename || null],
@@ -336,9 +360,9 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, encr
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
     [K.ENCRYPTION,  encryption],
-    [K.NONCE,       usedNonce],
-  ]);
-  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId, encryption, nonce: usedNonce };
+  ]));
+  const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
+  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption };
 }
 
 /**
@@ -514,25 +538,41 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
   },
 ];
 
-// Encrypted content (SPEC §9) — AES-256-GCM. The key/nonce are generated fresh
-// on each page load (see main()), so the two QR codes below differ between
-// reloads but always pair correctly with each other.
+// Hidden override map (SPEC §9) — AES-256-GCM. The key is generated fresh on each
+// page load (see main()), so the two QR codes below differ between reloads but
+// always pair correctly with each other.
+//
+// `cover` is the clear map: what the content code shows immediately, before the
+// key code is scanned. `override` is encrypted and carried as trailing bytes
+// after the CBOR sequence — once the key code unlocks it, override fields replace
+// the cover's (override wins; cover fields are the fallback for any field the
+// override doesn't set).
 const ENCRYPTED_EXAMPLE = {
-  label: 'Encrypted note',
-  mimeType: 'text/plain',
-  compress: false,
-  hint: 'Encrypted — scan the key code too',
-  keyHint: 'Key for "Encrypted note"',
-  filename: 'secret.txt',
-  content:
-`This message is encrypted with AES-256-GCM (SPEC §9).
+  cover: {
+    label: '🔒 Locked content',
+    mimeType: 'text/plain',
+    compress: false,
+    hint: '🔒 Locked content',
+    filename: null,
+    content: 'This content is locked. Scan the matching key code to unlock.',
+  },
+  keyHint: 'TagDrop key',
+  override: {
+    hint: 'Encrypted note',
+    filename: 'secret.txt',
+    mimeType: 'text/plain',
+    content:
+`This message was hidden inside the "🔒 Locked content" code using AES-256-GCM
+(SPEC §9).
 
 If you're reading this in the TagDrop app or web reader, you scanned both
-this content code and its separate key code — in either order — and the
-reader matched them by trial decryption ("discovery, not declaration").
+the content code and its separate key code — in either order — and the
+reader matched them by trial decryption ("discovery, not declaration"),
+then replaced the cover with this hidden message.
 
-The cache_id on this code is random, not derived from this content, so it
-can't be used to test whether you already have a copy of this message.`,
+The content code's cache_id is random, not derived from either the cover
+or this hidden message, so it can't be used as a content-equality oracle.`,
+  },
 };
 
 // Content too large for a single QR (~800 bytes recommended max) — split into
@@ -965,27 +1005,28 @@ async function main() {
     });
   }
 
-  // Encrypted content + key code (SPEC §9)
+  // Hidden override map + key code (SPEC §9)
   const ee = ENCRYPTED_EXAMPLE;
-  const eeRawBytes = new TextEncoder().encode(ee.content);
   const eeKey = generateKeyMaterial();
   const eeEncoded = await encodeSingle({
-    hint: ee.hint, filename: ee.filename, mimeType: ee.mimeType,
-    rawBytes: eeRawBytes, compress: ee.compress, encryptionKey: eeKey,
+    hint: ee.cover.hint, filename: ee.cover.filename, mimeType: ee.cover.mimeType,
+    rawBytes: new TextEncoder().encode(ee.cover.content), compress: ee.cover.compress,
+    override: { ...ee.override, content: new TextEncoder().encode(ee.override.content) },
+    encryptionKey: eeKey,
   });
   const eeKeyCode = encodeKeyCode({ keyMaterial: eeKey, hint: ee.keyHint });
 
   document.getElementById('encryption-info').innerHTML = `
-    <strong>${escHtml(ee.label)}</strong>
-    — ${escHtml(ee.mimeType)}, AES-256-GCM encrypted<br>
+    <strong>${escHtml(ee.cover.label)}</strong>
+    — ${escHtml(ee.cover.mimeType)}, hidden override map encrypted with AES-256-GCM<br>
     Cache ID: <code>${toHex(eeEncoded.cacheId)}</code> (random — not content-addressed)<br>
-    Nonce: <code>${toHex(eeEncoded.nonce)}</code>
-    <div class="step">① Scan the <strong>content</strong> code — it hash-verifies but stays locked ("awaiting key").</div>
-    <div class="step">② Scan the <strong>key</strong> code, in any order. The reader tries it against cached ciphertext and unlocks a match.</div>`;
+    Hidden override blob: <code>${eeEncoded.overrideBlob.length}</code> bytes (trailing bytes after the CBOR sequence)
+    <div class="step">① Scan the <strong>content</strong> code — it decodes immediately, showing the "${escHtml(ee.cover.label)}" cover. The hidden message stays locked.</div>
+    <div class="step">② Scan the <strong>key</strong> code, in any order. The reader tries it against the cached blob and, on a match, replaces the cover with the hidden message.</div>`;
 
   const encryptionGrid = document.getElementById('encryption-grid');
   await addCard(encryptionGrid, {
-    label: ee.label, mime: ee.mimeType, extraBadge: 'encrypted', badgeClass: 'encrypted',
+    label: ee.cover.label, mime: ee.cover.mimeType, extraBadge: 'hidden content', badgeClass: 'encrypted',
     id: toHex(eeEncoded.cacheId), uri: eeEncoded.uri, isManifest: false,
   });
   await addCard(encryptionGrid, {

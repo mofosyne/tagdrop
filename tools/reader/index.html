@@ -202,24 +202,26 @@ function base45Decode(s) {
 }
 
 // ── CBOR decoder ──────────────────────────────────────────────────────────
-// Decodes a CBOR Sequence (RFC 8742): concatenated top-level data items with no
-// enclosing array/map, read until input is exhausted. Used for the version/type/
-// payload envelope (SPEC §2).
-function cborDecodeSequence(bytes) {
+// Decodes exactly `n` top-level data items from a CBOR Sequence (RFC 8742),
+// returning { items, trailing } — `trailing` is whatever bytes remain after
+// those `n` items. Used for the version/type/payload envelope (SPEC §2): a
+// Single's hidden override-map blob (SPEC §9) lives in the trailing bytes
+// after its 3-item sequence. Decoders MUST NOT treat trailing bytes as an error.
+function cborDecodeSequencePrefix(bytes, n) {
   let pos = 0;
   function rb() {
     if (pos >= bytes.length) throw new Error('Unexpected end of CBOR');
     return bytes[pos++];
   }
-  function rbs(n) {
-    if (pos + n > bytes.length) throw new Error('Truncated CBOR');
-    const slice = bytes.slice(pos, pos + n); pos += n; return slice;
+  function rbs(m) {
+    if (pos + m > bytes.length) throw new Error('Truncated CBOR');
+    const slice = bytes.slice(pos, pos + m); pos += m; return slice;
   }
   function readArg(info) {
     if (info <= 23) return info;
     if (info === 24) return rb();
     if (info === 25) { return rb() * 256 + rb(); }
-    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    if (info === 26) { let n2 = 0; for (let i = 0; i < 4; i++) n2 = n2 * 256 + rb(); return n2; }
     if (info === 27) { return rbs(8); } // float64: 8 raw bytes, decoded in readVal
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
@@ -245,8 +247,8 @@ function cborDecodeSequence(bytes) {
     }
   }
   const items = [];
-  while (pos < bytes.length) items.push(readVal());
-  return items;
+  for (let i = 0; i < n; i++) items.push(readVal());
+  return { items, trailing: bytes.slice(pos) };
 }
 
 // ── Decompression ─────────────────────────────────────────────────────────
@@ -284,6 +286,55 @@ async function decryptAesGcm(ciphertextAndTag, key, nonce) {
   }
 }
 
+// Minimum size of a self-contained nonce(12) || ciphertext || tag(16) override-map blob (SPEC §9).
+const OVERRIDE_BLOB_MIN_BYTES = 28;
+
+/**
+ * Tries `key` against `blob` as nonce(12) || ciphertext || tag(16) (SPEC §9). Returns the
+ * decoded override map ({hint, mimeType, content, filename}, each possibly null) on
+ * success, or null if `blob` is too short, `key` doesn't authenticate it, or the
+ * plaintext doesn't decode as a CBOR map — any of which just means this candidate
+ * doesn't apply here ("discovery, not declaration").
+ */
+async function tryDecryptOverrideMap(blob, key, compression) {
+  if (blob.length < OVERRIDE_BLOB_MIN_BYTES) return null;
+  const nonce = blob.slice(0, 12);
+  const ciphertextAndTag = blob.slice(12);
+  const plaintext = await decryptAesGcm(ciphertextAndTag, key, nonce);
+  if (plaintext === null) return null;
+  let cbor = plaintext;
+  if (compression === 1) {
+    try { cbor = await zlibDecompress(plaintext); } catch (e) { return null; }
+  }
+  let map;
+  try {
+    const decoded = cborDecodeSequencePrefix(cbor, 1).items[0];
+    if (!decoded || typeof decoded !== 'object' || decoded instanceof Uint8Array || Array.isArray(decoded)) return null;
+    map = decoded;
+  } catch (e) { return null; }
+  return {
+    hint:     map[K.HINT] ?? null,
+    mimeType: map[K.MIME] ?? null,
+    content:  map[K.CONTENT] ?? null,
+    filename: map[K.FILENAME] ?? null,
+  };
+}
+
+/**
+ * Merges a decrypted override map onto a clear map's fields (SPEC §9): the override's
+ * present fields win. `fallbackContent` supplies `content` when the override doesn't
+ * specify one — empty for "fresh resolution" (a Single/Manifest reached for the first
+ * time), or the existing cached/cover content for "self-correct" of an already-cached item.
+ */
+function mergeOverride(clear, override, fallbackContent) {
+  return {
+    hint:     override.hint     ?? clear.hint     ?? null,
+    mimeType: override.mimeType ?? clear.mimeType,
+    filename: override.filename ?? clear.filename ?? null,
+    content:  override.content  ?? fallbackContent,
+  };
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────
 function toHex(u8) {
   return Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -302,7 +353,7 @@ const K = {
   SET:13, SLUG:14, FILES:15, RELATED:16,
   FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23,
   LAT:26, LNG:27,
-  ENCRYPTION:28, NONCE:29, KEY_MATERIAL:30, RETAIN_KEY:31
+  ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31
 };
 
 // CBOR-sequence envelope (SPEC §2): tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
@@ -320,7 +371,7 @@ const KEY_NAMES = {
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
   26: 'lat', 27: 'lng',
-  28: 'encryption', 29: 'nonce', 30: 'key_material', 31: 'retain_key'
+  28: 'encryption', 30: 'key_material', 31: 'retain_key'
 };
 
 function toHexDump(bytes) {
@@ -332,12 +383,18 @@ function toHexDump(bytes) {
 function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
   try {
-    const items = cborDecodeSequence(bytes);
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 3);
     if (items.length < 3) throw new Error('Expected version, type, payload — got ' + items.length + ' item(s)');
     const [version, type, payload] = items;
     out += 'version: ' + version + '\n';
     out += 'type: ' + type + ' (' + (TYPE_NAMES[type] || 'unknown') + ')\n\n';
     out += describeMap(payload, 0);
+    if (trailing.length > 0) {
+      const note = trailing.length >= OVERRIDE_BLOB_MIN_BYTES
+        ? 'candidate encrypted override map, SPEC §9'
+        : 'too short to be an override map, SPEC §9';
+      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes, ' + note + ')\n';
+    }
   } catch (e) {
     out += 'Failed to decode as CBOR sequence: ' + e.message;
   }
@@ -394,37 +451,41 @@ async function parseUri(uri) {
   try { seq = base45Decode(uri.slice('tagdrop:'.length)); }
   catch (e) { return { type: 'invalid' }; }
 
-  let items;
-  try { items = cborDecodeSequence(seq); }
+  let items, trailing;
+  try { ({ items, trailing } = cborDecodeSequencePrefix(seq, 3)); }
   catch (e) { return { type: 'invalid' }; }
   if (items.length < 3) return { type: 'invalid' };
   const [version, kind, m] = items;
   if (version !== ENVELOPE_VERSION) return { type: 'invalid' };
 
   if (kind === TYPE_SINGLE) {
+    const keyMaterial = m[K.KEY_MATERIAL] || null;
+    const retainKey   = m[K.RETAIN_KEY] !== false;
     // Key-only code (SPEC §9): carries key_material for other content, no content/mime
     // of its own. Per "discovery, not declaration", nothing says which content it unlocks.
-    const keyMaterial = m[K.KEY_MATERIAL];
-    if (keyMaterial) {
+    if (keyMaterial && !m[K.CONTENT] && !m[K.MIME]) {
       return {
         type: 'key',
-        cacheId:    toHex(m[K.CACHE_ID]),
-        hint:       m[K.HINT] || null,
+        cacheId: toHex(m[K.CACHE_ID]),
+        hint:    m[K.HINT] || null,
         keyMaterial,
-        retainKey:  m[K.RETAIN_KEY] !== false,
+        retainKey,
         cbor: seq,
       };
     }
+    // A Single's raw trailing bytes (after its 3-item CBOR sequence), if >= 28 bytes, are a
+    // candidate hidden override-map blob (SPEC §9) — may carry real content+key together.
     return {
       type: 'single',
       cacheId:     toHex(m[K.CACHE_ID]),
       hint:        m[K.HINT]     || null,
       filename:    m[K.FILENAME] || null,
-      mimeType:    m[K.MIME],
-      content:     m[K.CONTENT],
+      mimeType:    m[K.MIME] || '',
+      content:     m[K.CONTENT] || new Uint8Array(0),
       compression: m[K.COMPRESSION] || 0,
-      encryption:  m[K.ENCRYPTION]  || 0,
-      nonce:       m[K.NONCE] || null,
+      overrideBlob: trailing.length >= OVERRIDE_BLOB_MIN_BYTES ? trailing : null,
+      keyMaterial,
+      retainKey,
       cbor: seq,
     };
   }
@@ -437,6 +498,8 @@ async function parseUri(uri) {
       slug:     m[K.SLUG] || null,
       scannedAt: Date.now(),
       cbor: seq,
+      keyMaterial: m[K.KEY_MATERIAL] || null,
+      retainKey:   m[K.RETAIN_KEY] !== false,
       files: (m[K.FILES] || []).map(f => ({
         slug:     f[K.FILE_SLUG],
         mimeType: f[K.FILE_MIME],
@@ -449,6 +512,8 @@ async function parseUri(uri) {
         paperId: r[K.PAPER_ID] ? toHex(r[K.PAPER_ID]) : null,
         lat:     r[K.LAT] ?? null,
         lng:     r[K.LNG] ?? null,
+        keyMaterial: r[K.KEY_MATERIAL] || null,
+        retainKey:   r[K.RETAIN_KEY] !== false,
       })),
     };
   }
@@ -460,10 +525,10 @@ async function parseUri(uri) {
       filename:    m[K.FILENAME] || null,
       mimeType:    m[K.MIME],
       compression: m[K.COMPRESSION] || 0,
-      encryption:  m[K.ENCRYPTION]  || 0,
-      nonce:       m[K.NONCE] || null,
       chunkCount:  m[K.CHUNK_COUNT],
       sha256:      m[K.SHA256],
+      keyMaterial: m[K.KEY_MATERIAL] || null,
+      retainKey:   m[K.RETAIN_KEY] !== false,
       cbor: seq,
     };
   }
@@ -534,40 +599,124 @@ async function dbClear() {
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
   });
-  for (const id of Object.keys(pendingEncrypted)) delete pendingEncrypted[id];
+  for (const id of Object.keys(awaitingManifests)) delete awaitingManifests[id];
 }
 
 // ── Chunk assembly ────────────────────────────────────────────────────────
 // In-memory only — multi-code sets must be scanned in one session.
 const assemblies = {};
 
-// ── Encrypted content awaiting a key (SPEC §9) ───────────────────────────
-// In-memory only, keyed by cacheId hex: hash-verified ciphertext that has no
-// matching key_material yet. Resolved when a 'key' code is scanned (or was
-// already retained from a previous scan).
-const pendingEncrypted = {};
+// ── Assembled bytes awaiting a key (SPEC §9) ─────────────────────────────
+// In-memory only, keyed by cacheId hex: hash-verified, fully-assembled chunk bytes
+// that could not be decompressed as plain `content` per `compression` (SPEC §5
+// step 5) — they must be a hidden override-map blob, but no retained key has
+// authenticated it yet. Resolved by processDiscoveredKey when a matching key
+// arrives ("discovery, not declaration" — scan order doesn't matter).
+const awaitingManifests = {};
 
 /**
- * Decrypts (if encrypted) and decompresses verified bytes, storing the result in
- * the 'caches' store. If encrypted and no retained key matches, stashes the
- * ciphertext in pendingEncrypted and returns null — resolved later by a 'key' scan.
+ * Decompresses `clearContentBytes` per `compression` as the "cover" view, then — if
+ * `overrideBlob` is present — tries every retained key against it as an encrypted
+ * override map (SPEC §9). On a match, the override's fields overlay the cover and the
+ * fully-resolved result is stored; otherwise the cover is stored with the blob kept as
+ * `pendingOverrideBlob` for a later key to "self-correct". A Single always reaches
+ * "Complete" — its `content` decompression doesn't depend on the override blob.
  */
-async function resolveAndStore(cacheId, bytes, { encryption, nonce, compression, mimeType, hint, filename }) {
-  if (encryption === 1) { // AES-256-GCM (SPEC §9)
+async function resolveSingleAndStore(cacheId, clearContentBytes, overrideBlob, { compression, mimeType, hint, filename }) {
+  const cover = compression === 1 ? await zlibDecompress(clearContentBytes) : clearContentBytes;
+  if (overrideBlob) {
     for (const k of await dbGetAll('keys')) {
-      const plain = await decryptAesGcm(bytes, k.keyMaterial, nonce);
-      if (plain !== null) {
-        const content = compression === 1 ? await zlibDecompress(plain) : plain;
-        await dbPut('caches', { cacheId, mimeType, content, hint, filename });
-        return content;
+      const override = await tryDecryptOverrideMap(overrideBlob, k.keyMaterial, compression);
+      if (override) {
+        const merged = mergeOverride({ hint, mimeType, filename, content: null }, override, new Uint8Array(0));
+        await dbPut('caches', { cacheId, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
+        return { content: merged.content, merged: true, fields: merged };
       }
     }
-    pendingEncrypted[cacheId] = { ciphertext: bytes, nonce, compression, mimeType, hint, filename };
+  }
+  await dbPut('caches', {
+    cacheId, mimeType, content: cover, hint, filename,
+    pendingOverrideBlob: overrideBlob || null, pendingCompression: compression
+  });
+  return { content: cover, merged: false, fields: { hint, mimeType, filename } };
+}
+
+/**
+ * Implements SPEC §5 step 5 for a Manifest+Chunks' assembled (hash-verified) bytes: if
+ * `assembled` is long enough, tries every retained key against it as an encrypted
+ * override map first. On a match, the override's fields overlay the manifest's clear
+ * fields and the fully-resolved result is stored. Otherwise tries decompressing
+ * `assembled` per `compression` as the "cover" content — `compression === 0` always
+ * trivially succeeds (identity). On success, the cover is stored with `assembled` kept
+ * as `pendingOverrideBlob` (if long enough) for a later key to self-correct. If neither
+ * succeeds (real ciphertext, no matching key yet), stashes `assembled` in
+ * `awaitingManifests` and returns null — SPEC §9 AwaitingKey.
+ */
+async function resolveAssembledAndStore(cacheId, assembled, manifestParsed) {
+  const { compression, mimeType, hint, filename } = manifestParsed;
+  if (assembled.length >= OVERRIDE_BLOB_MIN_BYTES) {
+    for (const k of await dbGetAll('keys')) {
+      const override = await tryDecryptOverrideMap(assembled, k.keyMaterial, compression);
+      if (override) {
+        const merged = mergeOverride({ hint, mimeType, filename, content: null }, override, new Uint8Array(0));
+        await dbPut('caches', { cacheId, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
+        return { content: merged.content, merged: true, fields: merged };
+      }
+    }
+  }
+  let cover;
+  try {
+    cover = compression === 1 ? await zlibDecompress(assembled) : assembled;
+  } catch (e) {
+    awaitingManifests[cacheId] = { assembled, manifest: manifestParsed };
     return null;
   }
-  const content = compression === 1 ? await zlibDecompress(bytes) : bytes;
-  await dbPut('caches', { cacheId, mimeType, content, hint, filename });
-  return content;
+  const pendingBlob = assembled.length >= OVERRIDE_BLOB_MIN_BYTES ? assembled : null;
+  await dbPut('caches', {
+    cacheId, mimeType, content: cover, hint, filename,
+    pendingOverrideBlob: pendingBlob, pendingCompression: pendingBlob ? compression : 0
+  });
+  return { content: cover, merged: false, fields: { hint, mimeType, filename } };
+}
+
+/**
+ * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
+ * it against everything currently locked: assemblies stuck in `awaitingManifests` and
+ * cached items with a still-unresolved `pendingOverrideBlob`. "Discovery, not
+ * declaration": scan order between a key and the content it unlocks doesn't matter.
+ */
+async function processDiscoveredKey(keyMaterial, retainKey, hint) {
+  if (retainKey) {
+    await dbPut('keys', { id: toHex(keyMaterial), keyMaterial, hint });
+  }
+  let unlockedAny = false;
+
+  for (const [cacheId, entry] of Object.entries(awaitingManifests)) {
+    const override = await tryDecryptOverrideMap(entry.assembled, keyMaterial, entry.manifest.compression);
+    if (!override) continue;
+    const { hint: h, mimeType, filename } = entry.manifest;
+    const merged = mergeOverride({ hint: h, mimeType, filename, content: null }, override, new Uint8Array(0));
+    await dbPut('caches', { cacheId, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
+    delete awaitingManifests[cacheId];
+    unlockedAny = true;
+    showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
+    await showContent(merged.mimeType, merged.content, merged.filename || merged.hint || merged.mimeType, cacheId);
+  }
+
+  for (const cached of await dbGetAll('caches')) {
+    if (!cached.pendingOverrideBlob) continue;
+    const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, keyMaterial, cached.pendingCompression);
+    if (!override) continue;
+    const merged = mergeOverride(cached, override, cached.content);
+    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
+    unlockedAny = true;
+    showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
+  }
+
+  if (!unlockedAny) {
+    showMsg('Key code scanned' + (retainKey ? ' and stored' : '') + ' — scan its content code to unlock.', 'info');
+  }
+  if (activePaperHash) await renderPaper(activePaperHash);
 }
 
 // ── Camera / QR scanner ───────────────────────────────────────────────────
@@ -640,43 +789,30 @@ async function handleScanned(raw) {
       lastScannedCbor = parsed.cbor;
       lastScannedTitle = parsed.cacheId;
       updateCborButton();
-      const content = await resolveAndStore(parsed.cacheId, parsed.content, parsed);
-      if (content === null) {
-        showMsg('🔒 Encrypted content received — scan its key code to unlock.', 'info');
-        if (activePaperHash) await renderPaper(activePaperHash);
-        return;
+      // SPEC §9: discover any carried key_material first, so a combined content+key code
+      // can resolve its own overrideBlob below in one pass.
+      if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
+      const { content, merged, fields } = await resolveSingleAndStore(parsed.cacheId, parsed.content, parsed.overrideBlob, parsed);
+      const label = fields.filename || fields.hint || fields.mimeType;
+      if (merged) {
+        showMsg('🔓 Decrypted: ' + label, 'ok');
+      } else if (parsed.overrideBlob) {
+        showMsg('Loaded: ' + label + ' (🔒 hidden content not yet unlocked)', 'ok');
+      } else {
+        showMsg('Loaded: ' + label, 'ok');
       }
-      showMsg((parsed.encryption === 1 ? '🔓 Decrypted: ' : 'Loaded: ') + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
-      await showContent(parsed.mimeType, content, parsed.filename || parsed.hint || parsed.mimeType, parsed.cacheId);
+      await showContent(fields.mimeType, content, label, parsed.cacheId);
       // Refresh directory if this file belongs to the active paper
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
     }
 
-    case 'key': {
+    case 'key':
       lastScannedCbor = parsed.cbor;
       lastScannedTitle = parsed.cacheId;
       updateCborButton();
-      if (parsed.retainKey) {
-        await dbPut('keys', { id: toHex(parsed.keyMaterial), keyMaterial: parsed.keyMaterial, hint: parsed.hint });
-      }
-      let unlockedAny = false;
-      for (const [cacheId, entry] of Object.entries(pendingEncrypted)) {
-        const plain = await decryptAesGcm(entry.ciphertext, parsed.keyMaterial, entry.nonce);
-        if (plain === null) continue;
-        const content = entry.compression === 1 ? await zlibDecompress(plain) : plain;
-        await dbPut('caches', { cacheId, mimeType: entry.mimeType, content, hint: entry.hint, filename: entry.filename });
-        delete pendingEncrypted[cacheId];
-        unlockedAny = true;
-        showMsg('🔓 Decrypted: ' + (entry.filename || entry.hint || entry.mimeType), 'ok');
-        await showContent(entry.mimeType, content, entry.filename || entry.hint || entry.mimeType, cacheId);
-      }
-      if (!unlockedAny) {
-        showMsg('Key code scanned' + (parsed.retainKey ? ' and stored' : '') + ' — scan its content code to unlock.', 'info');
-      }
-      if (activePaperHash) await renderPaper(activePaperHash);
+      await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
       break;
-    }
 
     case 'paper':
       await dbPut('papers', parsed);
@@ -684,11 +820,18 @@ async function handleScanned(raw) {
       lastScannedCbor = parsed.cbor;
       lastScannedTitle = parsed.rootHash;
       updateCborButton();
+      // SPEC §9: a paper manifest (and its related[] entries) may each carry their own
+      // key_material for other content discovered along the way.
+      if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.label);
+      for (const related of parsed.related) {
+        if (related.keyMaterial) await processDiscoveredKey(related.keyMaterial, related.retainKey, related.hint);
+      }
       showMsg('Paper: ' + (parsed.label || 'untitled') + ' — ' + parsed.files.length + ' file(s)', 'ok');
       await renderPaper(parsed.rootHash);
       break;
 
     case 'manifest':
+      if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
       assemblies[parsed.cacheId] = { manifest: parsed, chunks: new Map() };
       lastScannedCbor = parsed.cbor;
       lastScannedTitle = parsed.cacheId;
@@ -723,23 +866,28 @@ async function handleScanned(raw) {
       const raw = new Uint8Array(parts.reduce((s, c) => s + c.length, 0));
       let off = 0;
       for (const p of parts) { raw.set(p, off); off += p.length; }
-      // SHA-256 integrity check (against compressed bytes, matching Android ChunkAssembler)
+      // SHA-256 integrity check (against the assembled bytes, matching Android ChunkAssembler)
       const hashBuf  = await crypto.subtle.digest('SHA-256', raw);
       const hashBytes = new Uint8Array(hashBuf);
       const expected  = a.manifest.sha256;
       let ok = expected && hashBytes.length === expected.length;
       if (ok) for (let i = 0; i < hashBytes.length; i++) if (hashBytes[i] !== expected[i]) { ok = false; break; }
       if (!ok) { showMsg('Integrity check failed — try rescanning all chunks.', 'err'); return; }
-      const content = await resolveAndStore(a.manifest.cacheId, raw, a.manifest);
-      delete assemblies[a.manifest.cacheId];
+      const manifest = a.manifest;
+      delete assemblies[manifest.cacheId];
       hideAssemblyProgress();
-      if (content === null) {
-        showMsg('🔒 All chunks assembled and verified — scan the key code to unlock.', 'info');
+      // SPEC §5 step 5 / §9: try the assembled bytes as a hidden override-map blob first,
+      // then as plain content per `compression` — may still end up AwaitingKey.
+      const result = await resolveAssembledAndStore(manifest.cacheId, raw, manifest);
+      if (result === null) {
+        showMsg('🔒 All chunks assembled, but still locked — scan the key code to unlock.', 'info');
         if (activePaperHash) await renderPaper(activePaperHash);
         break;
       }
-      showMsg(a.manifest.encryption === 1 ? '🔓 All chunks assembled and decrypted!' : 'All chunks assembled!', 'ok');
-      await showContent(a.manifest.mimeType, content, a.manifest.filename || a.manifest.hint || a.manifest.mimeType, a.manifest.cacheId);
+      const { content, merged, fields } = result;
+      const label = fields.filename || fields.hint || fields.mimeType;
+      showMsg(merged ? '🔓 All chunks assembled and decrypted!' : 'All chunks assembled!', 'ok');
+      await showContent(fields.mimeType, content, label, manifest.cacheId);
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
     }
@@ -795,21 +943,24 @@ async function renderPaper(rootHash) {
 
   // Which files are already cached?
   const allCaches = await dbGetAll('caches');
-  const cachedIds = new Set(allCaches.map(c => c.cacheId));
+  const cacheById = new Map(allCaches.map(c => [c.cacheId, c]));
 
   const list = document.getElementById('fileList');
   list.innerHTML = '';
   for (const f of paper.files) {
-    const have = cachedIds.has(f.fileId);
+    const cache = cacheById.get(f.fileId);
     const li   = document.createElement('li');
-    li.className = 'file-item ' + (have ? 'have' : 'missing');
-    if (have) {
+    li.className = 'file-item ' + (cache ? 'have' : 'missing');
+    if (cache) {
+      // SPEC §9: a pending override blob means this file's cover content is shown but a
+      // later key could "self-correct" hint/filename/mime_type/content.
+      const lock = cache.pendingOverrideBlob ? ' 🔒' : '';
       li.innerHTML =
-        '<span class="slug">' + escHtml(f.slug) + '</span>' +
+        '<span class="slug">' + escHtml(f.slug) + lock + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
         '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>';
     } else {
-      const label = pendingEncrypted[f.fileId] ? '🔒 needs key' : 'not scanned';
+      const label = awaitingManifests[f.fileId] ? '🔒 needs key' : 'not scanned';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
