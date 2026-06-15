@@ -492,19 +492,34 @@ function loadQRCode() {
   return qrcodeModulePromise;
 }
 
-async function renderQr(container, uri) {
-  const QRCode = await loadQRCode();
+// Renders a QR code for `uri` onto a fresh canvas at the given pixel width.
+function qrToCanvas(QRCode, uri, width) {
   return new Promise((resolve, reject) => {
-    container.innerHTML = '';
-    QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width: 220 }, (err, canvas) => {
-      if (err) { reject(err); return; }
-      container.appendChild(canvas);
-      resolve();
+    QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width }, (err, canvas) => {
+      if (err) reject(err); else resolve(canvas);
     });
   });
 }
 
-// Builds one QR card (canvas + label/sub/id + print/copy actions) and appends it to grid.
+async function renderQr(container, uri) {
+  const QRCode = await loadQRCode();
+  const canvas = await qrToCanvas(QRCode, uri, 220);
+  container.innerHTML = '';
+  container.appendChild(canvas);
+}
+
+// Re-renders the QR at a higher resolution than the on-screen 220px preview — better for
+// printing or pasting elsewhere — and triggers a browser download as a PNG file.
+async function downloadQrPng(uri, filename) {
+  const QRCode = await loadQRCode();
+  const canvas = await qrToCanvas(QRCode, uri, 512);
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = filename;
+  a.click();
+}
+
+// Builds one QR card (canvas + label/sub/id + print/download/copy actions) and appends it to grid.
 // `label` is inserted as-is (escape before calling); `sub`/`id` are escaped here.
 async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, itemClass }) {
   const item = document.createElement('div');
@@ -524,7 +539,9 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   actionRow.className = 'action-row';
   actionRow.innerHTML = `
     <button class="secondary" onclick="window.print()">🖨 Print</button>
+    <button class="secondary download-png">⬇ Download PNG</button>
     <button class="secondary" onclick="copyToClipboard('${uri.replace(/'/g,"\\'")}')">Copy URI</button>`;
+  actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(uri, `tagdrop-${id}.png`));
   item.appendChild(actionRow);
 }
 
@@ -894,14 +911,14 @@ async function generatePaper() {
   const grid = document.getElementById('p-qr-grid');
 
   // Manifest QR first
-  const mItem = makeQrItem(`📋 ${label || 'Manifest'}`, 'paper manifest', toHex(manifestEnc.rootHash));
+  const mItem = makeQrItem(`📋 ${label || 'Manifest'}`, 'paper manifest', toHex(manifestEnc.rootHash), manifestEnc.uri);
   grid.appendChild(mItem.div);
   try { await renderQr(mItem.qrDiv, manifestEnc.uri); }
   catch(e) { msgs.innerHTML = '<div class="err">QR rendering failed — is the qrcode library loaded?</div>'; return; }
 
   // File QRs
   for (const f of encodedFiles) {
-    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId));
+    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri);
     grid.appendChild(fItem.div);
     if (f.uri.length > 2000)
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
@@ -925,7 +942,7 @@ async function generatePaper() {
   result.appendChild(actionRow);
 }
 
-function makeQrItem(label, sub, id) {
+function makeQrItem(label, sub, id, uri) {
   const div = document.createElement('div');
   div.className = 'qr-item';
   const qrDiv = document.createElement('div');
@@ -934,6 +951,11 @@ function makeQrItem(label, sub, id) {
     `<div class="qr-label">${escHtml(label)}</div>
      <div class="qr-sub">${escHtml(sub)}</div>
      <div class="qr-id">${id}</div>`);
+  const actionRow = document.createElement('div');
+  actionRow.className = 'action-row';
+  actionRow.innerHTML = `<button class="secondary download-png">⬇ Download PNG</button>`;
+  actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(uri, `tagdrop-${id}.png`));
+  div.appendChild(actionRow);
   return { div, qrDiv };
 }
 
