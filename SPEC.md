@@ -92,7 +92,6 @@ The `payload` map — the third item of the envelope sequence (§2) — uses **i
 | 19 | `collection_tag` | text (opt) | S, M, P |
 | 24 | `icon` | text (opt) | S, M, P |
 | 28 | `encryption` | uint (opt) | S, M |
-| 29 | `nonce` | bytes (12, opt) | S, M |
 | 30 | `key_material` | bytes (32, opt) | S, M, P |
 | 31 | `retain_key` | bool (opt, default `true`) | S, M, P |
 | 32 | `signature_algorithm` | uint (opt) | S, M, P |
@@ -104,15 +103,21 @@ The `payload` map — the third item of the envelope sequence (§2) — uses **i
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
 Key 25 is reserved for a future small embedded image icon (raw bytes), as an
-alternative to the emoji `icon` field above. Keys 28–31 are defined in §9
-(Encryption); keys 32–36 are defined in §10 (Verified Authorship).
+alternative to the emoji `icon` field above. Keys 28, 30, and 31 are defined
+in §9 (Encryption); keys 32–36 are defined in §10 (Verified Authorship). Key
+29 is reserved and unused — see §9 for why an encrypted override map's nonce
+doesn't need its own clear-map field.
 
-**Encrypted payloads carry an override map.** When `encryption` (key 28) is
-present and non-zero, an encrypted **override map** — using key numbers 3
-(`hint`), 4 (`mime_type`), 5 (`content`, Single only), and 11 (`filename`) —
-overlays the payload/manifest map (the **clear map**) once decrypted. The
-clear map's own keys 3/4/5/11, if present, serve as optional pre-decryption
-"cover" values. See §9.
+**Codes may carry a hidden, encrypted override map.** A Single's trailing
+bytes (after its 3-item CBOR Sequence) or a Manifest's assembled chunk bytes
+(§5) may be a self-contained, encrypted **override map** — using key numbers
+3 (`hint`), 4 (`mime_type`), 5 (`content`, Single only), and 11 (`filename`)
+— that overlays the payload/manifest map (the **clear map**) once decrypted.
+`encryption` (key 28), if present and non-zero, is an optional hint that this
+is the case; its absence does NOT mean the code has no hidden override map —
+see §9, "Discovery, not declaration." The clear map's own keys 3/4/5/11, if
+present, serve as the values shown before (or without) a matching key. See
+§9.
 
 ### File entry sub-keys (elements of key 15)
 
@@ -166,11 +171,13 @@ payload map {
 
 `content` is the raw payload bytes (after any decompression). If `compression` is present and non-zero, decompress before use.
 
-The example above is unencrypted (`encryption` absent). If `encryption`
-(key 28) is present and non-zero, the code carries a 4th CBOR-sequence
-item — an encrypted override map that overlays keys 3, 4, 5, and 11 of this
-map once decrypted. Any of those keys present here instead serve as
-pre-decryption "cover" values — see §9.
+The example above shows just the 3-item envelope+payload sequence. The code
+MAY additionally carry **raw trailing bytes** after this sequence — a hidden,
+encrypted override map (§9) that overlays keys 3, 4, 5, and 11 of this map
+once decrypted. `encryption` (key 28) is at most an optional hint that this
+is the case; its absence doesn't rule it out (§9). Keys 3, 4, 5, and 11
+present here serve as the values shown before (or without) a matching
+key — see §9.
 
 ### 4.2 Manifest (`type` = 1)
 
@@ -195,12 +202,14 @@ payload map {
 }
 ```
 
-The example above is unencrypted (`encryption` absent). If `encryption`
-(key 28) is present and non-zero, the assembled chunk bytes (§5), once
-decrypted, are an override map that overlays keys 3, 4, and 11 of this map
-(plus `content`, key 5, which doesn't otherwise appear in a Manifest). Any of
-keys 3/4/11 present in this map instead serve as pre-decryption "cover"
-values — see §9.
+The assembled chunk bytes (§5) MAY themselves *be* a hidden, encrypted
+override map (§9) which, once decrypted, overlays keys 3, 4, and 11 of this
+map (plus `content`, key 5, which doesn't otherwise appear in a Manifest) —
+distinguished from plain assembled content only by whether a candidate key
+successfully decrypts them (§9, "Discovery, not declaration"). `encryption`
+(key 28) is at most an optional hint that this is the case; its absence
+doesn't rule it out. Keys 3, 4, and 11 present here serve as the values shown
+before (or without) a matching key — see §9.
 
 ### 4.3 Chunk (`type` = 2)
 
@@ -293,11 +302,14 @@ Paper (root hash)
 2. **Scan chunks** in any order. The app tracks which `chunk_index` values have been collected.
 3. When `chunks_received == chunk_count`: assemble in ascending `chunk_index` order → concatenate bytes.
 4. Verify: `SHA-256(assembled) == sha256` from manifest. Reject on mismatch.
-5. Decrypt if `encryption != 0` (§9), then decompress if `compression != 0`.
-   If `encryption != 0`, the result is the CBOR-encoded override map (§9) —
-   merge it onto the manifest map (override map's keys win) to get the final
-   `hint`/`mime_type`/`content`/`filename`. Otherwise the manifest map's
-   fields are final as-is, with `content` being the assembled bytes.
+5. If the assembled bytes are ≥ 28 bytes, try AES-256-GCM decryption as
+   `nonce(12) || ciphertext || tag(16)` (§9) against every known
+   `key_material`. If one authenticates, decompress the plaintext if
+   `compression != 0` and CBOR-decode it as the override map (§9) — merge it
+   onto the manifest map (override map's keys win) to get the final
+   `hint`/`mime_type`/`content`/`filename`. Otherwise, decompress the
+   assembled bytes if `compression != 0`; the manifest map's fields are final
+   as-is, with `content` being the (decompressed) assembled bytes.
 6. Deliver MIME-typed content to the viewer.
 
 **Resumability (issue #14):** Because assembly only needs the CBOR map stored in each QR, a partially-collected set can be saved to a database and resumed later. Each chunk carries `cache_id` so the app can match newly-scanned chunks to a pending collection.
@@ -525,28 +537,41 @@ DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively
 ## 9. Encryption
 
 A payload's `hint` (3), `mime_type` (4), `content` (5), and `filename` (11)
-may optionally be protected by an **encrypted override map** layered on top
-of the payload/manifest map, independently of compression (§8).
+may optionally be shadowed by a hidden, encrypted **override map** that
+overlays the payload/manifest map (the **clear map**), independently of
+compression (§8). Unlike most of this format, the override map's presence is
+**never required to be declared** — see "Discovery, not declaration" below.
+A code with no declared `encryption` and an unremarkable clear map can still
+be carrying one.
 
 | `encryption` value | Algorithm |
 |---|---|
-| 0 (or absent) | None |
+| 0 (or absent) | None declared |
 | 1 | AES-256-GCM |
 | 2–255 | Reserved |
+
+`encryption` (key 28) is an **optional hint**, not a precondition: a code MAY
+set it to `1` to advertise "scan a key to unlock more" (e.g. for a "🔒
+Locked" badge in the UI). Its absence does NOT mean the code has no hidden
+override map.
 
 | Key | Field | Type | Used in |
 |---|---|---|---|
 | 28 | `encryption` | uint (opt) | S, M |
-| 29 | `nonce` | bytes (12, opt) | S, M |
 | 30 | `key_material` | bytes (32, opt) | S, M, P, `related` entries |
 | 31 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
 
+Key 29 is reserved and unused: the GCM nonce travels embedded in the override
+map's ciphertext itself (below), so a separate clear-map `nonce` field would
+only add bulk and a second (always-matching, or suspiciously-not) value to
+cross-check — without it, there's simply nothing nonce-shaped in the clear
+map at all.
+
 ### Encrypted override map
 
-When `encryption` (key 28) is present and non-zero, the payload/manifest map
-(the **clear map**) is paired with a second, encrypted CBOR map (the
-**override map**) using the same key numbers — 3 (`hint`), 4 (`mime_type`),
-5 (`content`, Single only), 11 (`filename`):
+A hidden **override map** is a CBOR map using the same key numbers as the
+clear map — 3 (`hint`), 4 (`mime_type`), 5 (`content`, Single only), 11
+(`filename`):
 
 ```
 override map {
@@ -557,50 +582,65 @@ override map {
 }
 ```
 
-**Where the override map lives:**
+Its CBOR bytes are compressed (§8, if `compression != 0`) and then
+AES-256-GCM-encrypted (see below) to a single **self-contained blob**:
 
-- **Single (`type` = 0):** the override map is CBOR-encoded, compressed
-  (§8, if `compression != 0`), then AES-256-GCM-encrypted (see below) to
-  `ciphertext || 16-byte tag`, carried as a **4th item** in the code's CBOR
-  Sequence:
+```
+nonce(12 bytes) || ciphertext || tag(16 bytes)
+```
 
-  ```
-  CBOR(version) || CBOR(type) || CBOR(clear map) || CBOR(h'<ciphertext || tag>')
-  ```
+The nonce travels with the blob — nothing in the clear map is needed to
+locate or interpret it.
 
-- **Manifest (`type` = 1):** the assembled chunk bytes (§5) — once
-  `sha256`-verified, decrypted, and (if `compression != 0`) decompressed —
-  *are* the override map's CBOR bytes, in the same shape as the Single case
-  above. No extra framing is needed; this is how assembled bytes already
-  worked, just with a CBOR map instead of raw content as the result.
+**Where this blob lives:**
 
-**Producing the final view:** decrypt (and decompress) the override map,
-then merge it onto the clear map — `final = {...clear map, ...override map}`
-— with the override map's values winning on key collisions. When
-`encryption` is absent or `0`, there is no override map: the clear map *is*
-the final view, exactly as in §4.1/§4.2 today.
+- **Single (`type` = 0):** as **raw trailing bytes** after the code's 3-item
+  CBOR Sequence (envelope + payload map, §2) — *not* a 4th CBOR item, just
+  bytes appended after a complete, self-delimiting sequence (§2, "Decoders
+  tolerate trailing bytes"). Any trailing bytes of length ≥ 28 (the minimum
+  possible blob: 12-byte nonce + 16-byte tag, for an empty plaintext) are a
+  candidate.
+- **Manifest (`type` = 1):** the assembled chunk bytes (§5) themselves, if ≥
+  28 bytes, are a candidate — *in addition to* whatever they decode to as
+  plain `content` per `compression`. §5 step 5 tries both.
+
+**Producing the final view:** for each candidate `key_material` the app
+holds, try AES-256-GCM decryption of the candidate blob using its first 12
+bytes as the nonce. If the authentication tag checks out, decompress the
+remaining plaintext (if `compression != 0`) and CBOR-decode it as the
+override map, then merge it onto the clear map —
+`final = {...clear map, ...override map}` — with the override map's values
+winning on key collisions. If no key has yet succeeded (or the code carries
+no such blob at all), the clear map *is* the final view, exactly as in
+§4.1/§4.2.
 
 ```
 clear map {
   2: h'<8 random bytes>',  // cache_id — random, see below
-  12: 1,                   // compression — applied to the override map's CBOR bytes
-  28: 1,                   // encryption: AES-256-GCM
-  29: h'<12-byte nonce>',
+  12: 1,                   // compression — applies to content (Single) /
+                           //   assembled bytes (Manifest), and to the
+                           //   override map's CBOR bytes before encryption
+  28: 1,                   // encryption — optional "🔒 Locked" hint
 }
-// + 4th sequence item (Single only): h'<ciphertext of (compressed) override map || tag>'
+// + trailing bytes (Single) / assembled bytes (Manifest):
+//   h'<12-byte nonce>' || h'<ciphertext of (compressed) override map>' || h'<16-byte tag>'
 ```
 
-**Cover stories (optional):** the clear map MAY itself include `hint` (3),
-`mime_type` (4), `content` (5, Single only), and/or `filename` (11) — shown
-to a finder who hasn't found a matching key yet. These can be anything: a
-generic "locked" placeholder, or a believable **decoy** (a different
-hint/MIME/content/filename than what's really there). Once a matching
-`key_material` is found, the override map's same-numbered fields replace the
-cover values in the merge above — the displayed content, hint, MIME type,
-and filename **self-correct** to the real ones. Without the key, there's no
-way to tell from the clear map alone whether `encryption != 0` hides
-*nothing displayable*, *a locked version of what's already shown*, or
-*something else entirely*.
+**Cover stories, or no story at all:** the clear map's `hint` (3),
+`mime_type` (4), `content` (5, Single only), and `filename` (11) are shown
+(and used) until a matching key is found. They MAY be a generic "locked"
+placeholder, a believable **decoy** (different hint/MIME/content/filename
+than what's really there), or — since `encryption` need not be declared —
+genuine, unremarkable content with no relation to the hidden override map at
+all. A code can look, scan, and behave exactly like any other TagDrop code
+while still carrying a hidden layer in its trailing/assembled bytes. Once a
+matching `key_material` is found, the override map's same-numbered fields
+replace the clear map's — the displayed content, hint, MIME type, and
+filename **self-correct** to the real ones.
+
+For the fully-undeclared case to actually be deniable, the clear map needs
+genuine, unremarkable content of its own — an empty or trivially-placeholder
+clear map is itself a tell ("why would this code exist at all?").
 
 **Order of operations:** compress (§8) first, then encrypt — encrypted bytes
 are high-entropy and don't compress further, so encryption is always the
@@ -611,26 +651,25 @@ transmitted, i.e. after compression *and* encryption, so a partially- or
 incorrectly-assembled multi-code cache can be detected before a decryption
 key is even available.
 
-**`cache_id` for encrypted content is random, not content-addressed.**
-§4.5 defines `cache_id = SHA-256(uncompressed content)[0:8]` so that
-identical content always gets the same ID — useful for deduplication, but
-exactly the wrong property for encrypted content: it would let anyone
-compute the `cache_id` of a known plaintext and check whether any encrypted
-code in the wild carries it, confirming "this hidden content equals known
-document X" without the key. When `encryption != 0`, `cache_id` (key 2, in
-the clear map) MUST instead be 8 random bytes, independent of the override
-map's real `content` — deliberately giving up cross-author deduplication for
-encrypted content in exchange for not leaking a content-equality oracle.
+**`cache_id` for a code carrying a hidden override map is random, not
+content-addressed.** §4.5 defines `cache_id = SHA-256(uncompressed
+content)[0:8]` so that identical content always gets the same ID — useful for
+deduplication, but exactly the wrong property here: it would let anyone
+compute the `cache_id` of the clear map's own `content` (cover story or not)
+and check whether any code in the wild carries it, linking that code to a
+known document regardless of what's hidden inside. An author embedding a
+hidden override map MUST set `cache_id` (key 2, in the clear map) to 8 random
+bytes, independent of both the clear map's own `content` and the override
+map's real `content`.
 
-**AES-256-GCM:** `nonce` (key 29, in the clear map) is the 12-byte GCM nonce,
-and MUST be unique for every encryption performed under a given key — a
-reused nonce breaks AES-GCM's confidentiality entirely. The (compressed)
-override map's CBOR bytes, when `encryption = 1`, are encrypted to
-`ciphertext || 16-byte authentication tag` (tag appended) — the default
-output of both `javax.crypto.Cipher` ("AES/GCM/NoPadding") on Android and
-`SubtleCrypto.encrypt()` in browsers — wrapped in a CBOR byte string as the
-4th sequence item (Single) or used directly as the assembled chunk bytes
-(Manifest).
+**AES-256-GCM:** the 12-byte nonce prefixing the blob MUST be unique for
+every encryption performed under a given key — a reused nonce breaks
+AES-GCM's confidentiality entirely. The (compressed) override map's CBOR
+bytes are encrypted to `ciphertext || 16-byte authentication tag` (tag
+appended) — the default output of both `javax.crypto.Cipher`
+("AES/GCM/NoPadding") on Android and `SubtleCrypto.encrypt()` in browsers —
+then prefixed with the nonce to form the blob above, used as the Single's
+trailing bytes or the Manifest's assembled chunk bytes.
 
 ### Decryption keys
 
@@ -656,6 +695,17 @@ payload map {
 }
 ```
 
+Note what's *not* here: no `cache_id`, no pointer to the content this key
+unlocks. That's deliberate — a `key_material` carries no reference to which
+code(s) it applies to, so the same key MAY be the right key for many
+different cached codes (e.g. one trail-wide secret that unlocks a hidden
+layer on every sticker in the trail, not just one). "Try this key against
+everything cached" isn't a fallback for when a targeted lookup is
+unavailable — it's the only mechanism there is, and it's the right one for
+a key that's reused across many tags. A key-only code typically omits
+`cache_id` (key 2) too, since it references no content of its own to be
+deduplicated or cached against.
+
 `retain_key` (key 31, default `true`) is the author's recommendation for
 whether the app should remember this key for future matches across scanning
 sessions (`true`), or use it only against content already cached *right now*
@@ -663,21 +713,24 @@ and then discard it (`false`). It's a recommendation, not an enforceable
 guarantee — an app or user can always choose to remember a key regardless.
 
 **Discovery, not declaration:** no field says which content a given
-`key_material` decrypts, and no field says a given encrypted payload
-requires a particular key. Instead, whenever the app learns a new
-`key_material`, it attempts AES-256-GCM decryption (using each candidate's
-`nonce`) against every encrypted override-map ciphertext — the 4th sequence
-item of a cached Single, or the assembled-chunk blob of a cached Manifest —
-it has but couldn't previously open. A successful authentication-tag check
+`key_material` decrypts, and — per above — `encryption` (key 28) is at most
+a hint, not a precondition. Instead, whenever the app learns a new
+`key_material`, it tries AES-256-GCM decryption — using the candidate blob's
+own embedded 12-byte nonce — against the trailing bytes of every cached
+Single and the assembled-chunk bytes of every cached Manifest that are ≥ 28
+bytes and haven't already been opened. A successful authentication-tag check
 is the match; the app decompresses (if `compression != 0`) and CBOR-decodes
 the result as the override map (§9), then merges it onto the clear map —
 refreshing the displayed `hint`/`mime_type`/`content`/`filename` to their
-real values. Symmetrically, whenever a new encrypted payload is cached, it's
-tried against every previously-seen `key_material` (subject to that key's
-`retain_key`). This is cheap — AES-GCM decryption of a few KB against a
-handful of candidates is negligible — and means **scan order doesn't
-matter**: the key first, the content first, or either in a later session,
-the app reconciles them whichever order they arrive in.
+real values. Symmetrically, whenever a new code is cached, its
+trailing/assembled bytes (if ≥ 28 bytes) are tried against every
+previously-seen `key_material` (subject to that key's `retain_key`). This is
+cheap — AES-GCM decryption of a few KB against a handful of candidates is
+negligible, with a false-positive authentication rate of ~2⁻¹²⁸ — so trying
+one key against an entire trail's worth of cached codes costs nothing
+measurable, and means **scan order doesn't matter**: the key first, the
+content first, or either in a later session, the app reconciles them
+whichever order they arrive in.
 
 ### Privacy properties
 
@@ -689,28 +742,30 @@ hidden volumes or OTR's deniable authentication.
 
 - **Ciphertext is indistinguishable from random.** AES-GCM ciphertext with a
   fresh nonce is computationally indistinguishable from random bytes. Without
-  the key, only the **clear map** is visible — the envelope (`version`,
-  `type`), `cache_id`, `compression`, `encryption`, `nonce`, whichever
-  optional collection/icon/manifest-sizing fields the author included, and
-  whatever `hint`/`mime_type`/`content`/`filename` cover story (§9) the
-  author chose, genuine placeholder or decoy. The encrypted override map
-  reveals nothing about the real values, or whether any particular
-  `key_material` unlocks it — and a convincing cover story is
-  indistinguishable from "this is simply the (unencrypted) content."
+  the right key, only the **clear map** is visible — the envelope
+  (`version`, `type`), `cache_id`, `compression`, optionally `encryption`,
+  whichever optional collection/icon/manifest-sizing fields the author
+  included, and whatever `hint`/`mime_type`/`content`/`filename` (§9) the
+  author chose: a placeholder, a decoy, or genuine unremarkable content with
+  no relation to what's hidden. A hidden override map's trailing/assembled
+  bytes reveal nothing about the real values, or whether any particular
+  `key_material` unlocks them — and genuine cover content is
+  indistinguishable from "this is simply the (unencrypted) content, full
+  stop."
 - **Decoders tolerate trailing bytes.** A CBOR Sequence (RFC 8742, §2) is
   self-delimiting — a decoder reads exactly as many bytes as the known items
   require and stops. TagDrop decoders MUST NOT treat additional bytes after
   a complete, valid envelope+payload sequence as an error. This is what lets
-  an encrypted Single (§9) carry its override map as a 4th sequence item
-  without breaking decoders that stop after the 3rd; the same tolerance also
-  lets a code carry a second, independent envelope+payload(+override)
-  sequence after the first, encrypted under a different key — to a decoder
-  that doesn't know to look for it, indistinguishable from padding.
+  a Single carry a hidden override map (§9) as raw trailing bytes — to a
+  decoder that doesn't know to look for them, indistinguishable from padding
+  or noise. The same tolerance also lets those trailing bytes themselves be
+  followed by a second, independent envelope+payload(+override) sequence,
+  encrypted under a different key.
 - **Keys and content are the same shape.** A `key_material`-only code and a
-  small encrypted Single code both look like a short CBOR map of
-  high-entropy byte strings (plus, for the Single, a trailing ciphertext
-  blob that's equally high-entropy). Nothing marks "this is a key" versus
-  "this is locked content."
+  small code carrying a hidden override map both look like a short CBOR map
+  of high-entropy byte strings, optionally followed by trailing bytes that
+  are equally high-entropy. Nothing marks "this is a key," "this is locked
+  content," or "this is just a normal code with some padding."
 - **Ephemeral-by-default caching is recommended.** Implementations SHOULD
   NOT persist encrypted content they cannot yet decrypt beyond the current
   session, unless a `key_material` scanned alongside it has
@@ -894,7 +949,7 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 Version history:
 | Version | Changes |
 |---|---|
-| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. Optional AES-256-GCM encryption (`encryption`/`nonce`, keys 28/29) applied after compression, and optional `key_material`/`retain_key` (keys 30/31) carried inline or via `related` entries, matched by trial decryption rather than declared targets — see §9. Optional ML-DSA-44 post-quantum signatures (`signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label`, keys 32–36), additive over the unsigned payload and not affecting `cache_id`/`root_hash`/`sha256` — see §10 (not yet implemented in reference implementations). |
+| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. Optional AES-256-GCM-encrypted hidden override map (key 29 reserved, unused) carried as self-contained `nonce||ciphertext||tag` trailing bytes (Single) or assembled-chunk bytes (Manifest), applied after compression, with an optional, non-binding `encryption` hint (key 28); optional `key_material`/`retain_key` (keys 30/31) carried inline or via `related` entries, matched by trial decryption against every cached code rather than declared targets — see §9. Optional ML-DSA-44 post-quantum signatures (`signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label`, keys 32–36), additive over the unsigned payload and not affecting `cache_id`/`root_hash`/`sha256` — see §10 (not yet implemented in reference implementations). |
 
 ---
 
