@@ -176,7 +176,23 @@ class CollectionDetailAdapter(
 
     private object Diff : DiffUtil.ItemCallback<PageItem>() {
         override fun areItemsTheSame(a: PageItem, b: PageItem) = a.key == b.key
-        override fun areContentsTheSame(a: PageItem, b: PageItem) = a == b
+
+        /**
+         * [FoundCache.equals] compares only `cacheId` (it holds a `ByteArray`, which can't
+         * be structurally `==`-compared), so `a == b` alone can't see e.g. `encrypted`
+         * flipping from true to false once a SPEC §9 key unlocks it — check that explicitly
+         * so the row re-binds and drops its "Locked" status.
+         */
+        override fun areContentsTheSame(a: PageItem, b: PageItem): Boolean {
+            if (a != b) return false
+            return a.cacheOrNull()?.encrypted == b.cacheOrNull()?.encrypted
+        }
+
+        private fun PageItem.cacheOrNull(): FoundCache? = when (this) {
+            is PageItem.CacheEntry -> cache
+            is PageItem.PaperFile -> cache
+            else -> null
+        }
     }
 
     companion object {

@@ -646,7 +646,7 @@ async function handleScanned(raw) {
         if (activePaperHash) await renderPaper(activePaperHash);
         return;
       }
-      showMsg('Loaded: ' + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
+      showMsg((parsed.encryption === 1 ? '🔓 Decrypted: ' : 'Loaded: ') + (parsed.filename || parsed.hint || parsed.mimeType), 'ok');
       await showContent(parsed.mimeType, content, parsed.filename || parsed.hint || parsed.mimeType, parsed.cacheId);
       // Refresh directory if this file belongs to the active paper
       if (activePaperHash) await renderPaper(activePaperHash);
@@ -668,7 +668,7 @@ async function handleScanned(raw) {
         await dbPut('caches', { cacheId, mimeType: entry.mimeType, content, hint: entry.hint, filename: entry.filename });
         delete pendingEncrypted[cacheId];
         unlockedAny = true;
-        showMsg('Decrypted: ' + (entry.filename || entry.hint || entry.mimeType), 'ok');
+        showMsg('🔓 Decrypted: ' + (entry.filename || entry.hint || entry.mimeType), 'ok');
         await showContent(entry.mimeType, content, entry.filename || entry.hint || entry.mimeType, cacheId);
       }
       if (!unlockedAny) {
@@ -738,7 +738,7 @@ async function handleScanned(raw) {
         if (activePaperHash) await renderPaper(activePaperHash);
         break;
       }
-      showMsg('All chunks assembled!', 'ok');
+      showMsg(a.manifest.encryption === 1 ? '🔓 All chunks assembled and decrypted!' : 'All chunks assembled!', 'ok');
       await showContent(a.manifest.mimeType, content, a.manifest.filename || a.manifest.hint || a.manifest.mimeType, a.manifest.cacheId);
       if (activePaperHash) await renderPaper(activePaperHash);
       break;

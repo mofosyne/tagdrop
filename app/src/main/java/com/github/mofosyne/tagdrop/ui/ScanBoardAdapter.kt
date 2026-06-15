@@ -46,7 +46,11 @@ class ScanBoardAdapter(private val onOpen: (FoundCache) -> Unit) :
 
     private object Diff : DiffUtil.ItemCallback<ScanBlock>() {
         override fun areItemsTheSame(a: ScanBlock, b: ScanBlock) = a.slug == b.slug
-        override fun areContentsTheSame(a: ScanBlock, b: ScanBlock) = a == b
+
+        // FoundCache.equals() compares only cacheId, so `a == b` alone can't see `encrypted`
+        // flipping from true to false once a SPEC §9 key unlocks it — check it explicitly.
+        override fun areContentsTheSame(a: ScanBlock, b: ScanBlock) =
+            a == b && a.cache?.encrypted == b.cache?.encrypted
     }
 
     companion object {
