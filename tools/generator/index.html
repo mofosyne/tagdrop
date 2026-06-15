@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TagDrop Generator</title>
+<script>
+  // crypto.subtle (SHA-256, AES-GCM) requires a secure context. GitHub Pages
+  // serves this page over both http:// and https:// without redirecting —
+  // upgrade to https so crypto.subtle is available.
+  if (location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+    location.replace('https:' + location.href.slice(location.protocol.length));
+  }
+</script>
 <!--
   Static HTML generator for TagDrop QR codes.
   No server required — open this file directly in a browser.

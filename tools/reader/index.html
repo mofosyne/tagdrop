@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TagDrop Reader</title>
+<script>
+  // crypto.subtle (SHA-256, AES-GCM) requires a secure context. GitHub Pages
+  // serves this page over both http:// and https:// without redirecting —
+  // upgrade to https so crypto.subtle is available.
+  if (location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+    location.replace('https:' + location.href.slice(location.protocol.length));
+  }
+</script>
 <!--
   TagDrop Reader — scan TagDrop QR codes in any modern browser.
   Self-contained single HTML file, no server required.

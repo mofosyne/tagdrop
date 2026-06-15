@@ -77,3 +77,26 @@ optional follow-up.
 ## Branch/remote notes
 
 - The repo's default branch is `master`, not `main`.
+
+## Future ideas / backlog (not yet implemented)
+
+Ideas raised and assessed but deliberately deferred — revisit if they come up
+again or a concrete need emerges.
+
+- **Paper "homepage" via `index` slug convention** (assessed: *later*).
+  When browsing a paper manifest, let a file whose `slug` is `index`,
+  `index.html`, or `index.md` be treated as the paper's default/landing
+  page (auto-open it, or highlight it as the primary "Open" action in the
+  paper detail view / `renderPaper()`-equivalent), instead of just listing
+  all files with no preferred entry point. No SPEC.md changes needed — pure
+  convention, mirrors the existing `style.css` stylesheet convention. Small,
+  non-blocking; do whenever someone wants nicer paper browsing.
+- **Collection "default" via `collection_home` field** (assessed:
+  *later, possibly never*). A boolean field (CBOR key TBD), set on one
+  paper/cache within a `collection_id` group, marking it as that
+  collection's entry point — analogous to `retain_key`. Would need a new
+  permanent CBOR key in SPEC.md plus updates to both codec implementations
+  (see above). Existing "first scanned wins" fallback for
+  `collection_label`/`icon` may be sufficient; only add this if a real case
+  shows up where users need to designate/re-designate a collection's home
+  item explicitly.
