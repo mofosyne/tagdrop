@@ -76,6 +76,7 @@
   }
   .qr-badge.encrypted { background: #fce4ec; color: #ad1457; }
   .qr-badge.key       { background: #fff3e0; color: #e65100; }
+  .qr-badge.home      { background: #e8f5e9; color: #2e7d32; }
   .qr-item.key-item   { border: 2px dashed #e65100; }
 
   .warn { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px;
@@ -791,6 +792,10 @@ async function generateSingle() {
 }
 
 // ── Paper layout generator ─────────────────────────────────────────────────
+// Slug convention (mirrors tools/reader/index.html and the Android app): a
+// file with one of these slugs is the paper's homepage/landing page.
+const HOME_SLUGS = ['index', 'index.html', 'index.md'];
+
 let fileEntries   = [];
 let relatedEntries = [];
 
@@ -951,7 +956,7 @@ async function generatePaper() {
 
   // File QRs
   for (const f of encodedFiles) {
-    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri);
+    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri, HOME_SLUGS.includes(f.slug) ? '🏠 homepage' : null);
     grid.appendChild(fItem.div);
     if (f.uri.length > 2000)
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
@@ -978,14 +983,15 @@ async function generatePaper() {
   result.appendChild(actionRow);
 }
 
-function makeQrItem(label, sub, id, uri) {
+function makeQrItem(label, sub, id, uri, badge) {
   const div = document.createElement('div');
   div.className = 'qr-item';
   const qrDiv = document.createElement('div');
   div.appendChild(qrDiv);
+  const badgeHtml = badge ? ` <span class="qr-badge home">${escHtml(badge)}</span>` : '';
   div.insertAdjacentHTML('beforeend',
     `<div class="qr-label">${escHtml(label)}</div>
-     <div class="qr-sub">${escHtml(sub)}</div>
+     <div class="qr-sub">${escHtml(sub)}${badgeHtml}</div>
      <div class="qr-id">${id}</div>`);
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row';
