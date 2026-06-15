@@ -92,6 +92,14 @@
 
   .action-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 
+  .dropzone {
+    border: 2px dashed #ccc; border-radius: 8px; padding: 14px; margin-top: 6px;
+    text-align: center; transition: border-color .15s, background-color .15s;
+  }
+  .dropzone.dragover { border-color: #1a1a2e; background: #f0f0ff; }
+  .dropzone input[type=file] { display: block; margin: 0 auto; }
+  .dropzone-hint { font-size: 0.8rem; color: #888; margin-top: 6px; }
+
   /* ── Print styles ── */
   @media print {
     header, .tabs, .controls, .action-row, button, label, input, select, textarea,
@@ -166,7 +174,10 @@
     </div>
     <label>Or upload a file <small>(fills in filename, MIME type, and content below — binary
       files are stored as base64, matching the "(paste base64)" MIME options)</small></label>
-    <input type="file" id="s-upload">
+    <div class="dropzone" id="s-dropzone">
+      <input type="file" id="s-upload">
+      <div class="dropzone-hint">…or drag a file here</div>
+    </div>
     <label>Content</label>
     <textarea id="s-content" placeholder="Paste your HTML, text, JSON, or SVG here…"></textarea>
     <button class="primary" onclick="generateSingle()">Generate QR Code</button>
@@ -215,6 +226,9 @@
       (e.g. <code>images/photo.jpg</code>) — they are matched as plain strings.
     </p>
     <div id="p-files"></div>
+    <div class="dropzone" id="p-dropzone">
+      <div class="dropzone-hint">Drag files or a ZIP archive here to add them as pages</div>
+    </div>
     <div class="action-row">
       <button class="secondary" onclick="addFileEntry()">+ Add File</button>
       <button class="secondary" onclick="document.getElementById('p-upload-files').click()">📁 Upload File(s)</button>
@@ -869,6 +883,16 @@ async function generatePaper() {
   const set   = document.getElementById('p-set').value.trim() || null;
   const slug  = document.getElementById('p-slug').value.trim() || null;
 
+  // Slugs identify files within the paper's directory (SPEC §7) — catch empty
+  // or duplicate slugs before encoding anything.
+  const slugs = fileEntries.map(id => document.getElementById('fslug-' + id)?.value.trim());
+  if (slugs.some(s => !s)) { msgs.innerHTML = '<div class="err">Each file needs a slug.</div>'; return; }
+  const dupSlugs = [...new Set(slugs.filter((s, i) => slugs.indexOf(s) !== i))];
+  if (dupSlugs.length) {
+    msgs.innerHTML = `<div class="err">Duplicate file slug(s): ${dupSlugs.map(escHtml).join(', ')}. Each file needs a unique slug.</div>`;
+    return;
+  }
+
   // Encode all files first
   const encodedFiles = [];
   for (const id of fileEntries) {
@@ -876,7 +900,6 @@ async function generatePaper() {
     const fmime    = document.getElementById('fmime-' + id)?.value;
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
-    if (!fslug) { msgs.innerHTML = '<div class="err">Each file needs a slug.</div>'; return; }
     if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" has no content.</div>`; return; }
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
@@ -987,6 +1010,29 @@ document.getElementById('tab-paper').addEventListener('click', function once() {
   this.removeEventListener('click', once);
 });
 
+// ── File / ZIP upload helpers ───────────────────────────────────────────────
+// Adds each of `files` as a new file entry on the Paper Layout tab, pre-filled
+// from its contents (slug defaults to the filename — edit afterwards to add a
+// folder prefix, drop the extension, etc).
+async function addFilesToPaper(files) {
+  for (const file of files) {
+    const id = addFileEntry();
+    document.getElementById('fslug-' + id).value = file.name;
+    await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id);
+  }
+}
+
+// Unpacks `file` (a .zip) and adds each entry as a new file entry, preserving
+// its path as the slug (e.g. "images/photo.jpg"). Returns the number of
+// entries added; throws if `file` isn't a readable ZIP.
+async function addZipToPaper(file) {
+  const entries = await parseZip(await file.arrayBuffer());
+  for (const entry of entries) {
+    addFileEntryFromBytes(entry.name, entry.bytes, guessMimeType(entry.name, ''));
+  }
+  return entries.length;
+}
+
 // ── File / ZIP upload event handlers ────────────────────────────────────────
 document.getElementById('s-upload').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -997,11 +1043,7 @@ document.getElementById('s-upload').addEventListener('change', async (e) => {
 document.getElementById('p-upload-files').addEventListener('change', async (e) => {
   const files = [...e.target.files];
   e.target.value = '';
-  for (const file of files) {
-    const id = addFileEntry();
-    document.getElementById('fslug-' + id).value = file.name;
-    await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id);
-  }
+  await addFilesToPaper(files);
 });
 
 document.getElementById('p-upload-zip').addEventListener('change', async (e) => {
@@ -1010,21 +1052,57 @@ document.getElementById('p-upload-zip').addEventListener('change', async (e) => 
   if (!file) return;
   const msgs = document.getElementById('p-messages');
   msgs.innerHTML = '';
-  let entries;
+  let count;
   try {
-    entries = await parseZip(await file.arrayBuffer());
+    count = await addZipToPaper(file);
   } catch (err) {
     msgs.innerHTML = `<div class="err">Couldn't read "${escHtml(file.name)}": ${escHtml(err.message)}</div>`;
     return;
   }
-  if (entries.length === 0) {
+  if (count === 0) {
     msgs.innerHTML = '<div class="warn">ZIP archive has no files.</div>';
     return;
   }
-  for (const entry of entries) {
-    addFileEntryFromBytes(entry.name, entry.bytes, guessMimeType(entry.name, ''));
+  msgs.innerHTML = `<div class="ok">Added ${count} file(s) from "${escHtml(file.name)}".</div>`;
+});
+
+// ── Drag-and-drop uploads ────────────────────────────────────────────────────
+// A file dropped outside a dropzone would otherwise navigate the browser to it
+// (the browser treats it as a file:// link) — block that globally.
+['dragover', 'drop'].forEach(evt => document.body.addEventListener(evt, e => e.preventDefault()));
+
+function setupDropzone(el, onFiles) {
+  el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('dragover'); });
+  el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+  el.addEventListener('drop', e => {
+    e.preventDefault();
+    el.classList.remove('dragover');
+    const files = [...(e.dataTransfer?.files || [])];
+    if (files.length) onFiles(files);
+  });
+}
+
+setupDropzone(document.getElementById('s-dropzone'), files => {
+  loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content');
+});
+
+setupDropzone(document.getElementById('p-dropzone'), async files => {
+  const msgs = document.getElementById('p-messages');
+  msgs.innerHTML = '';
+  let fileCount = 0, zipCount = 0;
+  for (const file of files) {
+    if (/\.zip$/i.test(file.name) || file.type === 'application/zip') {
+      try { zipCount += await addZipToPaper(file); }
+      catch (err) { msgs.innerHTML += `<div class="err">Couldn't read "${escHtml(file.name)}": ${escHtml(err.message)}</div>`; }
+    } else {
+      await addFilesToPaper([file]);
+      fileCount++;
+    }
   }
-  msgs.innerHTML = `<div class="ok">Added ${entries.length} file(s) from "${escHtml(file.name)}".</div>`;
+  const parts = [];
+  if (fileCount) parts.push(`${fileCount} file(s)`);
+  if (zipCount)  parts.push(`${zipCount} file(s) from ZIP archive(s)`);
+  if (parts.length) msgs.innerHTML += `<div class="ok">Added ${parts.join(' and ')}.</div>`;
 });
 </script>
 </body>
