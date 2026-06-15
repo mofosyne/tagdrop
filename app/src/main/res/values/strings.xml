@@ -70,6 +70,7 @@
     <string name="status_cached">Cached</string>
     <string name="status_not_cached">Not yet scanned</string>
     <string name="status_encrypted">🔒 Locked — scan its key code to unlock</string>
+    <string name="lock_badge_desc">Encrypted — locked</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
     <string name="related_found">Already in your collection — tap Open</string>

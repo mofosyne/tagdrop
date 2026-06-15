@@ -103,4 +103,16 @@
 
     </LinearLayout>
 
+    <!-- SPEC §9: shown for cached content still awaiting its decryption key. -->
+    <TextView
+        android:id="@+id/textLockBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:padding="6dp"
+        android:text="🔒"
+        android:textSize="16sp"
+        android:visibility="gone"
+        android:contentDescription="@string/lock_badge_desc" />
+
 </androidx.cardview.widget.CardView>

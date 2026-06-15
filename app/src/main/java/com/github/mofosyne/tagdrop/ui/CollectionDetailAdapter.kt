@@ -67,6 +67,12 @@ class CollectionDetailAdapter(
             }
             binding.textIcon.text = icon
             binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
+            val cacheForBadge = when (item) {
+                is PageItem.PaperFile -> item.cache
+                is PageItem.CacheEntry -> item.cache
+                is PageItem.RelatedHint -> null
+            }
+            binding.textLockBadge.visibility = if (cacheForBadge?.encrypted == true) View.VISIBLE else View.GONE
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug
