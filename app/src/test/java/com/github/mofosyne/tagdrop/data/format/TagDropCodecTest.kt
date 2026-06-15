@@ -708,44 +708,52 @@ class TagDropCodecTest {
         val content = "plain content".toByteArray()
         val payload = TagDropCodec.createSingle(null, null, "text/plain", content)
         assertEquals(TagDropCodec.ENCRYPTION_NONE, payload.encryption)
-        assertNull(payload.nonce)
+        assertNull(payload.overrideBlob)
         assertArrayEquals(TagDropCodec.contentId(content), payload.cacheId)
 
         val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
         assertEquals(TagDropCodec.ENCRYPTION_NONE, decoded.encryption)
-        assertNull(decoded.nonce)
+        assertNull(decoded.overrideBlob)
         assertNull(decoded.keyMaterial)
     }
 
     @Test fun createSingleEncryptedRoundTrip() {
         val key = TagDropCodec.generateKeyMaterial()
-        val content = "Hello, encrypted TagDrop!".toByteArray()
-        val payload = TagDropCodec.createSingle(null, null, "text/plain", content, encryptionKey = key)
+        val coverContent = "just a cover story".toByteArray()
+        val realContent = "Hello, encrypted TagDrop!".toByteArray()
+        val override = TagDropPayload.OverrideMap(content = realContent)
+        val payload = TagDropCodec.createSingle(null, null, "text/plain", coverContent, override = override, encryptionKey = key)
 
         assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, payload.encryption)
-        assertEquals(12, payload.nonce?.size)
+        assertNotNull(payload.overrideBlob)
+        assertTrue(payload.overrideBlob!!.size >= TagDropCodec.OVERRIDE_BLOB_MIN_BYTES)
         // Encrypted content uses a random cache_id, not a content-addressed one (SPEC §9).
-        assertFalse(payload.cacheId.contentEquals(TagDropCodec.contentId(content)))
+        assertFalse(payload.cacheId.contentEquals(TagDropCodec.contentId(coverContent)))
 
         val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
         assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, decoded.encryption)
-        assertArrayEquals(payload.nonce, decoded.nonce)
+        assertArrayEquals(payload.overrideBlob, decoded.overrideBlob)
         assertArrayEquals(payload.cacheId, decoded.cacheId)
         assertArrayEquals(payload.content, decoded.content)
 
-        assertArrayEquals(content, TagDropCodec.resolveContent(decoded, key))
-        assertNull(TagDropCodec.resolveContent(decoded, TagDropCodec.generateKeyMaterial()))
-        assertNull(TagDropCodec.resolveContent(decoded, null))
+        // The correct key "self-corrects" the cover content to the real, hidden content.
+        assertArrayEquals(realContent, TagDropCodec.resolveSingle(decoded, key).content)
+        // A non-matching key — or no key at all — just sees the cover story.
+        assertArrayEquals(coverContent, TagDropCodec.resolveSingle(decoded, TagDropCodec.generateKeyMaterial()).content)
+        assertArrayEquals(coverContent, TagDropCodec.resolveSingle(decoded, null).content)
     }
 
     @Test fun createSingleEncryptedWithCompression() {
         val key = TagDropCodec.generateKeyMaterial()
-        val content = "<html><body>Hello!</body></html>".repeat(20).toByteArray()
-        val payload = TagDropCodec.createSingle(null, null, "text/html", content, compress = true, encryptionKey = key)
+        val coverContent = "<html><body>Cover page</body></html>".repeat(20).toByteArray()
+        val realContent = "<html><body>Hello!</body></html>".repeat(20).toByteArray()
+        val override = TagDropPayload.OverrideMap(content = realContent)
+        val payload = TagDropCodec.createSingle(null, null, "text/html", coverContent, compress = true, override = override, encryptionKey = key)
         assertEquals(TagDropCodec.COMPRESSION_DEFLATE, payload.compression)
 
         val decoded = TagDropCodec.decode(TagDropCodec.encode(payload)) as TagDropPayload.Single
-        assertArrayEquals(content, TagDropCodec.resolveContent(decoded, key))
+        assertArrayEquals(realContent, TagDropCodec.resolveSingle(decoded, key).content)
+        assertArrayEquals(coverContent, TagDropCodec.resolveSingle(decoded, null).content)
     }
 
     // ── createKeyCode factory ─────────────────────────────────────────────────
@@ -797,21 +805,23 @@ class TagDropCodecTest {
     @Test fun createManifestAndChunksWithEncryptionUsesRandomCacheId() {
         val key = TagDropCodec.generateKeyMaterial()
         val content = "Hello, TagDrop!".repeat(200).toByteArray()
+        val override = TagDropPayload.OverrideMap(content = "secret content".toByteArray())
         val (manifest, _) = TagDropCodec.createManifestAndChunks(
-            null, null, "text/plain", content, chunkCount = 3, encryptionKey = key
+            null, null, "text/plain", content, chunkCount = 3, override = override, encryptionKey = key
         )
         assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, manifest.encryption)
-        assertEquals(12, manifest.nonce?.size)
+        assertNotNull(manifest.sha256)
         assertFalse(manifest.cacheId.contentEquals(TagDropCodec.contentId(content)))
     }
 
     @Test fun createManifestAndChunksWithEncryptionRoundTripViaChunkAssembler() {
         val key = TagDropCodec.generateKeyMaterial()
-        val content = "The quick brown fox jumps over the lazy dog. ".repeat(100).toByteArray()
+        val coverContent = "Cover story placeholder text. ".repeat(50).toByteArray()
+        val realContent = "The quick brown fox jumps over the lazy dog. ".repeat(100).toByteArray()
+        val override = TagDropPayload.OverrideMap(hint = "real hint", filename = "fox.txt", content = realContent)
         val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
-            "hint", "fox.txt", "text/plain", content, compress = true,
-            chunkCount = TagDropCodec.chunkCountForBytes(TagDropCodec.compress(content).size),
-            encryptionKey = key
+            "cover hint", "cover.txt", "text/plain", coverContent, compress = true,
+            chunkCount = 4, override = override, encryptionKey = key
         )
         assertEquals(TagDropCodec.COMPRESSION_DEFLATE, manifest.compression)
         assertEquals(TagDropCodec.ENCRYPTION_AES256GCM, manifest.encryption)
@@ -824,19 +834,20 @@ class TagDropCodecTest {
         assembler.add(decodedManifest)
         decodedChunks.shuffled(java.util.Random(42)).forEach { assembler.add(it) }
 
-        // All chunks present and hash-verified, but content is still encrypted.
+        // All chunks present and hash-verified, but the assembled bytes don't decompress as
+        // plain content (SPEC §5 step 5) — they're the hidden override-map blob (SPEC §9).
         val awaiting = assembler.currentState()
         assertTrue(awaiting is ChunkAssembler.State.AwaitingKey)
-        assertArrayEquals(manifest.nonce, (awaiting as ChunkAssembler.State.AwaitingKey).nonce)
 
         // A non-matching key leaves the state unchanged (SPEC §9 "discovery, not declaration").
         assertTrue(assembler.tryKey(TagDropCodec.generateKeyMaterial()) is ChunkAssembler.State.AwaitingKey)
 
-        // The correct key resolves to the original, decompressed content.
+        // The correct key resolves to the override map's fields, overlaying the manifest's clear map.
         val complete = assembler.tryKey(key)
         assertTrue(complete is ChunkAssembler.State.Complete)
-        assertArrayEquals(content, (complete as ChunkAssembler.State.Complete).content)
-        assertEquals("hint", complete.hint)
+        assertArrayEquals(realContent, (complete as ChunkAssembler.State.Complete).content)
+        assertEquals("real hint", complete.hint)
         assertEquals("fox.txt", complete.filename)
+        assertNull(complete.pendingOverrideBlob)
     }
 }

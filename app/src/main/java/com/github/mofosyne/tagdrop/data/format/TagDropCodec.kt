@@ -45,10 +45,17 @@ import javax.crypto.spec.SecretKeySpec
  *   19 collection_tag   text, optional      (Single, Manifest, PaperManifest)
  *   24 icon              text, optional      (Single, Manifest, PaperManifest) — emoji icon
  *   25 reserved for future image icon (bytes — small embedded icon image)
- *   28 encryption    uint, optional   0=none 1=AES-256-GCM (Single, Manifest) — SPEC §9
- *   29 nonce         bytes(12), optional, present iff encryption != 0 (Single, Manifest) — SPEC §9
+ *   28 encryption    uint, optional   0=none 1=AES-256-GCM (Single, Manifest) — optional cosmetic
+ *                    hint only, NOT a precondition — SPEC §9
+ *   29 reserved and unused — see SPEC §9 (an override map's nonce travels embedded in its blob)
  *   30 key_material  bytes(32), optional — a decryption key for OTHER content (Single, Manifest, PaperManifest) — SPEC §9
  *   31 retain_key    bool, optional, default true — wherever key_material appears — SPEC §9
+ *
+ * A Single's raw trailing bytes (after its 3-item CBOR sequence), if >= 28 bytes, or a
+ * Manifest's assembled chunk bytes (§5), if >= 28 bytes, are a candidate self-contained
+ * `nonce(12) || ciphertext || tag(16)` blob — an encrypted "override map" using key numbers
+ * 3 (hint), 4 (mime_type), 5 (content, Single only), 11 (filename) that overlays this map
+ * once decrypted by a matching key_material. See SPEC §9.
  *
  * File entry sub-keys (within key 15 elements):
  *   20 slug        text
@@ -76,6 +83,10 @@ object TagDropCodec {
     private const val AES_KEY_BYTES   = 32
     private const val GCM_NONCE_BYTES = 12
     private const val GCM_TAG_BITS    = 128
+    private const val GCM_TAG_BYTES   = GCM_TAG_BITS / 8
+
+    /** Minimum size of a self-contained `nonce(12) || ciphertext || tag(16)` override-map blob (SPEC §9). */
+    const val OVERRIDE_BLOB_MIN_BYTES = GCM_NONCE_BYTES + GCM_TAG_BYTES
 
     /** Encoded URI length that reliably fits in one QR code (CreateActivity/CreatePaperActivity warn past this). */
     const val MAX_URI_LENGTH = 2000
@@ -124,7 +135,7 @@ object TagDropCodec {
     private const val K_LAT         = 26
     private const val K_LNG         = 27
     private const val K_ENCRYPTION    = 28
-    private const val K_NONCE         = 29
+    // 29 reserved and unused — see SPEC §9
     private const val K_KEY_MATERIAL  = 30
     private const val K_RETAIN_KEY    = 31
 
@@ -180,18 +191,76 @@ object TagDropCodec {
     }
 
     /**
-     * Decompresses (and decrypts, if [payload] is encrypted) its content. Returns null
-     * if the content is encrypted and [key] is missing or doesn't authenticate (SPEC §9).
+     * Encrypts [override] as a self-contained `nonce(12) || ciphertext || tag(16)` blob
+     * (SPEC §9): the override map's CBOR bytes are compressed per [compression] (the same
+     * value the clear map declares for its own `content`/assembled bytes), then
+     * AES-256-GCM-encrypted under a fresh nonce.
      */
-    fun resolveContent(payload: TagDropPayload.Single, key: ByteArray? = null): ByteArray? {
-        val raw = if (payload.encryption == ENCRYPTION_AES256GCM) {
-            val nonce = payload.nonce ?: return null
-            val decrypted = key?.let { decryptAesGcm(payload.content, it, nonce) } ?: return null
-            decrypted
+    fun encryptOverrideMap(override: TagDropPayload.OverrideMap, key: ByteArray, compression: Int): ByteArray {
+        val cbor = MiniCbor.encodeMap(listOf(
+            K_HINT     to override.hint,
+            K_MIME     to override.mimeType,
+            K_CONTENT  to override.content,
+            K_FILENAME to override.filename
+        ))
+        val plaintext = if (compression == COMPRESSION_DEFLATE) compress(cbor) else cbor
+        val nonce = generateNonce()
+        return nonce + encryptAesGcm(plaintext, key, nonce)
+    }
+
+    /**
+     * Tries [key] against [blob] as `nonce(12) || ciphertext || tag(16)` (SPEC §9). Returns
+     * the decoded override map on success, or null if [blob] is too short, [key] doesn't
+     * authenticate it, or the plaintext doesn't decode as a CBOR map — any of which just
+     * means this candidate doesn't apply here (SPEC §9, "Discovery, not declaration").
+     */
+    fun tryDecryptOverrideMap(blob: ByteArray, key: ByteArray, compression: Int): TagDropPayload.OverrideMap? {
+        if (blob.size < OVERRIDE_BLOB_MIN_BYTES) return null
+        val nonce = blob.copyOfRange(0, GCM_NONCE_BYTES)
+        val ciphertextAndTag = blob.copyOfRange(GCM_NONCE_BYTES, blob.size)
+        val plaintext = decryptAesGcm(ciphertextAndTag, key, nonce) ?: return null
+        val cbor = if (compression == COMPRESSION_DEFLATE) {
+            runCatching { decompress(plaintext) }.getOrNull() ?: return null
         } else {
-            payload.content
+            plaintext
         }
-        return decompressPayload(raw, payload.compression)
+        val map = runCatching { MiniCbor.decodeMap(cbor) }.getOrNull() ?: return null
+        return TagDropPayload.OverrideMap(
+            hint     = map.text(K_HINT),
+            mimeType = map.text(K_MIME),
+            content  = map.bytesOrNull(K_CONTENT),
+            filename = map.text(K_FILENAME)
+        )
+    }
+
+    /** [resolveSingle]'s result: a Single's final hint/mime_type/filename/content after any override merge (SPEC §9). */
+    data class ResolvedSingle(val hint: String?, val mimeType: String, val filename: String?, val content: ByteArray)
+
+    /**
+     * Resolves a Single's final view (SPEC §9). If [payload] carries an [TagDropPayload.Single.overrideBlob]
+     * and [key] decrypts it, the override map's present fields replace the clear map's —
+     * hint/mime_type/content/filename "self-correct" to their real values. Otherwise (no
+     * blob, no key, or [key] doesn't authenticate), returns the clear map's own
+     * (decompressed) content and fields.
+     */
+    fun resolveSingle(payload: TagDropPayload.Single, key: ByteArray? = null): ResolvedSingle {
+        val blob = payload.overrideBlob
+        val override = if (blob != null && key != null) tryDecryptOverrideMap(blob, key, payload.compression) else null
+        return if (override != null) {
+            ResolvedSingle(
+                hint     = override.hint ?: payload.hint,
+                mimeType = override.mimeType ?: payload.mimeType,
+                filename = override.filename ?: payload.filename,
+                content  = override.content ?: ByteArray(0)
+            )
+        } else {
+            ResolvedSingle(
+                hint     = payload.hint,
+                mimeType = payload.mimeType,
+                filename = payload.filename,
+                content  = decompressPayload(payload.content, payload.compression)
+            )
+        }
     }
 
     // ── Factory helpers ───────────────────────────────────────────────────────
@@ -199,16 +268,24 @@ object TagDropCodec {
     /**
      * Build a Single payload with an auto-computed content-addressed ID.
      *
-     * If [encryptionKey] is given (32 bytes, see [generateKeyMaterial]), the
-     * (possibly-compressed) content is AES-256-GCM encrypted under a fresh nonce
-     * (SPEC §9), `encryption`/`nonce` are set, and `cacheId` is random rather than
-     * content-addressed — see [randomCacheId].
+     * [hint]/[filename]/[mimeType]/[rawContent] become the **clear map**'s own fields —
+     * shown (and used) until a hidden override map, if any, is unlocked (SPEC §9). They
+     * may be a cover story, a decoy, or genuine unremarkable content with no relation to
+     * [override].
+     *
+     * If [override] is given (with [encryptionKey], 32 bytes — see [generateKeyMaterial]),
+     * it's AES-256-GCM-encrypted into a self-contained blob (SPEC §9) carried as raw
+     * trailing bytes after this payload's CBOR sequence — see [TagDropPayload.Single.overrideBlob].
+     * `cacheId` becomes random rather than content-addressed (see [randomCacheId]), and
+     * `encryption` is set to the AES-256-GCM hint unless [declareEncryption] is false
+     * (the hint is cosmetic only — SPEC §9).
      */
     fun createSingle(
         hint: String?, filename: String?, mimeType: String,
         rawContent: ByteArray, compress: Boolean = false, collectionId: ByteArray? = null,
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
-        encryptionKey: ByteArray? = null
+        override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
+        declareEncryption: Boolean = true
     ): TagDropPayload.Single {
         val (compressed, compression) = if (compress) {
             compress(rawContent) to COMPRESSION_DEFLATE
@@ -216,19 +293,17 @@ object TagDropCodec {
             rawContent to COMPRESSION_NONE
         }
         val cacheId: ByteArray
-        val content: ByteArray
+        val overrideBlob: ByteArray?
         val encryption: Int
-        val nonce: ByteArray?
-        if (encryptionKey != null) {
-            nonce = generateNonce()
-            content = encryptAesGcm(compressed, encryptionKey, nonce)
-            encryption = ENCRYPTION_AES256GCM
+        if (override != null) {
+            requireNotNull(encryptionKey) { "encryptionKey is required when override is provided" }
+            overrideBlob = encryptOverrideMap(override, encryptionKey, compression)
             cacheId = randomCacheId()
+            encryption = if (declareEncryption) ENCRYPTION_AES256GCM else ENCRYPTION_NONE
         } else {
-            content = compressed
-            encryption = ENCRYPTION_NONE
-            nonce = null
+            overrideBlob = null
             cacheId = contentId(rawContent)
+            encryption = ENCRYPTION_NONE
         }
         return TagDropPayload.Single(
             cacheId         = cacheId,
@@ -236,9 +311,9 @@ object TagDropCodec {
             filename        = filename,
             mimeType        = mimeType,
             compression     = compression,
-            content         = content,
+            content         = compressed,
+            overrideBlob    = overrideBlob,
             encryption      = encryption,
-            nonce           = nonce,
             collectionId    = collectionId,
             collectionLabel = collectionLabel,
             collectionTag   = collectionTag,
@@ -277,18 +352,20 @@ object TagDropCodec {
      * (possibly compressed) bytes; chunks split those bytes into equal-sized pieces
      * (the last one may be shorter).
      *
-     * If [encryptionKey] is given (32 bytes, see [generateKeyMaterial]), the assembled
-     * (possibly-compressed) bytes are AES-256-GCM encrypted under a fresh nonce (SPEC
-     * §9) before being split into chunks, `encryption`/`nonce` are set on the manifest,
-     * `sha256` covers the encrypted bytes, and `cacheId` is random rather than
-     * content-addressed — see [randomCacheId].
+     * If [override] is given (with [encryptionKey] — see [generateKeyMaterial]), the
+     * assembled chunk bytes ARE the self-contained encrypted override-map blob (SPEC
+     * §9, §4.2) rather than [rawContent] — [hint]/[filename]/[mimeType] still describe
+     * the manifest's own clear map (a cover story or genuine unremarkable metadata).
+     * `cacheId` becomes random rather than content-addressed (see [randomCacheId]), and
+     * `encryption` is set to the AES-256-GCM hint unless [declareEncryption] is false.
      */
     fun createManifestAndChunks(
         hint: String?, filename: String?, mimeType: String,
         rawContent: ByteArray, compress: Boolean = false, chunkCount: Int,
         collectionId: ByteArray? = null, collectionLabel: String? = null,
         collectionTag: String? = null, icon: String? = null,
-        encryptionKey: ByteArray? = null
+        override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
+        declareEncryption: Boolean = true
     ): Pair<TagDropPayload.Manifest, List<TagDropPayload.Chunk>> {
         require(chunkCount >= 1) { "chunkCount must be >= 1" }
         val (compressed, compression) = if (compress) {
@@ -299,16 +376,14 @@ object TagDropCodec {
         val cacheId: ByteArray
         val assembled: ByteArray
         val encryption: Int
-        val nonce: ByteArray?
-        if (encryptionKey != null) {
-            nonce = generateNonce()
-            assembled = encryptAesGcm(compressed, encryptionKey, nonce)
-            encryption = ENCRYPTION_AES256GCM
+        if (override != null) {
+            requireNotNull(encryptionKey) { "encryptionKey is required when override is provided" }
+            assembled = encryptOverrideMap(override, encryptionKey, compression)
             cacheId = randomCacheId()
+            encryption = if (declareEncryption) ENCRYPTION_AES256GCM else ENCRYPTION_NONE
         } else {
             assembled = compressed
             encryption = ENCRYPTION_NONE
-            nonce = null
             cacheId = contentId(rawContent)
         }
         val totalBytes = assembled.size
@@ -324,7 +399,6 @@ object TagDropCodec {
             totalBytes      = totalBytes,
             sha256          = sha256,
             encryption      = encryption,
-            nonce           = nonce,
             collectionId    = collectionId,
             collectionLabel = collectionLabel,
             collectionTag   = collectionTag,
@@ -359,11 +433,16 @@ object TagDropCodec {
         return out.toByteArray()
     }
 
-    /** Raw CBOR sequence (envelope + payload) for a Single payload — useful for on-device inspection. */
+    /**
+     * Raw CBOR sequence (envelope + payload) for a Single payload — useful for on-device
+     * inspection. If [payload] carries an [TagDropPayload.Single.overrideBlob], it's
+     * appended as raw trailing bytes after the 3-item sequence, not as a 4th CBOR item
+     * (SPEC §9).
+     */
     fun singleCbor(payload: TagDropPayload.Single): ByteArray {
         // A key-only code (SPEC §9) omits content/mime_type entirely rather than encoding them empty.
         val keyOnly = payload.keyMaterial != null && payload.content.isEmpty() && payload.mimeType.isEmpty()
-        return envelope(TYPE_SINGLE, listOf(
+        val seq = envelope(TYPE_SINGLE, listOf(
             K_CACHE_ID    to payload.cacheId,
             K_HINT        to payload.hint,
             K_FILENAME    to payload.filename,
@@ -371,7 +450,6 @@ object TagDropCodec {
             K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
             K_CONTENT     to payload.content.takeIf { !keyOnly },
             K_ENCRYPTION  to payload.encryption.takeIf { it != ENCRYPTION_NONE },
-            K_NONCE       to payload.nonce,
             K_COLLECTION_ID    to payload.collectionId,
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
@@ -379,6 +457,7 @@ object TagDropCodec {
             K_KEY_MATERIAL to payload.keyMaterial,
             K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
         ))
+        return payload.overrideBlob?.let { seq + it } ?: seq
     }
 
     /** Raw CBOR sequence (envelope + payload) for a Manifest payload — useful for on-device inspection. */
@@ -393,7 +472,6 @@ object TagDropCodec {
             K_TOTAL_BYTES to payload.totalBytes,
             K_SHA256      to payload.sha256,
             K_ENCRYPTION  to payload.encryption.takeIf { it != ENCRYPTION_NONE },
-            K_NONCE       to payload.nonce,
             K_COLLECTION_ID    to payload.collectionId,
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
@@ -490,9 +568,9 @@ object TagDropCodec {
         if (!scanned.startsWith(SCHEME) || scanned.startsWith(NAV_LINK_PREFIX)) return null
         val rest = scanned.removePrefix(SCHEME)
         return runCatching {
-            val (type, payload) = decodeEnvelope(Base45.decode(rest)) ?: return@runCatching null
+            val (type, payload, trailing) = decodeEnvelope(Base45.decode(rest)) ?: return@runCatching null
             when (type) {
-                TYPE_SINGLE         -> decodeSingle(payload)
+                TYPE_SINGLE         -> decodeSingle(payload, trailing)
                 TYPE_MANIFEST       -> decodeManifest(payload)
                 TYPE_CHUNK          -> decodeChunk(payload)
                 TYPE_PAPER_MANIFEST -> decodePaperManifest(payload)
@@ -502,37 +580,39 @@ object TagDropCodec {
     }
 
     /**
-     * Splits a CBOR sequence (RFC 8742) into (type, payload map), per the version/type
-     * envelope in SPEC §2. Returns null for an unsupported version or malformed envelope.
+     * Splits a CBOR sequence (RFC 8742) into (type, payload map, trailing bytes), per the
+     * version/type envelope in SPEC §2. Trailing bytes after the 3-item sequence are a
+     * candidate hidden override-map blob for a Single (SPEC §9) — decoders MUST NOT treat
+     * them as an error. Returns null for an unsupported version or malformed envelope.
      */
     @Suppress("UNCHECKED_CAST")
-    private fun decodeEnvelope(bytes: ByteArray): Pair<Int, Map<Int, Any>>? {
-        val items = MiniCbor.decodeSequence(bytes)
-        if (items.size < 3) return null
+    private fun decodeEnvelope(bytes: ByteArray): Triple<Int, Map<Int, Any>, ByteArray>? {
+        val (items, trailing) = MiniCbor.decodeSequencePrefix(bytes, 3)
         val version = items[0] as? Long ?: return null
         if (version != VERSION) return null
         val type = items[1] as? Long ?: return null
         val payload = items[2] as? Map<Int, Any> ?: return null
-        return type.toInt() to payload
+        return Triple(type.toInt(), payload, trailing)
     }
 
     /** Decode a PaperManifest from its raw CBOR sequence bytes (e.g. stored in ScannedPaper.cborBytes). */
     fun decodePaperManifestCbor(cbor: ByteArray): TagDropPayload.PaperManifest? =
         runCatching {
-            val (type, payload) = decodeEnvelope(cbor) ?: return@runCatching null
+            val (type, payload, _) = decodeEnvelope(cbor) ?: return@runCatching null
             if (type != TYPE_PAPER_MANIFEST) return@runCatching null
             decodePaperManifest(payload)
         }.getOrNull()
 
-    private fun decodeSingle(m: Map<Int, Any>) = TagDropPayload.Single(
+    /** [trailing] is this Single's raw bytes after its 3-item CBOR sequence — see [TagDropPayload.Single.overrideBlob]. */
+    private fun decodeSingle(m: Map<Int, Any>, trailing: ByteArray) = TagDropPayload.Single(
         cacheId         = m.bytes(K_CACHE_ID),
         hint            = m.text(K_HINT),
         filename        = m.text(K_FILENAME),
         mimeType        = m.text(K_MIME) ?: "",
         compression     = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
         content         = m.bytesOrNull(K_CONTENT) ?: ByteArray(0),
+        overrideBlob    = trailing.takeIf { it.size >= OVERRIDE_BLOB_MIN_BYTES },
         encryption      = m.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
-        nonce           = m.bytesOrNull(K_NONCE),
         keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
         retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true,
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
@@ -551,7 +631,6 @@ object TagDropCodec {
         totalBytes      = m.uint(K_TOTAL_BYTES)!!.toInt(),
         sha256          = m.bytes(K_SHA256),
         encryption      = m.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
-        nonce           = m.bytesOrNull(K_NONCE),
         keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
         retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true,
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
@@ -653,7 +732,7 @@ object TagDropCodec {
         K_COLLECTION_TAG to "collection_tag", K_FILE_SLUG to "slug", K_FILE_MIME to "mime_type",
         K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon",
         K_LAT to "lat", K_LNG to "lng",
-        K_ENCRYPTION to "encryption", K_NONCE to "nonce",
+        K_ENCRYPTION to "encryption",
         K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key"
     )
 
@@ -673,18 +752,27 @@ object TagDropCodec {
         appendLine(cbor.toHexDump())
         appendLine()
         runCatching {
-            val items = MiniCbor.decodeSequence(cbor)
-            require(items.size >= 3) { "Expected version, type, payload — got ${items.size} item(s)" }
+            val (items, trailing) = MiniCbor.decodeSequencePrefix(cbor, 3)
             val version = items[0] as Long
             val type = items[1] as Long
             @Suppress("UNCHECKED_CAST")
             val payload = items[2] as Map<Int, Any>
-            Triple(version, type, payload)
-        }.onSuccess { (version, type, payload) ->
+            Triple(version, type, payload) to trailing
+        }.onSuccess { (envelope, trailing) ->
+            val (version, type, payload) = envelope
             appendLine("version: $version")
             appendLine("type: $type (${TYPE_NAMES[type.toInt()] ?: "unknown"})")
             appendLine()
             describeMap(payload, 0, this)
+            if (trailing.isNotEmpty()) {
+                appendLine()
+                val note = if (trailing.size >= OVERRIDE_BLOB_MIN_BYTES) {
+                    "candidate encrypted override map, SPEC §9"
+                } else {
+                    "too short to be an override map, SPEC §9"
+                }
+                appendLine("trailing bytes: ${trailing.toHexDump()} (${trailing.size} bytes, $note)")
+            }
         }.onFailure { append("Failed to decode as CBOR sequence: ${it.message}") }
     }
 

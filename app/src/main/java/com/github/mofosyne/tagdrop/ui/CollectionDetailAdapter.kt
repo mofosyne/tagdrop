@@ -9,6 +9,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
@@ -72,7 +73,7 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> item.cache
                 is PageItem.RelatedHint -> null
             }
-            binding.textLockBadge.visibility = if (cacheForBadge?.encrypted == true) View.VISIBLE else View.GONE
+            binding.textLockBadge.visibility = if (cacheForBadge?.hasPendingOverride == true) View.VISIBLE else View.GONE
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug
@@ -80,11 +81,7 @@ class CollectionDetailAdapter(
                     binding.textSubtitle.visibility = View.VISIBLE
                     val cache = item.cache
                     if (cache != null) {
-                        binding.textStatus.text = if (cache.encrypted) {
-                            ctx.getString(R.string.status_encrypted)
-                        } else {
-                            ctx.getString(R.string.status_cached)
-                        }
+                        binding.textStatus.text = ctx.getString(R.string.status_cached)
                         binding.buttonOpen.isEnabled = cache.isOpenable
                         binding.buttonOpen.setOnClickListener { onOpen(cache) }
                         binding.buttonMap.visibility = View.GONE
@@ -103,11 +100,7 @@ class CollectionDetailAdapter(
                     binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = cache.mimeType
                     binding.textSubtitle.visibility = View.VISIBLE
-                    binding.textStatus.text = if (cache.encrypted) {
-                        ctx.getString(R.string.status_encrypted)
-                    } else {
-                        DATE_FMT.format(Date(cache.discoveredAt))
-                    }
+                    binding.textStatus.text = DATE_FMT.format(Date(cache.discoveredAt))
                     binding.buttonOpen.isEnabled = cache.isOpenable
                     binding.buttonOpen.setOnClickListener { onOpen(cache) }
                     binding.buttonMap.visibility = View.GONE
@@ -185,13 +178,13 @@ class CollectionDetailAdapter(
 
         /**
          * [FoundCache.equals] compares only `cacheId` (it holds a `ByteArray`, which can't
-         * be structurally `==`-compared), so `a == b` alone can't see e.g. `encrypted`
-         * flipping from true to false once a SPEC §9 key unlocks it — check that explicitly
-         * so the row re-binds and drops its "Locked" status.
+         * be structurally `==`-compared), so `a == b` alone can't see e.g. `pendingOverrideBlob`
+         * clearing once a SPEC §9 key unlocks it — check that explicitly so the row re-binds
+         * and drops its lock badge.
          */
         override fun areContentsTheSame(a: PageItem, b: PageItem): Boolean {
             if (a != b) return false
-            return a.cacheOrNull()?.encrypted == b.cacheOrNull()?.encrypted
+            return a.cacheOrNull()?.hasPendingOverride == b.cacheOrNull()?.hasPendingOverride
         }
 
         private fun PageItem.cacheOrNull(): FoundCache? = when (this) {

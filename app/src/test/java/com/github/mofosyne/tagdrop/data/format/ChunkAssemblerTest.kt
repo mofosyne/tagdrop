@@ -180,32 +180,35 @@ class ChunkAssemblerTest {
         assertArrayEquals(raw, state.content)
     }
 
-    // ── Encryption (SPEC §9) ──────────────────────────────────────────────────
+    // ── Hidden override map (SPEC §9) ────────────────────────────────────────
 
-    private fun encryptedManifest(cacheId: ByteArray, ciphertext: ByteArray, nonce: ByteArray, chunkCount: Int) =
+    /** A Manifest carrying [assembled] (an override-map blob or plain compressed content) as its chunk data. */
+    private fun overrideManifest(cacheId: ByteArray, assembled: ByteArray, chunkCount: Int, compression: Int) =
         TagDropPayload.Manifest(
             cacheId     = cacheId,
-            hint        = "test hint",
-            filename    = "secret.txt",
+            hint        = "cover hint",
+            filename    = "cover.txt",
             mimeType    = "text/plain",
-            compression = TagDropCodec.COMPRESSION_NONE,
+            compression = compression,
             chunkCount  = chunkCount,
-            totalBytes  = ciphertext.size,
-            sha256      = sha256(ciphertext),
-            encryption  = TagDropCodec.ENCRYPTION_AES256GCM,
-            nonce       = nonce
+            totalBytes  = assembled.size,
+            sha256      = sha256(assembled),
+            encryption  = TagDropCodec.ENCRYPTION_AES256GCM
         )
 
+    /**
+     * With `compression = deflate`, the assembled bytes (an AES-256-GCM blob) can't decompress
+     * as plain content (SPEC §5 step 5) — so the assembler awaits a key once chunks complete.
+     */
     @Test fun encryptedManifestAwaitsKeyOnceChunksComplete() {
         val key       = TagDropCodec.generateKeyMaterial()
-        val nonce     = TagDropCodec.generateNonce()
-        val content   = "secret trail notes".toByteArray()
-        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
+        val override  = TagDropPayload.OverrideMap(content = "secret trail notes".toByteArray())
+        val assembled = TagDropCodec.encryptOverrideMap(override, key, TagDropCodec.COMPRESSION_DEFLATE)
         val cacheId   = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val parts     = chunks(cacheId, ciphertext, 8)
+        val parts     = chunks(cacheId, assembled, 8)
 
         val a = ChunkAssembler()
-        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        a.add(overrideManifest(cacheId, assembled, parts.size, TagDropCodec.COMPRESSION_DEFLATE))
         for (chunk in parts.dropLast(1)) {
             assertTrue(a.add(chunk) is ChunkAssembler.State.Collecting)
         }
@@ -213,20 +216,18 @@ class ChunkAssemblerTest {
         val final = a.add(parts.last())
         assertTrue(final is ChunkAssembler.State.AwaitingKey)
         assertArrayEquals(cacheId, (final as ChunkAssembler.State.AwaitingKey).cacheId)
-        assertArrayEquals(nonce, final.nonce)
     }
 
     @Test fun tryKeyWithWrongKeyStaysAwaitingKey() {
-        val key        = TagDropCodec.generateKeyMaterial()
-        val wrongKey   = TagDropCodec.generateKeyMaterial()
-        val nonce      = TagDropCodec.generateNonce()
-        val content    = "secret trail notes".toByteArray()
-        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
-        val cacheId    = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val parts      = chunks(cacheId, ciphertext, 8)
+        val key       = TagDropCodec.generateKeyMaterial()
+        val wrongKey  = TagDropCodec.generateKeyMaterial()
+        val override  = TagDropPayload.OverrideMap(content = "secret trail notes".toByteArray())
+        val assembled = TagDropCodec.encryptOverrideMap(override, key, TagDropCodec.COMPRESSION_DEFLATE)
+        val cacheId   = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts     = chunks(cacheId, assembled, 8)
 
         val a = ChunkAssembler()
-        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        a.add(overrideManifest(cacheId, assembled, parts.size, TagDropCodec.COMPRESSION_DEFLATE))
         parts.forEach { a.add(it) }
         assertTrue(a.currentState() is ChunkAssembler.State.AwaitingKey)
 
@@ -234,37 +235,36 @@ class ChunkAssemblerTest {
     }
 
     @Test fun tryKeyWithCorrectKeyResolvesToComplete() {
-        val key        = TagDropCodec.generateKeyMaterial()
-        val nonce      = TagDropCodec.generateNonce()
-        val content    = "secret trail notes".toByteArray()
-        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
-        val cacheId    = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val parts      = chunks(cacheId, ciphertext, 8)
+        val key       = TagDropCodec.generateKeyMaterial()
+        val override  = TagDropPayload.OverrideMap(hint = "real hint", filename = "secret.txt", content = "secret trail notes".toByteArray())
+        val assembled = TagDropCodec.encryptOverrideMap(override, key, TagDropCodec.COMPRESSION_DEFLATE)
+        val cacheId   = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts     = chunks(cacheId, assembled, 8)
 
         val a = ChunkAssembler()
-        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        a.add(overrideManifest(cacheId, assembled, parts.size, TagDropCodec.COMPRESSION_DEFLATE))
         parts.forEach { a.add(it) }
 
         val state = a.tryKey(key)
         assertTrue(state is ChunkAssembler.State.Complete)
-        assertArrayEquals(content, (state as ChunkAssembler.State.Complete).content)
-        assertEquals("test hint", state.hint)
+        assertArrayEquals("secret trail notes".toByteArray(), (state as ChunkAssembler.State.Complete).content)
+        assertEquals("real hint", state.hint)
         assertEquals("secret.txt", state.filename)
+        assertNull(state.pendingOverrideBlob)
     }
 
     @Test fun tryKeyBeforeChunksCompleteHasNoEffectButOrderIsIndependent() {
-        val key        = TagDropCodec.generateKeyMaterial()
-        val nonce      = TagDropCodec.generateNonce()
-        val content    = "secret trail notes".toByteArray()
-        val ciphertext = TagDropCodec.encryptAesGcm(content, key, nonce)
-        val cacheId    = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val parts      = chunks(cacheId, ciphertext, 8)
+        val key       = TagDropCodec.generateKeyMaterial()
+        val override  = TagDropPayload.OverrideMap(content = "secret trail notes".toByteArray())
+        val assembled = TagDropCodec.encryptOverrideMap(override, key, TagDropCodec.COMPRESSION_DEFLATE)
+        val cacheId   = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts     = chunks(cacheId, assembled, 8)
 
         val a = ChunkAssembler()
-        a.add(encryptedManifest(cacheId, ciphertext, nonce, parts.size))
+        a.add(overrideManifest(cacheId, assembled, parts.size, TagDropCodec.COMPRESSION_DEFLATE))
 
         // The key can be scanned before all chunks have arrived — trying it then
-        // has no effect yet (nothing to decrypt), but isn't an error either.
+        // has no effect yet (nothing to verify against), but isn't an error either.
         assertTrue(a.tryKey(key) is ChunkAssembler.State.Collecting)
 
         parts.forEach { a.add(it) }
@@ -273,6 +273,34 @@ class ChunkAssemblerTest {
         // Trying the same key again now that chunks are complete resolves it.
         val state = a.tryKey(key)
         assertTrue(state is ChunkAssembler.State.Complete)
-        assertArrayEquals(content, (state as ChunkAssembler.State.Complete).content)
+        assertArrayEquals("secret trail notes".toByteArray(), (state as ChunkAssembler.State.Complete).content)
+    }
+
+    /**
+     * With `compression = none`, the assembled bytes (an AES-256-GCM blob) decompress trivially
+     * (identity) — so the assembler reaches Complete immediately, showing the raw bytes as a
+     * cover, with the blob kept pending. A later matching key "self-corrects" that same state.
+     */
+    @Test fun selfCorrectsCompleteStateOnceKeyArrives() {
+        val key       = TagDropCodec.generateKeyMaterial()
+        val override  = TagDropPayload.OverrideMap(hint = "real hint", content = "secret trail notes".toByteArray())
+        val assembled = TagDropCodec.encryptOverrideMap(override, key, TagDropCodec.COMPRESSION_NONE)
+        val cacheId   = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts     = chunks(cacheId, assembled, 8)
+
+        val a = ChunkAssembler()
+        a.add(overrideManifest(cacheId, assembled, parts.size, TagDropCodec.COMPRESSION_NONE))
+        parts.forEach { a.add(it) }
+
+        val cover = a.currentState()
+        assertTrue(cover is ChunkAssembler.State.Complete)
+        assertEquals("cover hint", (cover as ChunkAssembler.State.Complete).hint)
+        assertArrayEquals(assembled, cover.pendingOverrideBlob)
+
+        val resolved = a.tryKey(key)
+        assertTrue(resolved is ChunkAssembler.State.Complete)
+        assertArrayEquals("secret trail notes".toByteArray(), (resolved as ChunkAssembler.State.Complete).content)
+        assertEquals("real hint", resolved.hint)
+        assertNull(resolved.pendingOverrideBlob)
     }
 }

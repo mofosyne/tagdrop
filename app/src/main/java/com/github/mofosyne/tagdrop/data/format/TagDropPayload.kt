@@ -19,14 +19,14 @@ sealed class TagDropPayload {
 
     /** Complete cache encoded in a single QR. */
     data class Single(
-        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8] — content-addressed; random if encrypted (SPEC §9)
+        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8] — content-addressed; random if a hidden override map is present (SPEC §9)
         val hint: String?,
         val filename: String?,
         val mimeType: String,     // empty for a key-only code (SPEC §9)
         val compression: Int,     // 0 = none, 1 = deflate
-        val content: ByteArray,   // raw (possibly compressed+encrypted) payload bytes; empty for a key-only code
-        val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM (SPEC §9)
-        val nonce: ByteArray? = null,           // 12-byte AES-GCM nonce, present iff encryption != 0 (SPEC §9)
+        val content: ByteArray,   // raw (possibly compressed) clear-map payload bytes — cover/decoy/genuine; empty for a key-only code
+        val overrideBlob: ByteArray? = null,    // raw trailing bytes after this Single's CBOR sequence, >=28 bytes — candidate encrypted override map (SPEC §9)
+        val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM — optional cosmetic hint only, NOT a precondition (SPEC §9)
         val keyMaterial: ByteArray? = null,     // optional — a decryption key for OTHER content (SPEC §9)
         val retainKey: Boolean = true,          // recommendation for whether keyMaterial should be remembered (SPEC §9)
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
@@ -43,16 +43,15 @@ sealed class TagDropPayload {
      * Designed for geographic distribution: each chunk can be at a different location.
      */
     data class Manifest(
-        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8]; random if encrypted (SPEC §9)
+        val cacheId: ByteArray,   // SHA-256(uncompressed content)[0:8]; random if a hidden override map is present (SPEC §9)
         val hint: String?,
         val filename: String?,
         val mimeType: String,
         val compression: Int,
         val chunkCount: Int,
         val totalBytes: Int,
-        val sha256: ByteArray,    // SHA-256 of the assembled, compressed AND encrypted bytes (SPEC §9)
-        val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM (SPEC §9)
-        val nonce: ByteArray? = null,           // 12-byte AES-GCM nonce, present iff encryption != 0 (SPEC §9)
+        val sha256: ByteArray,    // SHA-256 of the assembled bytes exactly as transmitted (SPEC §5/§9)
+        val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM — optional cosmetic hint only, NOT a precondition (SPEC §9)
         val keyMaterial: ByteArray? = null,     // optional — a decryption key for OTHER content (SPEC §9)
         val retainKey: Boolean = true,          // recommendation for whether keyMaterial should be remembered (SPEC §9)
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
@@ -73,6 +72,19 @@ sealed class TagDropPayload {
         override fun equals(other: Any?) = other is Chunk && cacheId.contentEquals(other.cacheId) && index == other.index
         override fun hashCode() = 31 * cacheId.contentHashCode() + index
     }
+
+    /**
+     * A hidden override map (SPEC §9), decrypted from a Single's [Single.overrideBlob]
+     * trailing bytes or a Manifest's assembled chunk bytes. Its present fields overlay
+     * the clear map's same-numbered fields — `hint`/`mime_type`/`content`/`filename` —
+     * with the override map's values winning on collisions.
+     */
+    data class OverrideMap(
+        val hint: String? = null,
+        val mimeType: String? = null,
+        val content: ByteArray? = null,  // Single only — a Manifest's clear map has no content field
+        val filename: String? = null
+    )
 
     /** One file listed in a paper's directory. */
     data class FileEntry(

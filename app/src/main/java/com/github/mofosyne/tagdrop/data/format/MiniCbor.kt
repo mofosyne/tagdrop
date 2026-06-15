@@ -126,6 +126,18 @@ object MiniCbor {
         return items
     }
 
+    /**
+     * Decodes exactly [count] top-level CBOR data items from the start of [bytes] (per
+     * [decodeMap]'s value conventions), then returns whatever bytes remain unconsumed.
+     * Used to split a TagDrop envelope+payload sequence (3 items, see TagDropCodec) from
+     * any raw trailing bytes it may carry — a hidden override-map blob (SPEC §9).
+     */
+    fun decodeSequencePrefix(bytes: ByteArray, count: Int): Pair<List<Any>, ByteArray> {
+        val stream = ByteArrayInputStream(bytes)
+        val items = List(count) { readValue(stream) }
+        return items to stream.readBytes()
+    }
+
     private fun readMapFromStream(stream: ByteArrayInputStream, count: Int): Map<Int, Any> =
         buildMap(count) {
             repeat(count) {

@@ -10,7 +10,7 @@ data class FoundCache(
     val hint: String?,
     val filename: String?,
     val mimeType: String,
-    val contentBytes: ByteArray?,         // null if user chose not to save content; ciphertext while encrypted == true
+    val contentBytes: ByteArray?,         // null if user chose not to save content; otherwise always the resolved clear-map content (SPEC §9)
     val collectionId: String? = null,     // hex-encoded 8-byte ID, groups related scans
     val collectionLabel: String? = null,  // human-readable name for the collection
     val collectionTag: String? = null,    // hashtag-style cross-collection tag
@@ -18,13 +18,15 @@ data class FoundCache(
     val lng: Double? = null,              // longitude where this was scanned, if available
     val icon: String? = null,             // optional emoji icon
     val createdByMe: Boolean = false,     // true if authored in-app (Create Cache/Paper), not scanned
-    val encrypted: Boolean = false,       // true if contentBytes is still ciphertext awaiting a key (SPEC §9)
-    val pendingNonce: ByteArray? = null,  // AES-GCM nonce for contentBytes, present iff encrypted
-    val pendingCompression: Int = 0       // compression applied before encryption; needed to decompress after decrypting
+    val pendingOverrideBlob: ByteArray? = null,  // candidate encrypted override-map blob not yet unlocked by any retained key (SPEC §9)
+    val pendingCompression: Int = 0              // compression to apply when decoding pendingOverrideBlob's plaintext (SPEC §9)
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()
 }
 
-/** False while [FoundCache.contentBytes] is still ciphertext awaiting a key (SPEC §9) — not safe to render or export. */
-val FoundCache.isOpenable: Boolean get() = contentBytes != null && !encrypted
+/** [FoundCache.contentBytes] is the resolved clear-map content — always safe to render/export, even with a [hasPendingOverride] (SPEC §9). */
+val FoundCache.isOpenable: Boolean get() = contentBytes != null
+
+/** True if this cache carries a hidden override-map blob not yet unlocked by any retained key (SPEC §9) — shown as a 🔒 hint, not a block. */
+val FoundCache.hasPendingOverride: Boolean get() = pendingOverrideBlob != null

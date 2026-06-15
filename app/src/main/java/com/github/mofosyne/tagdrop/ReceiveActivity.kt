@@ -307,7 +307,8 @@ class ReceiveActivity : AppCompatActivity() {
     private fun completeSingle(
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray, collectionId: String? = null,
-        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null
+        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
+        pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0
     ) {
         val location = getLastKnownLocation()
         val paper = lastPaper
@@ -316,18 +317,20 @@ class ReceiveActivity : AppCompatActivity() {
             val alreadyFound = cacheDao.getById(cacheId) != null
             cacheDao.insert(
                 FoundCache(
-                    cacheId         = cacheId,
-                    discoveredAt    = System.currentTimeMillis(),
-                    hint            = hint,
-                    filename        = filename,
-                    mimeType        = mimeType,
-                    contentBytes    = content,
-                    collectionId    = collectionId,
-                    collectionLabel = collectionLabel,
-                    collectionTag   = collectionTag,
-                    lat             = location?.first,
-                    lng             = location?.second,
-                    icon            = icon
+                    cacheId            = cacheId,
+                    discoveredAt       = System.currentTimeMillis(),
+                    hint               = hint,
+                    filename           = filename,
+                    mimeType           = mimeType,
+                    contentBytes       = content,
+                    collectionId       = collectionId,
+                    collectionLabel    = collectionLabel,
+                    collectionTag      = collectionTag,
+                    lat                = location?.first,
+                    lng                = location?.second,
+                    icon               = icon,
+                    pendingOverrideBlob = pendingOverrideBlob,
+                    pendingCompression  = pendingCompression
                 )
             )
             if (paper != null) {
@@ -344,9 +347,11 @@ class ReceiveActivity : AppCompatActivity() {
 
     /**
      * Handles a single-code payload (SPEC §9): discovers any carried `key_material` first,
-     * then either decrypts immediately (if a known key matches), caches the ciphertext
-     * pending a future key, or — for plain content — completes as before. A code that
-     * carries only a key (empty content/mimeType) is never cached.
+     * then checks any [TagDropPayload.Single.overrideBlob] against every retained key. If one
+     * authenticates, the override map's fields replace the clear map's. Otherwise, the clear
+     * map's own (decompressed) content is cached as-is — a cover story, decoy, or genuine
+     * unremarkable content — with the still-unresolved blob kept for [unlockPending] to retry
+     * later. A code that carries only a key (empty content/mimeType) is never cached.
      */
     private fun handleSingle(payload: TagDropPayload.Single) {
         lifecycleScope.launch {
@@ -357,23 +362,28 @@ class ReceiveActivity : AppCompatActivity() {
                 return@launch
             }
 
-            if (payload.encryption == TagDropCodec.ENCRYPTION_AES256GCM) {
-                val content = retainedKeys().firstNotNullOfOrNull { key ->
-                    runCatching { TagDropCodec.resolveContent(payload, key) }.getOrNull()
+            val blob = payload.overrideBlob
+            val override = blob?.let { b ->
+                retainedKeys().firstNotNullOfOrNull { key ->
+                    TagDropCodec.tryDecryptOverrideMap(b, key, payload.compression)
                 }
-                if (content != null) {
-                    completeSingle(
-                        payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                        payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
-                    )
-                } else {
-                    cachePendingEncrypted(payload)
-                }
+            }
+
+            if (override != null) {
+                completeSingle(
+                    payload.cacheId.toHex(),
+                    override.hint ?: payload.hint,
+                    override.filename ?: payload.filename,
+                    override.mimeType ?: payload.mimeType,
+                    override.content ?: ByteArray(0),
+                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
+                )
             } else {
                 val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                 completeSingle(
                     payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
+                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
+                    pendingOverrideBlob = blob, pendingCompression = payload.compression
                 )
             }
         }
@@ -395,44 +405,30 @@ class ReceiveActivity : AppCompatActivity() {
         if (state is ChunkAssembler.State.Complete) completeFromState(state)
     }
 
-    /** Tries [key] against every cached-but-locked item (SPEC §9), unlocking any that authenticate. */
+    /**
+     * Tries [key] against every cached item with a still-unresolved [FoundCache.pendingOverrideBlob]
+     * (SPEC §9), "self-correcting" any whose override map it decrypts: the override's present
+     * fields overlay the cached clear-map fields, and the blob is cleared.
+     */
     private suspend fun unlockPending(key: ByteArray) {
         val cacheDao = AppDatabase.get(this).cacheDao()
         var unlocked = 0
-        for (cache in cacheDao.getPendingEncrypted()) {
-            val ciphertext = cache.contentBytes ?: continue
-            val nonce = cache.pendingNonce ?: continue
-            val decrypted = runCatching { TagDropCodec.decryptAesGcm(ciphertext, key, nonce) }.getOrNull() ?: continue
-            val content = TagDropCodec.decompressPayload(decrypted, cache.pendingCompression)
-            cacheDao.insert(cache.copy(contentBytes = content, encrypted = false, pendingNonce = null, pendingCompression = 0))
+        for (cache in cacheDao.getPendingOverrides()) {
+            val blob = cache.pendingOverrideBlob ?: continue
+            val override = TagDropCodec.tryDecryptOverrideMap(blob, key, cache.pendingCompression) ?: continue
+            cacheDao.insert(
+                cache.copy(
+                    hint = override.hint ?: cache.hint,
+                    filename = override.filename ?: cache.filename,
+                    mimeType = override.mimeType ?: cache.mimeType,
+                    contentBytes = override.content ?: cache.contentBytes,
+                    pendingOverrideBlob = null,
+                    pendingCompression = 0
+                )
+            )
             unlocked++
         }
         if (unlocked > 0) toast(getString(R.string.unlocked_items, unlocked))
-    }
-
-    /** Caches still-encrypted content (SPEC §9), to be unlocked later when its key is discovered. */
-    private suspend fun cachePendingEncrypted(payload: TagDropPayload.Single) {
-        val location = getLastKnownLocation()
-        AppDatabase.get(this).cacheDao().insert(
-            FoundCache(
-                cacheId            = payload.cacheId.toHex(),
-                discoveredAt       = System.currentTimeMillis(),
-                hint               = payload.hint,
-                filename           = payload.filename,
-                mimeType           = payload.mimeType,
-                contentBytes       = payload.content,
-                collectionId       = payload.collectionId?.toHex(),
-                collectionLabel    = payload.collectionLabel,
-                collectionTag      = payload.collectionTag,
-                lat                = location?.first,
-                lng                = location?.second,
-                icon               = payload.icon,
-                encrypted          = true,
-                pendingNonce       = payload.nonce,
-                pendingCompression = payload.compression
-            )
-        )
-        toast(getString(R.string.encrypted_pending))
     }
 
     /** All `key_material` (SPEC §9) retained from previous discoveries, available to try against new ciphertext. */
@@ -476,7 +472,9 @@ class ReceiveActivity : AppCompatActivity() {
     private fun completeFromState(state: ChunkAssembler.State.Complete) {
         completeSingle(
             state.cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
-            state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon
+            state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
+            pendingOverrideBlob = state.pendingOverrideBlob,
+            pendingCompression = state.pendingOverrideCompression
         )
     }
 
