@@ -7,10 +7,11 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [FoundCache::class, ScannedPaper::class], version = 7, exportSchema = false)
+@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class], version = 8, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cacheDao(): CacheDao
     abstract fun paperDao(): PaperDao
+    abstract fun keyDao(): KeyDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -69,13 +70,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE found_caches ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE found_caches ADD COLUMN pendingNonce BLOB")
+                database.execSQL("ALTER TABLE found_caches ADD COLUMN pendingCompression INTEGER NOT NULL DEFAULT 0")
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS retained_keys (
+                        keyHex TEXT NOT NULL PRIMARY KEY,
+                        discoveredAt INTEGER NOT NULL,
+                        hint TEXT
+                    )"""
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "tagdrop.db"
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .build().also { INSTANCE = it }
         }
     }

@@ -6,6 +6,7 @@ import android.net.Uri
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.isOpenable
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
@@ -32,6 +33,7 @@ object ContentExporter {
 
     /** Writes [cache]'s content into the app's cache dir and returns a shareable content:// URI. */
     private fun exportToCacheFile(context: Context, cache: FoundCache): Uri? {
+        if (!cache.isOpenable) return null
         val bytes = cache.contentBytes ?: return null
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val file = File(dir, suggestFilename(cache))
@@ -60,7 +62,7 @@ object ContentExporter {
 
     /** Bundles every cached item with content into a single zip and returns a shareable content:// URI, or null if none have content. */
     fun exportZip(context: Context, caches: List<FoundCache>): Uri? {
-        val withContent = caches.filter { it.contentBytes != null }
+        val withContent = caches.filter { it.isOpenable }
         if (withContent.isEmpty()) return null
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val file = File(dir, "collection-export.zip")

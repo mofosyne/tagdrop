@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
@@ -118,7 +119,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             }
             adapter.submitList(items)
             binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
-            exportableCaches = fileItems.mapNotNull { it.cache }.filter { it.contentBytes != null }
+            exportableCaches = fileItems.mapNotNull { it.cache }.filter { it.isOpenable }
 
             title = paper.label ?: getString(R.string.paper_manifest_label)
             // Each page may be focused on its own theme, so accumulate every
@@ -169,7 +170,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             }
             adapter.submitList(caches.map { PageItem.CacheEntry(it) })
             binding.textEmpty.visibility = View.GONE
-            exportableCaches = caches.filter { it.contentBytes != null }
+            exportableCaches = caches.filter { it.isOpenable }
             currentAdHocCaches = caches
             invalidateOptionsMenu()
 

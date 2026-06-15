@@ -20,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.ChunkAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
@@ -235,41 +236,17 @@ class ReceiveActivity : AppCompatActivity() {
         lastScannedPayload = decoded
         invalidateOptionsMenu()
         when (val payload = decoded) {
-            is TagDropPayload.Single -> {
-                val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
-                completeSingle(
-                    payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
-                )
-            }
+            is TagDropPayload.Single -> handleSingle(payload)
             is TagDropPayload.Manifest -> {
+                payload.keyMaterial?.let { key ->
+                    lifecycleScope.launch { handleDiscoveredKey(key, payload.retainKey, payload.hint) }
+                }
                 assembler.add(payload)
                 updateDisplay()
                 toast(getString(R.string.manifest_scanned, payload.chunkCount))
             }
             is TagDropPayload.Chunk -> {
-                when (val state = assembler.add(payload)) {
-                    is ChunkAssembler.State.Collecting -> {
-                        updateDisplay()
-                        toast(getString(R.string.chunk_progress, state.received, state.total))
-                    }
-                    is ChunkAssembler.State.Complete -> {
-                        completeSingle(
-                            state.cacheId.toHex(), state.hint, state.filename,
-                            state.mimeType, state.content, state.collectionId?.toHex(),
-                            state.collectionLabel, state.collectionTag, state.icon
-                        )
-                    }
-                    is ChunkAssembler.State.HashMismatch -> {
-                        toast(getString(R.string.hash_mismatch))
-                        updateDisplay()
-                    }
-                    is ChunkAssembler.State.WaitingForManifest -> {
-                        toast(getString(R.string.chunk_before_manifest))
-                        updateDisplay()
-                    }
-                    else -> updateDisplay()
-                }
+                lifecycleScope.launch { handleAssemblerState(assembler.add(payload)) }
             }
             is TagDropPayload.PaperManifest -> handlePaperManifest(payload)
             is TagDropPayload.Legacy -> {
@@ -311,6 +288,10 @@ class ReceiveActivity : AppCompatActivity() {
                     icon            = payload.icon
                 )
             )
+            payload.keyMaterial?.let { handleDiscoveredKey(it, payload.retainKey, payload.label) }
+            for (related in payload.related) {
+                related.keyMaterial?.let { handleDiscoveredKey(it, related.retainKey, related.hint) }
+            }
         }
         lastPaper = payload
         updateDisplay()
@@ -359,6 +340,144 @@ class ReceiveActivity : AppCompatActivity() {
                 clearState()
             }
         }
+    }
+
+    /**
+     * Handles a single-code payload (SPEC §9): discovers any carried `key_material` first,
+     * then either decrypts immediately (if a known key matches), caches the ciphertext
+     * pending a future key, or — for plain content — completes as before. A code that
+     * carries only a key (empty content/mimeType) is never cached.
+     */
+    private fun handleSingle(payload: TagDropPayload.Single) {
+        lifecycleScope.launch {
+            payload.keyMaterial?.let { handleDiscoveredKey(it, payload.retainKey, payload.hint) }
+
+            if (payload.content.isEmpty() && payload.mimeType.isEmpty()) {
+                if (payload.keyMaterial != null) toast(getString(R.string.key_code_scanned))
+                return@launch
+            }
+
+            if (payload.encryption == TagDropCodec.ENCRYPTION_AES256GCM) {
+                val content = retainedKeys().firstNotNullOfOrNull { key ->
+                    runCatching { TagDropCodec.resolveContent(payload, key) }.getOrNull()
+                }
+                if (content != null) {
+                    completeSingle(
+                        payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
+                        payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
+                    )
+                } else {
+                    cachePendingEncrypted(payload)
+                }
+            } else {
+                val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
+                completeSingle(
+                    payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
+                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
+                )
+            }
+        }
+    }
+
+    /**
+     * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
+     * it against everything currently locked: cached ciphertext awaiting a key, and an
+     * in-progress encrypted chunk assembly. "Discovery, not declaration": scan order between
+     * a key and the content it unlocks doesn't matter.
+     */
+    private suspend fun handleDiscoveredKey(key: ByteArray, retain: Boolean, hint: String?) {
+        if (key.size != KEY_MATERIAL_BYTES) return
+        if (retain) {
+            AppDatabase.get(this).keyDao().insert(RetainedKey(key.toHex(), System.currentTimeMillis(), hint))
+        }
+        unlockPending(key)
+        val state = runCatching { assembler.tryKey(key) }.getOrElse { assembler.currentState() }
+        if (state is ChunkAssembler.State.Complete) completeFromState(state)
+    }
+
+    /** Tries [key] against every cached-but-locked item (SPEC §9), unlocking any that authenticate. */
+    private suspend fun unlockPending(key: ByteArray) {
+        val cacheDao = AppDatabase.get(this).cacheDao()
+        var unlocked = 0
+        for (cache in cacheDao.getPendingEncrypted()) {
+            val ciphertext = cache.contentBytes ?: continue
+            val nonce = cache.pendingNonce ?: continue
+            val decrypted = runCatching { TagDropCodec.decryptAesGcm(ciphertext, key, nonce) }.getOrNull() ?: continue
+            val content = TagDropCodec.decompressPayload(decrypted, cache.pendingCompression)
+            cacheDao.insert(cache.copy(contentBytes = content, encrypted = false, pendingNonce = null, pendingCompression = 0))
+            unlocked++
+        }
+        if (unlocked > 0) toast(getString(R.string.unlocked_items, unlocked))
+    }
+
+    /** Caches still-encrypted content (SPEC §9), to be unlocked later when its key is discovered. */
+    private suspend fun cachePendingEncrypted(payload: TagDropPayload.Single) {
+        val location = getLastKnownLocation()
+        AppDatabase.get(this).cacheDao().insert(
+            FoundCache(
+                cacheId            = payload.cacheId.toHex(),
+                discoveredAt       = System.currentTimeMillis(),
+                hint               = payload.hint,
+                filename           = payload.filename,
+                mimeType           = payload.mimeType,
+                contentBytes       = payload.content,
+                collectionId       = payload.collectionId?.toHex(),
+                collectionLabel    = payload.collectionLabel,
+                collectionTag      = payload.collectionTag,
+                lat                = location?.first,
+                lng                = location?.second,
+                icon               = payload.icon,
+                encrypted          = true,
+                pendingNonce       = payload.nonce,
+                pendingCompression = payload.compression
+            )
+        )
+        toast(getString(R.string.encrypted_pending))
+    }
+
+    /** All `key_material` (SPEC §9) retained from previous discoveries, available to try against new ciphertext. */
+    private suspend fun retainedKeys(): List<ByteArray> =
+        AppDatabase.get(this).keyDao().getAll().map { it.keyHex.hexToBytes() }
+
+    /**
+     * Handles the result of [ChunkAssembler.add] for a scanned chunk. If assembly finished
+     * but is still locked (SPEC §9 [ChunkAssembler.State.AwaitingKey]), tries every retained
+     * key before falling back to the "still locked" message.
+     */
+    private suspend fun handleAssemblerState(initial: ChunkAssembler.State) {
+        var state = initial
+        if (state is ChunkAssembler.State.AwaitingKey) {
+            for (key in retainedKeys()) {
+                state = runCatching { assembler.tryKey(key) }.getOrElse { assembler.currentState() }
+                if (state !is ChunkAssembler.State.AwaitingKey) break
+            }
+        }
+        when (val s = state) {
+            is ChunkAssembler.State.Collecting -> {
+                updateDisplay()
+                toast(getString(R.string.chunk_progress, s.received, s.total))
+            }
+            is ChunkAssembler.State.Complete -> completeFromState(s)
+            is ChunkAssembler.State.HashMismatch -> {
+                toast(getString(R.string.hash_mismatch))
+                updateDisplay()
+            }
+            is ChunkAssembler.State.WaitingForManifest -> {
+                toast(getString(R.string.chunk_before_manifest))
+                updateDisplay()
+            }
+            is ChunkAssembler.State.AwaitingKey -> {
+                toast(getString(R.string.awaiting_key))
+                updateDisplay()
+            }
+        }
+    }
+
+    private fun completeFromState(state: ChunkAssembler.State.Complete) {
+        completeSingle(
+            state.cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
+            state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon
+        )
     }
 
     /** Best-known device location at scan time, or null if unavailable/permission not granted. */
@@ -415,11 +534,11 @@ class ReceiveActivity : AppCompatActivity() {
                         legacyChunks.joinToString("").take(300)
                 }
                 !assembler.hasManifest -> getString(R.string.status_ready)
-                else -> {
-                    val state = assembler.currentState()
-                    if (state is ChunkAssembler.State.Collecting)
+                else -> when (val state = assembler.currentState()) {
+                    is ChunkAssembler.State.Collecting ->
                         getString(R.string.status_collecting, state.received, state.total, state.hint ?: "")
-                    else getString(R.string.status_ready)
+                    is ChunkAssembler.State.AwaitingKey -> getString(R.string.awaiting_key)
+                    else -> getString(R.string.status_ready)
                 }
             }
         }
@@ -441,12 +560,17 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+    private fun String.hexToBytes(): ByteArray =
+        ByteArray(length / 2) { i -> ((this[i * 2].digitToInt(16) shl 4) or this[i * 2 + 1].digitToInt(16)).toByte() }
 
     companion object {
         private const val SCAN_BOARD_COLUMNS = 4
 
         /** Minimum time before the same code can be reprocessed, to avoid re-decoding it every frame. */
         private const val SCAN_COOLDOWN_MS = 1500L
+
+        /** Expected length of a SPEC §9 AES-256-GCM `key_material`. */
+        private const val KEY_MATERIAL_BYTES = 32
 
         private const val PREFS_NAME = "tagdrop_prefs"
         private const val PREF_LOCATION_RATIONALE_SHOWN = "location_rationale_shown"

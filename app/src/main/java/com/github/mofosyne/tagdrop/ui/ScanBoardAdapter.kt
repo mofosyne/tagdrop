@@ -8,6 +8,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.databinding.ItemScanBlockBinding
 
 /** One file in a scanned paper's directory, shown as a fill-in block on the scan screen. */
@@ -28,11 +29,12 @@ class ScanBoardAdapter(private val onOpen: (FoundCache) -> Unit) :
             binding.textSlug.text = item.slug
             binding.textIcon.text = cache?.icon ?: iconForMimeType(item.mimeType)
             binding.textCheck.visibility = if (cache != null) View.VISIBLE else View.GONE
+            binding.textCheck.text = if (cache?.encrypted == true) "🔒" else "✓"
             binding.root.setCardBackgroundColor(
                 binding.root.context.getColor(if (cache != null) R.color.scan_block_found else R.color.scan_block_pending)
             )
             binding.root.setOnClickListener {
-                cache?.takeIf { it.contentBytes != null }?.let(onOpen)
+                cache?.takeIf { it.isOpenable }?.let(onOpen)
             }
         }
     }

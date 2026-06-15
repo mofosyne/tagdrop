@@ -47,6 +47,10 @@
     <string name="manifest_scanned">Manifest scanned (%1$d chunks expected). Scan chunks now.</string>
     <string name="chunk_progress">Chunk %1$d of %2$d received.</string>
     <string name="hash_mismatch">Assembly failed: integrity check failed. Try rescanning.</string>
+    <string name="key_code_scanned">🔑 Key received — scan its matching content code to unlock it.</string>
+    <string name="encrypted_pending">🔒 Encrypted content cached — scan its key code to unlock.</string>
+    <string name="awaiting_key">🔒 All chunks assembled, but still locked — scan the key code to unlock.</string>
+    <string name="unlocked_items">🔓 Unlocked %1$d item(s) with this key.</string>
     <string name="legacy_fragment">Legacy fragment %1$d received. Scan more or tap Launch.</string>
     <string name="unknown_fragment">Fragment %1$d added. Scan more or tap Launch.</string>
     <string name="nav_link_scanned">That\'s a link for use inside a page, not a code to scan directly.</string>
@@ -65,6 +69,7 @@
     <string name="button_more_desc">More actions</string>
     <string name="status_cached">Cached</string>
     <string name="status_not_cached">Not yet scanned</string>
+    <string name="status_encrypted">🔒 Locked — scan its key code to unlock</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
     <string name="related_found">Already in your collection — tap Open</string>

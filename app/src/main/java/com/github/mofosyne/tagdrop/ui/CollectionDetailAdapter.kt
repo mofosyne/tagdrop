@@ -9,6 +9,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
 import com.github.mofosyne.tagdrop.openCollectionDetail
@@ -34,9 +35,9 @@ class CollectionDetailAdapter(
             val popup = PopupMenu(binding.root.context, binding.buttonMore)
             popup.menuInflater.inflate(R.menu.menu_page_item, popup.menu)
             popup.menu.findItem(R.id.action_map).isVisible = cache.lat != null && cache.lng != null
-            popup.menu.findItem(R.id.action_share).isVisible = cache.contentBytes != null
-            popup.menu.findItem(R.id.action_share_qr).isVisible = cache.contentBytes != null
-            popup.menu.findItem(R.id.action_save).isVisible = cache.contentBytes != null
+            popup.menu.findItem(R.id.action_share).isVisible = cache.isOpenable
+            popup.menu.findItem(R.id.action_share_qr).isVisible = cache.isOpenable
+            popup.menu.findItem(R.id.action_save).isVisible = cache.isOpenable
             popup.menu.findItem(R.id.action_delete).isVisible = canDelete
             popup.setOnMenuItemClickListener { menuItem ->
                 when (menuItem.itemId) {
@@ -73,8 +74,12 @@ class CollectionDetailAdapter(
                     binding.textSubtitle.visibility = View.VISIBLE
                     val cache = item.cache
                     if (cache != null) {
-                        binding.textStatus.text = ctx.getString(R.string.status_cached)
-                        binding.buttonOpen.isEnabled = cache.contentBytes != null
+                        binding.textStatus.text = if (cache.encrypted) {
+                            ctx.getString(R.string.status_encrypted)
+                        } else {
+                            ctx.getString(R.string.status_cached)
+                        }
+                        binding.buttonOpen.isEnabled = cache.isOpenable
                         binding.buttonOpen.setOnClickListener { onOpen(cache) }
                         binding.buttonMap.visibility = View.GONE
                         binding.buttonMore.visibility = View.VISIBLE
@@ -92,8 +97,12 @@ class CollectionDetailAdapter(
                     binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = cache.mimeType
                     binding.textSubtitle.visibility = View.VISIBLE
-                    binding.textStatus.text = DATE_FMT.format(Date(cache.discoveredAt))
-                    binding.buttonOpen.isEnabled = cache.contentBytes != null
+                    binding.textStatus.text = if (cache.encrypted) {
+                        ctx.getString(R.string.status_encrypted)
+                    } else {
+                        DATE_FMT.format(Date(cache.discoveredAt))
+                    }
+                    binding.buttonOpen.isEnabled = cache.isOpenable
                     binding.buttonOpen.setOnClickListener { onOpen(cache) }
                     binding.buttonMap.visibility = View.GONE
                     binding.buttonMore.visibility = View.VISIBLE

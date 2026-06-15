@@ -25,4 +25,8 @@ interface CacheDao {
 
     @Query("DELETE FROM found_caches WHERE collectionId = :collectionId")
     suspend fun deleteByCollectionId(collectionId: String)
+
+    /** Items cached as ciphertext, still awaiting a matching `key_material` (SPEC §9). */
+    @Query("SELECT * FROM found_caches WHERE encrypted = 1")
+    suspend fun getPendingEncrypted(): List<FoundCache>
 }
