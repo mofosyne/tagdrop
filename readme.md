@@ -116,11 +116,11 @@ running from source.
 
 ## Status
 
-v1 wire format, stable — CBOR-sequence envelope encoding (`tagdrop:<base45>`),
-paper manifests with multi-file directories and relative-link navigation,
-geographic trails via `related` hints, ad-hoc collections, an in-app scanner
-with a live scan board, a Map tab for located finds, and AES-256-GCM
-encryption via key-code QR or passphrase (PBKDF2-SHA256).
+**TagDrop v2.0** — v1 wire format, stable. CBOR-sequence envelope encoding
+(`tagdrop:<base45>`), paper manifests with multi-file directories and
+relative-link navigation, geographic trails via `related` hints, ad-hoc
+collections, an in-app scanner with a live scan board, a Map tab for located
+finds, and AES-256-GCM encryption via key-code QR or passphrase (PBKDF2-SHA256).
 
 ## Extra
 
