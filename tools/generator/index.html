@@ -65,8 +65,9 @@
   /* ── Results grid ── */
   .qr-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; }
   .qr-item { background: #fff; border-radius: 8px; padding: 16px; text-align: center;
-             box-shadow: 0 1px 3px rgba(0,0,0,.1); min-width: 200px; }
-  .qr-item canvas, .qr-item img { display: block; margin: 0 auto 8px; }
+             box-shadow: 0 1px 3px rgba(0,0,0,.1); min-width: 280px; }
+  .qr-item canvas, .qr-item img { display: block; margin: 0 auto 8px;
+    image-rendering: pixelated; image-rendering: crisp-edges; }
   .qr-label { font-weight: 600; font-size: 0.9rem; word-break: break-all; }
   .qr-sub   { font-size: 0.75rem; color: #888; margin-top: 2px; }
   .qr-id    { font-family: monospace; font-size: 0.7rem; color: #aaa; margin-top: 4px; }
@@ -518,19 +519,21 @@ function qrToCanvas(QRCode, uri, width) {
 
 async function renderQr(container, uri) {
   const QRCode = await loadQRCode();
-  const canvas = await qrToCanvas(QRCode, uri, 220);
+  const canvas = await qrToCanvas(QRCode, uri, 300);
   container.innerHTML = '';
   container.appendChild(canvas);
 }
 
-// Re-renders the QR at a higher resolution than the on-screen 220px preview — better for
-// printing or pasting elsewhere — and triggers a browser download as a PNG file. If the
-// content is too large to fit in a QR at all, alerts rather than failing silently (the
-// per-card button is also removed when the on-screen render itself fails — see callers).
+// Re-renders the QR at 1024px — ~3× the on-screen 300px preview, giving each
+// module several pixels of margin so printers and scanners can read it reliably
+// even for high-version (dense) codes. PNG pixels are always crisp (no
+// smoothing baked in); viewers/printers that scale the image should render
+// well at this resolution. Alerts rather than failing silently if the content
+// is too large to fit in any QR code version.
 async function downloadQrPng(uri, filename) {
   try {
     const QRCode = await loadQRCode();
-    const canvas = await qrToCanvas(QRCode, uri, 512);
+    const canvas = await qrToCanvas(QRCode, uri, 1024);
     const a = document.createElement('a');
     a.href = canvas.toDataURL('image/png');
     a.download = filename;
