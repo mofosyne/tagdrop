@@ -99,14 +99,18 @@ The `payload` map — the third item of the envelope sequence (§2) — uses **i
 | 34 | `signer_pubkey` | bytes (1312, opt) | S, M, P |
 | 35 | `signer_id` | bytes (8, opt) | S, M, P |
 | 36 | `signer_label` | text (opt) | S, M, P |
+| 37 | `kdf_alg` | uint (opt) | S, M |
+| 38 | `kdf_salt` | bytes (16, opt) | S, M |
+| 39 | `kdf_iters` | uint (opt, default 100000) | S, M |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
 Key 25 is reserved for a future small embedded image icon (raw bytes), as an
 alternative to the emoji `icon` field above. Keys 28, 30, and 31 are defined
-in §9 (Encryption); keys 32–36 are defined in §10 (Verified Authorship). Key
-29 is reserved and unused — see §9 for why an encrypted override map's nonce
-doesn't need its own clear-map field.
+in §9 (Encryption); keys 32–36 are defined in §10 (Verified Authorship); keys
+37–39 are defined in §9 (Passphrase-based key derivation). Key 29 is reserved
+and unused — see §9 for why an encrypted override map's nonce doesn't need its
+own clear-map field.
 
 **Codes may carry a hidden, encrypted override map.** A Single's trailing
 bytes (after its 3-item CBOR Sequence) or a Manifest's assembled chunk bytes
@@ -778,6 +782,47 @@ and each property above is a deliberate small design choice rather than an
 afterthought. These are properties of the *format*; an implementation that
 logs scan history, retains keys against a user's wishes, or makes network
 requests undermines them regardless of what the bytes on the wire look like.
+
+### Passphrase-based key derivation
+
+Instead of a separate key code, an author MAY derive the AES-256-GCM key from
+a shared passphrase using PBKDF2-HMAC-SHA256. Three optional fields in the
+**clear map** signal this:
+
+| Key | Field | Type | Description |
+|---|---|---|---|
+| 37 | `kdf_alg` | uint | KDF algorithm: `1` = PBKDF2-HMAC-SHA256 |
+| 38 | `kdf_salt` | bytes (16) | Random salt; unique per encryption |
+| 39 | `kdf_iters` | uint | PBKDF2 iteration count; default `100000` if absent |
+
+When `kdf_alg = 1` is present alongside `encryption = 1` and an
+`overrideBlob`, the reader MUST:
+
+1. Prompt the user for a passphrase.
+2. Derive a 32-byte AES-256-GCM key:
+   `PBKDF2-HMAC-SHA256(passphrase, kdf_salt, kdf_iters, 32 bytes)`
+   — WebCrypto: `SubtleCrypto.deriveKey({name:"PBKDF2", ...})`;
+   Android: `SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")`.
+3. Try the derived key against the override blob exactly as for a
+   `key_material` key — authentication-tag failure means wrong passphrase.
+4. On success: the derived 32-byte key MAY be retained (same
+   `retain_key` semantics as a scanned key code — see above). Retaining
+   the derived key, not the passphrase itself, is RECOMMENDED: it avoids
+   storing plaintext passphrases while still skipping the PBKDF2 round on
+   the next scan of the same content.
+
+`kdf_salt` MUST be unique per encryption (16 random bytes). A reused salt
+under the same passphrase reduces security to the equivalent of reusing an
+AES-GCM nonce. The `kdf_iters` value SHOULD be omitted when equal to
+`100000` (the default saves two CBOR bytes).
+
+Passphrase and `key_material` modes are mutually exclusive per code: a
+passphrase-encrypted code has `kdf_alg`/`kdf_salt` in its clear map but no
+`key_material` field and no separate key QR; a key-code-encrypted code has
+neither `kdf_alg` nor `kdf_salt` and is unlocked by a separately distributed
+key code. The trial-decryption mechanism works identically once a key is in
+hand — the derivation step is simply the extra work the passphrase path adds
+before that.
 
 ---
 

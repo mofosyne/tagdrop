@@ -125,6 +125,21 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #contentArea { min-height: 200px; }
 #contentArea pre { margin: 0; }
+
+/* Passphrase dialog */
+.passphrase-box {
+  background: #2a2a3e; border-radius: 12px; padding: 24px;
+  width: min(400px, 96vw); display: flex; flex-direction: column; gap: 10px; color: #fff;
+}
+.passphrase-box h2 { margin: 0; font-size: 1.05rem; }
+.passphrase-box p { margin: 0; font-size: 0.88rem; color: #aaa; }
+#passphraseInput {
+  width: 100%; padding: 10px 12px; border-radius: 8px; border: none;
+  font-size: 1rem; background: #fff; color: #222; margin-top: 4px;
+}
+#passphraseError { font-size: 0.82rem; color: #f88; min-height: 1.2em; }
+.passphrase-box label { font-size: 0.85rem; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.passphrase-box .btn-row { display: flex; gap: 8px; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -142,6 +157,21 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
     <h2 id="cborTitle"></h2>
     <pre id="cborDump"></pre>
     <button id="btnCloseCbor" class="secondary">Close</button>
+  </div>
+</div>
+
+<div id="passphraseOverlay" class="overlay hidden">
+  <div class="passphrase-box">
+    <h2>🔒 Passphrase required</h2>
+    <p id="passphraseInfo"></p>
+    <input type="password" id="passphraseInput" placeholder="Enter passphrase" autocomplete="current-password">
+    <div id="passphraseError"></div>
+    <label><input type="checkbox" id="passphraseSession" checked> Remember for this session</label>
+    <label><input type="checkbox" id="passphraseStore"> Remember permanently</label>
+    <div class="btn-row">
+      <button id="btnPassphraseOk" class="primary">Unlock</button>
+      <button id="btnPassphraseCancel" class="secondary">Cancel</button>
+    </div>
   </div>
 </div>
 
@@ -300,6 +330,59 @@ async function decryptAesGcm(ciphertextAndTag, key, nonce) {
   }
 }
 
+// PBKDF2-SHA256 key derivation (SPEC §9 passphrase mode). Returns 32 raw AES-256-GCM key bytes.
+async function deriveKeyFromPassphrase(passphrase, salt, iters) {
+  const base = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']
+  );
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: iters, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, true, ['decrypt']
+  );
+  return new Uint8Array(await crypto.subtle.exportKey('raw', aesKey));
+}
+
+// Session-level cache: saltHex → derived AES key bytes. Cleared on page reload.
+// Lets the reader unlock passphrase-protected QRs in the same session without re-prompting.
+const sessionPassphraseKeys = new Map();
+
+// Passphrase dialog — returns { passphrase, sessionOnly, store } or null on cancel.
+function askPassphrase(infoText) {
+  return new Promise(resolve => {
+    document.getElementById('passphraseInfo').textContent = infoText;
+    document.getElementById('passphraseInput').value = '';
+    document.getElementById('passphraseError').textContent = '';
+    document.getElementById('passphraseOverlay').classList.remove('hidden');
+    setTimeout(() => document.getElementById('passphraseInput').focus(), 50);
+
+    const ok     = document.getElementById('btnPassphraseOk');
+    const cancel = document.getElementById('btnPassphraseCancel');
+
+    function cleanup() {
+      document.getElementById('passphraseOverlay').classList.add('hidden');
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      document.getElementById('passphraseInput').removeEventListener('keydown', onKey);
+    }
+    function onOk() {
+      const p = document.getElementById('passphraseInput').value;
+      if (!p) { document.getElementById('passphraseError').textContent = 'Enter a passphrase.'; return; }
+      cleanup();
+      resolve({
+        passphrase:  p,
+        sessionOnly: document.getElementById('passphraseSession').checked,
+        store:       document.getElementById('passphraseStore').checked,
+      });
+    }
+    function onCancel() { cleanup(); resolve(null); }
+    function onKey(e) { if (e.key === 'Enter') onOk(); else if (e.key === 'Escape') onCancel(); }
+
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    document.getElementById('passphraseInput').addEventListener('keydown', onKey);
+  });
+}
+
 // Minimum size of a self-contained nonce(12) || ciphertext || tag(16) override-map blob (SPEC §9).
 const OVERRIDE_BLOB_MIN_BYTES = 28;
 
@@ -367,7 +450,8 @@ const K = {
   SET:13, SLUG:14, FILES:15, RELATED:16,
   FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23,
   LAT:26, LNG:27,
-  ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31
+  ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
+  KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39
 };
 
 // CBOR-sequence envelope (SPEC §2): tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
@@ -385,7 +469,8 @@ const KEY_NAMES = {
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
   26: 'lat', 27: 'lng',
-  28: 'encryption', 30: 'key_material', 31: 'retain_key'
+  28: 'encryption', 30: 'key_material', 31: 'retain_key',
+  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters'
 };
 
 function toHexDump(bytes) {
@@ -501,6 +586,9 @@ async function parseUri(uri) {
       overrideBlob: trailing.length >= OVERRIDE_BLOB_MIN_BYTES ? trailing : null,
       keyMaterial,
       retainKey,
+      kdfAlg:   m[K.KDF_ALG]  || 0,
+      kdfSalt:  m[K.KDF_SALT]  || null,
+      kdfIters: m[K.KDF_ITERS] || 100000,
       cbor: seq,
     };
   }
@@ -638,10 +726,11 @@ const awaitingManifests = {};
  * `pendingOverrideBlob` for a later key to "self-correct". A Single always reaches
  * "Complete" — its `content` decompression doesn't depend on the override blob.
  */
-async function resolveSingleAndStore(cacheId, clearContentBytes, overrideBlob, { compression, mimeType, hint, filename }) {
+async function resolveSingleAndStore(cacheId, clearContentBytes, overrideBlob, { compression, mimeType, hint, filename }, extraKeys = []) {
   const cover = compression === 1 ? await zlibDecompress(clearContentBytes) : clearContentBytes;
   if (overrideBlob) {
-    for (const k of await dbGetAll('keys')) {
+    const storedKeys = await dbGetAll('keys');
+    for (const k of [...storedKeys, ...extraKeys]) {
       const override = await tryDecryptOverrideMap(overrideBlob, k.keyMaterial, compression);
       if (override) {
         const merged = mergeOverride({ hint, mimeType, filename, content: null }, override, new Uint8Array(0));
@@ -696,15 +785,11 @@ async function resolveAssembledAndStore(cacheId, assembled, manifestParsed) {
 }
 
 /**
- * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
- * it against everything currently locked: assemblies stuck in `awaitingManifests` and
- * cached items with a still-unresolved `pendingOverrideBlob`. "Discovery, not
- * declaration": scan order between a key and the content it unlocks doesn't matter.
+ * Tries `keyMaterial` against all currently-locked content: assemblies in `awaitingManifests`
+ * and cached items with a `pendingOverrideBlob`. Returns true if anything was unlocked.
+ * Does NOT store the key — callers decide whether and how to retain it.
  */
-async function processDiscoveredKey(keyMaterial, retainKey, hint) {
-  if (retainKey) {
-    await dbPut('keys', { id: toHex(keyMaterial), keyMaterial, hint });
-  }
+async function unlockWithKey(keyMaterial) {
   let unlockedAny = false;
 
   for (const [cacheId, entry] of Object.entries(awaitingManifests)) {
@@ -729,10 +814,23 @@ async function processDiscoveredKey(keyMaterial, retainKey, hint) {
     showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
   }
 
+  if (activePaperHash) await renderPaper(activePaperHash);
+  return unlockedAny;
+}
+
+/**
+ * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
+ * it against everything currently locked. "Discovery, not declaration": scan order between
+ * a key and the content it unlocks doesn't matter.
+ */
+async function processDiscoveredKey(keyMaterial, retainKey, hint) {
+  if (retainKey) {
+    await dbPut('keys', { id: toHex(keyMaterial), keyMaterial, hint });
+  }
+  const unlockedAny = await unlockWithKey(keyMaterial);
   if (!unlockedAny) {
     showMsg('Key code scanned' + (retainKey ? ' and stored' : '') + ' — scan its content code to unlock.', 'info');
   }
-  if (activePaperHash) await renderPaper(activePaperHash);
 }
 
 // ── Camera / QR scanner ───────────────────────────────────────────────────
@@ -808,15 +906,51 @@ async function handleScanned(raw) {
       // SPEC §9: discover any carried key_material first, so a combined content+key code
       // can resolve its own overrideBlob below in one pass.
       if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
-      const { content, merged, fields } = await resolveSingleAndStore(parsed.cacheId, parsed.content, parsed.overrideBlob, parsed);
+
+      // If this code uses passphrase-based KDF (SPEC §9 kdf_params), check the session
+      // cache so a previously-entered passphrase in this session is tried automatically.
+      const saltHex = parsed.kdfAlg === 1 && parsed.kdfSalt ? toHex(parsed.kdfSalt) : null;
+      const sessionKey = saltHex ? sessionPassphraseKeys.get(saltHex) : null;
+      const extraKeys = sessionKey ? [{ keyMaterial: sessionKey }] : [];
+
+      const { content, merged, fields } = await resolveSingleAndStore(parsed.cacheId, parsed.content, parsed.overrideBlob, parsed, extraKeys);
       const label = fields.filename || fields.hint || fields.mimeType;
-      if (merged) {
+
+      // Passphrase prompt: only if the code advertises KDF, has an override blob, and
+      // no retained/session key has already unlocked it.
+      if (!merged && parsed.overrideBlob && parsed.kdfAlg === 1 && saltHex) {
+        const info = parsed.hint
+          ? `"${parsed.hint}" is passphrase-protected. Enter the passphrase to unlock.`
+          : 'This content is passphrase-protected. Enter the passphrase to unlock.';
+        const result = await askPassphrase(info);
+        if (result) {
+          const derived = await deriveKeyFromPassphrase(result.passphrase, parsed.kdfSalt, parsed.kdfIters || 100000);
+          const testOv = await tryDecryptOverrideMap(parsed.overrideBlob, derived, parsed.compression);
+          if (!testOv) {
+            document.getElementById('passphraseError').textContent = '';
+            showMsg('Wrong passphrase — scan the code again to retry.', 'err');
+          } else {
+            if (result.sessionOnly) sessionPassphraseKeys.set(saltHex, derived);
+            if (result.store) {
+              await dbPut('keys', {
+                id: toHex(derived), keyMaterial: derived,
+                hint: 'passphrase (salt: ' + saltHex.slice(0, 8) + '…)',
+              });
+            }
+            await unlockWithKey(derived);
+            showMsg('🔓 Passphrase accepted — content unlocked!', 'ok');
+          }
+        } else {
+          showMsg('Loaded: ' + label + ' (🔒 enter passphrase to unlock)', 'ok');
+        }
+      } else if (merged) {
         showMsg('🔓 Decrypted: ' + label, 'ok');
       } else if (parsed.overrideBlob) {
         showMsg('Loaded: ' + label + ' (🔒 hidden content not yet unlocked)', 'ok');
       } else {
         showMsg('Loaded: ' + label, 'ok');
       }
+
       await showContent(fields.mimeType, content, label, parsed.cacheId);
       // Refresh directory if this file belongs to the active paper
       if (activePaperHash) await renderPaper(activePaperHash);

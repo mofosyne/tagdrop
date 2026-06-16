@@ -170,8 +170,23 @@
       <div style="display:flex;align-items:flex-end;padding-bottom:6px">
         <label style="margin:0">
           <input type="checkbox" id="s-encrypt"> 🔒 Encrypt this content (AES-256-GCM)
-          <small style="display:block;color:#888;margin-top:2px">Generates a separate key code (SPEC §9) — print or share it apart from the content code</small>
+          <small style="display:block;color:#888;margin-top:2px">Hides the real content inside an encrypted override map (SPEC §9)</small>
         </label>
+      </div>
+    </div>
+    <div id="s-key-mode-section" style="display:none;padding-left:24px;margin-top:4px">
+      <div style="font-size:0.82rem;color:#555;margin-bottom:6px">Key distribution method:</div>
+      <label style="display:block;font-size:0.85rem;color:#333;margin:0 0 4px">
+        <input type="radio" name="s-key-mode" id="s-key-mode-keyqr" value="keyqr" checked>
+        Key code QR <small style="color:#888">— a separate QR code is generated; print or share it apart from the content</small>
+      </label>
+      <label style="display:block;font-size:0.85rem;color:#333;margin:0">
+        <input type="radio" name="s-key-mode" id="s-key-mode-passphrase" value="passphrase">
+        Passphrase <small style="color:#888">— recipients type a passphrase you choose; no separate QR needed</small>
+      </label>
+      <div id="s-passphrase-row" style="display:none;margin-top:8px">
+        <label>Passphrase</label>
+        <input type="text" id="s-passphrase" placeholder="Choose a passphrase for recipients to type">
       </div>
     </div>
     <label>Or upload a file <small>(fills in filename, MIME type, and content below — binary
@@ -382,11 +397,25 @@ async function zlibCompress(bytes) {
 const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
              FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27,
-             ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31 };
+             ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
+             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39 };
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
 function generateNonce() { return crypto.getRandomValues(new Uint8Array(12)); }
+
+// PBKDF2-SHA256 key derivation (SPEC §9, passphrase mode).
+// Returns 32 raw AES-256-GCM key bytes.
+async function deriveKeyFromPassphrase(passphrase, salt, iters) {
+  const base = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']
+  );
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: iters, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, true, ['encrypt']
+  );
+  return new Uint8Array(await crypto.subtle.exportKey('raw', aesKey));
+}
 
 // 8 random bytes — cache_id for encrypted content (SPEC §9): random rather than
 // content-addressed, so the ID itself can't be used as a content-equality oracle.
@@ -421,17 +450,26 @@ async function encryptOverrideMap(override, key, compression) {
  * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
  * or genuine unremarkable content with no relation to `override`.
  *
- * If `override` is given (with `encryptionKey`, 32 bytes), it's AES-256-GCM-encrypted into
- * a self-contained blob (SPEC §9) carried as raw trailing bytes after this payload's CBOR
- * sequence. `cacheId` becomes random rather than content-addressed, and `encryption` is
- * set to the AES-256-GCM hint unless `declareEncryption` is false (cosmetic only — SPEC §9).
+ * If `override` is given, it's AES-256-GCM-encrypted into a self-contained blob (SPEC §9)
+ * carried as raw trailing bytes. Supply exactly one of:
+ *   - `encryptionKey` (32-byte Uint8Array) — key-code mode, generates a separate key QR
+ *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_params
+ *     in the clear map so the reader knows to prompt for a passphrase
  */
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, declareEncryption = true }) {
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, kdfPassphrase, declareEncryption = true }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
   let cacheId, overrideBlob = null, encryption = null;
+  let kdfAlg = null, kdfSalt = null, kdfIters = null;
   if (override) {
-    overrideBlob = await encryptOverrideMap(override, encryptionKey, compression || 0);
+    let key = encryptionKey;
+    if (kdfPassphrase != null) {
+      kdfSalt  = crypto.getRandomValues(new Uint8Array(16));
+      kdfIters = 100000;
+      kdfAlg   = 1;
+      key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, kdfIters);
+    }
+    overrideBlob = await encryptOverrideMap(override, key, compression || 0);
     cacheId = randomCacheId();
     encryption = declareEncryption ? 1 : null;
   } else {
@@ -445,9 +483,12 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
     [K.ENCRYPTION,  encryption],
+    [K.KDF_ALG,     kdfAlg],
+    [K.KDF_SALT,    kdfSalt],
+    // kdf_iters is the default (100000) — omit to save bytes
   ]));
   const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
-  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption };
+  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption, kdfPassphrase };
 }
 
 /**
@@ -721,18 +762,33 @@ async function generateSingle() {
   // When "Encrypt" is checked, the user's real hint/filename/mimeType/content become a
   // hidden override map (SPEC §9), and a generic placeholder cover is shown/printed
   // instead — the printed label must never reveal the hidden content.
-  let encodeArgs, encryptionKey = null;
+  let encodeArgs, encryptionKey = null, kdfPassphrase = null;
   if (encrypt) {
-    encryptionKey = generateKeyMaterial();
-    encodeArgs = {
-      hint: '🔒 Locked content',
-      filename: null,
-      mimeType: 'text/plain',
-      rawBytes: new TextEncoder().encode('This content is locked. Scan the matching key code to unlock.'),
-      compress,
-      override: { hint, mimeType, content: rawBytes, filename },
-      encryptionKey,
-    };
+    const keyMode = document.querySelector('input[name="s-key-mode"]:checked')?.value || 'keyqr';
+    if (keyMode === 'passphrase') {
+      kdfPassphrase = document.getElementById('s-passphrase').value;
+      if (!kdfPassphrase) { msgs.innerHTML = '<div class="err">Enter a passphrase for recipients to type.</div>'; return; }
+      encodeArgs = {
+        hint: '🔒 Locked content',
+        filename: null,
+        mimeType: 'text/plain',
+        rawBytes: new TextEncoder().encode('This content is locked. Enter the passphrase to unlock.'),
+        compress,
+        override: { hint, mimeType, content: rawBytes, filename },
+        kdfPassphrase,
+      };
+    } else {
+      encryptionKey = generateKeyMaterial();
+      encodeArgs = {
+        hint: '🔒 Locked content',
+        filename: null,
+        mimeType: 'text/plain',
+        rawBytes: new TextEncoder().encode('This content is locked. Scan the matching key code to unlock.'),
+        compress,
+        override: { hint, mimeType, content: rawBytes, filename },
+        encryptionKey,
+      };
+    }
   } else {
     encodeArgs = { hint, filename, mimeType, rawBytes, compress };
   }
@@ -744,11 +800,18 @@ async function generateSingle() {
   if (encoded.uri.length > 2000)
     msgs.innerHTML += `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
       Enable compression or reduce content size.</div>`;
-  if (encrypt)
-    msgs.innerHTML += `<div class="warn">🔒 The real hint/filename/content are hidden inside this code as an
-      encrypted override map (SPEC §9) — the QR and its printed label show only the generic cover below.
-      A separate <strong>key</strong> code is also generated; keep it apart from the cover — print or share
-      on different paper — since anyone with both can unlock the hidden content.</div>`;
+  if (encrypt) {
+    if (kdfPassphrase) {
+      msgs.innerHTML += `<div class="warn">🔒 The real content is hidden inside an encrypted override map (SPEC §9) —
+        the QR shows only the generic cover. Recipients unlock it by entering the passphrase
+        <strong>"${escHtml(kdfPassphrase)}"</strong> in the TagDrop reader. No separate key QR is needed.</div>`;
+    } else {
+      msgs.innerHTML += `<div class="warn">🔒 The real hint/filename/content are hidden inside this code as an
+        encrypted override map (SPEC §9) — the QR and its printed label show only the generic cover below.
+        A separate <strong>key</strong> code is also generated; keep it apart from the cover — print or share
+        on different paper — since anyone with both can unlock the hidden content.</div>`;
+    }
+  }
 
   result.innerHTML = '<div class="qr-grid"></div>';
   const grid = result.querySelector('.qr-grid');
@@ -768,24 +831,29 @@ async function generateSingle() {
   }
 
   if (encrypt) {
-    const keyHint = 'TagDrop key';
-    const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
-    try {
-      await addGeneratorQrCard(grid, {
-        label: escHtml(keyHint),
-        sub: 'key_material (AES-256-GCM)',
-        badge: 'key',
-        badgeClass: 'key',
-        id: toHex(keyEncoded.cacheId),
-        uri: keyEncoded.uri,
-        itemClass: 'key-item',
-      });
-    } catch (e) {
-      msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
+    if (encryptionKey) {
+      const keyHint = 'TagDrop key';
+      const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
+      try {
+        await addGeneratorQrCard(grid, {
+          label: escHtml(keyHint),
+          sub: 'key_material (AES-256-GCM)',
+          badge: 'key',
+          badgeClass: 'key',
+          id: toHex(keyEncoded.cacheId),
+          uri: keyEncoded.uri,
+          itemClass: 'key-item',
+        });
+      } catch (e) {
+        msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
+      }
     }
 
     // Screen-only reference for the person generating this code — never printed
     // (the printed cards above must show only the generic cover, per SPEC §9).
+    const keyNote = kdfPassphrase
+      ? `<div style="margin-top:4px"><small style="color:#555">key method:</small> passphrase — <strong>${escHtml(kdfPassphrase)}</strong></div>`
+      : '';
     result.insertAdjacentHTML('beforeend', `
       <div class="card" id="no-print" style="margin-top:8px">
         <strong>🔒 Hidden inside the code above (SPEC §9):</strong>
@@ -793,6 +861,7 @@ async function generateSingle() {
           <small style="color:#555">hint:</small> ${hint ? escHtml(hint) : '<em>(none)</em>'}<br>
           <small style="color:#555">filename:</small> ${filename ? escHtml(filename) : '<em>(none)</em>'}<br>
           <small style="color:#555">mime_type:</small> ${escHtml(mimeType)}
+          ${keyNote}
         </div>
       </div>`);
   }
@@ -1023,20 +1092,29 @@ document.getElementById('tab-paper').addEventListener('click', function once() {
   this.removeEventListener('click', once);
 });
 
-// When "Encrypt" is on, force-check "Compress" and lock the checkbox. The
-// encrypted override blob carries the full real content, so without DEFLATE
-// the cover QR is just as dense as an unencrypted one and often unscannable.
+// When "Encrypt" is on, force-check "Compress", lock it, and show the key-mode selector.
 document.getElementById('s-encrypt').addEventListener('change', function () {
   const compressEl = document.getElementById('s-compress');
   const hintEl     = document.getElementById('s-compress-hint');
+  const keyModeEl  = document.getElementById('s-key-mode-section');
   if (this.checked) {
     compressEl.checked  = true;
     compressEl.disabled = true;
     hintEl.textContent  = 'Required for encrypted content — the encrypted real content is embedded in this QR';
+    keyModeEl.style.display = 'block';
   } else {
     compressEl.disabled = false;
     hintEl.textContent  = 'Saves ~50–70% for HTML/text';
+    keyModeEl.style.display = 'none';
   }
+});
+
+// Show/hide passphrase input based on key-mode radio selection.
+document.querySelectorAll('input[name="s-key-mode"]').forEach(r => {
+  r.addEventListener('change', () => {
+    const isPassphrase = document.getElementById('s-key-mode-passphrase').checked;
+    document.getElementById('s-passphrase-row').style.display = isPassphrase ? 'block' : 'none';
+  });
 });
 
 // ── File / ZIP upload helpers ───────────────────────────────────────────────
