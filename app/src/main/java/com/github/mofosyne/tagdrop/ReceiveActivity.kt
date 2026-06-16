@@ -312,7 +312,8 @@ class ReceiveActivity : AppCompatActivity() {
         mimeType: String, content: ByteArray, collectionId: String? = null,
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
         pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0,
-        wasEncrypted: Boolean = false
+        wasEncrypted: Boolean = false,
+        kdfAlg: Int = 0, kdfSalt: ByteArray? = null
     ) {
         val location = getLastKnownLocation()
         val paper = lastPaper
@@ -335,7 +336,9 @@ class ReceiveActivity : AppCompatActivity() {
                     icon               = icon,
                     pendingOverrideBlob = pendingOverrideBlob,
                     pendingCompression  = pendingCompression,
-                    wasEncrypted        = wasEncrypted
+                    wasEncrypted        = wasEncrypted,
+                    kdfAlg              = kdfAlg,
+                    kdfSalt             = kdfSalt
                 )
             )
             if (paper != null) {
@@ -418,23 +421,25 @@ class ReceiveActivity : AppCompatActivity() {
                         )
                     } else {
                         toast(getString(R.string.passphrase_wrong))
-                        // Fall back to caching the clear-map content with blob pending.
+                        // Fall back to caching the clear-map content with blob + kdf fields pending for retry.
                         val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                         completeSingle(
                             payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
                             payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
                             pendingOverrideBlob = blob, pendingCompression = payload.compression,
-                            wasEncrypted = true
+                            wasEncrypted = true,
+                            kdfAlg = payload.kdfAlg, kdfSalt = payload.kdfSalt
                         )
                     }
                 } else {
-                    // User cancelled — cache clear-map content with blob pending for later.
+                    // User cancelled — cache clear-map content with blob + kdf fields pending for retry.
                     val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                     completeSingle(
                         payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
                         payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
                         pendingOverrideBlob = blob, pendingCompression = payload.compression,
-                        wasEncrypted = true
+                        wasEncrypted = true,
+                        kdfAlg = payload.kdfAlg, kdfSalt = payload.kdfSalt
                     )
                 }
             } else {

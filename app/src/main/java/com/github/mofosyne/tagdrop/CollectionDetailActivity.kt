@@ -8,6 +8,8 @@ import android.util.Base64
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.text.InputType
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -16,9 +18,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.db.hasPendingPassphrase
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import kotlinx.coroutines.CompletableDeferred
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
@@ -199,14 +204,88 @@ class CollectionDetailActivity : AppCompatActivity() {
     }
 
     private fun openCache(cache: FoundCache) {
+        if (cache.hasPendingPassphrase) {
+            lifecycleScope.launch { tryPassphraseUnlock(cache) }
+            return
+        }
         val bytes = cache.contentBytes ?: return
-        val dataUri = "data:${cache.mimeType};base64," +
-            Base64.encodeToString(bytes, Base64.NO_WRAP)
+        launchCacheViewer(cache, bytes)
+    }
+
+    private fun launchCacheViewer(cache: FoundCache, bytes: ByteArray) {
+        val dataUri = "data:${cache.mimeType};base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
         startActivity(
             Intent(this, ViewDataUriActivity::class.java)
                 .putExtra(ViewDataUriActivity.EXTRA_DATA_URI, dataUri)
                 .putExtra(ViewDataUriActivity.EXTRA_CACHE_ID, cache.cacheId)
         )
+    }
+
+    private suspend fun tryPassphraseUnlock(cache: FoundCache) {
+        val salt = cache.kdfSalt ?: return
+        val result = askPassphrase(cache.hint)
+        if (result == null) {
+            val bytes = cache.contentBytes ?: return
+            launchCacheViewer(cache, bytes)
+            return
+        }
+        val (passphrase, shouldStore) = result
+        val derivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, salt, 100000)
+        val override = TagDropCodec.tryDecryptOverrideMap(cache.pendingOverrideBlob!!, derivedKey, cache.pendingCompression)
+        if (override == null) {
+            Toast.makeText(this, getString(R.string.passphrase_wrong), Toast.LENGTH_SHORT).show()
+            val bytes = cache.contentBytes ?: return
+            launchCacheViewer(cache, bytes)
+            return
+        }
+        if (shouldStore) {
+            val saltHint = salt.take(4).joinToString("") { "%02x".format(it) }
+            AppDatabase.get(this).keyDao().insert(
+                RetainedKey(
+                    keyHex = derivedKey.joinToString("") { "%02x".format(it) },
+                    discoveredAt = System.currentTimeMillis(),
+                    hint = "passphrase (salt: $saltHint…)"
+                )
+            )
+        }
+        val unlocked = cache.copy(
+            hint = override.hint ?: cache.hint,
+            filename = override.filename ?: cache.filename,
+            mimeType = override.mimeType ?: cache.mimeType,
+            contentBytes = override.content ?: cache.contentBytes,
+            pendingOverrideBlob = null,
+            pendingCompression = 0,
+            kdfAlg = 0,
+            kdfSalt = null
+        )
+        AppDatabase.get(this).cacheDao().insert(unlocked)
+        launchCacheViewer(unlocked, unlocked.contentBytes ?: ByteArray(0))
+    }
+
+    private suspend fun askPassphrase(contentHint: String?): Pair<String, Boolean>? {
+        val deferred = CompletableDeferred<Pair<String, Boolean>?>()
+        runOnUiThread {
+            val editText = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                hint = getString(R.string.passphrase_hint_text)
+            }
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.passphrase_dialog_title))
+                .apply { contentHint?.let { setMessage(it) } }
+                .setView(editText)
+                .setPositiveButton(getString(R.string.passphrase_remember_key)) { _, _ ->
+                    deferred.complete(editText.text.toString() to true)
+                }
+                .setNeutralButton(getString(R.string.passphrase_unlock_once)) { _, _ ->
+                    deferred.complete(editText.text.toString() to false)
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    deferred.complete(null)
+                }
+                .setOnCancelListener { deferred.complete(null) }
+                .show()
+        }
+        return deferred.await()
     }
 
     private fun shareCache(cache: FoundCache) {

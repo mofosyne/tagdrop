@@ -20,7 +20,9 @@ data class FoundCache(
     val createdByMe: Boolean = false,     // true if authored in-app (Create Cache/Paper), not scanned
     val pendingOverrideBlob: ByteArray? = null,  // candidate encrypted override-map blob not yet unlocked by any retained key (SPEC §9)
     val pendingCompression: Int = 0,             // compression to apply when decoding pendingOverrideBlob's plaintext (SPEC §9)
-    val wasEncrypted: Boolean = false            // true if this cache ever carried an encrypted override-map blob (SPEC §9); stays true even after unlock
+    val wasEncrypted: Boolean = false,           // true if this cache ever carried an encrypted override-map blob (SPEC §9); stays true even after unlock
+    val kdfAlg: Int = 0,                         // KDF algorithm for passphrase-derived key (0 = none, 1 = PBKDF2-SHA256); non-zero only while pendingOverrideBlob is set
+    val kdfSalt: ByteArray? = null               // 16-byte random salt for PBKDF2; present whenever kdfAlg != 0
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()
@@ -31,3 +33,6 @@ val FoundCache.isOpenable: Boolean get() = contentBytes != null
 
 /** True if this cache carries a hidden override-map blob not yet unlocked by any retained key (SPEC §9) — shown as a 🔒 hint, not a block. */
 val FoundCache.hasPendingOverride: Boolean get() = pendingOverrideBlob != null
+
+/** True if [hasPendingOverride] and the blob is passphrase-derived (PBKDF2) — user can retry by entering the passphrase. */
+val FoundCache.hasPendingPassphrase: Boolean get() = pendingOverrideBlob != null && kdfAlg != 0 && kdfSalt != null
