@@ -774,7 +774,11 @@ hidden volumes or OTR's deniable authentication.
   NOT persist encrypted content they cannot yet decrypt beyond the current
   session, unless a `key_material` scanned alongside it has
   `retain_key = true`. Storage with no record of "content I can't open"
-  reveals less than storage that has one.
+  reveals less than storage that has one. Note that `retain_key` defaults to
+  `true` (§9, "Decryption keys") as a usability default for the common
+  treasure-hunt case; privacy-sensitive authors SHOULD explicitly set
+  `retain_key: false` on key codes distributed in contexts where deniability
+  matters.
 
 None of this is mandatory, and most uses of TagDrop (sticker trails,
 treasure hunts) won't need any of it — but the format doesn't preclude it,
@@ -795,8 +799,9 @@ a shared passphrase using PBKDF2-HMAC-SHA256. Three optional fields in the
 | 38 | `kdf_salt` | bytes (16) | Random salt; unique per encryption |
 | 39 | `kdf_iters` | uint | PBKDF2 iteration count; default `100000` if absent |
 
-When `kdf_alg = 1` is present alongside `encryption = 1` and an
-`overrideBlob`, the reader MUST:
+When `kdf_alg = 1` is present in the clear map alongside a candidate override
+blob (trailing bytes for a Single, assembled-chunk bytes for a Manifest — see
+"Where this blob lives" above), the reader MUST:
 
 1. Prompt the user for a passphrase.
 2. Derive a 32-byte AES-256-GCM key:
@@ -820,9 +825,11 @@ Passphrase and `key_material` modes are mutually exclusive per code: a
 passphrase-encrypted code has `kdf_alg`/`kdf_salt` in its clear map but no
 `key_material` field and no separate key QR; a key-code-encrypted code has
 neither `kdf_alg` nor `kdf_salt` and is unlocked by a separately distributed
-key code. The trial-decryption mechanism works identically once a key is in
-hand — the derivation step is simply the extra work the passphrase path adds
-before that.
+key code. If a code anomalously carries both `kdf_alg` and `key_material`, a
+reader SHOULD attempt `key_material` first (no user interaction required)
+before falling back to the passphrase prompt. The trial-decryption mechanism
+works identically once a key is in hand — the derivation step is simply the
+extra work the passphrase path adds before that.
 
 ---
 
@@ -992,9 +999,16 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 `version` is the first item of the envelope sequence (§2) — a single CBOR integer, decodable independently of everything that follows it. A reader encountering an unsupported `version` should stop immediately and show a human-readable "unsupported format version" message, without attempting to decode `type` or `payload` — a future version is free to redefine either, even to something other than CBOR.
 
 Version history:
-| Version | Changes |
-|---|---|
-| 1 | Initial release. `version`/`type` envelope as a 2-item CBOR sequence (§2); `type` 0–3 for Single/Manifest/Chunk/PaperManifest. Payload map keys 2–19, 20–24 (25 reserved), 26–27 (key 1 retired — see §3). DEFLATE compression. Base45 URI encoding (`tagdrop:<base45>`). Content-addressed IDs. Optional ad-hoc collections (`collection_id`, `collection_label`, `collection_tag`). Optional emoji `icon` (key 24), with key 25 reserved for a future image icon. Optional `lat`/`lng` (keys 26/27, float64) on `related` paper entries (key 16), for placeholder map pins. Optional AES-256-GCM-encrypted hidden override map (key 29 reserved, unused) carried as self-contained `nonce||ciphertext||tag` trailing bytes (Single) or assembled-chunk bytes (Manifest), applied after compression, with an optional, non-binding `encryption` hint (key 28); optional `key_material`/`retain_key` (keys 30/31) carried inline or via `related` entries, matched by trial decryption against every cached code rather than declared targets — see §9. Optional ML-DSA-44 post-quantum signatures (`signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label`, keys 32–36), additive over the unsigned payload and not affecting `cache_id`/`root_hash`/`sha256` — see §10 (not yet implemented in reference implementations). |
+
+**Version 1** (initial release, current)
+
+- `version`/`type` envelope as a 2-item CBOR sequence prefix (§2); `type` 0–3 for Single / Manifest / Chunk / PaperManifest.
+- Payload map integer keys 2–19, 20–24, 26–27. Key 1 retired (formerly `version` inside the payload — now lives in the envelope). Key 25 reserved for a future binary image icon.
+- Base45 URI encoding: `tagdrop:<base45>`. DEFLATE compression (key 12). Content-addressed IDs via SHA-256 (§4.5).
+- Paper manifests (type 3) with file directories, `set`/`slug` navigation, and `related` paper hints with optional `lat`/`lng` placeholder coordinates (keys 26/27). TagDropNet relative-link and `tagdrop://` navigation (§7).
+- Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
+- AES-256-GCM hidden override maps (§9): self-contained `nonce||ciphertext||tag` blob carried as trailing bytes (Single) or assembled-chunk bytes (Manifest), applied after compression. Optional non-binding `encryption` hint (key 28). Key 29 reserved, unused. `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
+- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 
 ---
 
