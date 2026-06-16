@@ -100,6 +100,7 @@ class MainActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.action_demo_collection -> { addDemoCollection(); true }
+            R.id.action_retained_keys -> { startActivity(Intent(this, RetainedKeysActivity::class.java)); true }
             R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }

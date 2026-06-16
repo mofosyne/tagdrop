@@ -69,6 +69,7 @@
     <string name="status_cached">Cached</string>
     <string name="status_not_cached">Not yet scanned</string>
     <string name="lock_badge_desc">Hidden content not yet unlocked — scan its key code to reveal more</string>
+    <string name="unlock_badge_desc">Content was encrypted — now unlocked with its key</string>
     <string name="home_badge_desc">This paper\'s homepage</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
@@ -143,6 +144,15 @@
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>
+
+    <!-- Retained Keys screen -->
+    <string name="title_retained_keys">Retained Keys</string>
+    <string name="retained_keys_empty">No retained keys stored.</string>
+    <string name="retained_keys_hint">Key (no hint)</string>
+    <string name="action_delete_all_keys">Delete all keys</string>
+    <string name="delete_all_keys_confirm_title">Delete all keys?</string>
+    <string name="delete_all_keys_confirm_message">Remove all %1$d retained key(s)? Encrypted items that haven\'t been unlocked yet will remain locked. This cannot be undone.</string>
+    <string name="menu_retained_keys">Retained Keys</string>
 
     <!-- Share via QR screen -->
     <string name="action_share_qr">Share via QR</string>

@@ -308,7 +308,8 @@ class ReceiveActivity : AppCompatActivity() {
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray, collectionId: String? = null,
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
-        pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0
+        pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0,
+        wasEncrypted: Boolean = false
     ) {
         val location = getLastKnownLocation()
         val paper = lastPaper
@@ -330,7 +331,8 @@ class ReceiveActivity : AppCompatActivity() {
                     lng                = location?.second,
                     icon               = icon,
                     pendingOverrideBlob = pendingOverrideBlob,
-                    pendingCompression  = pendingCompression
+                    pendingCompression  = pendingCompression,
+                    wasEncrypted        = wasEncrypted
                 )
             )
             if (paper != null) {
@@ -370,20 +372,23 @@ class ReceiveActivity : AppCompatActivity() {
             }
 
             if (override != null) {
+                // Override decrypted immediately — blob != null so wasEncrypted = true.
                 completeSingle(
                     payload.cacheId.toHex(),
                     override.hint ?: payload.hint,
                     override.filename ?: payload.filename,
                     override.mimeType ?: payload.mimeType,
                     override.content ?: ByteArray(0),
-                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon
+                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
+                    wasEncrypted = true
                 )
             } else {
                 val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                 completeSingle(
                     payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
                     payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
-                    pendingOverrideBlob = blob, pendingCompression = payload.compression
+                    pendingOverrideBlob = blob, pendingCompression = payload.compression,
+                    wasEncrypted = blob != null
                 )
             }
         }
@@ -423,7 +428,8 @@ class ReceiveActivity : AppCompatActivity() {
                     mimeType = override.mimeType ?: cache.mimeType,
                     contentBytes = override.content ?: cache.contentBytes,
                     pendingOverrideBlob = null,
-                    pendingCompression = 0
+                    pendingCompression = 0,
+                    wasEncrypted = true
                 )
             )
             unlocked++
@@ -474,7 +480,8 @@ class ReceiveActivity : AppCompatActivity() {
             state.cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = state.pendingOverrideBlob,
-            pendingCompression = state.pendingOverrideCompression
+            pendingCompression = state.pendingOverrideCompression,
+            wasEncrypted = state.pendingOverrideBlob != null
         )
     }
 

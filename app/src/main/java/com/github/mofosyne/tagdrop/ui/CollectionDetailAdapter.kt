@@ -75,6 +75,13 @@ class CollectionDetailAdapter(
                 is PageItem.RelatedHint -> null
             }
             binding.textLockBadge.visibility = if (cacheForBadge?.hasPendingOverride == true) View.VISIBLE else View.GONE
+            val wasEncrypted = when (item) {
+                is PageItem.CacheEntry -> item.cache.wasEncrypted
+                is PageItem.PaperFile -> item.cache?.wasEncrypted == true
+                else -> false
+            }
+            binding.textUnlockBadge.visibility =
+                if (wasEncrypted && cacheForBadge?.hasPendingOverride != true) View.VISIBLE else View.GONE
             binding.textHomeBadge.visibility =
                 if (item is PageItem.PaperFile && item.slug in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
             when (item) {
@@ -183,11 +190,14 @@ class CollectionDetailAdapter(
          * [FoundCache.equals] compares only `cacheId` (it holds a `ByteArray`, which can't
          * be structurally `==`-compared), so `a == b` alone can't see e.g. `pendingOverrideBlob`
          * clearing once a SPEC §9 key unlocks it — check that explicitly so the row re-binds
-         * and drops its lock badge.
+         * and drops its lock badge and gains its unlock badge.
          */
         override fun areContentsTheSame(a: PageItem, b: PageItem): Boolean {
             if (a != b) return false
-            return a.cacheOrNull()?.hasPendingOverride == b.cacheOrNull()?.hasPendingOverride
+            val ca = a.cacheOrNull()
+            val cb = b.cacheOrNull()
+            return ca?.hasPendingOverride == cb?.hasPendingOverride &&
+                ca?.wasEncrypted == cb?.wasEncrypted
         }
 
         private fun PageItem.cacheOrNull(): FoundCache? = when (this) {

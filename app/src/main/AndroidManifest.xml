@@ -95,6 +95,13 @@
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 
+        <!-- Retained AES key management (SPEC §9) -->
+        <activity
+            android:name=".RetainedKeysActivity"
+            android:label="@string/title_retained_keys"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Exposes cached content as content:// URIs for "Open with…" / "Share" -->
         <provider
             android:name="androidx.core.content.FileProvider"

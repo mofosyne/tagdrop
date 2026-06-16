@@ -127,4 +127,16 @@
         android:visibility="gone"
         android:contentDescription="@string/home_badge_desc" />
 
+    <!-- SPEC §9: shown for content that was encrypted but has been unlocked. -->
+    <TextView
+        android:id="@+id/textUnlockBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:padding="6dp"
+        android:text="🔓"
+        android:textSize="16sp"
+        android:visibility="gone"
+        android:contentDescription="@string/unlock_badge_desc" />
+
 </androidx.cardview.widget.CardView>

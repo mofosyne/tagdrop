@@ -19,7 +19,8 @@ data class FoundCache(
     val icon: String? = null,             // optional emoji icon
     val createdByMe: Boolean = false,     // true if authored in-app (Create Cache/Paper), not scanned
     val pendingOverrideBlob: ByteArray? = null,  // candidate encrypted override-map blob not yet unlocked by any retained key (SPEC §9)
-    val pendingCompression: Int = 0              // compression to apply when decoding pendingOverrideBlob's plaintext (SPEC §9)
+    val pendingCompression: Int = 0,             // compression to apply when decoding pendingOverrideBlob's plaintext (SPEC §9)
+    val wasEncrypted: Boolean = false            // true if this cache ever carried an encrypted override-map blob (SPEC §9); stays true even after unlock
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()
