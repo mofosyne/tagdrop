@@ -32,7 +32,10 @@ sealed class TagDropPayload {
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
         val collectionLabel: String? = null,    // optional — human-readable name for the collection
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
-        val icon: String? = null                // optional — emoji icon for this page/collection
+        val icon: String? = null,               // optional — emoji icon for this page/collection
+        val kdfAlg: Int = 0,                    // 0 = none, 1 = PBKDF2-SHA256 (SPEC §10)
+        val kdfSalt: ByteArray? = null,         // 16-byte random salt (present when kdfAlg != 0)
+        val kdfIters: Int = 100000              // PBKDF2 iteration count
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Single && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId.contentHashCode()
@@ -57,7 +60,10 @@ sealed class TagDropPayload {
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
         val collectionLabel: String? = null,    // optional — human-readable name for the collection
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
-        val icon: String? = null                // optional — emoji icon for this page/collection
+        val icon: String? = null,               // optional — emoji icon for this page/collection
+        val kdfAlg: Int = 0,                    // 0 = none, 1 = PBKDF2-SHA256 (SPEC §10)
+        val kdfSalt: ByteArray? = null,         // 16-byte random salt (present when kdfAlg != 0)
+        val kdfIters: Int = 100000              // PBKDF2 iteration count
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Manifest && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId.contentHashCode()

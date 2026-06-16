@@ -160,4 +160,11 @@
     <string name="share_qr_progress">%1$d / %2$d</string>
     <string name="button_pause">Pause</string>
     <string name="button_resume">Resume</string>
+
+    <!-- Passphrase unlock dialog -->
+    <string name="passphrase_dialog_title">🔒 Passphrase required</string>
+    <string name="passphrase_hint_text">Enter the passphrase to unlock this content</string>
+    <string name="passphrase_unlock_once">Unlock once</string>
+    <string name="passphrase_remember_key">Remember key</string>
+    <string name="passphrase_wrong">Wrong passphrase — please try again</string>
 </resources>

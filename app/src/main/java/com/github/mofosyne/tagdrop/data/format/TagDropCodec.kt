@@ -7,7 +7,9 @@ import java.security.SecureRandom
 import java.util.zip.DeflaterOutputStream
 import java.util.zip.InflaterInputStream
 import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -138,6 +140,12 @@ object TagDropCodec {
     // 29 reserved and unused — see SPEC §9
     private const val K_KEY_MATERIAL  = 30
     private const val K_RETAIN_KEY    = 31
+    private const val K_KDF_ALG       = 37
+    private const val K_KDF_SALT      = 38
+    private const val K_KDF_ITERS     = 39
+
+    const val KDF_NONE          = 0
+    const val KDF_PBKDF2_SHA256 = 1
 
     // ── Content addressing (IPFS-inspired) ───────────────────────────────────
 
@@ -231,6 +239,17 @@ object TagDropCodec {
             content  = map.bytesOrNull(K_CONTENT),
             filename = map.text(K_FILENAME)
         )
+    }
+
+    /**
+     * Derives a 32-byte AES-256 key from [passphrase] using PBKDF2-SHA256 with the given
+     * [salt] (16 bytes) and [iterations] count (SPEC §10). The resulting key can be used
+     * with [tryDecryptOverrideMap] just like a [generateKeyMaterial]-produced random key.
+     */
+    fun deriveKeyFromPassphrase(passphrase: String, salt: ByteArray, iterations: Int): ByteArray {
+        val spec = PBEKeySpec(passphrase.toCharArray(), salt, iterations, 256)
+        val key = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec)
+        return key.encoded
     }
 
     /** [resolveSingle]'s result: a Single's final hint/mime_type/filename/content after any override merge (SPEC §9). */
@@ -455,7 +474,10 @@ object TagDropCodec {
             K_COLLECTION_TAG   to payload.collectionTag,
             K_ICON             to payload.icon,
             K_KEY_MATERIAL to payload.keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
+            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey },
+            K_KDF_ALG      to payload.kdfAlg.takeIf { it != KDF_NONE },
+            K_KDF_SALT     to payload.kdfSalt,
+            K_KDF_ITERS    to payload.kdfIters.takeIf { it != 100000 }
         ))
         return payload.overrideBlob?.let { seq + it } ?: seq
     }
@@ -477,7 +499,10 @@ object TagDropCodec {
             K_COLLECTION_TAG   to payload.collectionTag,
             K_ICON             to payload.icon,
             K_KEY_MATERIAL to payload.keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
+            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey },
+            K_KDF_ALG      to payload.kdfAlg.takeIf { it != KDF_NONE },
+            K_KDF_SALT     to payload.kdfSalt,
+            K_KDF_ITERS    to payload.kdfIters.takeIf { it != 100000 }
         ))
 
     /** Raw CBOR sequence (envelope + payload) for a Chunk payload — useful for on-device inspection. */
@@ -618,7 +643,10 @@ object TagDropCodec {
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
         collectionLabel = m.text(K_COLLECTION_LABEL),
         collectionTag   = m.text(K_COLLECTION_TAG),
-        icon            = m.text(K_ICON)
+        icon            = m.text(K_ICON),
+        kdfAlg          = m.uint(K_KDF_ALG)?.toInt() ?: KDF_NONE,
+        kdfSalt         = m.bytesOrNull(K_KDF_SALT),
+        kdfIters        = m.uint(K_KDF_ITERS)?.toInt() ?: 100000
     )
 
     private fun decodeManifest(m: Map<Int, Any>) = TagDropPayload.Manifest(
@@ -636,7 +664,10 @@ object TagDropCodec {
         collectionId    = m.bytesOrNull(K_COLLECTION_ID),
         collectionLabel = m.text(K_COLLECTION_LABEL),
         collectionTag   = m.text(K_COLLECTION_TAG),
-        icon            = m.text(K_ICON)
+        icon            = m.text(K_ICON),
+        kdfAlg          = m.uint(K_KDF_ALG)?.toInt() ?: KDF_NONE,
+        kdfSalt         = m.bytesOrNull(K_KDF_SALT),
+        kdfIters        = m.uint(K_KDF_ITERS)?.toInt() ?: 100000
     )
 
     private fun decodeChunk(m: Map<Int, Any>) = TagDropPayload.Chunk(
@@ -733,7 +764,8 @@ object TagDropCodec {
         K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon",
         K_LAT to "lat", K_LNG to "lng",
         K_ENCRYPTION to "encryption",
-        K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key"
+        K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key",
+        K_KDF_ALG to "kdf_alg", K_KDF_SALT to "kdf_salt", K_KDF_ITERS to "kdf_iters"
     )
 
     /** Human-readable names for the envelope's `type` values, used by [describeCbor]. */

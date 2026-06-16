@@ -7,9 +7,11 @@ import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -34,6 +36,7 @@ import com.google.zxing.ResultPoint
 import com.journeyapps.barcodescanner.BarcodeCallback
 import com.journeyapps.barcodescanner.BarcodeResult
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 
 /**
@@ -382,6 +385,58 @@ class ReceiveActivity : AppCompatActivity() {
                     payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
                     wasEncrypted = true
                 )
+            } else if (
+                blob != null &&
+                payload.kdfAlg == TagDropCodec.KDF_PBKDF2_SHA256 &&
+                payload.kdfSalt != null
+            ) {
+                // Passphrase-derived key — show dialog to get the passphrase from the user.
+                val passphraseResult = askPassphrase(payload.hint)
+                if (passphraseResult != null) {
+                    val (passphrase, shouldStore) = passphraseResult
+                    val derivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, payload.kdfSalt, payload.kdfIters)
+                    val passphraseOverride = TagDropCodec.tryDecryptOverrideMap(blob, derivedKey, payload.compression)
+                    if (passphraseOverride != null) {
+                        if (shouldStore) {
+                            val saltHint = payload.kdfSalt.take(4).joinToString("") { "%02x".format(it) }
+                            AppDatabase.get(this@ReceiveActivity).keyDao().insert(
+                                RetainedKey(
+                                    keyHex      = derivedKey.toHex(),
+                                    discoveredAt = System.currentTimeMillis(),
+                                    hint        = "passphrase (salt: $saltHint…)"
+                                )
+                            )
+                        }
+                        completeSingle(
+                            payload.cacheId.toHex(),
+                            passphraseOverride.hint ?: payload.hint,
+                            passphraseOverride.filename ?: payload.filename,
+                            passphraseOverride.mimeType ?: payload.mimeType,
+                            passphraseOverride.content ?: ByteArray(0),
+                            payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
+                            wasEncrypted = true
+                        )
+                    } else {
+                        toast(getString(R.string.passphrase_wrong))
+                        // Fall back to caching the clear-map content with blob pending.
+                        val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
+                        completeSingle(
+                            payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
+                            payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
+                            pendingOverrideBlob = blob, pendingCompression = payload.compression,
+                            wasEncrypted = true
+                        )
+                    }
+                } else {
+                    // User cancelled — cache clear-map content with blob pending for later.
+                    val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
+                    completeSingle(
+                        payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
+                        payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
+                        pendingOverrideBlob = blob, pendingCompression = payload.compression,
+                        wasEncrypted = true
+                    )
+                }
             } else {
                 val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                 completeSingle(
@@ -392,6 +447,39 @@ class ReceiveActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    /**
+     * Suspends the coroutine while showing a passphrase input dialog (SPEC §10).
+     * Returns a pair of (passphrase, shouldStore) when the user submits, or null if cancelled.
+     * Uses [CompletableDeferred] to bridge the AlertDialog callback into the coroutine.
+     */
+    private suspend fun askPassphrase(contentHint: String?): Pair<String, Boolean>? {
+        val deferred = CompletableDeferred<Pair<String, Boolean>?>()
+        runOnUiThread {
+            val editText = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                hint = getString(R.string.passphrase_hint_text)
+            }
+            val message = contentHint?.let { getString(R.string.passphrase_hint_text) + "\n\n" + it }
+                ?: getString(R.string.passphrase_hint_text)
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.passphrase_dialog_title))
+                .setMessage(message)
+                .setView(editText)
+                .setPositiveButton(getString(R.string.passphrase_remember_key)) { _, _ ->
+                    deferred.complete(editText.text.toString() to true)
+                }
+                .setNeutralButton(getString(R.string.passphrase_unlock_once)) { _, _ ->
+                    deferred.complete(editText.text.toString() to false)
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    deferred.complete(null)
+                }
+                .setOnCancelListener { deferred.complete(null) }
+                .show()
+        }
+        return deferred.await()
     }
 
     /**
