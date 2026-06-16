@@ -62,6 +62,8 @@ tagdrop://<rootHash-base45>/<slug>
 
 **Why Base45?** QR codes have an alphanumeric mode (charset 0–9, A–Z, space, `$%*+-./:`) that stores 5.5 bits per character vs 8 bits per character in binary mode. Base45 encodes 2 bytes → 3 alphanumeric characters, giving ~3% overhead — far better than Base64 (33% overhead in binary mode).
 
+**Caveat: Base45 output is not always a strictly valid URI.** Base45's alphabet includes the space character and `%`, neither of which RFC 3986 permits unescaped in a URI — so `tagdrop:<base45-cbor-sequence>` or the `<rootHash-base45>` segment of a navigation link (§2, "Navigation links") can, depending on the encoded bytes, contain a raw space or `%`. In practice this rarely matters: QR alphanumeric mode handles space natively, and most scanners (including both reference implementations) treat the scanned text as an opaque string routed by the `tagdrop:`/`tagdrop://` prefix rather than parsing it through a strict URI library. It can matter in stricter contexts — a literal `<a href="tagdrop:...">`, JavaScript's `new URL(...)`, or a third-party scanner that validates the scanned text as a URI before dispatching it. An implementation that needs strict URI validity in those contexts should percent-encode space as `%20` and `%` as `%25` before constructing the string, and reverse this before Base45-decoding. Neither reference implementation does this today.
+
 **Why CBOR?** CBOR (RFC 8949) is binary JSON: self-describing, compact, standardised, and easy to parse without a schema. It is 20–50% smaller than JSON for typical payloads. Integer map keys (used here) are 1 byte each. CBOR Sequences (RFC 8742) let the `version`/`type` envelope reuse the same compact integer encoding, with no extra framing.
 
 ---
