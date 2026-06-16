@@ -161,7 +161,7 @@
       <div style="display:flex;align-items:flex-end;padding-bottom:6px">
         <label style="margin:0">
           <input type="checkbox" id="s-compress"> Compress with DEFLATE
-          <small style="display:block;color:#888;margin-top:2px">Saves ~50–70% for HTML/text</small>
+          <small id="s-compress-hint" style="display:block;color:#888;margin-top:2px">Saves ~50–70% for HTML/text</small>
         </label>
       </div>
     </div>
@@ -702,8 +702,12 @@ async function generateSingle() {
   const filename = document.getElementById('s-filename').value.trim() || null;
   const mimeType = document.getElementById('s-mime').value;
   const text     = document.getElementById('s-content').value;
-  const compress = document.getElementById('s-compress').checked;
   const encrypt  = document.getElementById('s-encrypt').checked;
+  // Encrypt always forces compression: the override blob carries the full real
+  // content, so without DEFLATE the encrypted QR is just as dense as the
+  // plaintext one (often unscannable). The checkbox is already locked to
+  // checked when encrypt is on — this guards against stale state.
+  const compress = encrypt || document.getElementById('s-compress').checked;
 
   if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
 
@@ -1014,6 +1018,22 @@ function copyToClipboard(text) {
 document.getElementById('tab-paper').addEventListener('click', function once() {
   if (fileEntries.length === 0) addFileEntry();
   this.removeEventListener('click', once);
+});
+
+// When "Encrypt" is on, force-check "Compress" and lock the checkbox. The
+// encrypted override blob carries the full real content, so without DEFLATE
+// the cover QR is just as dense as an unencrypted one and often unscannable.
+document.getElementById('s-encrypt').addEventListener('change', function () {
+  const compressEl = document.getElementById('s-compress');
+  const hintEl     = document.getElementById('s-compress-hint');
+  if (this.checked) {
+    compressEl.checked  = true;
+    compressEl.disabled = true;
+    hintEl.textContent  = 'Required for encrypted content — the encrypted real content is embedded in this QR';
+  } else {
+    compressEl.disabled = false;
+    hintEl.textContent  = 'Saves ~50–70% for HTML/text';
+  }
 });
 
 // ── File / ZIP upload helpers ───────────────────────────────────────────────
