@@ -84,10 +84,10 @@ network, or account needed to read or write a drop.
 
 ## How it works
 
-Every code carries a `tagdrop:<base45-cbor-sequence>` URI — a
+Every code carries a `tagdrop:<base41-cbor-sequence>` URI — a
 [CBOR](https://cbor.io/) sequence (version, type, and payload map),
-[Base45](https://www.rfc-editor.org/rfc/rfc9285)-encoded so it packs
-efficiently into a QR code's alphanumeric mode. Content can optionally be
+Base41-encoded (a QR/URI-safe alphabet packed like RFC 9285 Base45) so it
+packs efficiently into a QR code's alphanumeric mode. Content can optionally be
 DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical
 content always gets the same ID regardless of who created it.
 
@@ -117,7 +117,7 @@ running from source.
 ## Status
 
 **TagDrop v2.0** — v1 wire format, stable. CBOR-sequence envelope encoding
-(`tagdrop:<base45>`), paper manifests with multi-file directories and
+(`tagdrop:<base41>`), paper manifests with multi-file directories and
 relative-link navigation, geographic trails via `related` hints, ad-hoc
 collections, an in-app scanner with a live scan board, a Map tab for located
 finds, and AES-256-GCM encryption via key-code QR or passphrase (PBKDF2-SHA256).

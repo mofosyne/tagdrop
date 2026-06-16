@@ -15,15 +15,15 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Encodes and decodes TagDrop QR payloads.
  *
- * Encoding URI scheme:  tagdrop:<base45-cbor-sequence>
- *   <base45-cbor-sequence> = Base45( CBOR(version) || CBOR(type) || CBOR(payload) )
+ * Encoding URI scheme:  tagdrop:<base41-cbor-sequence>
+ *   <base41-cbor-sequence> = Base41( CBOR(version) || CBOR(type) || CBOR(payload) )
  *   version = uint, currently 1
  *   type    = uint: 0 = Single, 1 = Manifest, 2 = Chunk, 3 = PaperManifest
  *
  * Navigation links (NOT encoding URIs, NOT put in QR codes):
- *   tagdrop://<rootHash-base45>/<slug>
- *   Disambiguated by "//": a Base45 sequence of 2+ bytes can never start with
- *   '/' (Base45 index 43), so an encoding URI never has "//" right after the scheme.
+ *   tagdrop://<rootHash-base41>/<slug>
+ *   Disambiguated by "//": Base41's alphabet has no '/' at all, so an encoding
+ *   URI can never have "//" right after the scheme.
  *
  * CBOR payload map integer keys (key 1 "version" is retired — it now lives in
  * the envelope above):
@@ -95,7 +95,7 @@ object TagDropCodec {
 
     /**
      * Max payload bytes (post-compression) per Chunk so its encoded `tagdrop:` URI stays
-     * under [MAX_URI_LENGTH]: ~20 bytes of CBOR/envelope overhead per chunk, and Base45
+     * under [MAX_URI_LENGTH]: ~20 bytes of CBOR/envelope overhead per chunk, and Base41
      * expands 2 bytes to 3 chars.
      */
     private const val MAX_CHUNK_DATA_BYTES = 1300
@@ -436,10 +436,10 @@ object TagDropCodec {
     // ── Encoding ──────────────────────────────────────────────────────────────
 
     fun encode(payload: TagDropPayload): String = when (payload) {
-        is TagDropPayload.Single -> SCHEME + Base45.encode(singleCbor(payload))
-        is TagDropPayload.Manifest -> SCHEME + Base45.encode(manifestCbor(payload))
-        is TagDropPayload.Chunk -> SCHEME + Base45.encode(chunkCbor(payload))
-        is TagDropPayload.PaperManifest -> SCHEME + Base45.encode(paperManifestCbor(payload))
+        is TagDropPayload.Single -> SCHEME + Base41.encode(singleCbor(payload))
+        is TagDropPayload.Manifest -> SCHEME + Base41.encode(manifestCbor(payload))
+        is TagDropPayload.Chunk -> SCHEME + Base41.encode(chunkCbor(payload))
+        is TagDropPayload.PaperManifest -> SCHEME + Base41.encode(paperManifestCbor(payload))
         is TagDropPayload.Legacy -> payload.dataUri
     }
 
@@ -593,7 +593,7 @@ object TagDropCodec {
         if (!scanned.startsWith(SCHEME) || scanned.startsWith(NAV_LINK_PREFIX)) return null
         val rest = scanned.removePrefix(SCHEME)
         return runCatching {
-            val (type, payload, trailing) = decodeEnvelope(Base45.decode(rest)) ?: return@runCatching null
+            val (type, payload, trailing) = decodeEnvelope(Base41.decode(rest)) ?: return@runCatching null
             when (type) {
                 TYPE_SINGLE         -> decodeSingle(payload, trailing)
                 TYPE_MANIFEST       -> decodeManifest(payload)

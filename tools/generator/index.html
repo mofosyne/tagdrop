@@ -289,17 +289,17 @@ function showTab(name) {
   event.target.classList.add('active');
 }
 
-// ── Base45 ────────────────────────────────────────────────────────────────
-const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
-function base45Encode(u8) {
+// ── Base41 (QR/URI-safe alphabet, packed like RFC 9285 Base45 — see SPEC.md §2) ─
+const B41 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:';
+function base41Encode(u8) {
   let s = '';
   for (let i = 0; i < u8.length - 1; i += 2) {
     const n = u8[i] * 256 + u8[i + 1];
-    s += B45[n % 45] + B45[Math.floor(n / 45) % 45] + B45[Math.floor(n / 2025)];
+    s += B41[n % 41] + B41[Math.floor(n / 41) % 41] + B41[Math.floor(n / 1681)];
   }
   if (u8.length & 1) {
     const n = u8[u8.length - 1];
-    s += B45[n % 45] + B45[Math.floor(n / 45)];
+    s += B41[n % 41] + B41[Math.floor(n / 41)];
   }
   return s;
 }
@@ -354,7 +354,7 @@ function cborMap(pairs) {
 function subMap(pairs) { return { __map: true, pairs }; }
 
 // ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
-// tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
+// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(payload) )>
 const ENVELOPE_VERSION = 1;
 const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
 
@@ -495,7 +495,7 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
     // kdf_iters is the default (100000) — omit to save bytes
   ]));
   const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
-  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption, kdfPassphrase };
+  return { uri: 'tagdrop:' + base41Encode(full), cacheId, overrideBlob, encryption, kdfPassphrase };
 }
 
 /**
@@ -512,7 +512,7 @@ function encodeKeyCode({ keyMaterial, hint }) {
     [K.HINT,         hint || null],
     [K.KEY_MATERIAL, keyMaterial],
   ]);
-  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
+  return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
 
 async function encodePaperManifest({ label, set, slug, files, related }) {
@@ -542,7 +542,7 @@ async function encodePaperManifest({ label, set, slug, files, related }) {
     [K.FILES,    filesField],
     [K.RELATED,  relatedField],
   ]);
-  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
+  return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
@@ -1051,13 +1051,13 @@ async function generatePaper() {
   }
 
   // Navigation link info
-  const rootHashB45 = base45Encode(manifestEnc.rootHash);
+  const rootHashB41 = base41Encode(manifestEnc.rootHash);
   result.insertAdjacentHTML('beforeend', `
     <div class="card" id="no-print" style="margin-top:16px">
-      <strong>Root hash (Base45):</strong>
-      <code style="display:block;margin:4px 0;font-size:0.85rem">${rootHashB45}</code>
+      <strong>Root hash (Base41):</strong>
+      <code style="display:block;margin:4px 0;font-size:0.85rem">${rootHashB41}</code>
       <small style="color:#555">Use in navigation links:
-        <code>tagdrop://${rootHashB45}/${slug || 'index'}</code></small>
+        <code>tagdrop://${rootHashB41}/${slug || 'index'}</code></small>
     </div>`);
 
   const actionRow = document.createElement('div');

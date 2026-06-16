@@ -104,7 +104,7 @@ On Windows use `gradlew.bat` instead of `./gradlew`.
 
 Results appear in `app/build/reports/tests/testDebugUnitTest/index.html`.
 
-The unit tests cover the format layer (Base45, MiniCbor, TagDropCodec, ChunkAssembler) and run entirely on the JVM — no Android SDK or emulator required.
+The unit tests cover the format layer (Base41, MiniCbor, TagDropCodec, ChunkAssembler) and run entirely on the JVM — no Android SDK or emulator required.
 
 ### Instrumented tests (requires connected device or emulator)
 
@@ -121,7 +121,7 @@ tagdrop/
 ├── app/src/main/java/com/github/mofosyne/tagdrop/
 │   ├── data/
 │   │   ├── db/          # Room database (AppDatabase, DAOs, entities)
-│   │   └── format/      # Wire format: Base45, MiniCbor, TagDropCodec,
+│   │   └── format/      # Wire format: Base41, MiniCbor, TagDropCodec,
 │   │                    #   ChunkAssembler, TagDropPayload, TagDropLinkResolver
 │   ├── ui/              # RecyclerView adapters
 │   ├── MainActivity.kt

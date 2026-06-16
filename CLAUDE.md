@@ -6,11 +6,11 @@ Android build setup see `DEVELOPING.md`.
 
 ## Two parallel wire-format implementations
 
-The `tagdrop:<base45-cbor-sequence>` encoding (Base45 + CBOR-sequence
+The `tagdrop:<base41-cbor-sequence>` encoding (Base41 + CBOR-sequence
 envelope + DEFLATE, see `SPEC.md`) is implemented **independently twice**:
 
 1. **Kotlin (Android app)** — `app/src/main/java/.../data/format/`
-   (`Base45.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
+   (`Base41.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
    implementation; `app/src/test/.../TagDropCodecTest.kt` is the most
    thorough test suite.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
@@ -26,13 +26,13 @@ verification has so far been manual (decode every URI in
 
 ### Known duplication (not yet deduped)
 
-`tools/generator/index.html`'s encode-side helpers (`base45Encode`,
+`tools/generator/index.html`'s encode-side helpers (`base41Encode`,
 `writeHead`/`cborValue`/`cborMap`/`cborSequence`/etc., `encodeSingle`,
 `encodePaperManifest`) are near-byte-identical to the ones inlined in
 `tools/examples/index.html` (which also adds `encodeMultiChunk` and an
 `encodePaperManifest` with collection/icon fields, for its multi-chunk and
 trail examples). `tools/reader/index.html` has the decode-side mirror
-(`base45Decode`, `cborDecodeSequence`, etc.).
+(`base41Decode`, `cborDecodeSequence`, etc.).
 
 This is now **browser-vs-browser** duplication (same APIs, same runtime),
 which is lower-risk than the old Node-vs-browser split (`generate.mjs` was

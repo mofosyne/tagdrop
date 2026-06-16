@@ -151,7 +151,7 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /**
      * True for both navigation-link forms TagDropLinkResolver understands:
-     *   tagdrop://<rootHash-base45>/<slug>
+     *   tagdrop://<rootHash-base41>/<slug>
      *   https://paper.tagdrop.invalid/<rootHash-hex>/<slug>  (same-paper relative links)
      */
     private fun isTagDropUrl(uri: Uri): Boolean =

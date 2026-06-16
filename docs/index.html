@@ -95,8 +95,8 @@
     <h2>How it works</h2>
     <ul>
       <li><strong>URI scheme:</strong> every code carries a
-        <code>tagdrop:&lt;base45-cbor-sequence&gt;</code> URI — a CBOR sequence
-        (version, type, payload map), Base45-encoded so it fits QR alphanumeric
+        <code>tagdrop:&lt;base41-cbor-sequence&gt;</code> URI — a CBOR sequence
+        (version, type, payload map), Base41-encoded so it fits QR alphanumeric
         mode with minimal overhead. Content can optionally be DEFLATE-compressed.</li>
       <li><strong>Single codes</strong> hold a complete payload; larger payloads
         split into a manifest plus chunks that can be scattered across multiple

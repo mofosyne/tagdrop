@@ -7,8 +7,8 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 /**
  * Resolves TagDrop navigation links. Two URL forms are recognised:
  *
- *   tagdrop://<rootHash-base45>/<slug>
- *     The portable form carried in QR-encoded content. rootHash is Base45-encoded.
+ *   tagdrop://<rootHash-base41>/<slug>
+ *     The portable form carried in QR-encoded content. rootHash is Base41-encoded.
  *
  *   https://paper.tagdrop.invalid/<rootHash-hex>/<slug>
  *     A synthetic same-paper form (rootHash as plain hex). Never appears in a QR
@@ -21,7 +21,7 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
  * selects a file within that paper's directory. Both are resolved from the local
  * Room database, so no network is needed -- the offline TagDropNet.
  *
- * Encoding URIs (tagdrop:<base45-cbor-sequence>, no "//") are passed through as
+ * Encoding URIs (tagdrop:<base41-cbor-sequence>, no "//") are passed through as
  * EncodingUri so callers know not to treat them as navigation.
  */
 class TagDropLinkResolver(private val db: AppDatabase) {
@@ -29,7 +29,7 @@ class TagDropLinkResolver(private val db: AppDatabase) {
     sealed class Resolution {
         /** Not a recognised navigation link at all. */
         object NotTagDrop  : Resolution()
-        /** A QR encoding URI (tagdrop:<base45-cbor-sequence>) — not a navigation link. */
+        /** A QR encoding URI (tagdrop:<base41-cbor-sequence>) — not a navigation link. */
         object EncodingUri : Resolution()
         /** Could not parse the root hash. */
         object Invalid     : Resolution()
@@ -52,13 +52,13 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         val ref = when {
             uri.startsWith(SCHEME) -> {
                 val rest = uri.removePrefix(SCHEME)
-                val (rootHashB45, slug) = splitFirstSlash(rest)
-                val rootHashHex = runCatching { Base45.decode(rootHashB45).toHex() }.getOrElse {
+                val (rootHashB41, slug) = splitFirstSlash(rest)
+                val rootHashHex = runCatching { Base41.decode(rootHashB41).toHex() }.getOrElse {
                     return Resolution.Invalid
                 }
                 Ref(rootHashHex, slug)
             }
-            // tagdrop:<base45> with no "//" — an encoding URI, not a navigation link (SPEC §2).
+            // tagdrop:<base41> with no "//" — an encoding URI, not a navigation link (SPEC §2).
             uri.startsWith(ENCODING_PREFIX) -> return Resolution.EncodingUri
             uri.startsWith(SYNTHETIC_BASE) -> {
                 val (rootHashHex, slug) = splitFirstSlash(uri.removePrefix(SYNTHETIC_BASE))

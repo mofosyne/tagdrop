@@ -230,24 +230,24 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 <script>
 'use strict';
 
-// ── Base45 decoder ────────────────────────────────────────────────────────
-const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
-function base45Decode(s) {
-  if (s.length % 3 === 1) throw new Error('Invalid Base45 length');
+// ── Base41 decoder (QR/URI-safe alphabet, packed like RFC 9285 Base45 — see SPEC.md §2) ─
+const B41 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:';
+function base41Decode(s) {
+  if (s.length % 3 === 1) throw new Error('Invalid Base41 length');
   const out = [];
   let i = 0;
   while (i + 2 < s.length) {
-    const c0 = B45.indexOf(s[i]), c1 = B45.indexOf(s[i+1]), c2 = B45.indexOf(s[i+2]);
-    if (c0 < 0 || c1 < 0 || c2 < 0) throw new Error('Invalid Base45 char');
-    const n = c0 + c1 * 45 + c2 * 2025;
-    if (n > 0xFFFF) throw new Error('Base45 value overflow');
+    const c0 = B41.indexOf(s[i]), c1 = B41.indexOf(s[i+1]), c2 = B41.indexOf(s[i+2]);
+    if (c0 < 0 || c1 < 0 || c2 < 0) throw new Error('Invalid Base41 char');
+    const n = c0 + c1 * 41 + c2 * 1681;
+    if (n > 0xFFFF) throw new Error('Base41 value overflow');
     out.push((n >> 8) & 0xFF, n & 0xFF);
     i += 3;
   }
   if (i < s.length) {
-    const c0 = B45.indexOf(s[i]), c1 = B45.indexOf(s[i+1]);
-    if (c0 < 0 || c1 < 0) throw new Error('Invalid Base45 char');
-    out.push(c0 + c1 * 45);
+    const c0 = B41.indexOf(s[i]), c1 = B41.indexOf(s[i+1]);
+    if (c0 < 0 || c1 < 0) throw new Error('Invalid Base41 char');
+    out.push(c0 + c1 * 41);
   }
   return new Uint8Array(out);
 }
@@ -461,7 +461,7 @@ const K = {
   KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39
 };
 
-// CBOR-sequence envelope (SPEC §2): tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
+// CBOR-sequence envelope (SPEC §2): tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(payload) )>
 const ENVELOPE_VERSION = 1;
 const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
 
@@ -538,23 +538,23 @@ function describeMap(map, indent) {
 async function parseUri(uri) {
   if (!uri.startsWith('tagdrop:')) return null;
 
-  // Navigation link: tagdrop://ROOTHASH_B45[/slug] — disambiguated from encoding
-  // URIs by the "//" (SPEC §2): a 2+ byte Base45 string can never start with "/".
+  // Navigation link: tagdrop://ROOTHASH_B41[/slug] — disambiguated from encoding
+  // URIs by the "//" (SPEC §2): Base41's alphabet has no '/' at all.
   if (uri.startsWith('tagdrop://')) {
     const rest = uri.slice('tagdrop://'.length);
     const slash = rest.indexOf('/');
-    const rhB45 = slash < 0 ? rest : rest.slice(0, slash);
+    const rhB41 = slash < 0 ? rest : rest.slice(0, slash);
     const slug  = slash < 0 ? null  : (rest.slice(slash + 1) || null);
     try {
-      return { type: 'nav', rootHashHex: toHex(base45Decode(rhB45)), slug };
+      return { type: 'nav', rootHashHex: toHex(base41Decode(rhB41)), slug };
     } catch (e) {
       return { type: 'invalid' };
     }
   }
 
-  // Encoding URI: tagdrop:<base45-cbor-sequence>
+  // Encoding URI: tagdrop:<base41-cbor-sequence>
   let seq;
-  try { seq = base45Decode(uri.slice('tagdrop:'.length)); }
+  try { seq = base41Decode(uri.slice('tagdrop:'.length)); }
   catch (e) { return { type: 'invalid' }; }
 
   let items, trailing;

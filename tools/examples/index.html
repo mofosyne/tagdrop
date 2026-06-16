@@ -15,7 +15,7 @@
 <!--
   Self-contained example payloads page — a sibling of ../generator/index.html
   and ../reader/index.html. Each example below is encoded in-browser using the
-  same wire-format codec as the generator (Base45 + CBOR-sequence envelope +
+  same wire-format codec as the generator (Base41 + CBOR-sequence envelope +
   optional DEFLATE, see ../../SPEC.md) and rendered as a QR code on page load.
 
   Requires a modern browser (WebCrypto SubtleCrypto, CompressionStream) and an
@@ -193,17 +193,17 @@
 <script>
 'use strict';
 
-// ── Base45 ────────────────────────────────────────────────────────────────
-const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
-function base45Encode(u8) {
+// ── Base41 (QR/URI-safe alphabet, packed like RFC 9285 Base45 — see SPEC.md §2) ─
+const B41 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:';
+function base41Encode(u8) {
   let s = '';
   for (let i = 0; i < u8.length - 1; i += 2) {
     const n = u8[i] * 256 + u8[i + 1];
-    s += B45[n % 45] + B45[Math.floor(n / 45) % 45] + B45[Math.floor(n / 2025)];
+    s += B41[n % 41] + B41[Math.floor(n / 41) % 41] + B41[Math.floor(n / 1681)];
   }
   if (u8.length & 1) {
     const n = u8[u8.length - 1];
-    s += B45[n % 45] + B45[Math.floor(n / 45)];
+    s += B41[n % 41] + B41[Math.floor(n / 41)];
   }
   return s;
 }
@@ -258,7 +258,7 @@ function cborMap(pairs) {
 function subMap(pairs) { return { __map: true, pairs }; }
 
 // ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
-// tagdrop:<base45( CBOR(version) || CBOR(type) || CBOR(payload) )>
+// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(payload) )>
 const ENVELOPE_VERSION = 1;
 const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
 
@@ -399,7 +399,7 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
     [K.KDF_SALT,    kdfSalt],
   ]));
   const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
-  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption, kdfSalt };
+  return { uri: 'tagdrop:' + base41Encode(full), cacheId, overrideBlob, encryption, kdfSalt };
 }
 
 /**
@@ -417,7 +417,7 @@ function encodeKeyCode({ keyMaterial, hint, retainKey }) {
     [K.KEY_MATERIAL, keyMaterial],
     [K.RETAIN_KEY,   retainKey === false ? false : null],
   ]);
-  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
+  return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
 
 /**
@@ -444,7 +444,7 @@ async function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, 
     [K.TOTAL_BYTES, totalBytes],
     [K.SHA256,      sha256Full],
   ]);
-  const manifestUri = 'tagdrop:' + base45Encode(cborSequence(TYPE_MANIFEST, manifestPayload));
+  const manifestUri = 'tagdrop:' + base41Encode(cborSequence(TYPE_MANIFEST, manifestPayload));
 
   const chunkSize = Math.ceil(totalBytes / chunkCount);
   const chunks = [];
@@ -456,7 +456,7 @@ async function encodeMultiChunk({ hint, filename, mimeType, rawBytes, compress, 
       [K.CHUNK_INDEX, i],
       [K.CHUNK_DATA,  data],
     ]);
-    chunks.push({ index: i, size: data.length, uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_CHUNK, chunkPayload)) });
+    chunks.push({ index: i, size: data.length, uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_CHUNK, chunkPayload)) });
   }
 
   return { manifestUri, chunks, cacheId, totalBytes, sha256: sha256Full, chunkCount, compression };
@@ -494,7 +494,7 @@ async function encodePaperManifest({ label, set, slug, files, related, collectio
     [K.COLLECTION_TAG,   collectionTag   || null],
     [K.ICON,             icon            || null],
   ]);
-  return { uri: 'tagdrop:' + base45Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
+  return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
@@ -1166,13 +1166,13 @@ async function main() {
   const manifestEnc = await encodePaperManifest({ label: p.label, set: p.set, slug: p.slug, files: manifestFiles, related: [] });
 
   const rootHashHex = toHex(manifestEnc.rootHash);
-  const rootHashB45 = base45Encode(manifestEnc.rootHash);
+  const rootHashB41 = base41Encode(manifestEnc.rootHash);
 
   document.getElementById('paper-info').innerHTML = `
     <strong>${escHtml(p.label)}</strong>
     — set: <code>${escHtml(p.set)}</code>, slug: <code>${escHtml(p.slug)}</code><br>
     Root hash: <code>${rootHashHex}</code><br>
-    Navigation link base: <code>tagdrop://${escHtml(rootHashB45)}/${escHtml(p.slug)}</code>
+    Navigation link base: <code>tagdrop://${escHtml(rootHashB41)}/${escHtml(p.slug)}</code>
     <div class="step">① Scan <strong>manifest</strong> first — it registers the paper and its file list.</div>
     <div class="step">② Scan each <strong>file</strong> QR in any order to cache its content.</div>
     <div class="step">③ Open <strong>readme</strong> — its relative links (<code>note</code>, <code>images/badge.svg</code>) resolve to the sibling files on this same paper.</div>`;
@@ -1202,13 +1202,13 @@ async function main() {
   const bookManifestEnc = await encodePaperManifest({ label: book.label, set: book.set, slug: book.slug, files: bookManifestFiles, related: [] });
 
   const bookRootHashHex = toHex(bookManifestEnc.rootHash);
-  const bookRootHashB45 = base45Encode(bookManifestEnc.rootHash);
+  const bookRootHashB41 = base41Encode(bookManifestEnc.rootHash);
 
   document.getElementById('book-info').innerHTML = `
     <strong>${escHtml(book.label)}</strong>
     — set: <code>${escHtml(book.set)}</code>, slug: <code>${escHtml(book.slug)}</code><br>
     Root hash: <code>${bookRootHashHex}</code><br>
-    Navigation link base: <code>tagdrop://${escHtml(bookRootHashB45)}/${escHtml(book.slug)}</code>
+    Navigation link base: <code>tagdrop://${escHtml(bookRootHashB41)}/${escHtml(book.slug)}</code>
     <div class="step">① Scan the <strong>manifest</strong>, then <code>style.css</code> and each markdown page.</div>
     <div class="step">② Open <strong>index.md</strong> — its table of contents links to each chapter.</div>
     <div class="step">③ Each chapter links back to the cover and to its neighbours, and every page

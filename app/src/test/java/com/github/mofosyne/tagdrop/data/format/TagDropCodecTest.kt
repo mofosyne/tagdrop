@@ -266,7 +266,7 @@ class TagDropCodecTest {
             content     = "<h1>Hello</h1>".toByteArray()
         )
         val cbor = TagDropCodec.singleCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
+        val uriCbor = Base41.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
 
         val items = MiniCbor.decodeSequence(cbor)
@@ -290,7 +290,7 @@ class TagDropCodecTest {
             sha256      = ByteArray(32) { it.toByte() }
         )
         val cbor = TagDropCodec.manifestCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
+        val uriCbor = Base41.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
     }
 
@@ -301,7 +301,7 @@ class TagDropCodecTest {
             data    = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
         )
         val cbor = TagDropCodec.chunkCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
+        val uriCbor = Base41.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
     }
 
@@ -418,14 +418,14 @@ class TagDropCodecTest {
         assertNull(TagDropCodec.decode("tagdrop://ABCD/some-slug"))
     }
 
-    @Test fun malformedBase45ReturnsNull() {
+    @Test fun malformedBase41ReturnsNull() {
         assertNull(TagDropCodec.decode("tagdrop:!!!!INVALID!!!!"))
     }
 
     @Test fun unsupportedVersionReturnsNull() {
         val payload = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
         val seq = MiniCbor.encodeUInt(2) + MiniCbor.encodeUInt(0) + payload  // version 2 — unsupported
-        assertNull(TagDropCodec.decode("tagdrop:" + Base45.encode(seq)))
+        assertNull(TagDropCodec.decode("tagdrop:" + Base41.encode(seq)))
     }
 
     // ── Content addressing ────────────────────────────────────────────────────

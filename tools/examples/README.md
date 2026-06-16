@@ -36,7 +36,7 @@ them directly — there's no build step; just reload the page.
 
 ## How it works
 
-`index.html` inlines the same Base45/CBOR-sequence/SHA-256/DEFLATE encoding
+`index.html` inlines the same Base41/CBOR-sequence/SHA-256/DEFLATE encoding
 used by [`tools/generator/index.html`](../generator/index.html) and the
 Android app (see [`SPEC.md`](../../SPEC.md)), using the browser's
 SubtleCrypto and CompressionStream APIs. QR codes are rendered onto
