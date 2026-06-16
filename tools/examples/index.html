@@ -110,8 +110,21 @@
     <div class="qr-grid" id="standalone-grid"></div>
   </section>
 
+  <section id="sec-passphrase">
+    <h2>Passphrase-Encrypted Content (SPEC §9 + KDF)</h2>
+    <p class="section-desc">
+      A content code whose hidden override map is unlocked by <strong>entering a passphrase</strong>
+      — no separate key-code QR. The code embeds a random KDF salt (<code>kdf_salt</code>, CBOR key 38)
+      and algorithm hint (<code>kdf_alg=1</code>, CBOR key 37); the reader derives the AES-256-GCM key
+      via PBKDF2-HMAC-SHA256 (100 000 iterations) when prompted.
+      The passphrase for this example is: <strong><code>sunset</code></strong>.
+    </p>
+    <div class="paper-info" id="passphrase-info"></div>
+    <div class="qr-grid" id="passphrase-grid"></div>
+  </section>
+
   <section id="sec-encrypted">
-    <h2>Hidden Content (SPEC §9)</h2>
+    <h2>Hidden Content — Key-Code QR (SPEC §9)</h2>
     <p class="section-desc">
       A content code whose visible "cover" is a generic placeholder, plus a hidden
       <strong>override map</strong> — AES-256-GCM encrypted and carried as trailing bytes —
@@ -297,7 +310,8 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
             LAT:26, LNG:27,
-            ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31 };
+            ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
+            KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39 };
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -311,6 +325,18 @@ function randomCacheId() { return crypto.getRandomValues(new Uint8Array(8)); }
 async function encryptAesGcm(plaintext, key, nonce) {
   const cryptoKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
   return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cryptoKey, plaintext));
+}
+
+// ── KDF (PBKDF2-HMAC-SHA256, SPEC §9) ────────────────────────────────────
+async function deriveKeyFromPassphrase(passphrase, salt, iters) {
+  const base = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']
+  );
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: iters, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, true, ['encrypt']
+  );
+  return new Uint8Array(await crypto.subtle.exportKey('raw', aesKey));
 }
 
 // ── Encoding ──────────────────────────────────────────────────────────────
@@ -342,12 +368,19 @@ async function encryptOverrideMap(override, key, compression) {
  * sequence. `cacheId` becomes random rather than content-addressed, and `encryption` is
  * set to the AES-256-GCM hint unless `declareEncryption` is false (cosmetic only — SPEC §9).
  */
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, declareEncryption = true }) {
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, kdfPassphrase, declareEncryption = true }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
   let cacheId, overrideBlob = null, encryption = null;
+  let kdfAlg = null, kdfSalt = null;
+  let key = encryptionKey;
+  if (kdfPassphrase != null) {
+    kdfSalt = crypto.getRandomValues(new Uint8Array(16));
+    kdfAlg = 1;
+    key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, 100000);
+  }
   if (override) {
-    overrideBlob = await encryptOverrideMap(override, encryptionKey, compression || 0);
+    overrideBlob = await encryptOverrideMap(override, key, compression || 0);
     cacheId = randomCacheId();
     encryption = declareEncryption ? 1 : null;
   } else {
@@ -361,9 +394,11 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
     [K.COMPRESSION, compression],
     [K.CONTENT,     content],
     [K.ENCRYPTION,  encryption],
+    [K.KDF_ALG,     kdfAlg],
+    [K.KDF_SALT,    kdfSalt],
   ]));
   const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
-  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption };
+  return { uri: 'tagdrop:' + base45Encode(full), cacheId, overrideBlob, encryption, kdfSalt };
 }
 
 /**
@@ -538,6 +573,36 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
     }, null, 2),
   },
 ];
+
+// Passphrase-encrypted example (SPEC §9 + PBKDF2-HMAC-SHA256 KDF). The cover
+// decodes immediately; the hidden override map is unlocked by entering the
+// passphrase "sunset" when prompted. The KDF salt is generated fresh on each
+// page load, so the QR differs between reloads, but the passphrase stays fixed.
+const PASSPHRASE_EXAMPLE = {
+  passphrase: 'sunset',
+  cover: {
+    label: '🔐 Passphrase-locked content',
+    mimeType: 'text/plain',
+    compress: false,
+    hint: '🔐 Passphrase-locked content',
+    filename: null,
+    content: 'This content is locked with a passphrase. Enter the passphrase to unlock.',
+  },
+  override: {
+    hint: 'Passphrase-unlocked note',
+    filename: 'secret.txt',
+    mimeType: 'text/plain',
+    content:
+`You unlocked this message with the passphrase "sunset" (SPEC §9 + PBKDF2-HMAC-SHA256).
+
+The QR code carries a random KDF salt (kdf_salt, CBOR key 38) and algorithm hint
+(kdf_alg = 1, CBOR key 37). When scanned, the reader derives a 32-byte AES-256-GCM
+key via PBKDF2 (100 000 iterations, SHA-256), then decrypts the hidden override map.
+
+No separate key-code QR is needed — the passphrase is the shared secret. The derived
+AES key (not the plaintext passphrase) can be stored so PBKDF2 only runs once per device.`,
+  },
+};
 
 // Hidden override map (SPEC §9) — AES-256-GCM. The key is generated fresh on each
 // page load (see main()), so the two QR codes below differ between reloads but
@@ -1005,6 +1070,31 @@ async function main() {
       isManifest: false,
     });
   }
+
+  // Passphrase-encrypted example (SPEC §9 + PBKDF2)
+  const pe = PASSPHRASE_EXAMPLE;
+  const peEncoded = await encodeSingle({
+    hint: pe.cover.hint, filename: pe.cover.filename, mimeType: pe.cover.mimeType,
+    rawBytes: new TextEncoder().encode(pe.cover.content), compress: pe.cover.compress,
+    override: { ...pe.override, content: new TextEncoder().encode(pe.override.content) },
+    kdfPassphrase: pe.passphrase,
+  });
+
+  document.getElementById('passphrase-info').innerHTML = `
+    <strong>${escHtml(pe.cover.label)}</strong>
+    — ${escHtml(pe.cover.mimeType)}, passphrase-encrypted (AES-256-GCM via PBKDF2-HMAC-SHA256)<br>
+    Passphrase: <code>${escHtml(pe.passphrase)}</code><br>
+    KDF salt: <code>${toHex(peEncoded.kdfSalt)}</code> (random — regenerated each page load)<br>
+    Cache ID: <code>${toHex(peEncoded.cacheId)}</code> (random — not content-addressed)
+    <div class="step">① Scan the QR code — it decodes immediately, showing the "${escHtml(pe.cover.label)}" cover.</div>
+    <div class="step">② The reader detects <code>kdf_alg=1</code> and prompts for a passphrase. Enter: <strong>${escHtml(pe.passphrase)}</strong></div>
+    <div class="step">③ PBKDF2-SHA256 derives the AES key; the hidden message replaces the cover. Optionally remember the derived key for future scans.</div>`;
+
+  const passphraseGrid = document.getElementById('passphrase-grid');
+  await addCard(passphraseGrid, {
+    label: pe.cover.label, mime: pe.cover.mimeType, extraBadge: 'passphrase', badgeClass: 'encrypted',
+    id: toHex(peEncoded.cacheId), uri: peEncoded.uri, isManifest: false,
+  });
 
   // Hidden override map + key code (SPEC §9)
   const ee = ENCRYPTED_EXAMPLE;
