@@ -59,6 +59,14 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 #scanSection { text-align: center; padding: 24px 0; }
 #scanSection p { color: #666; font-size: 0.9rem; margin-top: 10px; }
 
+.img-dropzone {
+  margin: 16px auto 0; max-width: 360px; border: 2px dashed #ccc; border-radius: 8px;
+  padding: 14px; font-size: 0.85rem; color: #888; cursor: pointer;
+  transition: border-color .15s, background-color .15s;
+}
+.img-dropzone.dragover { border-color: #1a1a2e; background: #f0f0ff; color: #1a1a2e; }
+.img-dropzone label { cursor: pointer; display: block; }
+
 /* Message bar */
 #msgBar { padding: 10px 14px; border-radius: 6px; margin-bottom: 12px;
           font-size: 0.9rem; }
@@ -150,6 +158,12 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
   <section id="scanSection">
     <button id="btnScan" class="primary big">📷 Scan TagDrop QR</button>
     <p>Tap above to start the camera and scan a TagDrop code.</p>
+    <div class="img-dropzone" id="imgDropZone">
+      <label>
+        <input type="file" id="imgFileInput" accept="image/*" style="display:none">
+        Or drop a QR code image here / <u>choose file</u>
+      </label>
+    </div>
   </section>
 
   <div id="msgBar" class="hidden"></div>
@@ -1128,6 +1142,51 @@ function showMsg(text, type) {
 // ── Event wiring ──────────────────────────────────────────────────────────
 document.getElementById('btnScan').onclick = startScan;
 document.getElementById('btnScanFile').onclick = startScan;
+
+// ── Image file / drag-and-drop QR decode ─────────────────────────────────
+async function decodeQrFromFile(file) {
+  const showErr = msg => {
+    const bar = document.getElementById('msgBar');
+    bar.textContent = msg;
+    bar.className = 'err';
+    bar.classList.remove('hidden');
+  };
+  let bitmap;
+  try { bitmap = await createImageBitmap(file); }
+  catch (e) { showErr('Could not load image — is it a valid PNG or JPEG?'); return; }
+  const offscreen = document.createElement('canvas');
+  offscreen.width  = bitmap.width;
+  offscreen.height = bitmap.height;
+  const ctx = offscreen.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0);
+  const imgData = ctx.getImageData(0, 0, offscreen.width, offscreen.height);
+  const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
+  if (!code) {
+    showErr('No QR code found in this image — try a higher-resolution version or check that the code scanned correctly.');
+    return;
+  }
+  await handleScanned(code.data);
+}
+
+(function () {
+  const zone  = document.getElementById('imgDropZone');
+  const input = document.getElementById('imgFileInput');
+
+  input.addEventListener('change', e => {
+    if (e.target.files[0]) decodeQrFromFile(e.target.files[0]);
+    e.target.value = '';
+  });
+
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    const file = e.dataTransfer?.files[0];
+    if (file) decodeQrFromFile(file);
+  });
+})();
 
 document.getElementById('btnStopScan').onclick = () => {
   const v = document.getElementById('video');

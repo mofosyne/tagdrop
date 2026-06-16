@@ -1,0 +1,14 @@
+{
+  "name": "tagdrop-tools-tests",
+  "version": "1.0.0",
+  "description": "QR round-trip test for TagDrop web tools",
+  "type": "module",
+  "scripts": {
+    "test": "node test-qr-roundtrip.mjs"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4"
+  }
+}
