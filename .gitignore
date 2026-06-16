@@ -6,3 +6,4 @@
 /build
 /captures
 tools/node_modules/
+.claude/worktrees/
