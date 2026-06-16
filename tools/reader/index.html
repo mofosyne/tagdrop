@@ -161,7 +161,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
     <div class="img-dropzone" id="imgDropZone">
       <label>
         <input type="file" id="imgFileInput" accept="image/*" style="display:none">
-        Or drop a QR code image here / <u>choose file</u>
+        Drop a QR image here, paste from clipboard (Ctrl+V), or <u>choose file</u>
       </label>
     </div>
   </section>
@@ -1187,6 +1187,15 @@ async function decodeQrFromFile(file) {
     if (file) decodeQrFromFile(file);
   });
 })();
+
+// Clipboard paste — works where tab-to-tab drag doesn't (browser security blocks it).
+document.addEventListener('paste', e => {
+  const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  const file = item.getAsFile();
+  if (file) decodeQrFromFile(file);
+});
 
 document.getElementById('btnStopScan').onclick = () => {
   const v = document.getElementById('video');
