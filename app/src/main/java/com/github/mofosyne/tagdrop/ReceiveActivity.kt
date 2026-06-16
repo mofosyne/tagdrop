@@ -254,8 +254,10 @@ class ReceiveActivity : AppCompatActivity() {
             is TagDropPayload.PaperManifest -> handlePaperManifest(payload)
             is TagDropPayload.Legacy -> {
                 legacyChunks.add(payload.dataUri)
-                updateDisplay()
-                toast(getString(R.string.legacy_fragment, legacyChunks.size))
+                if (!tryCompleteLegacy()) {
+                    updateDisplay()
+                    toast(getString(R.string.legacy_fragment, legacyChunks.size))
+                }
             }
             null -> when {
                 // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
@@ -264,8 +266,10 @@ class ReceiveActivity : AppCompatActivity() {
                 scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
                 else -> {
                     legacyChunks.add(scanned)
-                    updateDisplay()
-                    toast(getString(R.string.unknown_fragment, legacyChunks.size))
+                    if (!tryCompleteLegacy()) {
+                        updateDisplay()
+                        toast(getString(R.string.unknown_fragment, legacyChunks.size))
+                    }
                 }
             }
         }
@@ -591,9 +595,50 @@ class ReceiveActivity : AppCompatActivity() {
             ?.let { it.latitude to it.longitude }
     }
 
+    /**
+     * After each legacy fragment is appended, try to parse the joined string as a
+     * complete `data:` URI. If it parses and the base64 decodes cleanly, save it as
+     * a [FoundCache] entry and open it — no button press needed.
+     * Returns true if completed (caller should skip the "N fragment(s)" toast).
+     */
+    private fun tryCompleteLegacy(): Boolean {
+        val joined = legacyChunks.joinToString("")
+        val parsed = parseLegacyDataUri(joined) ?: return false
+        val (mimeType, bytes) = parsed
+        legacyChunks.clear()
+        completeSingle(
+            cacheId    = TagDropCodec.contentId(bytes).toHex(),
+            hint       = null,
+            filename   = null,
+            mimeType   = mimeType,
+            content    = bytes
+        )
+        return true
+    }
+
     private fun launchLegacyContent() {
         if (legacyChunks.isEmpty()) return
-        openDataUri(legacyChunks.joinToString(""))
+        val joined = legacyChunks.joinToString("")
+        val parsed = parseLegacyDataUri(joined)
+        if (parsed != null) {
+            val (mimeType, bytes) = parsed
+            legacyChunks.clear()
+            completeSingle(TagDropCodec.contentId(bytes).toHex(), null, null, mimeType, bytes)
+        } else {
+            openDataUri(joined)
+        }
+    }
+
+    private fun parseLegacyDataUri(dataUri: String): Pair<String, ByteArray>? {
+        if (!dataUri.startsWith("data:")) return null
+        val comma = dataUri.indexOf(',')
+        if (comma < 0) return null
+        val header = dataUri.substring(5, comma)
+        if (!header.endsWith(";base64")) return null
+        val bytes = runCatching {
+            android.util.Base64.decode(dataUri.substring(comma + 1), android.util.Base64.NO_WRAP)
+        }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+        return header.removeSuffix(";base64") to bytes
     }
 
     private fun openContent(mimeType: String, bytes: ByteArray, cacheId: String? = null) {
