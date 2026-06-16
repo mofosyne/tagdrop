@@ -133,6 +133,8 @@ class RetainedKeysActivity : AppCompatActivity() {
                 binding.textKeyHint.text = key.hint
                     ?: binding.root.context.getString(R.string.retained_keys_hint)
                 binding.textKeyDate.text = DATE_FMT.format(Date(key.discoveredAt))
+                binding.textKeyPrefix.text = key.keyHex.take(16)
+                    .chunked(4).joinToString(" ") + "…"
                 binding.buttonDeleteKey.setOnClickListener { onDelete(key) }
             }
         }

@@ -38,6 +38,15 @@
                 android:textColor="#888888"
                 android:textSize="12sp" />
 
+            <TextView
+                android:id="@+id/textKeyPrefix"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textColor="#aaaaaa"
+                android:textSize="11sp"
+                android:fontFamily="monospace" />
+
         </LinearLayout>
 
         <Button
