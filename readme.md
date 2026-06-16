@@ -40,6 +40,11 @@ network, or account needed to read or write a drop.
   hints (optionally with coordinates), or tag a loose set of stickers with a
   shared `collection_id` so they group into one card on the home screen and
   map, even though each code is independently scannable.
+- **Hide content behind encryption** — AES-256-GCM encrypted override maps
+  let you keep a "cover story" visible while the real content stays locked.
+  Unlock with a **key-code QR** (a separate code carrying the AES key) or a
+  **passphrase** (PBKDF2-SHA256 key derivation, no second QR needed). Derived
+  keys are stored persistently so you only enter a passphrase once per device.
 - **Browse offline** — scanned pages render in an in-app WebView. The
   Collections, History, and Map tabs let you revisit, locate, and manage
   everything you've found.
@@ -93,14 +98,16 @@ See [SPEC.md](SPEC.md) for the full wire format and design rationale.
 - **Android app** (`app/`) — scan with the camera, browse content offline,
   create single-code drops and multi-file paper layouts (with printable QR
   sheets / PDF export), and explore collections, history, and a map of
-  located finds.
+  located finds. Includes a Key Management screen for retained AES keys.
 - **[Web generator](tools/generator/)** — build single codes or full
   multi-file "paper" layouts with a printable QR sheet, entirely in the
-  browser, no install needed.
+  browser. Supports both key-code QR and passphrase encryption modes.
 - **[Web reader](tools/reader/)** — decode and preview `tagdrop:` codes in
-  any browser.
+  any browser, with camera scanning, passphrase prompts, and persistent key
+  retention.
 - **[Examples](tools/examples/)** — pre-rendered sample QR codes for testing
-  the app and the web reader.
+  the app and the web reader, including passphrase-encrypted and key-code
+  encrypted examples.
 
 ## Building
 
@@ -109,11 +116,11 @@ running from source.
 
 ## Status
 
-V2.0 — CBOR-sequence envelope encoding (`tagdrop:<base45>`), paper manifests
-with multi-file directories and relative-link navigation, geographic trails
-via `related` hints, ad-hoc collections, an in-app scanner with a live scan
-board, a Map tab for located finds, and optional AES-256-GCM encryption with
-separate key codes.
+v1 wire format, stable — CBOR-sequence envelope encoding (`tagdrop:<base45>`),
+paper manifests with multi-file directories and relative-link navigation,
+geographic trails via `related` hints, ad-hoc collections, an in-app scanner
+with a live scan board, a Map tab for located finds, and AES-256-GCM
+encryption via key-code QR or passphrase (PBKDF2-SHA256).
 
 ## Extra
 

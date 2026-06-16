@@ -1,7 +1,7 @@
 # TagDrop Encoding Specification
 
-**Version:** 1 (draft)  
-**Status:** Working draft — feedback welcome via GitHub issues
+**Version:** 1  
+**Status:** Stable — feedback welcome via GitHub issues
 
 ---
 

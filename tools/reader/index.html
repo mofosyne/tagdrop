@@ -145,7 +145,14 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 <body>
 
 <header>
-  <h1>TagDrop Reader</h1>
+  <div>
+    <h1>TagDrop Reader</h1>
+    <nav style="font-size:0.8rem; margin-top:4px;">
+      <a href="../" style="color:#7eb8f7;">← Home</a> ·
+      <a href="../generator/" style="color:#7eb8f7;">Generator</a> ·
+      <a href="../examples/" style="color:#7eb8f7;">Examples</a>
+    </nav>
+  </div>
   <div style="display:flex; gap:8px;">
     <button id="btnCbor" class="ghost" disabled>🔍 CBOR</button>
     <button id="btnClear" class="ghost">Clear cache</button>

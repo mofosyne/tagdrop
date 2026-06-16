@@ -73,20 +73,20 @@
       <a class="tool-card" href="generator/">
         <h3>🧰 Generator</h3>
         <p>Create TagDrop QR codes from text, HTML, images, or audio — single
-        files or multi-file "paper" layouts with directories and related-paper
-        hints. Print-ready output.</p>
+        files or full "paper" layouts. Supports key-code QR and passphrase
+        encryption. Print-ready output.</p>
       </a>
       <a class="tool-card" href="reader/">
         <h3>📷 Reader</h3>
         <p>Scan TagDrop QR codes with your device camera, assemble multi-code
         payloads, browse paper directories, and follow tagdrop:// links
-        between pages — entirely offline.</p>
+        between pages. Unlocks encrypted content via key-code or passphrase.</p>
       </a>
       <a class="tool-card" href="examples/">
         <h3>🧪 Examples</h3>
         <p>A gallery of pre-generated sample codes: standalone payloads, a
-        multi-code story, a paper directory, and a multi-location trail —
-        ready to scan with the app or the Reader.</p>
+        multi-code story, a paper directory, a multi-location trail, and
+        encrypted examples (key-code and passphrase).</p>
       </a>
     </div>
   </section>
@@ -94,23 +94,25 @@
   <section>
     <h2>How it works</h2>
     <ul>
-      <li><strong>URI scheme:</strong> every code carries
-        <code>tagdrop://v1/&lt;type&gt;/&lt;base45-cbor&gt;</code> — a CBOR map,
-        Base45-encoded so it fits QR alphanumeric mode with minimal overhead.</li>
-      <li><strong>Single codes</strong> hold a complete payload (<code>s</code>);
-        larger payloads split into a manifest (<code>m</code>) plus chunks
-        (<code>c</code>) that can be scattered across multiple physical
-        locations and reassembled later.</li>
-      <li><strong>Paper manifests</strong> (<code>p</code>) describe a
-        directory of files on one physical sheet, plus hints pointing to
-        related papers elsewhere — letting a "trail" of drops link together
-        into a collection.</li>
-      <li><strong>Forward-compatible:</strong> versioned, with unknown CBOR
-        keys ignored, so the format can grow without breaking old readers.</li>
+      <li><strong>URI scheme:</strong> every code carries a
+        <code>tagdrop:&lt;base45-cbor-sequence&gt;</code> URI — a CBOR sequence
+        (version, type, payload map), Base45-encoded so it fits QR alphanumeric
+        mode with minimal overhead. Content can optionally be DEFLATE-compressed.</li>
+      <li><strong>Single codes</strong> hold a complete payload; larger payloads
+        split into a manifest plus chunks that can be scattered across multiple
+        physical locations and reassembled in any order.</li>
+      <li><strong>Paper manifests</strong> describe a directory of files on one
+        physical sheet, plus hints pointing to related papers elsewhere — letting
+        a "trail" of drops link together into a collection.</li>
+      <li><strong>Encryption:</strong> content can be AES-256-GCM encrypted with
+        a separate key-code QR, or locked behind a passphrase (PBKDF2-SHA256 —
+        no second QR needed). Keys are retained so you only unlock once per device.</li>
+      <li><strong>Forward-compatible:</strong> versioned, with unknown CBOR keys
+        ignored, so the format can grow without breaking old readers.</li>
     </ul>
     <p>
       Full details in the
-      <a href="https://github.com/mofosyne/tagdrop/blob/master/SPEC.md">format specification</a>.
+      <a href="https://github.com/mofosyne/tagdrop/blob/master/SPEC.md">format specification (v1)</a>.
     </p>
   </section>
 
@@ -120,8 +122,9 @@
       The TagDrop Android app scans codes with the camera, caches found
       content, tracks scanned papers and collections on a map, and renders
       HTML/image/audio content offline — including navigation between pages
-      of the same paper via <code>tagdrop://</code> links. Build it from
-      source using the instructions in
+      of the same paper via <code>tagdrop://</code> links. Encrypted content
+      can be unlocked with a key-code QR or a passphrase; retained keys are
+      managed in a dedicated Key Management screen. Build from source using
       <a href="https://github.com/mofosyne/tagdrop/blob/master/DEVELOPING.md">DEVELOPING.md</a>.
     </p>
   </section>
