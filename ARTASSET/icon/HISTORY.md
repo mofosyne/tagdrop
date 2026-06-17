@@ -40,6 +40,13 @@ reproducing):
   pre-Oreo launchers, plus the Play Store icon
   (`ARTASSET/icon/android/playstore-icon.png`) and
   `fastlane/metadata/android/en-US/images/icon.png`.
+- `featureGraphic.svg` — the Play Store feature graphic (1024×500), reusing
+  the legacy icon mark beside a "TagDrop" wordmark and the store listing's
+  tagline. Rendered to
+  `fastlane/metadata/android/en-US/images/featureGraphic.png` with
+  `rsvg-convert -w 1024 -h 500`. The `phoneScreenshots/` in that same
+  directory are in-app UI captures, unrelated to the icon — not regenerated
+  here.
 
 Palette: background `#F3EDE1` (cream/parchment), blob `#2A3941` (deep slate
 navy), finder marks `#D9652B` (terracotta/burnt orange).
