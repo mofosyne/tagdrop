@@ -551,13 +551,13 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
   let cacheId, overrideBlob = null, encryption = null;
   let kdfAlg = null, kdfSalt = null;
-  let key = encryptionKey;
-  if (kdfPassphrase != null) {
-    kdfSalt = crypto.getRandomValues(new Uint8Array(16));
-    kdfAlg = 1;
-    key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, 100000);
-  }
   if (override) {
+    let key = encryptionKey;
+    if (kdfPassphrase != null) {
+      kdfSalt = crypto.getRandomValues(new Uint8Array(16));
+      kdfAlg = 1;
+      key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, 100000);
+    }
     overrideBlob = await encryptOverrideMap(override, key, compression || 0);
     cacheId = randomCacheId();
     encryption = declareEncryption ? 1 : null;

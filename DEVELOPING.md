@@ -112,6 +112,20 @@ The unit tests cover the format layer (Base41, MiniCbor, TagDropCodec, ChunkAsse
 ./gradlew connectedDebugAndroidTest
 ```
 
+### Web tools round-trip test (Node, not run by CI)
+
+```bash
+cd tools
+npm install
+npm test
+```
+
+Builds Single and Manifest+Chunk payloads with the browser tools' codec logic
+ported to Node, renders them as real QR images, decodes them back via
+zxing-wasm, and asserts round-trip correctness. This is separate from the
+Gradle unit tests above and isn't part of `.github/workflows/ci.yml` — run it
+manually after touching `tools/generator/index.html` or `tools/reader/index.html`.
+
 ---
 
 ## 7. Project structure
@@ -127,13 +141,19 @@ tagdrop/
 │   ├── MainActivity.kt
 │   ├── ReceiveActivity.kt    # QR scanner + payload assembly
 │   ├── ViewDataUriActivity.kt# WebView content renderer
-│   ├── CreateActivity.kt     # In-app QR generator
+│   ├── CreateActivity.kt     # In-app QR generator (single code)
+│   ├── CreatePaperActivity.kt# In-app multi-file paper + print/PDF export
 │   ├── CollectionDetailActivity.kt # Collection "map" / page list
+│   ├── ShareQrActivity.kt    # Re-share a cached item as a QR sequence
+│   ├── RetainedKeysActivity.kt # Manage remembered decryption keys
 │   └── ReadMeActivity.kt
 ├── app/src/test/            # JVM unit tests
 ├── tools/
 │   ├── generator/index.html # Static HTML QR generator (no server needed)
-│   └── reader/index.html    # Static HTML reader (scan + view in browser)
+│   ├── reader/index.html    # Static HTML reader (scan + view in browser)
+│   ├── examples/index.html  # Self-contained gallery of example codes
+│   ├── package.json         # Deps (qrcode, zxing-wasm) for the test below
+│   └── test-qr-roundtrip.mjs# Node round-trip test (not wired into CI — run manually)
 └── SPEC.md                  # Wire format specification
 ```
 

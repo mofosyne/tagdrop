@@ -46,9 +46,13 @@ is a CDN script for QR rendering (`qrcode`) and scanning (`zxing-wasm`), not
 the codec logic. Splitting the codec into an importable `tools/shared/*.mjs`
 would break that "download one file, it just works offline" property unless
 paired with a build step that inlines it back into the HTML (extra tooling)
-— not worth it for three files of this size. If drift becomes a real
-problem, an automated round-trip/cross-check test (encode with one
-implementation, decode with another, compare) is lower-risk than deduping.
+— not worth it for three files of this size. Instead there's a separate,
+independent Node port for verification: `tools/test-qr-roundtrip.mjs`
+(`tools/package.json`) builds Single and Manifest+Chunk payloads, renders
+them as real QR images (`qrcode`), decodes them back via zxing-wasm, and
+asserts round-trip correctness — run with `cd tools && npm install && npm
+test`. **It is not wired into CI** (`.github/workflows/ci.yml` only runs
+`./gradlew testDebugUnitTest` + APK builds) — it has to be run manually.
 
 ### Why the reader uses zxing-wasm, not jsQR, to scan QR codes
 
@@ -86,8 +90,8 @@ phone.
 
 The Android app's in-app creation screens (`CreateActivity` = single code,
 `CreatePaperActivity` = multi-file paper + print/PDF via the system print
-dialog, added on branch `claude/paper-pdf-export`) are considered
-**secondary/optional** — useful for "no computer available" scenarios, but
+dialog) are considered **secondary/optional** — useful for "no computer
+available" scenarios, but
 not the priority for new authoring features. New paper-layout features
 should land in the web generator first; porting to the Android app is
 optional follow-up.
