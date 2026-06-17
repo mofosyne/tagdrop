@@ -1,7 +1,6 @@
 # TagDrop — Tag Dead Drop
 
-<img src="./docs/icon.png" alt="TagDrop Logo" width="100" height="100">
-<a href="https://f-droid.org/packages/com.github.mofosyne.tagdrop">
+<img src="./docs/icon.png" alt="TagDrop Logo" width="100" height="100"><a href="https://f-droid.org/packages/com.github.mofosyne.tagdrop">
     <img src="https://f-droid.org/badge/get-it-on.png"
     alt="Get it on F-Droid"
     height="80">
