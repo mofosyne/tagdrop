@@ -64,6 +64,8 @@ tagdrop://<rootHash-base41>/<slug>
 
 Credit: this is the "BYOA" (bring-your-own-alphabet) variant of Philippe Majerus' [Base41 scheme](https://github.com/sveljko/base41), using his QR/URL-safe alphabet. There's no RFC for this specific alphabet — TagDrop defines it here as its own encoding, reusing Base45's well-understood packing algorithm.
 
+**Case:** encoders MUST emit uppercase letters only. Decoders MUST accept lowercase letters as equivalent to their uppercase counterparts (case-insensitive decode) — this tolerates content that's been manually retyped (e.g. a `tagdrop://` link copied by hand), since `$*-.:` and the digits have no case to confuse and the QR alphanumeric mode itself is uppercase-only by convention.
+
 **Why CBOR?** CBOR (RFC 8949) is binary JSON: self-describing, compact, standardised, and easy to parse without a schema. It is 20–50% smaller than JSON for typical payloads. Integer map keys (used here) are 1 byte each. CBOR Sequences (RFC 8742) let the `version`/`type` envelope reuse the same compact integer encoding, with no extra framing.
 
 ---

@@ -231,8 +231,10 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 'use strict';
 
 // ── Base41 decoder (QR/URI-safe alphabet, packed like RFC 9285 Base45 — see SPEC.md §2) ─
+// Decoding is case-insensitive (tolerates manual transcription); encoding always emits uppercase.
 const B41 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:';
 function base41Decode(s) {
+  s = s.replace(/[a-z]/g, c => c.toUpperCase());
   if (s.length % 3 === 1) throw new Error('Invalid Base41 length');
   const out = [];
   let i = 0;

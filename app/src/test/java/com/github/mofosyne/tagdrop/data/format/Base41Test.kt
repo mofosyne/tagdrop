@@ -78,4 +78,15 @@ class Base41Test {
     fun rejectsPercentCharacter() {
         Base41.decode("A%B")  // '%' isn't in the Base41 alphabet, unlike Base45's
     }
+
+    @Test fun decodeIsCaseInsensitive() {
+        assertArrayEquals(Base41.decode("J-9"), Base41.decode("j-9"))
+        assertArrayEquals("Hello!!".toByteArray(Charsets.UTF_8), Base41.decode("11b:kg\$*gx0"))
+        assertArrayEquals("Hello!!".toByteArray(Charsets.UTF_8), Base41.decode("11B:kG\$*Gx0"))  // mixed case
+    }
+
+    @Test fun encodeAlwaysEmitsUppercase() {
+        val encoded = Base41.encode(ByteArray(200) { it.toByte() })
+        assertEquals(encoded, encoded.uppercase())
+    }
 }

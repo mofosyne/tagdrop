@@ -18,13 +18,19 @@ package com.github.mofosyne.tagdrop.data.format
  * scheme, for consistency with the rest of this codec.
  *
  * Alphabet (41 chars): 0-9, A-Z, $, *, -, ., :
+ *
+ * Decoding is case-insensitive (lowercase letters are accepted as their uppercase
+ * equivalent) to tolerate manual transcription; encoding always emits uppercase.
  */
 object Base41 {
 
     private const val ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\$*-.:"
 
     private val DECODE = IntArray(256) { -1 }.also { table ->
-        ALPHABET.forEachIndexed { i, c -> table[c.code] = i }
+        ALPHABET.forEachIndexed { i, c ->
+            table[c.code] = i
+            if (c in 'A'..'Z') table[c.lowercaseChar().code] = i
+        }
     }
 
     fun encode(data: ByteArray): String {
