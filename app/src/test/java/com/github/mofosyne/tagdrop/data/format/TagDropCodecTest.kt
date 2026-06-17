@@ -331,6 +331,55 @@ class TagDropCodecTest {
         assertNull(TagDropCodec.rawCbor(TagDropPayload.Legacy("data:text/plain;base64,aGk=")))
     }
 
+    @Test fun decodeRawRoundTripsAllPayloadTypes() {
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        assertEquals(single, TagDropCodec.decodeRaw(TagDropCodec.singleCbor(single)))
+
+        val manifest = TagDropPayload.Manifest(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE,
+            chunkCount = 1, totalBytes = 10, sha256 = ByteArray(32)
+        )
+        assertEquals(manifest, TagDropCodec.decodeRaw(TagDropCodec.manifestCbor(manifest)))
+
+        val chunk = TagDropPayload.Chunk(cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), index = 0, data = byteArrayOf(1))
+        assertEquals(chunk, TagDropCodec.decodeRaw(TagDropCodec.chunkCbor(chunk)))
+
+        val paper = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), label = null, set = null, slug = null,
+            files = emptyList(), related = emptyList()
+        )
+        assertEquals(paper, TagDropCodec.decodeRaw(TagDropCodec.paperManifestCbor(paper)))
+    }
+
+    @Test fun decodeRawMatchesDecodeOfEncodedUri() {
+        // Fully-binary carriers (SPEC §13: byte-mode 2D barcode segment, NFC NDEF) skip the
+        // tagdrop:/Base41 text wrapper entirely -- decodeRaw must agree with decode() on the
+        // same underlying CBOR sequence regardless of which path produced it.
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = "hint", filename = "f.txt",
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        val uri = TagDropCodec.encode(single)
+        val viaUri = TagDropCodec.decode(uri)
+        val viaRaw = TagDropCodec.decodeRaw(Base41.decode(uri.removePrefix("tagdrop:")))
+        assertEquals(viaUri, viaRaw)
+    }
+
+    @Test fun decodeRawReturnsNullForGarbageBytes() {
+        assertNull(TagDropCodec.decodeRaw(byteArrayOf(1, 2, 3)))
+        assertNull(TagDropCodec.decodeRaw(ByteArray(0)))
+    }
+
+    @Test fun decodeRawReturnsNullForUnsupportedVersion() {
+        val payload = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val seq = MiniCbor.encodeUInt(2) + MiniCbor.encodeUInt(0) + payload  // version 2 — unsupported
+        assertNull(TagDropCodec.decodeRaw(seq))
+    }
+
     @Test fun envelopeIsTwoBytesForEveryType() {
         val single = TagDropPayload.Single(
             cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,

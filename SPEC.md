@@ -1000,7 +1000,7 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 
 | Carrier | Form | Notes |
 |---|---|---|
-| QR code | `tagdrop:` URI, alphanumeric mode | Primary target |
+| QR code | `tagdrop:` URI, alphanumeric mode; or raw CBOR sequence, byte mode | Primary target. Byte mode avoids Base41 overhead — denser, but not human-typable; best for Chunks, which are always camera-scanned |
 | Aztec code | `tagdrop:` URI | Higher density than QR at small sizes |
 | Data Matrix | `tagdrop:` URI | Better damage resistance |
 | JABCode (color) | `tagdrop:` URI or raw CBOR sequence | ~4× capacity of QR; see [jabcode/jabcode](https://github.com/jabcode/jabcode) |
@@ -1052,7 +1052,7 @@ Version history:
 
 **Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§12).
 
-**Binary mode vs alphanumeric Base41:** Raw binary QR codes store 8 bits/char. Alphanumeric Base41 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable.
+**Binary mode vs alphanumeric Base41:** Raw binary QR codes store 8 bits/char. Alphanumeric Base41 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain for most codes: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable/typable. Chunks are the exception — they're always camera-scanned, never hand-typed or shared as text — so the Android reference reader also accepts a QR byte-mode segment carrying the raw CBOR sequence directly (no `tagdrop:`/Base41 wrapper), per §13. As of this writing only the decode side is implemented; the reference generator still emits alphanumeric `tagdrop:` URIs for every payload type, including Chunks.
 
 **Compression:** DEFLATE was chosen over LZMA (issue #2) because it is available in every Java/Android standard library (`java.util.zip`), requiring no dependency. LZMA achieves better ratios for larger payloads but is a future extension (compression value 2).
 

@@ -592,17 +592,27 @@ object TagDropCodec {
         // Navigation links (tagdrop://<rootHash>/<slug>) are not encoding URIs (SPEC §2).
         if (!scanned.startsWith(SCHEME) || scanned.startsWith(NAV_LINK_PREFIX)) return null
         val rest = scanned.removePrefix(SCHEME)
-        return runCatching {
-            val (type, payload, trailing) = decodeEnvelope(Base41.decode(rest)) ?: return@runCatching null
-            when (type) {
-                TYPE_SINGLE         -> decodeSingle(payload, trailing)
-                TYPE_MANIFEST       -> decodeManifest(payload)
-                TYPE_CHUNK          -> decodeChunk(payload)
-                TYPE_PAPER_MANIFEST -> decodePaperManifest(payload)
-                else -> null
-            }
-        }.getOrNull()
+        val bytes = runCatching { Base41.decode(rest) }.getOrNull() ?: return null
+        return decodeRaw(bytes)
     }
+
+    /**
+     * Decode a TagDrop payload straight from its raw CBOR sequence (envelope + payload map),
+     * with no `tagdrop:`/Base41 text wrapper — the carrier already supports raw bytes (SPEC
+     * §13: NFC NDEF, a byte-mode 2D barcode segment, etc.). [decode] delegates here after
+     * stripping the URI scheme and Base41-decoding; carriers that skip the text form entirely
+     * call this directly.
+     */
+    fun decodeRaw(bytes: ByteArray): TagDropPayload? = runCatching {
+        val (type, payload, trailing) = decodeEnvelope(bytes) ?: return@runCatching null
+        when (type) {
+            TYPE_SINGLE         -> decodeSingle(payload, trailing)
+            TYPE_MANIFEST       -> decodeManifest(payload)
+            TYPE_CHUNK          -> decodeChunk(payload)
+            TYPE_PAPER_MANIFEST -> decodePaperManifest(payload)
+            else -> null
+        }
+    }.getOrNull()
 
     /**
      * Splits a CBOR sequence (RFC 8742) into (type, payload map, trailing bytes), per the
