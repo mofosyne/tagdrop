@@ -23,8 +23,14 @@ class ChunkAssembler {
         /** No manifest scanned yet. */
         object WaitingForManifest : State()
 
-        /** Manifest received; still collecting chunks. */
-        data class Collecting(val received: Int, val total: Int, val cacheId: ByteArray, val hint: String?) : State()
+        /** Manifest received; still collecting chunks. [missingIndices] is sorted ascending. */
+        data class Collecting(
+            val received: Int,
+            val total: Int,
+            val cacheId: ByteArray,
+            val hint: String?,
+            val missingIndices: List<Int>
+        ) : State()
 
         /** All chunks received and SHA-256 verified. Content is ready. */
         data class Complete(
@@ -96,6 +102,9 @@ class ChunkAssembler {
         return computeState()
     }
 
+    /** 0-based indices in `0 until total` not yet received — lets the UI say which to scan next. */
+    private fun missingIndices(total: Int): List<Int> = (0 until total).filterNot { chunks.containsKey(it) }
+
     /** Joins all chunks in order and checks `sha256`, or returns null if incomplete or hash-mismatched. */
     private fun assembledAndVerified(): ByteArray? {
         val m = manifest ?: return null
@@ -109,12 +118,12 @@ class ChunkAssembler {
         val m = manifest ?: return State.WaitingForManifest
 
         if (chunks.size < m.chunkCount) {
-            return State.Collecting(chunks.size, m.chunkCount, m.cacheId, m.hint)
+            return State.Collecting(chunks.size, m.chunkCount, m.cacheId, m.hint, missingIndices(m.chunkCount))
         }
 
         // All chunks present — assemble in order
         val assembled = (0 until m.chunkCount).map { idx ->
-            chunks[idx] ?: return State.Collecting(chunks.size, m.chunkCount, m.cacheId, m.hint)
+            chunks[idx] ?: return State.Collecting(chunks.size, m.chunkCount, m.cacheId, m.hint, missingIndices(m.chunkCount))
         }.reduce(ByteArray::plus)
 
         // Integrity check — covers the fully-transmitted (possibly encrypted) bytes (SPEC §9)

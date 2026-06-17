@@ -4,8 +4,10 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.text.format.Formatter
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -35,6 +37,10 @@ class ViewDataUriActivity : AppCompatActivity() {
     /** The cached item being viewed, if any — used by the Open/Share/Save menu actions. */
     private var exportCache: FoundCache? = null
 
+    /** Set by [showPreviewUnavailable]; re-read by [refreshPreviewPanel] once [exportCache] resolves asynchronously. */
+    private var previewMimeType: String? = null
+    private var previewSizeBytes: Int = 0
+
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
     }
@@ -61,8 +67,8 @@ class ViewDataUriActivity : AppCompatActivity() {
 
             /**
              * Navigation interception: tagdrop:// links and same-paper relative links
-             * (resolved by the browser to https://paper.tagdrop.invalid/...) clicked
-             * by the user. Resolved asynchronously; loads the target as a new page.
+             * (resolved by the browser to https://<rootHash>.paper.tagdrop.invalid/...)
+             * clicked by the user. Resolved asynchronously; loads the target as a new page.
              */
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!isTagDropUrl(request.url)) return false
@@ -84,6 +90,9 @@ class ViewDataUriActivity : AppCompatActivity() {
             }
         }
 
+        binding.previewButtonOpen.setOnClickListener { openExternally() }
+        binding.previewButtonSave.setOnClickListener { saveToDevice() }
+
         loadInitial(dataUri)
 
         val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
@@ -91,6 +100,7 @@ class ViewDataUriActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 exportCache = AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(cacheId)
                 invalidateOptionsMenu()
+                refreshPreviewPanel()
             }
         }
     }
@@ -151,11 +161,11 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /**
      * True for both navigation-link forms TagDropLinkResolver understands:
-     *   tagdrop://<rootHash-base45>/<slug>
-     *   https://paper.tagdrop.invalid/<rootHash-hex>/<slug>  (same-paper relative links)
+     *   tagdrop://<rootHash-hex>/<slug>
+     *   https://<rootHash-hex>.paper.tagdrop.invalid/<slug>  (same-paper relative links)
      */
     private fun isTagDropUrl(uri: Uri): Boolean =
-        uri.scheme == "tagdrop" || uri.host == TagDropLinkResolver.SYNTHETIC_HOST
+        uri.scheme == "tagdrop" || TagDropLinkResolver.isSyntheticHost(uri.host)
 
     /**
      * Loads the activity's initial content. If it's HTML belonging to a scanned
@@ -168,6 +178,11 @@ class ViewDataUriActivity : AppCompatActivity() {
             binding.htmldisp.loadUrl(dataUri)
             return
         }
+        if (!isWebViewRenderable(mimeType)) {
+            showPreviewUnavailable(mimeType, bytes.size)
+            return
+        }
+        showWebView()
         if (mimeType.startsWith("text/html")) {
             lifecycleScope.launch {
                 val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
@@ -195,8 +210,55 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /** Loads HTML with a synthetic same-paper base URL so its relative links resolve. */
     private fun loadHtml(html: String, rootHashHex: String, slug: String) {
-        val baseUrl = "${TagDropLinkResolver.SYNTHETIC_BASE}$rootHashHex/$slug"
+        val baseUrl = TagDropLinkResolver.syntheticBaseUrl(rootHashHex, slug)
         binding.htmldisp.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null)
+    }
+
+    /**
+     * Types the WebView can meaningfully render — matches the web reader's `showContent()`
+     * buckets (`tools/reader/index.html`) for cross-implementation parity. Everything else
+     * (EPUB, video, archives, ...) gets the "can't preview" panel instead of a blank page.
+     */
+    private fun isWebViewRenderable(mimeType: String): Boolean =
+        mimeType.startsWith("text/") || mimeType.startsWith("image/") || mimeType.startsWith("audio/")
+
+    /** Hides the preview-unavailable panel and shows the WebView, e.g. when navigating to a renderable file. */
+    private fun showWebView() {
+        binding.previewPanel.visibility = View.GONE
+        binding.htmldisp.visibility = View.VISIBLE
+    }
+
+    /** Shows the "can't preview" panel for [mimeType] content instead of a blank WebView. */
+    private fun showPreviewUnavailable(mimeType: String, sizeBytes: Int) {
+        previewMimeType = mimeType
+        previewSizeBytes = sizeBytes
+        binding.htmldisp.visibility = View.GONE
+        binding.previewPanel.visibility = View.VISIBLE
+        refreshPreviewPanel()
+    }
+
+    /** Re-renders the preview panel's text/icon/buttons from [exportCache] — called once it resolves asynchronously. */
+    private fun refreshPreviewPanel() {
+        val mimeType = previewMimeType ?: return
+        if (binding.previewPanel.visibility != View.VISIBLE) return
+        val cache = exportCache
+        binding.previewIcon.text = cache?.icon ?: iconForMimeType(mimeType)
+        binding.previewTitle.text = cache?.filename?.takeIf { it.isNotBlank() }
+            ?: cache?.hint?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.preview_unavailable_title)
+        binding.previewSubtitle.text = "$mimeType • ${Formatter.formatShortFileSize(this, previewSizeBytes.toLong())}"
+        val canExport = cache?.contentBytes != null
+        binding.previewButtonOpen.isEnabled = canExport
+        binding.previewButtonSave.isEnabled = canExport
+    }
+
+    private fun iconForMimeType(mime: String): String = when {
+        mime.startsWith("image/") -> "🖼"
+        mime.startsWith("audio/") -> "🎵"
+        mime.startsWith("video/") -> "🎬"
+        mime == "application/pdf" -> "📕"
+        mime.startsWith("text/") -> "📄"
+        else -> "📦"
     }
 
     /** Parses a "data:<mime>;base64,<payload>" URI into (mimeType, bytes), or null if not one. */
@@ -223,6 +285,13 @@ class ViewDataUriActivity : AppCompatActivity() {
                 is TagDropLinkResolver.Resolution.FileFound -> {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
+                    exportCache = result.cache
+                    invalidateOptionsMenu()
+                    if (!isWebViewRenderable(result.cache.mimeType)) {
+                        showPreviewUnavailable(result.cache.mimeType, content.size)
+                        return@launch
+                    }
+                    showWebView()
                     when {
                         result.cache.mimeType.startsWith("text/html") ->
                             loadHtml(String(content, Charsets.UTF_8), result.paper.rootHash, result.slug)

@@ -24,10 +24,10 @@ The format is designed to:
 All TagDrop codes use the URI scheme `tagdrop:` so any QR scanner routes them to the app. The URI doubles as an intent deep-link on Android.
 
 ```
-tagdrop:<base45-cbor-sequence>
+tagdrop:<base41-cbor-sequence>
 ```
 
-`<base45-cbor-sequence>` is a [Base45](https://www.rfc-editor.org/rfc/rfc9285) (RFC 9285) encoding of a short **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array or map):
+`<base41-cbor-sequence>` is a **Base41** encoding of a short **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array or map):
 
 ```
 CBOR(version) || CBOR(type) || CBOR(payload)
@@ -53,14 +53,39 @@ For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 maj
 HTML pages embedded in TagDrop caches can link to other files and papers using:
 
 ```
-tagdrop://<rootHash-base45>/<slug>
+tagdrop://<rootHash-hex>/<slug>
 ```
 
-`rootHash` is the 8-byte SHA-256 of the paper manifest's CBOR sequence bytes, Base45-encoded (12 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
+`rootHash` is the 8-byte SHA-256 of the paper manifest's CBOR sequence bytes, lowercase-hex-encoded (16 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
 
-**Disambiguation:** encoding payloads never contain `//` — `tagdrop:<base45-cbor-sequence>` has no authority component. Navigation links always do — the root hash serves as the link's authority. Base45-encoding any byte string of 2 or more bytes can never produce `/` (Base45 index 43) as its first character: the most-significant digit of a 2-byte group is `value / 45²`, which maxes out at 32 for a 16-bit value. So the character immediately after `tagdrop:` can never start a `//`. Encoding URIs and navigation links are therefore unambiguously distinguishable by whether `//` follows the scheme.
+**Why hex, not Base41, here?** Base41's alphabet includes `:`, which is fine inside the *path* of an opaque URI like `tagdrop:<base41-cbor-sequence>` but not inside a URL's *authority* (host[:port]) component — a `:` there starts the port subcomponent per the WHATWG URL Standard, and anything after it that isn't a bare port number is a hard parse failure for the whole URL. Since the root hash sits in the authority position of a `tagdrop://` link, a Base41-encoded root hash containing `:` (roughly 1 in 4, since `:` is 1 of 41 alphabet characters) would make the link unparseable. Plain lowercase hex has no such character, at the cost of 4 extra characters (16 hex vs 12 Base41 for 8 bytes) — cheap, since navigation links are clicked/typed, not scanned from a QR code.
 
-**Why Base45?** QR codes have an alphanumeric mode (charset 0–9, A–Z, space, `$%*+-./:`) that stores 5.5 bits per character vs 8 bits per character in binary mode. Base45 encodes 2 bytes → 3 alphanumeric characters, giving ~3% overhead — far better than Base64 (33% overhead in binary mode).
+**Disambiguation:** encoding payloads never contain `//` — `tagdrop:<base41-cbor-sequence>` has no authority component. Navigation links always do — the root hash serves as the link's authority. Base41's alphabet has no `/` character at all, so it can never appear anywhere in a Base41-encoded string, let alone right after the scheme. Encoding URIs and navigation links are therefore unambiguously distinguishable by whether `//` follows the scheme.
+
+**Why Base41?** QR codes have an alphanumeric mode (charset 0–9, A–Z, space, `$%*+-./:`, 45 characters) that stores 5.5 bits per character vs 8 bits per character in binary mode. RFC 9285's Base45 uses that full 45-character set, encoding 2 bytes → 3 alphanumeric characters (~3% overhead over QR's alphanumeric capacity) — far better than Base64 (33% overhead, and forces binary mode since Base64 needs lowercase letters). TagDrop uses **Base41**: the same 2-bytes-to-3-characters packing as Base45, but over a 41-character subset of the QR alphanumeric set — `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:` — that drops the 4 characters which cause trouble outside QR codes: space and `%` aren't valid unescaped in a URI (RFC 3986), and `+`/`/` carry special meaning in URLs (`+` as a space in query strings, `/` as a path separator). 41 is the smallest alphabet for which 3 characters can still represent every 16-bit value (41³ = 68921 ≥ 65536; 40³ = 64000 does not), so this costs nothing — Base41 output is exactly the same length as Base45 output would be for the same bytes. The result is a string that's always a strictly valid, unescaped URI component, with no percent-encoding step needed on either side. This alphabet is also a safe (if non-optimal) subset of Data Matrix's C40 mode and Aztec's Upper/Digit modes, so the same encoded string stays reasonably dense on those carriers too (§13).
+
+**Credit:** TagDrop's Base41 builds on two independent lines of prior art. The
+base scheme — packing 2 bytes into 3 characters, exactly like RFC 9285's
+Base45 but over a smaller alphabet — was created and placed in the public
+domain in 2014 by GitHub user [sveljko](https://github.com/sveljko/base41),
+whose repo also ships an independent reference encoder/decoder and test
+vectors (`base41_test.go`) — useful for cross-checking any new
+implementation of this format. That repo's "BYOA" (bring-your-own-alphabet)
+variant — swapping the fixed 41-character alphabet for a use-case-specific
+one — was proposed by Philippe Majerus
+([PhMajerus](https://github.com/PhMajerus)), who suggested exactly the
+QR/URL-safe alphabet TagDrop uses here:
+`0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:`. Botta and Cavagnino
+independently arrived at the same idea and formalized it in a peer-reviewed
+paper, [*"Base41: A proposal for printable encoding of bit
+strings"*](https://doi.org/10.1002/eng2.12606) (Engineering Reports, 2022),
+which cites sveljko's repo as prior art and discusses the same URL-safe BYOA
+alphabet choice — useful further reading on the reasoning behind this
+approach. There's no RFC for this specific alphabet — TagDrop defines it
+here as its own encoding, reusing Base45's well-understood packing
+algorithm.
+
+**Case:** encoders MUST emit uppercase letters only. Decoders MUST accept lowercase letters as equivalent to their uppercase counterparts (case-insensitive decode) — this tolerates content that's been manually retyped (e.g. a `tagdrop://` link copied by hand), since `$*-.:` and the digits have no case to confuse and the QR alphanumeric mode itself is uppercase-only by convention.
 
 **Why CBOR?** CBOR (RFC 8949) is binary JSON: self-describing, compact, standardised, and easy to parse without a schema. It is 20–50% smaller than JSON for typical payloads. Integer map keys (used here) are 1 byte each. CBOR Sequences (RFC 8742) let the `version`/`type` envelope reuse the same compact integer encoding, with no extra framing.
 
@@ -270,7 +295,7 @@ from the device's GPS at scan time) replaces the placeholder.
 
 **Navigation:** HTML files on the paper can link to other files using:
 ```html
-<a href="tagdrop://<paper-root-hash-base45>/map">See the map</a>
+<a href="tagdrop://<paper-root-hash-hex>/map">See the map</a>
 ```
 The TagDrop app intercepts these links and resolves them from the local database.
 
@@ -288,7 +313,7 @@ Two QR codes encoding the same bytes will have the same `cache_id`. This enables
 ```
 root_hash = SHA-256(paper manifest's CBOR sequence bytes)[0:8]
 ```
-A paper's root hash is computed from its manifest's CBOR sequence (envelope + payload map, §2), which includes the root hash field itself (key 2). This is the same chicken-and-egg situation IPFS solves the same way: encode the manifest *without* the hash, compute the hash, insert it, then re-encode. The root hash is the paper's permanent, immutable address. Because paper is inherently immutable (you can't update a sticker), this is fine — a new revision gets a new root hash.
+A paper's root hash is computed from its manifest's CBOR sequence (envelope + payload map, §2), which includes the root hash field itself (key 2). This is the same chicken-and-egg situation [IPFS](https://ipfs.tech/) solves the same way: encode the manifest *without* the hash, compute the hash, insert it, then re-encode. The root hash is the paper's permanent, immutable address. Because paper is inherently immutable (you can't update a sticker), this is fine — a new revision gets a new root hash.
 
 **Three-level hierarchy:**
 
@@ -328,21 +353,21 @@ Paper (root hash)
 
 **Single-code cache (simple drop):**
 ```
-[ tagdrop:<base45> ]
+[ tagdrop:<base41> ]
 ```
 One sticker, one code. Scan and done.
 
 **Multi-code cache (trail):**
 ```
-Location A: [ Manifest: tagdrop:<base45> ]   ← start here
-Location B: [ Chunk 0:  tagdrop:<base45> ]
-Location C: [ Chunk 1:  tagdrop:<base45> ]
-Location D: [ Chunk 2:  tagdrop:<base45> ]
+Location A: [ Manifest: tagdrop:<base41> ]   ← start here
+Location B: [ Chunk 0:  tagdrop:<base41> ]
+Location C: [ Chunk 1:  tagdrop:<base41> ]
+Location D: [ Chunk 2:  tagdrop:<base41> ]
 ```
 
 Or the manifest can be omitted from the field and provided out-of-band (e.g. posted online, given at registration). In that case all codes in the field are chunks — the app will queue them and complete assembly once the manifest is provided.
 
-**Chunk size recommendation:** Target ~600 bytes per chunk (decoded), which encodes to ~900 Base45 characters and fits in a QR Version 15 (M error correction) that prints cleanly at 3cm × 3cm.
+**Chunk size recommendation:** Target ~600 bytes per chunk (decoded), which encodes to ~900 Base41 characters and fits in a QR Version 15 (M error correction) that prints cleanly at 3cm × 3cm.
 
 ---
 
@@ -380,7 +405,7 @@ Scan the manifest first to get the directory, then scan whichever file you want 
 
 HTML files can link across the TagDropNet using:
 ```
-tagdrop://<rootHash-base45>/<slug>
+tagdrop://<rootHash-hex>/<slug>
 ```
 
 When the TagDrop WebView encounters such a link, it:
@@ -404,18 +429,27 @@ This works because of how slugs and page-loading combine:
   (e.g. `images/logo.svg`, `pages/about.html`) to express a directory layout
   (see "No explicit folder hierarchy" below).
 - When the Android app displays a file, it loads the page with
-  `https://paper.tagdrop.invalid/<rootHash-hex>/<slug>` as the **base URL**
-  (via `loadDataWithBaseURL`) instead of as an opaque `data:` URI. `.invalid`
-  is an IANA-reserved TLD (RFC 2606) that never resolves over the network.
-- Ordinary relative URLs in the HTML/CSS resolve against that base using
-  standard URL resolution, producing more `https://paper.tagdrop.invalid/...`
-  URLs. The app's `WebViewClient` recognises this host (alongside the
-  `tagdrop://` scheme) and resolves the resulting `<rootHash-hex>/<slug>` pair
-  through `TagDropLinkResolver`, exactly like a `tagdrop://<rootHash>/<slug>`
-  link.
+  `https://<rootHash-hex>.paper.tagdrop.invalid/<slug>` as the **base URL**
+  (via `loadDataWithBaseURL`) instead of as an opaque `data:` URI — the root
+  hash is a **subdomain label**, not a path segment. `.invalid` is an
+  IANA-reserved TLD (RFC 2606) that never resolves over the network.
+- Both ordinary relative URLs (`./about.html`, `../images/logo.svg`,
+  `style.css`) and root-relative URLs (a single leading `/`, e.g.
+  `/images/logo.svg`) in the HTML/CSS resolve against that base using
+  standard URL resolution, producing more
+  `https://<rootHash-hex>.paper.tagdrop.invalid/...` URLs — the host (and so
+  the root hash) survives either way, because resolving a path never touches
+  the host. Putting the root hash in the *path* instead would break
+  root-relative links: an absolute-path reference replaces a base URL's
+  entire path, not just its last segment, so `/images/logo.svg` resolved
+  against `.../<rootHash-hex>/<slug>` would land on `.../images/logo.svg`
+  with the root hash gone. The app's `WebViewClient` recognises any
+  `*.paper.tagdrop.invalid` host (alongside the `tagdrop://` scheme) and
+  resolves the resulting `<rootHash-hex>`/`<slug>` pair through
+  `TagDropLinkResolver`, exactly like a `tagdrop://<rootHash>/<slug>` link.
 
 To reference a file on a **different** paper (a different root hash), use an
-explicit `tagdrop://<rootHash-base45>/<slug>` link — this can't be relative,
+explicit `tagdrop://<rootHash-hex>/<slug>` link — this can't be relative,
 since it's a different content-addressed directory.
 
 Practical effect: a normal static-site folder (HTML + CSS + images with
@@ -451,7 +485,7 @@ links to another paper with slug="letterbox" in the same set.
 
 The full navigation URI for the letterbox paper's index file would be:
 ```
-tagdrop://<letterbox-paper-root-hash-base45>/index
+tagdrop://<letterbox-paper-root-hash-hex>/index
 ```
 
 Root hashes are permanent because paper is immutable. If a paper is updated, it gets a new hash — the old one continues to work as long as the old paper exists physically.
@@ -741,8 +775,9 @@ whichever order they arrive in.
 A few of the choices above double as standard **plausible deniability**
 measures — the inability for an observer to distinguish "this contains
 something hidden" from "this is just opaque data," even with some of the
-format in plain view. The same property underlies things like VeraCrypt's
-hidden volumes or OTR's deniable authentication.
+format in plain view. The same property underlies things like
+[VeraCrypt](https://www.veracrypt.fr/)'s hidden volumes or
+[OTR](https://otr.cypherpunks.ca/)'s deniable authentication.
 
 - **Ciphertext is indistinguishable from random.** AES-GCM ciphertext with a
   fresh nonce is computationally indistinguishable from random bytes. Without
@@ -860,9 +895,11 @@ backups) need no signature at all.
 implemented in either reference implementation (§15). ML-DSA-44 is not
 available in `java.security`/Android's crypto providers or in
 `SubtleCrypto` (Web Crypto), so adding it requires a new dependency in both
-— e.g. BouncyCastle for the Kotlin app, and a pure-JS PQC library (such as
-`@noble/post-quantum`) for the browser tools, which currently depend on
-nothing but a QR CDN script. Readers that don't recognise keys 32–36 ignore
+— e.g. [BouncyCastle](https://www.bouncycastle.org/) for the Kotlin app, and
+a pure-JS PQC library (such as
+[`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum))
+for the browser tools, which currently depend on nothing but a QR CDN
+script. Readers that don't recognise keys 32–36 ignore
 them per §3's forward-compatibility rule and treat the code as unsigned.
 
 **Why post-quantum, not ECDSA/Ed25519?** Shor's algorithm breaks the
@@ -872,8 +909,8 @@ schemes entirely. By contrast, Grover's algorithm only *halves* AES's
 effective key length, which is why AES-256-GCM (§9) needs no change for
 quantum resistance. A signature scheme adopted now should not be one that a
 sufficiently large quantum computer invalidates retroactively for every code
-ever signed with it. ML-DSA-44 (Dilithium2, NIST security category 2, FIPS
-204, standardized 2024) is a lattice-based scheme with no known efficient
+ever signed with it. ML-DSA-44 ([Dilithium2](https://pq-crystals.org/dilithium/), NIST security category 2, [FIPS
+204](https://csrc.nist.gov/pubs/fips/204/final), standardized 2024) is a lattice-based scheme with no known efficient
 quantum attack, and its sizes are **fixed regardless of message length** —
 2420-byte signature, 1312-byte public key, 2560-byte private key (never
 transmitted). For small codes (a few hundred bytes) that's significant
@@ -965,13 +1002,13 @@ New content should use the `tagdrop:` scheme. Legacy support will be maintained 
 
 ## 12. NFC Transport (future)
 
-The CBOR sequence (`version`, `type`, `payload` — §2; the same bytes that get Base45-encoded into the `tagdrop:` URI) can be stored directly in an NFC NDEF record with:
+The CBOR sequence (`version`, `type`, `payload` — §2; the same bytes that get Base41-encoded into the `tagdrop:` URI) can be stored directly in an NFC NDEF record with:
 
 - **TNF:** `0x02` (MIME Media type)
 - **Type:** `application/vnd.tagdrop`
-- **Payload:** the raw CBOR sequence bytes (no Base45 encoding needed for NFC binary storage)
+- **Payload:** the raw CBOR sequence bytes (no Base41 encoding needed for NFC binary storage)
 
-Because `version` and `type` are carried in the payload bytes themselves (§2), one permanent MIME type covers every TagDrop format version — no per-version MIME subtypes needed, and the `tagdrop:<base45>` and raw-NDEF decoders share the same CBOR-sequence parsing, differing only in the Base45 step.
+Because `version` and `type` are carried in the payload bytes themselves (§2), one permanent MIME type covers every TagDrop format version — no per-version MIME subtypes needed, and the `tagdrop:<base41>` and raw-NDEF decoders share the same CBOR-sequence parsing, differing only in the Base41 step.
 
 This lets the same physical sticker carry both a QR code (for camera scanning) and an NFC tag (for tap-to-read), with identical content. Android dispatches `application/vnd.tagdrop` NDEF records to the TagDrop app via intent filter.
 
@@ -985,11 +1022,11 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 
 | Carrier | Form | Notes |
 |---|---|---|
-| QR code | `tagdrop:` URI, alphanumeric mode | Primary target |
+| QR code | `tagdrop:` URI, alphanumeric mode; or raw CBOR sequence, byte mode | Primary target. Byte mode avoids Base41 overhead — denser, but not human-typable; best for Chunks, which are always camera-scanned |
 | Aztec code | `tagdrop:` URI | Higher density than QR at small sizes |
 | Data Matrix | `tagdrop:` URI | Better damage resistance |
 | JABCode (color) | `tagdrop:` URI or raw CBOR sequence | ~4× capacity of QR; see [jabcode/jabcode](https://github.com/jabcode/jabcode) |
-| NFC NDEF tag | Raw CBOR sequence, MIME type | No Base45 overhead; supports tapping |
+| NFC NDEF tag | Raw CBOR sequence, MIME type | No Base41 overhead; supports tapping |
 | Plain URL | `tagdrop:` as deep-link | QR of a URL that deep-links to app |
 
 ---
@@ -1004,7 +1041,7 @@ Version history:
 
 - `version`/`type` envelope as a 2-item CBOR sequence prefix (§2); `type` 0–3 for Single / Manifest / Chunk / PaperManifest.
 - Payload map integer keys 2–19, 20–24, 26–27. Key 1 retired (formerly `version` inside the payload — now lives in the envelope). Key 25 reserved for a future binary image icon.
-- Base45 URI encoding: `tagdrop:<base45>`. DEFLATE compression (key 12). Content-addressed IDs via SHA-256 (§4.5).
+- Base41 URI encoding: `tagdrop:<base41>`. DEFLATE compression (key 12). Content-addressed IDs via SHA-256 (§4.5).
 - Paper manifests (type 3) with file directories, `set`/`slug` navigation, and `related` paper hints with optional `lat`/`lng` placeholder coordinates (keys 26/27). TagDropNet relative-link and `tagdrop://` navigation (§7).
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
 - AES-256-GCM hidden override maps (§9): self-contained `nonce||ciphertext||tag` blob carried as trailing bytes (Single) or assembled-chunk bytes (Manifest), applied after compression. Optional non-binding `encryption` hint (key 28). Key 29 reserved, unused. `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
@@ -1016,7 +1053,7 @@ Version history:
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode all payload types; `contentId()`, `rootHashOf()`, `createSingle()`
-  - `Base45.kt` — RFC 9285
+  - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
   - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742) for the version/type envelope
   - `ChunkAssembler.kt` — multi-code assembly with SHA-256 verification
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
@@ -1033,11 +1070,11 @@ Version history:
 
 **Why not extend `data:` URI syntax?** (issues #2, #4, #13) Adding parameters like `;seq-id=`, `;seq-total=`, `;crc=` to the data URI was the original approach. It fails because data: URIs are opaque to QR readers — there's no way to route them to the app by scheme. The `tagdrop:` scheme gives us OS-level routing and a clean separation between the envelope and payload.
 
-**Why a version/type envelope instead of URI path segments or per-map keys?** An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §12/§13) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every payload with a 2-item CBOR Sequence (RFC 8742) — `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — makes the same bytes self-describing on every carrier: Base45-encode them for `tagdrop:<base45>`, or store them raw in an NDEF record, with identical decode logic either way. It also lets the URI collapse to `tagdrop:<base45>` (no `//`, no `/<type>/` segment), gives a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — costs one less byte than `[version, type, payload]` and doesn't require `payload` to be CBOR-wrapped, leaving room for a non-CBOR `payload` in a future version. `version` lives *only* in the envelope, not redundantly inside `payload` too: two fields claiming to describe the same fact can disagree, forcing a reader to pick which one to trust — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. CBOR's own self-describing-data convention (the tag-55799 "magic number", RFC 8949 §3.4.5.3) is likewise an external prefix rather than a duplicated internal field, reinforcing that self-description belongs in the envelope.
+**Why a version/type envelope instead of URI path segments or per-map keys?** An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §12/§13) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every payload with a 2-item CBOR Sequence (RFC 8742) — `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — makes the same bytes self-describing on every carrier: Base41-encode them for `tagdrop:<base41>`, or store them raw in an NDEF record, with identical decode logic either way. It also lets the URI collapse to `tagdrop:<base41>` (no `//`, no `/<type>/` segment), gives a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — costs one less byte than `[version, type, payload]` and doesn't require `payload` to be CBOR-wrapped, leaving room for a non-CBOR `payload` in a future version. `version` lives *only* in the envelope, not redundantly inside `payload` too: two fields claiming to describe the same fact can disagree, forcing a reader to pick which one to trust — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. CBOR's own self-describing-data convention (the tag-55799 "magic number", RFC 8949 §3.4.5.3) is likewise an external prefix rather than a duplicated internal field, reinforcing that self-description belongs in the envelope.
 
 **Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§12).
 
-**Binary mode vs alphanumeric Base45:** Raw binary QR codes store 8 bits/char. Alphanumeric Base45 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable.
+**Binary mode vs alphanumeric Base41:** Raw binary QR codes store 8 bits/char. Alphanumeric Base41 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain for most codes: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable/typable. Chunks are the exception — they're always camera-scanned, never hand-typed or shared as text — so the Android reference reader also accepts a QR byte-mode segment carrying the raw CBOR sequence directly (no `tagdrop:`/Base41 wrapper), per §13. The web generator (`tools/generator/index.html`) splits content too large for one QR into a Manifest + Chunks and, by default, renders Chunk QR codes in binary mode (toggleable back to alphanumeric `tagdrop:` URIs); the Manifest QR is always alphanumeric, since it must stay human-typable/shareable like a Single. The Android app's only Manifest+Chunks generator, `ShareQrActivity` (re-sharing an already-cached item too large for one QR), still emits alphanumeric `tagdrop:` URIs for every Chunk.
 
 **Compression:** DEFLATE was chosen over LZMA (issue #2) because it is available in every Java/Android standard library (`java.util.zip`), requiring no dependency. LZMA achieves better ratios for larger payloads but is a future extension (compression value 2).
 

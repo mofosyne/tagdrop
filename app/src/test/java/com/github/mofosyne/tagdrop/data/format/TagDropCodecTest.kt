@@ -227,6 +227,65 @@ class TagDropCodecTest {
         assertNull(decoded.related[1].lng)
     }
 
+    @Test fun relatedPaperKeyMaterialAndRetainKeyRoundTrip() {
+        val keyMaterial = ByteArray(32) { it.toByte() }
+        val original = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            label = null, set = null, slug = null,
+            files = emptyList(),
+            related = listOf(
+                TagDropPayload.RelatedPaper("locked related paper", keyMaterial = keyMaterial, retainKey = false),
+                TagDropPayload.RelatedPaper("plain related paper")
+            )
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.PaperManifest
+        assertArrayEquals(keyMaterial, decoded.related[0].keyMaterial)
+        assertFalse(decoded.related[0].retainKey)
+        assertNull(decoded.related[1].keyMaterial)
+        assertTrue(decoded.related[1].retainKey)
+    }
+
+    @Test fun relatedPaperRetainKeyDefaultTrueOmittedFromCbor() {
+        val original = TagDropCodec.createPaperManifest(
+            label = null, set = null, slug = null, files = emptyList(),
+            related = listOf(TagDropPayload.RelatedPaper("hint", keyMaterial = ByteArray(32) { it.toByte() }))
+        )
+        val cbor = TagDropCodec.paperManifestCbor(original)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        @Suppress("UNCHECKED_CAST")
+        val relatedList = map[16] as List<Map<Int, Any>>
+        assertTrue("key_material (30) should be present", relatedList[0].containsKey(30))
+        assertFalse("retain_key (31) defaults true and should be omitted", relatedList[0].containsKey(31))
+    }
+
+    @Test fun paperManifestKeyMaterialAndRetainKeyRoundTrip() {
+        val keyMaterial = ByteArray(32) { (it + 1).toByte() }
+        val original = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            label = null, set = null, slug = null,
+            files = emptyList(), related = emptyList(),
+            keyMaterial = keyMaterial, retainKey = false
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.PaperManifest
+        assertArrayEquals(keyMaterial, decoded.keyMaterial)
+        assertFalse(decoded.retainKey)
+    }
+
+    @Test fun paperManifestRetainKeyDefaultTrueOmittedFromCbor() {
+        val original = TagDropCodec.createPaperManifest(
+            label = null, set = null, slug = null, files = emptyList(),
+            keyMaterial = ByteArray(32) { it.toByte() }
+        )
+        val cbor = TagDropCodec.paperManifestCbor(original)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertTrue(map.containsKey(30))
+        assertFalse(map.containsKey(31))
+    }
+
     @Test fun paperManifestEmptyFilesAndRelated() {
         val original = TagDropPayload.PaperManifest(
             rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
@@ -266,7 +325,7 @@ class TagDropCodecTest {
             content     = "<h1>Hello</h1>".toByteArray()
         )
         val cbor = TagDropCodec.singleCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
+        val uriCbor = Base41.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
 
         val items = MiniCbor.decodeSequence(cbor)
@@ -290,7 +349,7 @@ class TagDropCodecTest {
             sha256      = ByteArray(32) { it.toByte() }
         )
         val cbor = TagDropCodec.manifestCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
+        val uriCbor = Base41.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
     }
 
@@ -301,7 +360,7 @@ class TagDropCodecTest {
             data    = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
         )
         val cbor = TagDropCodec.chunkCbor(original)
-        val uriCbor = Base45.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
+        val uriCbor = Base41.decode(TagDropCodec.encode(original).removePrefix("tagdrop:"))
         assertArrayEquals(uriCbor, cbor)
     }
 
@@ -329,6 +388,93 @@ class TagDropCodecTest {
         assertArrayEquals(TagDropCodec.paperManifestCbor(paper), TagDropCodec.rawCbor(paper))
 
         assertNull(TagDropCodec.rawCbor(TagDropPayload.Legacy("data:text/plain;base64,aGk=")))
+    }
+
+    @Test fun decodeRawRoundTripsAllPayloadTypes() {
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        assertEquals(single, TagDropCodec.decodeRaw(TagDropCodec.singleCbor(single)))
+
+        val manifest = TagDropPayload.Manifest(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE,
+            chunkCount = 1, totalBytes = 10, sha256 = ByteArray(32)
+        )
+        assertEquals(manifest, TagDropCodec.decodeRaw(TagDropCodec.manifestCbor(manifest)))
+
+        val chunk = TagDropPayload.Chunk(cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), index = 0, data = byteArrayOf(1))
+        assertEquals(chunk, TagDropCodec.decodeRaw(TagDropCodec.chunkCbor(chunk)))
+
+        val paper = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), label = null, set = null, slug = null,
+            files = emptyList(), related = emptyList()
+        )
+        assertEquals(paper, TagDropCodec.decodeRaw(TagDropCodec.paperManifestCbor(paper)))
+    }
+
+    @Test fun decodeRawMatchesDecodeOfEncodedUri() {
+        // Fully-binary carriers (SPEC §13: byte-mode 2D barcode segment, NFC NDEF) skip the
+        // tagdrop:/Base41 text wrapper entirely -- decodeRaw must agree with decode() on the
+        // same underlying CBOR sequence regardless of which path produced it.
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = "hint", filename = "f.txt",
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        val uri = TagDropCodec.encode(single)
+        val viaUri = TagDropCodec.decode(uri)
+        val viaRaw = TagDropCodec.decodeRaw(Base41.decode(uri.removePrefix("tagdrop:")))
+        assertEquals(viaUri, viaRaw)
+    }
+
+    @Test fun decodeRawReturnsNullForGarbageBytes() {
+        assertNull(TagDropCodec.decodeRaw(byteArrayOf(1, 2, 3)))
+        assertNull(TagDropCodec.decodeRaw(ByteArray(0)))
+    }
+
+    @Test fun decodeRawReturnsNullForUnsupportedVersion() {
+        val payload = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val seq = MiniCbor.encodeUInt(2) + MiniCbor.encodeUInt(0) + payload  // version 2 — unsupported
+        assertNull(TagDropCodec.decodeRaw(seq))
+    }
+
+    @Test fun decodeRawReturnsNullForNonMapPayload() {
+        val notAMap = byteArrayOf(0x44, 1, 2, 3, 4) // CBOR byte string (major 2), not a map
+        val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0) + notAMap
+        assertNull(TagDropCodec.decodeRaw(seq))
+    }
+
+    @Test fun decodeRawReturnsNullForSingleMissingRequiredCacheId() {
+        val payload = MiniCbor.encodeMap(listOf(
+            4 to "text/plain",
+            5 to "hi".toByteArray()
+            // cache_id (2) deliberately omitted — required by decodeSingle
+        ))
+        val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0) + payload // type=0 Single
+        assertNull(TagDropCodec.decodeRaw(seq))
+    }
+
+    @Test fun decodeRawReturnsNullForManifestMissingRequiredMimeType() {
+        val payload = MiniCbor.encodeMap(listOf(
+            2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), // cache_id
+            6 to 1L,                                    // chunk_count
+            7 to 10L,                                   // total_bytes
+            8 to ByteArray(32)                           // sha256
+            // mime_type (4) deliberately omitted — required by decodeManifest
+        ))
+        val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(1) + payload // type=1 Manifest
+        assertNull(TagDropCodec.decodeRaw(seq))
+    }
+
+    @Test fun decodeRawReturnsNullForChunkMissingRequiredIndex() {
+        val payload = MiniCbor.encodeMap(listOf(
+            2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), // cache_id
+            10 to byteArrayOf(9, 9, 9)                  // chunk_data
+            // chunk_index (9) deliberately omitted — required by decodeChunk
+        ))
+        val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(2) + payload // type=2 Chunk
+        assertNull(TagDropCodec.decodeRaw(seq))
     }
 
     @Test fun envelopeIsTwoBytesForEveryType() {
@@ -399,6 +545,18 @@ class TagDropCodecTest {
         assertTrue(text.contains("Failed to decode as CBOR sequence"))
     }
 
+    @Test fun describeCborNotesTooShortTrailingBytes() {
+        val single = TagDropPayload.Single(
+            cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), hint = null, filename = null,
+            mimeType = "text/plain", compression = TagDropCodec.COMPRESSION_NONE, content = "hi".toByteArray()
+        )
+        // Fewer than OVERRIDE_BLOB_MIN_BYTES (28) — too short to be a candidate override blob.
+        val withShortTrailer = TagDropCodec.singleCbor(single) + byteArrayOf(1, 2, 3)
+        val text = TagDropCodec.describeCbor(withShortTrailer)
+        assertTrue(text.contains("too short to be an override map"))
+        assertTrue(text.contains("3 bytes"))
+    }
+
     // ── Legacy ────────────────────────────────────────────────────────────────
 
     @Test fun legacyDataUri() {
@@ -418,14 +576,14 @@ class TagDropCodecTest {
         assertNull(TagDropCodec.decode("tagdrop://ABCD/some-slug"))
     }
 
-    @Test fun malformedBase45ReturnsNull() {
+    @Test fun malformedBase41ReturnsNull() {
         assertNull(TagDropCodec.decode("tagdrop:!!!!INVALID!!!!"))
     }
 
     @Test fun unsupportedVersionReturnsNull() {
         val payload = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
         val seq = MiniCbor.encodeUInt(2) + MiniCbor.encodeUInt(0) + payload  // version 2 — unsupported
-        assertNull(TagDropCodec.decode("tagdrop:" + Base45.encode(seq)))
+        assertNull(TagDropCodec.decode("tagdrop:" + Base41.encode(seq)))
     }
 
     // ── Content addressing ────────────────────────────────────────────────────
@@ -849,5 +1007,176 @@ class TagDropCodecTest {
         assertEquals("real hint", complete.hint)
         assertEquals("fox.txt", complete.filename)
         assertNull(complete.pendingOverrideBlob)
+    }
+
+    // ── Passphrase-based key derivation (SPEC §9 "Passphrase-based key derivation") ──
+
+    @Test fun deriveKeyFromPassphraseIsDeterministic() {
+        val salt = ByteArray(16) { it.toByte() }
+        val key1 = TagDropCodec.deriveKeyFromPassphrase("correct horse battery staple", salt, 1000)
+        val key2 = TagDropCodec.deriveKeyFromPassphrase("correct horse battery staple", salt, 1000)
+        assertEquals(32, key1.size)
+        assertArrayEquals(key1, key2)
+    }
+
+    @Test fun deriveKeyFromPassphraseDiffersForDifferentPassphraseOrSalt() {
+        val salt = ByteArray(16) { it.toByte() }
+        val baseline = TagDropCodec.deriveKeyFromPassphrase("trailhead2026", salt, 1000)
+        val wrongPassphrase = TagDropCodec.deriveKeyFromPassphrase("wrong guess", salt, 1000)
+        val otherSalt = TagDropCodec.deriveKeyFromPassphrase("trailhead2026", ByteArray(16) { (it + 1).toByte() }, 1000)
+        assertFalse(baseline.contentEquals(wrongPassphrase))
+        assertFalse(baseline.contentEquals(otherSalt))
+    }
+
+    @Test fun deriveKeyFromPassphraseWithEmptyPassphraseSucceeds() {
+        // PBKDF2 doesn't require a non-empty password — still derives deterministically.
+        val salt = ByteArray(16) { it.toByte() }
+        val key1 = TagDropCodec.deriveKeyFromPassphrase("", salt, 1000)
+        val key2 = TagDropCodec.deriveKeyFromPassphrase("", salt, 1000)
+        assertEquals(32, key1.size)
+        assertArrayEquals(key1, key2)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun deriveKeyFromPassphraseWithZeroIterationsThrows() {
+        TagDropCodec.deriveKeyFromPassphrase("pass", ByteArray(16), 0)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun deriveKeyFromPassphraseWithEmptySaltThrows() {
+        TagDropCodec.deriveKeyFromPassphrase("pass", ByteArray(0), 1000)
+    }
+
+    @Test fun passphraseEncryptedSingleRoundTrip() {
+        val passphrase = "trailhead2026"
+        val salt = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+        val key = TagDropCodec.deriveKeyFromPassphrase(passphrase, salt, 1000)
+        val coverContent = "just a locked sticker".toByteArray()
+        val realContent = "the treasure is under the oak tree".toByteArray()
+        val overrideBlob = TagDropCodec.encryptOverrideMap(
+            TagDropPayload.OverrideMap(content = realContent), key, TagDropCodec.COMPRESSION_NONE
+        )
+        val original = TagDropPayload.Single(
+            cacheId = TagDropCodec.randomCacheId(),
+            hint = null, filename = null, mimeType = "text/plain",
+            compression = TagDropCodec.COMPRESSION_NONE, content = coverContent,
+            overrideBlob = overrideBlob,
+            kdfAlg = TagDropCodec.KDF_PBKDF2_SHA256, kdfSalt = salt, kdfIters = 1000
+        )
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.Single
+        assertEquals(TagDropCodec.KDF_PBKDF2_SHA256, decoded.kdfAlg)
+        assertArrayEquals(salt, decoded.kdfSalt)
+        assertEquals(1000, decoded.kdfIters)
+
+        // Re-deriving the key from the same passphrase/salt/iterations (as read off the
+        // decoded clear map, per SPEC §9) unlocks the real, hidden content.
+        val rederivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, decoded.kdfSalt!!, decoded.kdfIters)
+        assertArrayEquals(realContent, TagDropCodec.resolveSingle(decoded, rederivedKey).content)
+
+        // A wrong passphrase derives a non-matching key — the cover story keeps showing.
+        val wrongKey = TagDropCodec.deriveKeyFromPassphrase("wrong guess", decoded.kdfSalt!!, decoded.kdfIters)
+        assertArrayEquals(coverContent, TagDropCodec.resolveSingle(decoded, wrongKey).content)
+    }
+
+    @Test fun kdfItersDefaultOmittedFromCbor() {
+        val original = TagDropPayload.Single(
+            cacheId = TagDropCodec.randomCacheId(),
+            hint = null, filename = null, mimeType = "text/plain",
+            compression = TagDropCodec.COMPRESSION_NONE, content = "locked".toByteArray(),
+            kdfAlg = TagDropCodec.KDF_PBKDF2_SHA256, kdfSalt = ByteArray(16) { it.toByte() }
+            // kdfIters left at its default (100000)
+        )
+        val cbor = TagDropCodec.singleCbor(original)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertTrue("kdf_alg (37) should be present", map.containsKey(37))
+        assertTrue("kdf_salt (38) should be present", map.containsKey(38))
+        assertFalse("kdf_iters (39) defaults to 100000 and should be omitted", map.containsKey(39))
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.Single
+        assertEquals(100000, decoded.kdfIters)
+    }
+
+    @Test fun kdfItersNonDefaultIncludedInCbor() {
+        val original = TagDropPayload.Single(
+            cacheId = TagDropCodec.randomCacheId(),
+            hint = null, filename = null, mimeType = "text/plain",
+            compression = TagDropCodec.COMPRESSION_NONE, content = "locked".toByteArray(),
+            kdfAlg = TagDropCodec.KDF_PBKDF2_SHA256, kdfSalt = ByteArray(16) { it.toByte() }, kdfIters = 250000
+        )
+        val cbor = TagDropCodec.singleCbor(original)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertTrue("non-default kdf_iters (39) should be present", map.containsKey(39))
+
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.Single
+        assertEquals(250000, decoded.kdfIters)
+    }
+
+    // ── Forward compatibility: unknown CBOR keys (SPEC §3 "Unknown keys must be ignored") ──
+
+    @Test fun decodeIgnoresUnknownKeyOnSingle() {
+        val cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val payloadMap = MiniCbor.encodeMap(listOf(
+            2 to cacheId,
+            4 to "text/plain",
+            5 to "hello from the future".toByteArray(),
+            99 to "a field no current decoder understands"
+        ))
+        val cbor = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0) + payloadMap
+        val uri = "tagdrop:" + Base41.encode(cbor)
+
+        val decoded = TagDropCodec.decode(uri) as TagDropPayload.Single
+        assertArrayEquals(cacheId, decoded.cacheId)
+        assertEquals("text/plain", decoded.mimeType)
+        assertArrayEquals("hello from the future".toByteArray(), decoded.content)
+    }
+
+    @Test fun decodeIgnoresUnknownKeyOnManifest() {
+        val cacheId = byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80.toByte())
+        val sha256 = ByteArray(32) { it.toByte() }
+        val payloadMap = MiniCbor.encodeMap(listOf(
+            2 to cacheId,
+            4 to "text/html",
+            6 to 3,
+            7 to 900,
+            8 to sha256,
+            12345 to 42L   // a hypothetical future key, larger than any currently assigned
+        ))
+        val cbor = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(1) + payloadMap
+        val uri = "tagdrop:" + Base41.encode(cbor)
+
+        val decoded = TagDropCodec.decode(uri) as TagDropPayload.Manifest
+        assertArrayEquals(cacheId, decoded.cacheId)
+        assertEquals(3, decoded.chunkCount)
+        assertEquals(900, decoded.totalBytes)
+        assertArrayEquals(sha256, decoded.sha256)
+    }
+
+    @Test fun decodeIgnoresUnknownSignatureKeysOnSingle() {
+        // SPEC §10: signature keys 32-36 are specified but not yet implemented in this
+        // reference decoder. A code carrying them must still decode as an ordinary
+        // (unverified) payload, per the same §3 forward-compatibility rule.
+        val cacheId = byteArrayOf(1, 1, 2, 3, 5, 8, 13, 21)
+        val payloadMap = MiniCbor.encodeMap(listOf(
+            2 to cacheId,
+            4 to "text/markdown",
+            5 to "signed content".toByteArray(),
+            32 to 1,                                    // signature_algorithm: ML-DSA-44
+            33 to ByteArray(2420),                       // signature
+            34 to ByteArray(1312),                       // signer_pubkey
+            35 to byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9),   // signer_id
+            36 to "Alice's Trail"                        // signer_label
+        ))
+        val cbor = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0) + payloadMap
+        val uri = "tagdrop:" + Base41.encode(cbor)
+
+        val decoded = TagDropCodec.decode(uri) as TagDropPayload.Single
+        assertArrayEquals(cacheId, decoded.cacheId)
+        assertEquals("text/markdown", decoded.mimeType)
+        assertArrayEquals("signed content".toByteArray(), decoded.content)
     }
 }

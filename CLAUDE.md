@@ -6,11 +6,11 @@ Android build setup see `DEVELOPING.md`.
 
 ## Two parallel wire-format implementations
 
-The `tagdrop:<base45-cbor-sequence>` encoding (Base45 + CBOR-sequence
+The `tagdrop:<base41-cbor-sequence>` encoding (Base41 + CBOR-sequence
 envelope + DEFLATE, see `SPEC.md`) is implemented **independently twice**:
 
 1. **Kotlin (Android app)** — `app/src/main/java/.../data/format/`
-   (`Base45.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
+   (`Base41.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
    implementation; `app/src/test/.../TagDropCodecTest.kt` is the most
    thorough test suite.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
@@ -26,13 +26,15 @@ verification has so far been manual (decode every URI in
 
 ### Known duplication (not yet deduped)
 
-`tools/generator/index.html`'s encode-side helpers (`base45Encode`,
+`tools/generator/index.html`'s encode-side helpers (`base41Encode`,
 `writeHead`/`cborValue`/`cborMap`/`cborSequence`/etc., `encodeSingle`,
-`encodePaperManifest`) are near-byte-identical to the ones inlined in
-`tools/examples/index.html` (which also adds `encodeMultiChunk` and an
+`encodeManifestAndChunks`, `encodePaperManifest`) are near-byte-identical to
+the ones inlined in `tools/examples/index.html` (which also adds an
 `encodePaperManifest` with collection/icon fields, for its multi-chunk and
-trail examples). `tools/reader/index.html` has the decode-side mirror
-(`base45Decode`, `cborDecodeSequence`, etc.).
+trail examples — its `encodeMultiChunk` predates and doesn't share code with
+the generator's `encodeManifestAndChunks`, which also supports the
+encrypted-override-map path). `tools/reader/index.html` has the decode-side
+mirror (`base41Decode`, `cborDecodeSequence`, etc.).
 
 This is now **browser-vs-browser** duplication (same APIs, same runtime),
 which is lower-risk than the old Node-vs-browser split (`generate.mjs` was
@@ -40,13 +42,33 @@ removed — see below). A shared module would reduce drift further, **but**
 note: `tools/generator/index.html`, `tools/reader/index.html`, and
 `tools/examples/index.html` are deliberately **self-contained single HTML
 files** (say so in their own header comments) — the only external dependency
-is a CDN script for QR rendering/scanning (`qrcode`/`jsQR`), not the codec
-logic. Splitting the codec into an importable `tools/shared/*.mjs` would break
-that "download one file, it just works offline" property unless paired with a
-build step that inlines it back into the HTML (extra tooling) — not worth it
-for three files of this size. If drift becomes a real problem, an automated
-round-trip/cross-check test (encode with one implementation, decode with
-another, compare) is lower-risk than deduping.
+is a CDN script for QR rendering (`qrcode`) and scanning (`zxing-wasm`), not
+the codec logic. Splitting the codec into an importable `tools/shared/*.mjs`
+would break that "download one file, it just works offline" property unless
+paired with a build step that inlines it back into the HTML (extra tooling)
+— not worth it for three files of this size. Instead there's a separate,
+independent Node port for verification: `tools/test-qr-roundtrip.mjs`
+(`tools/package.json`) builds Single and Manifest+Chunk payloads, renders
+them as real QR images (`qrcode`), decodes them back via zxing-wasm, and
+asserts round-trip correctness — run locally with `cd tools && npm install
+&& npm test`, and gated in CI as its own job (`.github/workflows/ci.yml`,
+`web-tools-roundtrip`) alongside the Gradle unit tests.
+
+### Why the reader uses zxing-wasm, not jsQR, to scan QR codes
+
+`tools/reader/index.html` decodes camera/image QR scans with **zxing-wasm**
+(a WebAssembly port of ZXing — the same decoder family the Android app uses
+via the platform ZXing library). jsQR was the original choice and is much
+smaller (no `.wasm` fetch), but has a confirmed, unfixed bug
+([cozmo/jsQR#155](https://github.com/cozmo/jsQR/issues/155)): it fails to
+detect **any** QR symbol — alphanumeric `tagdrop:` URI or binary/byte-mode
+chunk — that happens to be encoded as **QR version 23** specifically (other
+versions are unaffected). Confirmed by direct testing: alphanumeric URIs of
+1455–1582 chars and byte-mode payloads of 1004–1091 bytes both land on
+version 23 and were 100% undetectable by jsQR (and by `jsqr-es6`, its only
+maintained fork) regardless of pixel scale or mask pattern, while zxing-wasm
+decodes the identical images correctly. If jsQR is ever reintroduced (e.g.
+to shrink the dependency), re-verify against this version-23 case first.
 
 ### `tools/examples/` is self-contained, not generated
 
@@ -68,8 +90,8 @@ phone.
 
 The Android app's in-app creation screens (`CreateActivity` = single code,
 `CreatePaperActivity` = multi-file paper + print/PDF via the system print
-dialog, added on branch `claude/paper-pdf-export`) are considered
-**secondary/optional** — useful for "no computer available" scenarios, but
+dialog) are considered **secondary/optional** — useful for "no computer
+available" scenarios, but
 not the priority for new authoring features. New paper-layout features
 should land in the web generator first; porting to the Android app is
 optional follow-up.

@@ -42,10 +42,10 @@
     <string name="button_clear">Clear</string>
     <string name="button_readme">About / Read Me</string>
     <string name="status_ready">Point the camera at a TagDrop code to begin.</string>
-    <string name="status_collecting">Collecting chunks: %1$d / %2$d\nHint: %3$s\n\nKeep scanning.</string>
+    <string name="status_collecting">Collecting chunks: %1$d / %2$d\nHint: %3$s\n\nStill need: %4$s</string>
     <string name="status_legacy">Legacy mode: %1$d fragment(s) accumulated.\n\nTap \'Launch Content\' when done.</string>
     <string name="manifest_scanned">Manifest scanned (%1$d chunks expected). Scan chunks now.</string>
-    <string name="chunk_progress">Chunk %1$d of %2$d received.</string>
+    <string name="chunk_progress">Chunk %1$d of %2$d received. Still need: %3$s</string>
     <string name="hash_mismatch">Assembly failed: integrity check failed. Try rescanning.</string>
     <string name="key_code_scanned">🔑 Key received — scan its matching content code to unlock it.</string>
     <string name="awaiting_key">🔒 All chunks assembled, but still locked — scan the key code to unlock.</string>
@@ -144,6 +144,8 @@
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>
+    <string name="preview_unavailable_title">Tag found</string>
+    <string name="preview_unavailable_message">This content type can\'t be previewed here. Open it in another app, or save a copy to your device.\n\nIt\'s already saved — find it anytime in History.</string>
 
     <!-- Retained Keys screen -->
     <string name="title_retained_keys">Retained Keys</string>

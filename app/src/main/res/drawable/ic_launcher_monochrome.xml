@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon (Android 13+) silhouette: blob only, since the QR finder
+     marks sit fully inside it and would be invisible once flattened to a
+     single tint anyway. The system re-colors this; fillColor is a stand-in. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M 73.628,76.933 C 68.743,76.940 62.548,76.493 57.971,75.803 C 50.651,74.698 44.938,72.899 40.950,70.442 C 36.068,67.433 32.540,61.931 31.600,55.860 C 31.329,54.112 31.399,50.425 31.735,48.688 C 33.480,39.677 40.813,32.612 49.853,31.231 C 51.611,30.963 55.302,31.033 57.032,31.368 C 63.232,32.569 68.718,36.484 71.489,41.685 C 74.212,46.796 75.893,54.367 76.413,63.867 C 76.578,66.891 76.617,71.660 76.497,74.358 C 76.436,75.740 76.370,76.884 76.351,76.900 C 76.332,76.916 75.107,76.931 73.628,76.933 Z"
+        android:fillColor="#FF000000"/>
+</vector>

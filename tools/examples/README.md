@@ -15,7 +15,8 @@ it directly in a browser: it encodes each example and renders the resulting
   Manifest QR (type 1) plus three Chunk QRs (type 2). Scan the manifest and
   the chunks (any order) to test reassembly and SHA-256 verification.
 - **Paper set** — a manifest QR plus three file QRs (`readme`, `note`,
-  `badge`) demonstrating a multi-file paper drop. Scan the manifest first.
+  `images/badge.svg`) demonstrating a multi-file paper drop. Scan the
+  manifest first.
 - **Mini e-book** — "The Lighthouse Keeper's Almanac": a manifest plus a
   `style.css`, a Markdown cover/table-of-contents (`index.md`), and three
   Markdown chapters that link to each other and the cover via ordinary
@@ -36,7 +37,7 @@ them directly — there's no build step; just reload the page.
 
 ## How it works
 
-`index.html` inlines the same Base45/CBOR-sequence/SHA-256/DEFLATE encoding
+`index.html` inlines the same Base41/CBOR-sequence/SHA-256/DEFLATE encoding
 used by [`tools/generator/index.html`](../generator/index.html) and the
 Android app (see [`SPEC.md`](../../SPEC.md)), using the browser's
 SubtleCrypto and CompressionStream APIs. QR codes are rendered onto

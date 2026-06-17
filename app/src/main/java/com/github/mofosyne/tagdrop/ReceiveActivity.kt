@@ -32,6 +32,7 @@ import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import com.google.zxing.BarcodeFormat
+import com.google.zxing.ResultMetadataType
 import com.google.zxing.ResultPoint
 import com.journeyapps.barcodescanner.BarcodeCallback
 import com.journeyapps.barcodescanner.BarcodeResult
@@ -74,8 +75,24 @@ class ReceiveActivity : AppCompatActivity() {
 
     private val barcodeCallback = object : BarcodeCallback {
         override fun barcodeResult(result: BarcodeResult) {
-            val text = result.text ?: return
             val now = System.currentTimeMillis()
+
+            // Fully-binary codes carry the raw CBOR sequence directly in the symbol's byte-mode
+            // segment, with no `tagdrop:`/Base41 text wrapper (SPEC §13's "raw CBOR sequence
+            // form") -- denser than Base41, worthwhile for Chunks since those are always
+            // camera-scanned and never hand-typed/shared as text, unlike a `tagdrop:` link.
+            val rawBytes = rawByteSegment(result)
+            val rawPayload = rawBytes?.let { TagDropCodec.decodeRaw(it) }
+            if (rawPayload != null) {
+                val key = "raw:" + rawBytes.toHex()
+                if (key == lastDecodedText && now - lastDecodedAt < SCAN_COOLDOWN_MS) return
+                lastDecodedText = key
+                lastDecodedAt = now
+                processDecoded(rawPayload)
+                return
+            }
+
+            val text = result.text ?: return
             if (text == lastDecodedText && now - lastDecodedAt < SCAN_COOLDOWN_MS) return
             lastDecodedText = text
             lastDecodedAt = now
@@ -83,6 +100,14 @@ class ReceiveActivity : AppCompatActivity() {
         }
         override fun possibleResultPoints(resultPoints: MutableList<ResultPoint>) {}
     }
+
+    /** Concatenates a decoded symbol's byte-mode segment(s), if any -- see [barcodeCallback]. */
+    @Suppress("UNCHECKED_CAST")
+    private fun rawByteSegment(result: BarcodeResult): ByteArray? =
+        (result.result.resultMetadata?.get(ResultMetadataType.BYTE_SEGMENTS) as? List<ByteArray>)
+            ?.takeIf { it.isNotEmpty() }
+            ?.flatMap { it.toList() }
+            ?.toByteArray()
 
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -236,9 +261,33 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun processScanned(scanned: String) {
         val decoded = TagDropCodec.decode(scanned)
-        lastScannedPayload = decoded
+        if (decoded != null) { processDecoded(decoded); return }
+        when {
+            // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
+            scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
+            // tagdrop:... that failed to decode: unsupported version or corrupted data — not a legacy fragment.
+            scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
+            else -> {
+                legacyChunks.add(scanned)
+                if (!tryCompleteLegacy()) {
+                    updateDisplay()
+                    toast(getString(R.string.unknown_fragment, legacyChunks.size))
+                }
+            }
+        }
+    }
+
+    /**
+     * Dispatches an already-decoded payload, regardless of whether it arrived as `tagdrop:` URI
+     * text (Base41) or a fully-binary code's raw CBOR sequence (SPEC §13) — see [barcodeCallback].
+     * A failed raw-bytes decode never reaches here: unlike [processScanned]'s text path, there's
+     * no "not a TagDrop code" fallback to fall into (no nav-link/legacy-fragment text to inspect),
+     * so the caller just drops it silently.
+     */
+    private fun processDecoded(payload: TagDropPayload) {
+        lastScannedPayload = payload
         invalidateOptionsMenu()
-        when (val payload = decoded) {
+        when (payload) {
             is TagDropPayload.Single -> handleSingle(payload)
             is TagDropPayload.Manifest -> {
                 payload.keyMaterial?.let { key ->
@@ -257,19 +306,6 @@ class ReceiveActivity : AppCompatActivity() {
                 if (!tryCompleteLegacy()) {
                     updateDisplay()
                     toast(getString(R.string.legacy_fragment, legacyChunks.size))
-                }
-            }
-            null -> when {
-                // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
-                scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
-                // tagdrop:... that failed to decode: unsupported version or corrupted data — not a legacy fragment.
-                scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
-                else -> {
-                    legacyChunks.add(scanned)
-                    if (!tryCompleteLegacy()) {
-                        updateDisplay()
-                        toast(getString(R.string.unknown_fragment, legacyChunks.size))
-                    }
                 }
             }
         }
@@ -554,7 +590,7 @@ class ReceiveActivity : AppCompatActivity() {
         when (val s = state) {
             is ChunkAssembler.State.Collecting -> {
                 updateDisplay()
-                toast(getString(R.string.chunk_progress, s.received, s.total))
+                toast(getString(R.string.chunk_progress, s.received, s.total, formatMissingIndices(s.missingIndices)))
             }
             is ChunkAssembler.State.Complete -> completeFromState(s)
             is ChunkAssembler.State.HashMismatch -> {
@@ -679,7 +715,11 @@ class ReceiveActivity : AppCompatActivity() {
                 !assembler.hasManifest -> getString(R.string.status_ready)
                 else -> when (val state = assembler.currentState()) {
                     is ChunkAssembler.State.Collecting ->
-                        getString(R.string.status_collecting, state.received, state.total, state.hint ?: "")
+                        getString(
+                            R.string.status_collecting,
+                            state.received, state.total, state.hint ?: "",
+                            formatMissingIndices(state.missingIndices)
+                        )
                     is ChunkAssembler.State.AwaitingKey -> getString(R.string.awaiting_key)
                     else -> getString(R.string.status_ready)
                 }
@@ -687,6 +727,10 @@ class ReceiveActivity : AppCompatActivity() {
         }
         binding.buttonLaunch.isEnabled = legacyChunks.isNotEmpty()
     }
+
+    /** Renders 0-based missing chunk indices as 1-based "#1, #2" for display — chunks can be scanned in any order, so list all of them, not just the next. */
+    private fun formatMissingIndices(missingIndices: List<Int>): String =
+        missingIndices.joinToString(", ") { "#${it + 1}" }
 
     private fun buildPaperStatusText(paper: TagDropPayload.PaperManifest): String = buildString {
         appendLine(paper.label ?: getString(R.string.paper_manifest_label))

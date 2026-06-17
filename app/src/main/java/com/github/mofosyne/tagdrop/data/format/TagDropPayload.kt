@@ -5,15 +5,15 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 /**
  * Represents a decoded TagDrop payload from a single scanned QR code.
  *
- * Encoding URIs: tagdrop:<base45-cbor-sequence>
- *   <base45-cbor-sequence> = Base45( CBOR(version) || CBOR(type) || CBOR(payload) )
+ * Encoding URIs: tagdrop:<base41-cbor-sequence>
+ *   <base41-cbor-sequence> = Base41( CBOR(version) || CBOR(type) || CBOR(payload) )
  *   type: 0 = single-code cache (complete content in one QR)
  *         1 = manifest (header for a multi-code cache)
  *         2 = chunk  (one segment of a multi-code cache)
  *         3 = paper manifest (directory of files on a physical paper)
  *
  * Navigation links (not QR payloads):
- *   tagdrop://<rootHash-base45>/<slug>  resolved by TagDropLinkResolver
+ *   tagdrop://<rootHash-hex>/<slug>  resolved by TagDropLinkResolver
  */
 sealed class TagDropPayload {
 
@@ -127,7 +127,7 @@ sealed class TagDropPayload {
      * after the manifest is finalized — identical to how IPFS computes CIDs.
      *
      * Navigation links embedded in HTML pages:
-     *   tagdrop://<rootHash-base45>/<slug>  — resolved by TagDropLinkResolver
+     *   tagdrop://<rootHash-hex>/<slug>  — resolved by TagDropLinkResolver
      */
     data class PaperManifest(
         val rootHash: ByteArray,           // SHA-256(CBOR)[0:8]; paper's permanent address

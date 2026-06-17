@@ -93,6 +93,25 @@ class ChunkAssemblerTest {
         assertArrayEquals(content, (a.currentState() as ChunkAssembler.State.Complete).content)
     }
 
+    // ── Missing-index reporting (lets the UI say which chunk to scan next) ────
+
+    @Test fun missingIndicesNarrowsAsChunksArrive() {
+        val content = ByteArray(50) { it.toByte() }
+        val cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val parts   = chunks(cacheId, content, 10)
+        val a       = ChunkAssembler()
+        val afterManifest = a.add(manifest(cacheId, content, parts.size)) as ChunkAssembler.State.Collecting
+        assertEquals(listOf(0, 1, 2, 3, 4), afterManifest.missingIndices)
+
+        // Scan chunk #3 (index 2) out of order — it should drop out of the missing list.
+        val afterOne = a.add(parts[2]) as ChunkAssembler.State.Collecting
+        assertEquals(listOf(0, 1, 3, 4), afterOne.missingIndices)
+
+        // Scan a duplicate of the same chunk — missing list is unaffected.
+        val afterDuplicate = a.add(parts[2]) as ChunkAssembler.State.Collecting
+        assertEquals(listOf(0, 1, 3, 4), afterDuplicate.missingIndices)
+    }
+
     // ── Chunks before manifest are discarded ──────────────────────────────────
 
     @Test fun chunksArrivedBeforeManifestAreLost() {
