@@ -80,6 +80,7 @@
   .qr-badge.encrypted { background: #fce4ec; color: #ad1457; }
   .qr-badge.key       { background: #fff3e0; color: #e65100; }
   .qr-badge.home      { background: #e8f5e9; color: #2e7d32; }
+  .qr-badge.binary    { background: #ede7f6; color: #512da8; }
   .qr-item.key-item   { border: 2px dashed #e65100; }
 
   .warn { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px;
@@ -111,11 +112,11 @@
     body { background: #fff; }
     .qr-grid { break-inside: avoid; }
     .qr-item { box-shadow: none; border: 1px solid #ccc; page-break-inside: avoid; }
-    .print-area { display: block !important; }
     .print-header { display: block !important; }
     .print-header h2 { display: block !important; }
   }
-  .print-area  { display: none; }
+  /* .print-area (#s-result/#p-result) holds the actual QR results — visible on screen by
+     default (no rule needed) and unaffected by print; only .print-header is print-exclusive. */
   .print-header { display: none; }
 </style>
 </head>
@@ -170,6 +171,15 @@
         <label style="margin:0">
           <input type="checkbox" id="s-compress"> Compress with DEFLATE
           <small id="s-compress-hint" style="display:block;color:#888;margin-top:2px">Saves ~50–70% for HTML/text</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-binary-chunks" checked>
+          🔢 Use binary QR for chunks
+          <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only if content needs multiple QR codes</small>
         </label>
       </div>
     </div>
@@ -402,10 +412,20 @@ async function zlibCompress(bytes) {
 // ── TagDrop encoding ──────────────────────────────────────────────────────
 // CBOR payload-map keys (key 1 "version" is retired — it lives in the envelope)
 const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
+             CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
              FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27,
              ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
              KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39 };
+
+// Chunk sizing (mirrors Kotlin TagDropCodec.MAX_CHUNK_DATA_BYTES /
+// chunkCountForBytes): keeps each chunk's Base41-encoded tagdrop: URI under
+// MAX_URI_LENGTH (~20 bytes CBOR/envelope overhead, Base41 expands 2 bytes->3 chars).
+const MAX_URI_LENGTH = 2000;
+const MAX_CHUNK_DATA_BYTES = 1300;
+function chunkCountForBytes(totalBytes) {
+  return Math.max(1, Math.ceil(totalBytes / MAX_CHUNK_DATA_BYTES));
+}
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -495,7 +515,68 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
     // kdf_iters is the default (100000) — omit to save bytes
   ]));
   const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
-  return { uri: 'tagdrop:' + base41Encode(full), cacheId, overrideBlob, encryption, kdfPassphrase };
+  const assembledLength = overrideBlob ? overrideBlob.length : content.length;
+  return { uri: 'tagdrop:' + base41Encode(full), cacheId, overrideBlob, encryption, kdfPassphrase, assembledLength };
+}
+
+/**
+ * Splits content too large for one QR into a Manifest (type=1) plus [chunkCount]
+ * Chunks (type=2) — mirrors Kotlin's TagDropCodec.createManifestAndChunks. cache_id
+ * is content-addressed from `rawBytes`, so a Single and a Manifest+Chunks encoding
+ * of the same content share an ID.
+ *
+ * If `override` is given (with `encryptionKey` — passphrase mode isn't supported here,
+ * matching the Kotlin reference), the assembled/chunked bytes ARE the self-contained
+ * encrypted override-map blob (SPEC §9) rather than `rawBytes` — there's no separate
+ * cover-content field in a Manifest, only `hint`/`filename`/`mimeType` carry cover
+ * metadata in the clear map. `cacheId` becomes random rather than content-addressed.
+ *
+ * Each chunk's `raw` field is the full CBOR-sequence envelope bytes (for binary/byte-mode
+ * QR rendering); `uri` is the same bytes Base41-encoded as a tagdrop: URI (text fallback).
+ */
+async function encodeManifestAndChunks({ hint, filename, mimeType, rawBytes, compress, chunkCount, override, encryptionKey, declareEncryption = true }) {
+  let compression = null, compressed = rawBytes;
+  if (compress) { compressed = await zlibCompress(rawBytes); compression = 1; }
+
+  let cacheId, assembled, encryption = null;
+  if (override) {
+    assembled = await encryptOverrideMap(override, encryptionKey, compression || 0);
+    cacheId = randomCacheId();
+    encryption = declareEncryption ? 1 : null;
+  } else {
+    assembled = compressed;
+    cacheId = await sha256first8(rawBytes);
+  }
+  const totalBytes = assembled.length;
+  const sha256 = new Uint8Array(await crypto.subtle.digest('SHA-256', assembled));
+
+  const manifestSeq = cborSequence(TYPE_MANIFEST, cborMap([
+    [K.CACHE_ID,    cacheId],
+    [K.HINT,        hint || null],
+    [K.FILENAME,    filename || null],
+    [K.MIME,        mimeType],
+    [K.COMPRESSION, compression],
+    [K.CHUNK_COUNT, chunkCount],
+    [K.TOTAL_BYTES, totalBytes],
+    [K.SHA256,      sha256],
+    [K.ENCRYPTION,  encryption],
+  ]));
+  const manifestUri = 'tagdrop:' + base41Encode(manifestSeq);
+
+  const chunkSize = Math.ceil(totalBytes / chunkCount);
+  const chunks = [];
+  for (let i = 0; i < chunkCount; i++) {
+    const start = Math.min(i * chunkSize, totalBytes);
+    const data  = assembled.slice(start, Math.min(start + chunkSize, totalBytes));
+    const chunkSeq = cborSequence(TYPE_CHUNK, cborMap([
+      [K.CACHE_ID,    cacheId],
+      [K.CHUNK_INDEX, i],
+      [K.CHUNK_DATA,  data],
+    ]));
+    chunks.push({ index: i, size: data.length, raw: chunkSeq, uri: 'tagdrop:' + base41Encode(chunkSeq) });
+  }
+
+  return { manifestUri, chunks, cacheId, totalBytes, sha256, chunkCount, compression, encryption };
 }
 
 /**
@@ -556,18 +637,26 @@ function loadQRCode() {
   return qrcodeModulePromise;
 }
 
-// Renders a QR code for `uri` onto a fresh canvas at the given pixel width.
-function qrToCanvas(QRCode, uri, width) {
+// Converts QR content to the form QRCode.toCanvas/toFile expects: a plain text
+// string for tagdrop: URIs, or a byte-mode segment for raw binary (Uint8Array)
+// data such as a binary-QR chunk payload — see the qrcode package's "Binary data" docs.
+function qrPayloadFor(data) {
+  return typeof data === 'string' ? data : [{ data: new Uint8ClampedArray(data), mode: 'byte' }];
+}
+
+// Renders a QR code for `data` (a tagdrop: URI string, or raw Uint8Array bytes
+// for binary/byte-mode QR) onto a fresh canvas at the given pixel width.
+function qrToCanvas(QRCode, data, width) {
   return new Promise((resolve, reject) => {
-    QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width }, (err, canvas) => {
+    QRCode.toCanvas(qrPayloadFor(data), { errorCorrectionLevel: 'L', margin: 2, width }, (err, canvas) => {
       if (err) reject(err); else resolve(canvas);
     });
   });
 }
 
-async function renderQr(container, uri) {
+async function renderQr(container, data) {
   const QRCode = await loadQRCode();
-  const canvas = await qrToCanvas(QRCode, uri, 400);
+  const canvas = await qrToCanvas(QRCode, data, 400);
   container.innerHTML = '';
   container.appendChild(canvas);
 }
@@ -578,10 +667,10 @@ async function renderQr(container, uri) {
 // smoothing baked in); viewers/printers that scale the image should render
 // well at this resolution. Alerts rather than failing silently if the content
 // is too large to fit in any QR code version.
-async function downloadQrPng(uri, filename) {
+async function downloadQrPng(data, filename) {
   try {
     const QRCode = await loadQRCode();
-    const canvas = await qrToCanvas(QRCode, uri, 1024);
+    const canvas = await qrToCanvas(QRCode, data, 1024);
     const a = document.createElement('a');
     a.href = canvas.toDataURL('image/png');
     a.download = filename;
@@ -593,7 +682,10 @@ async function downloadQrPng(uri, filename) {
 
 // Builds one QR card (canvas + label/sub/id + print/download/copy actions) and appends it to grid.
 // `label` is inserted as-is (escape before calling); `sub`/`id` are escaped here.
-async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, itemClass }) {
+// `qrData` (defaults to `uri`) is what's actually rendered/downloaded as the QR — pass raw
+// Uint8Array bytes here for a binary/byte-mode QR while `uri` still carries the text
+// tagdrop: form for the "Copy URI" button.
+async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, qrData = uri, itemClass }) {
   const item = document.createElement('div');
   item.className = 'qr-item' + (itemClass ? ' ' + itemClass : '');
   const qrDiv = document.createElement('div');
@@ -605,7 +697,7 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
     <div class="qr-id">ID: ${escHtml(id)}</div>`);
   grid.appendChild(item);
 
-  await renderQr(qrDiv, uri); // throws on failure — caller handles
+  await renderQr(qrDiv, qrData); // throws on failure — caller handles
 
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row';
@@ -613,7 +705,7 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
     <button class="secondary" onclick="window.print()">🖨 Print</button>
     <button class="secondary download-png">⬇ Download PNG</button>
     <button class="secondary" onclick="copyToClipboard('${uri.replace(/'/g,"\\'")}')">Copy URI</button>`;
-  actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(uri, `tagdrop-${id}.png`));
+  actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(qrData, `tagdrop-${id}.png`));
   item.appendChild(actionRow);
 }
 
@@ -744,6 +836,99 @@ async function parseZip(buf) {
 }
 
 // ── Single-file generator ─────────────────────────────────────────────────
+// Renders the key-code QR (key-code mode) and the screen-only "hidden content"
+// reference card shared by both the single-QR and chunked (Manifest+Chunks) flows
+// when "Encrypt" is checked (SPEC §9). Appends to `grid`/`result`; errors append to `msgs`.
+async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType }) {
+  if (encryptionKey) {
+    const keyHint = 'TagDrop key';
+    const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
+    try {
+      await addGeneratorQrCard(grid, {
+        label: escHtml(keyHint),
+        sub: 'key_material (AES-256-GCM)',
+        badge: 'key',
+        badgeClass: 'key',
+        id: toHex(keyEncoded.cacheId),
+        uri: keyEncoded.uri,
+        itemClass: 'key-item',
+      });
+    } catch (e) {
+      msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
+    }
+  }
+
+  // Screen-only reference for the person generating this code — never printed
+  // (the printed cards above must show only the generic cover, per SPEC §9).
+  const keyNote = kdfPassphrase
+    ? `<div style="margin-top:4px"><small style="color:#555">key method:</small> passphrase — <strong>${escHtml(kdfPassphrase)}</strong></div>`
+    : '';
+  result.insertAdjacentHTML('beforeend', `
+    <div class="card" id="no-print" style="margin-top:8px">
+      <strong>🔒 Hidden inside the code above (SPEC §9):</strong>
+      <div style="margin-top:4px">
+        <small style="color:#555">hint:</small> ${hint ? escHtml(hint) : '<em>(none)</em>'}<br>
+        <small style="color:#555">filename:</small> ${filename ? escHtml(filename) : '<em>(none)</em>'}<br>
+        <small style="color:#555">mime_type:</small> ${escHtml(mimeType)}
+        ${keyNote}
+      </div>
+    </div>`);
+}
+
+// Renders a Manifest + Chunks result: the manifest as a text-only tagdrop: QR
+// (always — readers must scan it first regardless of how chunks are carried),
+// each chunk as binary (byte-mode) or text QR per the "Use binary QR for chunks"
+// checkbox, and (if encrypted) the same key-code/reference extras as the single-QR flow.
+async function renderChunkedResult(chunked, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result }) {
+  const useBinary = document.getElementById('s-binary-chunks').checked;
+
+  msgs.innerHTML += `<div class="warn">Content is ${chunked.totalBytes} bytes — split into 1 manifest QR
+    + ${chunked.chunkCount} chunk QR code${chunked.chunkCount === 1 ? '' : 's'}.</div>`;
+  if (encrypt) {
+    msgs.innerHTML += `<div class="warn">🔒 The real hint/filename/content are hidden inside these codes as an
+      encrypted override map (SPEC §9) — the manifest and chunk codes show only the generic cover below.
+      A separate <strong>key</strong> code is also generated; keep it apart from the cover — print or share
+      on different paper — since anyone with both can unlock the hidden content.</div>`;
+  }
+
+  result.innerHTML = '<div class="qr-grid"></div>';
+  const grid = result.querySelector('.qr-grid');
+
+  const coverLabel = encodeArgs.hint ? escHtml(encodeArgs.hint) : (encodeArgs.filename ? escHtml(encodeArgs.filename) : 'TagDrop');
+  try {
+    await addGeneratorQrCard(grid, {
+      label: coverLabel,
+      sub: `${encodeArgs.mimeType}${compress ? ' · deflate' : ''} · manifest`,
+      badge: encrypt ? 'hidden content' : null,
+      badgeClass: 'encrypted',
+      id: toHex(chunked.cacheId),
+      uri: chunked.manifestUri,
+    });
+  } catch (e) {
+    msgs.innerHTML += `<div class="err">QR rendering failed for the manifest. Is the qrcode library loaded? (requires internet on first use)</div>`;
+    return;
+  }
+
+  for (const c of chunked.chunks) {
+    try {
+      await addGeneratorQrCard(grid, {
+        label: `Chunk ${c.index + 1} / ${chunked.chunkCount}`,
+        sub: useBinary ? `${c.raw.length} raw bytes · binary QR` : `${c.uri.length} chars · text QR`,
+        badge: useBinary ? 'binary' : null,
+        badgeClass: 'binary',
+        id: `${toHex(chunked.cacheId)}-chunk${c.index}`,
+        uri: c.uri,
+        qrData: useBinary ? c.raw : c.uri,
+      });
+    } catch (e) {
+      msgs.innerHTML += `<div class="err">QR rendering failed for chunk ${c.index + 1}.</div>`;
+      return;
+    }
+  }
+
+  if (encrypt) await renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType });
+}
+
 async function generateSingle() {
   const msgs   = document.getElementById('s-messages');
   const result = document.getElementById('s-result');
@@ -804,7 +989,22 @@ async function generateSingle() {
   try { encoded = await encodeSingle(encodeArgs); }
   catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
 
-  if (encoded.uri.length > 2000)
+  const chunkCount = chunkCountForBytes(encoded.assembledLength);
+  if (chunkCount > 1) {
+    if (kdfPassphrase) {
+      msgs.innerHTML = `<div class="err">This content is too large for one QR code (would need ${chunkCount} chunks),
+        but passphrase-mode encryption doesn't support chunking. Switch to "Key code QR" mode, enable compression,
+        or reduce the content size.</div>`;
+      return;
+    }
+    let chunked;
+    try { chunked = await encodeManifestAndChunks({ ...encodeArgs, chunkCount }); }
+    catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
+    await renderChunkedResult(chunked, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result });
+    return;
+  }
+
+  if (encoded.uri.length > MAX_URI_LENGTH)
     msgs.innerHTML += `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
       Enable compression or reduce content size.</div>`;
   if (encrypt) {
@@ -837,41 +1037,7 @@ async function generateSingle() {
     return;
   }
 
-  if (encrypt) {
-    if (encryptionKey) {
-      const keyHint = 'TagDrop key';
-      const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
-      try {
-        await addGeneratorQrCard(grid, {
-          label: escHtml(keyHint),
-          sub: 'key_material (AES-256-GCM)',
-          badge: 'key',
-          badgeClass: 'key',
-          id: toHex(keyEncoded.cacheId),
-          uri: keyEncoded.uri,
-          itemClass: 'key-item',
-        });
-      } catch (e) {
-        msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
-      }
-    }
-
-    // Screen-only reference for the person generating this code — never printed
-    // (the printed cards above must show only the generic cover, per SPEC §9).
-    const keyNote = kdfPassphrase
-      ? `<div style="margin-top:4px"><small style="color:#555">key method:</small> passphrase — <strong>${escHtml(kdfPassphrase)}</strong></div>`
-      : '';
-    result.insertAdjacentHTML('beforeend', `
-      <div class="card" id="no-print" style="margin-top:8px">
-        <strong>🔒 Hidden inside the code above (SPEC §9):</strong>
-        <div style="margin-top:4px">
-          <small style="color:#555">hint:</small> ${hint ? escHtml(hint) : '<em>(none)</em>'}<br>
-          <small style="color:#555">filename:</small> ${filename ? escHtml(filename) : '<em>(none)</em>'}<br>
-          <small style="color:#555">mime_type:</small> ${escHtml(mimeType)}
-          ${keyNote}
-        </div>
-      </div>`);
-  }
+  if (encrypt) await renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType });
 }
 
 // ── Paper layout generator ─────────────────────────────────────────────────
@@ -1041,7 +1207,7 @@ async function generatePaper() {
   for (const f of encodedFiles) {
     const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri, HOME_SLUGS.includes(f.slug) ? '🏠 homepage' : null);
     grid.appendChild(fItem.div);
-    if (f.uri.length > 2000)
+    if (f.uri.length > MAX_URI_LENGTH)
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
     try { await renderQr(fItem.qrDiv, f.uri); }
     catch(e) {

@@ -28,11 +28,13 @@ verification has so far been manual (decode every URI in
 
 `tools/generator/index.html`'s encode-side helpers (`base41Encode`,
 `writeHead`/`cborValue`/`cborMap`/`cborSequence`/etc., `encodeSingle`,
-`encodePaperManifest`) are near-byte-identical to the ones inlined in
-`tools/examples/index.html` (which also adds `encodeMultiChunk` and an
+`encodeManifestAndChunks`, `encodePaperManifest`) are near-byte-identical to
+the ones inlined in `tools/examples/index.html` (which also adds an
 `encodePaperManifest` with collection/icon fields, for its multi-chunk and
-trail examples). `tools/reader/index.html` has the decode-side mirror
-(`base41Decode`, `cborDecodeSequence`, etc.).
+trail examples — its `encodeMultiChunk` predates and doesn't share code with
+the generator's `encodeManifestAndChunks`, which also supports the
+encrypted-override-map path). `tools/reader/index.html` has the decode-side
+mirror (`base41Decode`, `cborDecodeSequence`, etc.).
 
 This is now **browser-vs-browser** duplication (same APIs, same runtime),
 which is lower-risk than the old Node-vs-browser split (`generate.mjs` was
