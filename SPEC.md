@@ -53,10 +53,12 @@ For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 maj
 HTML pages embedded in TagDrop caches can link to other files and papers using:
 
 ```
-tagdrop://<rootHash-base41>/<slug>
+tagdrop://<rootHash-hex>/<slug>
 ```
 
-`rootHash` is the 8-byte SHA-256 of the paper manifest's CBOR sequence bytes, Base41-encoded (12 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
+`rootHash` is the 8-byte SHA-256 of the paper manifest's CBOR sequence bytes, lowercase-hex-encoded (16 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
+
+**Why hex, not Base41, here?** Base41's alphabet includes `:`, which is fine inside the *path* of an opaque URI like `tagdrop:<base41-cbor-sequence>` but not inside a URL's *authority* (host[:port]) component — a `:` there starts the port subcomponent per the WHATWG URL Standard, and anything after it that isn't a bare port number is a hard parse failure for the whole URL. Since the root hash sits in the authority position of a `tagdrop://` link, a Base41-encoded root hash containing `:` (roughly 1 in 4, since `:` is 1 of 41 alphabet characters) would make the link unparseable. Plain lowercase hex has no such character, at the cost of 4 extra characters (16 hex vs 12 Base41 for 8 bytes) — cheap, since navigation links are clicked/typed, not scanned from a QR code.
 
 **Disambiguation:** encoding payloads never contain `//` — `tagdrop:<base41-cbor-sequence>` has no authority component. Navigation links always do — the root hash serves as the link's authority. Base41's alphabet has no `/` character at all, so it can never appear anywhere in a Base41-encoded string, let alone right after the scheme. Encoding URIs and navigation links are therefore unambiguously distinguishable by whether `//` follows the scheme.
 
@@ -274,7 +276,7 @@ from the device's GPS at scan time) replaces the placeholder.
 
 **Navigation:** HTML files on the paper can link to other files using:
 ```html
-<a href="tagdrop://<paper-root-hash-base41>/map">See the map</a>
+<a href="tagdrop://<paper-root-hash-hex>/map">See the map</a>
 ```
 The TagDrop app intercepts these links and resolves them from the local database.
 
@@ -384,7 +386,7 @@ Scan the manifest first to get the directory, then scan whichever file you want 
 
 HTML files can link across the TagDropNet using:
 ```
-tagdrop://<rootHash-base41>/<slug>
+tagdrop://<rootHash-hex>/<slug>
 ```
 
 When the TagDrop WebView encounters such a link, it:
@@ -408,18 +410,27 @@ This works because of how slugs and page-loading combine:
   (e.g. `images/logo.svg`, `pages/about.html`) to express a directory layout
   (see "No explicit folder hierarchy" below).
 - When the Android app displays a file, it loads the page with
-  `https://paper.tagdrop.invalid/<rootHash-hex>/<slug>` as the **base URL**
-  (via `loadDataWithBaseURL`) instead of as an opaque `data:` URI. `.invalid`
-  is an IANA-reserved TLD (RFC 2606) that never resolves over the network.
-- Ordinary relative URLs in the HTML/CSS resolve against that base using
-  standard URL resolution, producing more `https://paper.tagdrop.invalid/...`
-  URLs. The app's `WebViewClient` recognises this host (alongside the
-  `tagdrop://` scheme) and resolves the resulting `<rootHash-hex>/<slug>` pair
-  through `TagDropLinkResolver`, exactly like a `tagdrop://<rootHash>/<slug>`
-  link.
+  `https://<rootHash-hex>.paper.tagdrop.invalid/<slug>` as the **base URL**
+  (via `loadDataWithBaseURL`) instead of as an opaque `data:` URI — the root
+  hash is a **subdomain label**, not a path segment. `.invalid` is an
+  IANA-reserved TLD (RFC 2606) that never resolves over the network.
+- Both ordinary relative URLs (`./about.html`, `../images/logo.svg`,
+  `style.css`) and root-relative URLs (a single leading `/`, e.g.
+  `/images/logo.svg`) in the HTML/CSS resolve against that base using
+  standard URL resolution, producing more
+  `https://<rootHash-hex>.paper.tagdrop.invalid/...` URLs — the host (and so
+  the root hash) survives either way, because resolving a path never touches
+  the host. Putting the root hash in the *path* instead would break
+  root-relative links: an absolute-path reference replaces a base URL's
+  entire path, not just its last segment, so `/images/logo.svg` resolved
+  against `.../<rootHash-hex>/<slug>` would land on `.../images/logo.svg`
+  with the root hash gone. The app's `WebViewClient` recognises any
+  `*.paper.tagdrop.invalid` host (alongside the `tagdrop://` scheme) and
+  resolves the resulting `<rootHash-hex>`/`<slug>` pair through
+  `TagDropLinkResolver`, exactly like a `tagdrop://<rootHash>/<slug>` link.
 
 To reference a file on a **different** paper (a different root hash), use an
-explicit `tagdrop://<rootHash-base41>/<slug>` link — this can't be relative,
+explicit `tagdrop://<rootHash-hex>/<slug>` link — this can't be relative,
 since it's a different content-addressed directory.
 
 Practical effect: a normal static-site folder (HTML + CSS + images with
@@ -455,7 +466,7 @@ links to another paper with slug="letterbox" in the same set.
 
 The full navigation URI for the letterbox paper's index file would be:
 ```
-tagdrop://<letterbox-paper-root-hash-base41>/index
+tagdrop://<letterbox-paper-root-hash-hex>/index
 ```
 
 Root hashes are permanent because paper is immutable. If a paper is updated, it gets a new hash — the old one continues to work as long as the old paper exists physically.

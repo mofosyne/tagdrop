@@ -1051,13 +1051,13 @@ async function generatePaper() {
   }
 
   // Navigation link info
-  const rootHashB41 = base41Encode(manifestEnc.rootHash);
+  const rootHashHex = toHex(manifestEnc.rootHash);
   result.insertAdjacentHTML('beforeend', `
     <div class="card" id="no-print" style="margin-top:16px">
-      <strong>Root hash (Base41):</strong>
-      <code style="display:block;margin:4px 0;font-size:0.85rem">${rootHashB41}</code>
+      <strong>Root hash:</strong>
+      <code style="display:block;margin:4px 0;font-size:0.85rem">${rootHashHex}</code>
       <small style="color:#555">Use in navigation links:
-        <code>tagdrop://${rootHashB41}/${slug || 'index'}</code></small>
+        <code>tagdrop://${rootHashHex}/${slug || 'index'}</code></small>
     </div>`);
 
   const actionRow = document.createElement('div');

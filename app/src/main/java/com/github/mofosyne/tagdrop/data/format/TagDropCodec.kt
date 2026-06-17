@@ -21,7 +21,7 @@ import javax.crypto.spec.SecretKeySpec
  *   type    = uint: 0 = Single, 1 = Manifest, 2 = Chunk, 3 = PaperManifest
  *
  * Navigation links (NOT encoding URIs, NOT put in QR codes):
- *   tagdrop://<rootHash-base41>/<slug>
+ *   tagdrop://<rootHash-hex>/<slug>
  *   Disambiguated by "//": Base41's alphabet has no '/' at all, so an encoding
  *   URI can never have "//" right after the scheme.
  *

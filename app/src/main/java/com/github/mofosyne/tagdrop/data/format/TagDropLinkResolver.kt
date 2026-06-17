@@ -7,19 +7,28 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 /**
  * Resolves TagDrop navigation links. Two URL forms are recognised:
  *
- *   tagdrop://<rootHash-base41>/<slug>
- *     The portable form carried in QR-encoded content. rootHash is Base41-encoded.
+ *   tagdrop://<rootHash-hex>/<slug>
+ *     The portable form carried in QR-encoded content. rootHash is plain lowercase
+ *     hex here -- NOT Base41, unlike the QR-payload encoding -- because Base41's
+ *     alphabet includes ':', which breaks URL authority parsing if it lands in the
+ *     host (SPEC.md §2).
  *
- *   https://paper.tagdrop.invalid/<rootHash-hex>/<slug>
- *     A synthetic same-paper form (rootHash as plain hex). Never appears in a QR
- *     code or in authored content -- pages are loaded with this as their base URL
- *     (see ViewDataUriActivity), so ordinary relative links (./foo, ../bar, baz.html)
- *     resolve to it via standard URL resolution. `.invalid` is an IANA-reserved TLD
- *     (RFC 2606) that never resolves over the network.
+ *   https://<rootHash-hex>.paper.tagdrop.invalid/<slug>
+ *     A synthetic same-paper form. rootHash is a subdomain *label*, not a path
+ *     segment, so it survives standard URL resolution even for root-relative links
+ *     (e.g. "/foo.html"), which replace a base URL's entire path but never its host.
+ *     Never appears in a QR code or in authored content -- pages are loaded with
+ *     this as their base URL (see ViewDataUriActivity), so both ordinary relative
+ *     links (./foo, ../bar, baz.html) and root-relative links (/foo) resolve to it
+ *     via standard URL resolution. `.invalid` is an IANA-reserved TLD (RFC 2606)
+ *     that never resolves over the network.
  *
  * In both forms, the root hash identifies which physical paper to look up; the slug
  * selects a file within that paper's directory. Both are resolved from the local
  * Room database, so no network is needed -- the offline TagDropNet.
+ *
+ * The root hash is lowercased before lookup in either form, tolerating manual
+ * transcription (e.g. a `tagdrop://` link copied or retyped by hand).
  *
  * Encoding URIs (tagdrop:<base41-cbor-sequence>, no "//") are passed through as
  * EncodingUri so callers know not to treat them as navigation.
@@ -52,18 +61,19 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         val ref = when {
             uri.startsWith(SCHEME) -> {
                 val rest = uri.removePrefix(SCHEME)
-                val (rootHashB41, slug) = splitFirstSlash(rest)
-                val rootHashHex = runCatching { Base41.decode(rootHashB41).toHex() }.getOrElse {
-                    return Resolution.Invalid
-                }
-                Ref(rootHashHex, slug)
+                val (rootHashHex, slug) = splitFirstSlash(rest)
+                val hex = rootHashHex.lowercase()
+                if (!HEX_ROOT_HASH.matches(hex)) return Resolution.Invalid
+                Ref(hex, slug)
             }
             // tagdrop:<base41> with no "//" — an encoding URI, not a navigation link (SPEC §2).
             uri.startsWith(ENCODING_PREFIX) -> return Resolution.EncodingUri
-            uri.startsWith(SYNTHETIC_BASE) -> {
-                val (rootHashHex, slug) = splitFirstSlash(uri.removePrefix(SYNTHETIC_BASE))
-                if (!HEX_ROOT_HASH.matches(rootHashHex)) return Resolution.Invalid
-                Ref(rootHashHex, slug)
+            uri.startsWith(HTTPS_PREFIX) -> {
+                val (host, slug) = splitFirstSlash(uri.removePrefix(HTTPS_PREFIX))
+                if (!isSyntheticHost(host)) return Resolution.NotTagDrop
+                val hex = host.removeSuffix(".$SYNTHETIC_HOST_SUFFIX").lowercase()
+                if (!HEX_ROOT_HASH.matches(hex)) return Resolution.Invalid
+                Ref(hex, slug)
             }
             else -> return Resolution.NotTagDrop
         }
@@ -127,10 +137,20 @@ class TagDropLinkResolver(private val db: AppDatabase) {
     companion object {
         private const val SCHEME = "tagdrop://"
         private const val ENCODING_PREFIX = "tagdrop:"
+        private const val HTTPS_PREFIX = "https://"
 
-        /** Synthetic host used as a same-paper base URL — see class doc. */
-        const val SYNTHETIC_HOST = "paper.tagdrop.invalid"
-        const val SYNTHETIC_BASE = "https://$SYNTHETIC_HOST/"
+        /**
+         * Synthetic host suffix for the same-paper base URL — see class doc. The full host
+         * is "<rootHash-hex>.$SYNTHETIC_HOST_SUFFIX" (root hash as a subdomain label).
+         */
+        const val SYNTHETIC_HOST_SUFFIX = "paper.tagdrop.invalid"
+
+        /** True if [host] is a same-paper synthetic host ("<rootHash-hex>.$SYNTHETIC_HOST_SUFFIX"). */
+        fun isSyntheticHost(host: String?): Boolean = host != null && host.endsWith(".$SYNTHETIC_HOST_SUFFIX")
+
+        /** Builds the same-paper base URL for [rootHashHex]/[slug] — see ViewDataUriActivity.loadHtml. */
+        fun syntheticBaseUrl(rootHashHex: String, slug: String): String =
+            "$HTTPS_PREFIX$rootHashHex.$SYNTHETIC_HOST_SUFFIX/$slug"
 
         /** Slug convention (SPEC §7) for a paper-wide CSS stylesheet, inlined into rendered Markdown. */
         const val STYLESHEET_SLUG = "style.css"

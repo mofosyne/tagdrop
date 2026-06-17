@@ -13,7 +13,7 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
  *         3 = paper manifest (directory of files on a physical paper)
  *
  * Navigation links (not QR payloads):
- *   tagdrop://<rootHash-base41>/<slug>  resolved by TagDropLinkResolver
+ *   tagdrop://<rootHash-hex>/<slug>  resolved by TagDropLinkResolver
  */
 sealed class TagDropPayload {
 
@@ -127,7 +127,7 @@ sealed class TagDropPayload {
      * after the manifest is finalized — identical to how IPFS computes CIDs.
      *
      * Navigation links embedded in HTML pages:
-     *   tagdrop://<rootHash-base41>/<slug>  — resolved by TagDropLinkResolver
+     *   tagdrop://<rootHash-hex>/<slug>  — resolved by TagDropLinkResolver
      */
     data class PaperManifest(
         val rootHash: ByteArray,           // SHA-256(CBOR)[0:8]; paper's permanent address

@@ -61,8 +61,8 @@ class ViewDataUriActivity : AppCompatActivity() {
 
             /**
              * Navigation interception: tagdrop:// links and same-paper relative links
-             * (resolved by the browser to https://paper.tagdrop.invalid/...) clicked
-             * by the user. Resolved asynchronously; loads the target as a new page.
+             * (resolved by the browser to https://<rootHash>.paper.tagdrop.invalid/...)
+             * clicked by the user. Resolved asynchronously; loads the target as a new page.
              */
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (!isTagDropUrl(request.url)) return false
@@ -151,11 +151,11 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /**
      * True for both navigation-link forms TagDropLinkResolver understands:
-     *   tagdrop://<rootHash-base41>/<slug>
-     *   https://paper.tagdrop.invalid/<rootHash-hex>/<slug>  (same-paper relative links)
+     *   tagdrop://<rootHash-hex>/<slug>
+     *   https://<rootHash-hex>.paper.tagdrop.invalid/<slug>  (same-paper relative links)
      */
     private fun isTagDropUrl(uri: Uri): Boolean =
-        uri.scheme == "tagdrop" || uri.host == TagDropLinkResolver.SYNTHETIC_HOST
+        uri.scheme == "tagdrop" || TagDropLinkResolver.isSyntheticHost(uri.host)
 
     /**
      * Loads the activity's initial content. If it's HTML belonging to a scanned
@@ -195,7 +195,7 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /** Loads HTML with a synthetic same-paper base URL so its relative links resolve. */
     private fun loadHtml(html: String, rootHashHex: String, slug: String) {
-        val baseUrl = "${TagDropLinkResolver.SYNTHETIC_BASE}$rootHashHex/$slug"
+        val baseUrl = TagDropLinkResolver.syntheticBaseUrl(rootHashHex, slug)
         binding.htmldisp.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null)
     }
 

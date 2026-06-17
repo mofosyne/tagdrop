@@ -540,18 +540,17 @@ function describeMap(map, indent) {
 async function parseUri(uri) {
   if (!uri.startsWith('tagdrop:')) return null;
 
-  // Navigation link: tagdrop://ROOTHASH_B41[/slug] — disambiguated from encoding
-  // URIs by the "//" (SPEC §2): Base41's alphabet has no '/' at all.
+  // Navigation link: tagdrop://ROOTHASH_HEX[/slug] — disambiguated from encoding
+  // URIs by the "//" (SPEC §2): Base41's alphabet has no '/' at all. The root hash
+  // here is plain lowercase hex, NOT Base41 — Base41's alphabet includes ':', which
+  // breaks URL authority parsing if it lands in the host (SPEC.md §2).
   if (uri.startsWith('tagdrop://')) {
     const rest = uri.slice('tagdrop://'.length);
     const slash = rest.indexOf('/');
-    const rhB41 = slash < 0 ? rest : rest.slice(0, slash);
-    const slug  = slash < 0 ? null  : (rest.slice(slash + 1) || null);
-    try {
-      return { type: 'nav', rootHashHex: toHex(base41Decode(rhB41)), slug };
-    } catch (e) {
-      return { type: 'invalid' };
-    }
+    const rootHashHex = (slash < 0 ? rest : rest.slice(0, slash)).toLowerCase();
+    const slug = slash < 0 ? null : (rest.slice(slash + 1) || null);
+    if (!/^[0-9a-f]{16}$/.test(rootHashHex)) return { type: 'invalid' };
+    return { type: 'nav', rootHashHex, slug };
   }
 
   // Encoding URI: tagdrop:<base41-cbor-sequence>
