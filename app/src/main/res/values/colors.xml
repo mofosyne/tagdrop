@@ -2,6 +2,9 @@
 
     <color name="black_overlay">#66000000</color>
 
+    <!-- App icon (see ARTASSET/icon/HISTORY.md) -->
+    <color name="ic_launcher_background">#F3EDE1</color>
+
     <!-- Scan board: blocks "fill in" as paper-directory files get scanned. -->
     <color name="scan_block_pending">#e0e0e0</color>
     <color name="scan_block_found">#c8e6c9</color>
