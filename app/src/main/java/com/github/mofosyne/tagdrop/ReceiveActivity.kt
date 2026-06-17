@@ -590,7 +590,7 @@ class ReceiveActivity : AppCompatActivity() {
         when (val s = state) {
             is ChunkAssembler.State.Collecting -> {
                 updateDisplay()
-                toast(getString(R.string.chunk_progress, s.received, s.total))
+                toast(getString(R.string.chunk_progress, s.received, s.total, formatMissingIndices(s.missingIndices)))
             }
             is ChunkAssembler.State.Complete -> completeFromState(s)
             is ChunkAssembler.State.HashMismatch -> {
@@ -715,7 +715,11 @@ class ReceiveActivity : AppCompatActivity() {
                 !assembler.hasManifest -> getString(R.string.status_ready)
                 else -> when (val state = assembler.currentState()) {
                     is ChunkAssembler.State.Collecting ->
-                        getString(R.string.status_collecting, state.received, state.total, state.hint ?: "")
+                        getString(
+                            R.string.status_collecting,
+                            state.received, state.total, state.hint ?: "",
+                            formatMissingIndices(state.missingIndices)
+                        )
                     is ChunkAssembler.State.AwaitingKey -> getString(R.string.awaiting_key)
                     else -> getString(R.string.status_ready)
                 }
@@ -723,6 +727,10 @@ class ReceiveActivity : AppCompatActivity() {
         }
         binding.buttonLaunch.isEnabled = legacyChunks.isNotEmpty()
     }
+
+    /** Renders 0-based missing chunk indices as 1-based "#1, #2" for display — chunks can be scanned in any order, so list all of them, not just the next. */
+    private fun formatMissingIndices(missingIndices: List<Int>): String =
+        missingIndices.joinToString(", ") { "#${it + 1}" }
 
     private fun buildPaperStatusText(paper: TagDropPayload.PaperManifest): String = buildString {
         appendLine(paper.label ?: getString(R.string.paper_manifest_label))

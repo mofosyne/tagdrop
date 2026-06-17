@@ -1066,7 +1066,7 @@ async function handleScanned(rawBytes) {
       lastScannedTitle = parsed.cacheId;
       updateCborButton();
       showMsg('Manifest scanned — need ' + parsed.chunkCount + ' chunk(s). Scan them now.', 'info');
-      showAssemblyProgress(parsed.cacheId, 0, parsed.chunkCount);
+      showAssemblyProgress(parsed.cacheId, new Map(), parsed.chunkCount);
       break;
 
     case 'chunk': {
@@ -1081,15 +1081,15 @@ async function handleScanned(rawBytes) {
       a.chunks.set(parsed.index, parsed.data);
       const got = a.chunks.size, need = a.manifest.chunkCount;
       if (got < need) {
-        showMsg('Chunk ' + got + '/' + need + ' received.', 'info');
-        showAssemblyProgress(parsed.cacheId, got, need);
+        showMsg('Chunk ' + got + '/' + need + ' received. Still need: ' + missingChunkLabels(a.chunks, need), 'info');
+        showAssemblyProgress(parsed.cacheId, a.chunks, need);
         return;
       }
       // All chunks present — assemble in order
       const parts = [];
       for (let i = 0; i < need; i++) {
         const chunk = a.chunks.get(i);
-        if (!chunk) { showMsg('Missing chunk ' + i + '. Scan it.', 'err'); return; }
+        if (!chunk) { showMsg('Missing chunk #' + (i + 1) + '. Scan it.', 'err'); return; }
         parts.push(chunk);
       }
       const raw = new Uint8Array(parts.reduce((s, c) => s + c.length, 0));
@@ -1359,8 +1359,20 @@ window.addEventListener('message', async e => {
 });
 
 // ── Assembly progress bar ─────────────────────────────────────────────────
-function showAssemblyProgress(cacheId, got, need) {
-  document.getElementById('assemblyText').textContent = 'Multi-code: ' + got + '/' + need + ' chunks';
+// Chunks can be scanned in any order (SPEC.md §5), so callers pass the Map of
+// chunks received so far rather than just a count — lets the UI point out
+// exactly which chunk(s) are still missing instead of leaving the finder to
+// guess which one they skipped.
+function missingChunkLabels(receivedChunks, need) {
+  const missing = [];
+  for (let i = 0; i < need; i++) if (!receivedChunks.has(i)) missing.push('#' + (i + 1));
+  return missing.join(', ');
+}
+function showAssemblyProgress(cacheId, receivedChunks, need) {
+  const got = receivedChunks.size;
+  let text = 'Multi-code: ' + got + '/' + need + ' chunks';
+  if (got < need) text += ' — still need: ' + missingChunkLabels(receivedChunks, need);
+  document.getElementById('assemblyText').textContent = text;
   document.getElementById('btnScanChunk').onclick = startScan;
   document.getElementById('assemblyBar').classList.remove('hidden');
 }
