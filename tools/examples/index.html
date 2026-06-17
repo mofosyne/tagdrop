@@ -84,9 +84,33 @@
 
   .err  { background: #fdecea; border-left: 4px solid #e53935; padding: 10px 14px;
           border-radius: 4px; margin: 16px 0; font-size: 0.85rem; }
+
+  /* CBOR debug dialog (dev tool: 🔍 Inspect CBOR button) */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+             display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .overlay.hidden { display: none; }
+  .cbor-box { background: #fff; border-radius: 10px; padding: 16px;
+              width: min(640px, 96vw); max-height: 80vh;
+              display: flex; flex-direction: column; gap: 12px; }
+  .cbor-box h2 { margin: 0; font-size: 0.95rem; font-family: monospace;
+                 color: #333; word-break: break-all; }
+  #cborDump { margin: 0; overflow: auto; font-size: 0.78rem; line-height: 1.4;
+              white-space: pre-wrap; word-break: break-all;
+              background: #f5f5f5; border-radius: 6px; padding: 12px; flex: 1; }
+  .cbor-box button { align-self: flex-end; padding: 8px 16px; background: #fff;
+                      border: 1px solid #ccc; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+  .cbor-box button:hover { background: #f0f0f0; }
 </style>
 </head>
 <body>
+
+<div id="cborOverlay" class="overlay hidden">
+  <div class="cbor-box">
+    <h2 id="cborTitle"></h2>
+    <pre id="cborDump"></pre>
+    <button id="btnCloseCbor" class="secondary">Close</button>
+  </div>
+</div>
 
 <header>
   <h1>TagDrop — Example Payloads</h1>
@@ -279,6 +303,159 @@ function concatBytes(...arrays) {
 function cborSequence(type, payload) {
   return concatBytes(cborUInt(ENVELOPE_VERSION), cborUInt(type), payload);
 }
+
+// ── CBOR debug (dev tool: 🔍 Inspect CBOR button) ──────────────────────────
+// Decode-side primitives + describeCbor/describeMap port — mirrors
+// ../reader/index.html's "View raw CBOR" debug view (same algorithm as
+// TagDropCodec.describeCbor/describeMap in the Kotlin app; copied rather
+// than shared, per CLAUDE.md's self-contained-HTML-tools rationale).
+function base41Decode(s) {
+  s = s.replace(/[a-z]/g, c => c.toUpperCase());
+  if (s.length % 3 === 1) throw new Error('Invalid Base41 length');
+  const out = [];
+  let i = 0;
+  while (i + 2 < s.length) {
+    const c0 = B41.indexOf(s[i]), c1 = B41.indexOf(s[i+1]), c2 = B41.indexOf(s[i+2]);
+    if (c0 < 0 || c1 < 0 || c2 < 0) throw new Error('Invalid Base41 char');
+    const n = c0 + c1 * 41 + c2 * 1681;
+    if (n > 0xFFFF) throw new Error('Base41 value overflow');
+    out.push((n >> 8) & 0xFF, n & 0xFF);
+    i += 3;
+  }
+  if (i < s.length) {
+    const c0 = B41.indexOf(s[i]), c1 = B41.indexOf(s[i+1]);
+    if (c0 < 0 || c1 < 0) throw new Error('Invalid Base41 char');
+    out.push(c0 + c1 * 41);
+  }
+  return new Uint8Array(out);
+}
+
+function cborDecodeSequencePrefix(bytes, n) {
+  let pos = 0;
+  function rb() {
+    if (pos >= bytes.length) throw new Error('Unexpected end of CBOR');
+    return bytes[pos++];
+  }
+  function rbs(m) {
+    if (pos + m > bytes.length) throw new Error('Truncated CBOR');
+    const slice = bytes.slice(pos, pos + m); pos += m; return slice;
+  }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) { return rb() * 256 + rb(); }
+    if (info === 26) { let n2 = 0; for (let i = 0; i < 4; i++) n2 = n2 * 256 + rb(); return n2; }
+    if (info === 27) { return rbs(8); } // float64: 8 raw bytes, decoded in readVal
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function readVal() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    switch (major) {
+      case 0: return a;
+      case 2: return rbs(a);
+      case 3: return new TextDecoder().decode(rbs(a));
+      case 4: return Array.from({length: a}, readVal);
+      case 5: {
+        const m = {};
+        for (let i = 0; i < a; i++) { const k = readVal(); m[k] = readVal(); }
+        return m;
+      }
+      case 7:
+        if (b === 0xF6) return null;
+        if (b === 0xF4) return false;
+        if (b === 0xF5) return true;
+        if ((b & 0x1F) === 27) return new DataView(a.buffer, a.byteOffset, 8).getFloat64(0);
+        throw new Error('Unsupported CBOR simple value: 0x' + b.toString(16));
+      default: throw new Error('Unsupported CBOR major type: ' + major);
+    }
+  }
+  const items = [];
+  for (let i = 0; i < n; i++) items.push(readVal());
+  return { items, trailing: bytes.slice(pos) };
+}
+
+const OVERRIDE_BLOB_MIN_BYTES = 28;
+const TYPE_NAMES = { 0: 'Single', 1: 'Manifest', 2: 'Chunk', 3: 'PaperManifest' };
+const KEY_NAMES = {
+  2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
+  6: 'chunk_count', 7: 'total_bytes', 8: 'sha256', 9: 'chunk_index', 10: 'chunk_data',
+  11: 'filename', 12: 'compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
+  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
+  20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
+  26: 'lat', 27: 'lng',
+  28: 'encryption', 30: 'key_material', 31: 'retain_key',
+  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters'
+};
+
+function toHexDump(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+/** Pretty-prints a raw TagDrop CBOR sequence: hex dump, version/type envelope, and a
+ *  key-by-key breakdown of the payload map annotated with KEY_NAMES. */
+function describeCbor(bytes) {
+  let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  try {
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 3);
+    if (items.length < 3) throw new Error('Expected version, type, payload — got ' + items.length + ' item(s)');
+    const [version, type, payload] = items;
+    out += 'version: ' + version + '\n';
+    out += 'type: ' + type + ' (' + (TYPE_NAMES[type] || 'unknown') + ')\n\n';
+    out += describeMap(payload, 0);
+    if (trailing.length > 0) {
+      const note = trailing.length >= OVERRIDE_BLOB_MIN_BYTES
+        ? 'candidate encrypted override map, SPEC §9'
+        : 'too short to be an override map, SPEC §9';
+      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes, ' + note + ')\n';
+    }
+  } catch (e) {
+    out += 'Failed to decode as CBOR sequence: ' + e.message;
+  }
+  return out;
+}
+
+function describeMap(map, indent) {
+  const pad = '  '.repeat(indent);
+  let out = '';
+  for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
+    const value = map[key];
+    const label = KEY_NAMES[key] ? key + ' (' + KEY_NAMES[key] + ')' : String(key);
+    if (value instanceof Uint8Array) {
+      out += pad + label + ': ' + toHexDump(value) + ' (' + value.length + ' bytes)\n';
+    } else if (typeof value === 'string') {
+      out += pad + label + ': "' + value + '"\n';
+    } else if (Array.isArray(value)) {
+      out += pad + label + ': [\n';
+      for (const item of value) {
+        if (item !== null && typeof item === 'object' && !(item instanceof Uint8Array) && !Array.isArray(item)) {
+          out += pad + '  {\n' + describeMap(item, indent + 2) + pad + '  }\n';
+        } else {
+          out += pad + '  ' + item + '\n';
+        }
+      }
+      out += pad + ']\n';
+    } else {
+      out += pad + label + ': ' + value + '\n';
+    }
+  }
+  return out;
+}
+
+// Decodes a tagdrop:<base41> URI and shows its CBOR breakdown in the #cborOverlay dialog.
+function inspectCborFromUri(uri, title) {
+  try {
+    const bytes = base41Decode(uri.replace(/^tagdrop:/, ''));
+    document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + title;
+    document.getElementById('cborDump').textContent = describeCbor(bytes);
+    document.getElementById('cborOverlay').classList.remove('hidden');
+  } catch (e) {
+    alert('Failed to decode CBOR: ' + e.message);
+  }
+}
+
+document.getElementById('btnCloseCbor').onclick = () => {
+  document.getElementById('cborOverlay').classList.add('hidden');
+};
 
 // ── SHA-256 ───────────────────────────────────────────────────────────────
 async function sha256first8(bytes) {
@@ -1029,7 +1206,8 @@ async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isM
     <div>${mimeBadge}${extra}</div>
     <div class="qr-id">${id}</div>
     <div class="qr-uri"><input type="text" readonly value="${escHtml(uri)}"></div>
-    <button class="copy-btn">Copy URI</button>`);
+    <button class="copy-btn">Copy URI</button>
+    <button class="copy-btn inspect-cbor">🔍 Inspect CBOR</button>`);
   grid.appendChild(div);
 
   try {
@@ -1050,6 +1228,7 @@ async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isM
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
   });
+  div.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromUri(uri, label));
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
