@@ -255,4 +255,15 @@ class TagDropLinkResolverTest {
         val paper = storePaper()
         assertNull(resolver.findStylesheet(paper.rootHash))
     }
+
+    // ── HOME_SLUGS convention ─────────────────────────────────────────────────
+
+    @Test fun homeSlugsContainsExpectedConventionalSlugs() {
+        assertEquals(setOf("index", "index.html", "index.md"), TagDropLinkResolver.HOME_SLUGS)
+    }
+
+    @Test fun homeSlugsMembershipIsCaseSensitive() {
+        assertFalse("INDEX.HTML" in TagDropLinkResolver.HOME_SLUGS)
+        assertFalse("Index" in TagDropLinkResolver.HOME_SLUGS)
+    }
 }
