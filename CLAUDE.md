@@ -42,13 +42,29 @@ removed — see below). A shared module would reduce drift further, **but**
 note: `tools/generator/index.html`, `tools/reader/index.html`, and
 `tools/examples/index.html` are deliberately **self-contained single HTML
 files** (say so in their own header comments) — the only external dependency
-is a CDN script for QR rendering/scanning (`qrcode`/`jsQR`), not the codec
-logic. Splitting the codec into an importable `tools/shared/*.mjs` would break
-that "download one file, it just works offline" property unless paired with a
-build step that inlines it back into the HTML (extra tooling) — not worth it
-for three files of this size. If drift becomes a real problem, an automated
-round-trip/cross-check test (encode with one implementation, decode with
-another, compare) is lower-risk than deduping.
+is a CDN script for QR rendering (`qrcode`) and scanning (`zxing-wasm`), not
+the codec logic. Splitting the codec into an importable `tools/shared/*.mjs`
+would break that "download one file, it just works offline" property unless
+paired with a build step that inlines it back into the HTML (extra tooling)
+— not worth it for three files of this size. If drift becomes a real
+problem, an automated round-trip/cross-check test (encode with one
+implementation, decode with another, compare) is lower-risk than deduping.
+
+### Why the reader uses zxing-wasm, not jsQR, to scan QR codes
+
+`tools/reader/index.html` decodes camera/image QR scans with **zxing-wasm**
+(a WebAssembly port of ZXing — the same decoder family the Android app uses
+via the platform ZXing library). jsQR was the original choice and is much
+smaller (no `.wasm` fetch), but has a confirmed, unfixed bug
+([cozmo/jsQR#155](https://github.com/cozmo/jsQR/issues/155)): it fails to
+detect **any** QR symbol — alphanumeric `tagdrop:` URI or binary/byte-mode
+chunk — that happens to be encoded as **QR version 23** specifically (other
+versions are unaffected). Confirmed by direct testing: alphanumeric URIs of
+1455–1582 chars and byte-mode payloads of 1004–1091 bytes both land on
+version 23 and were 100% undetectable by jsQR (and by `jsqr-es6`, its only
+maintained fork) regardless of pixel scale or mask pattern, while zxing-wasm
+decodes the identical images correctly. If jsQR is ever reintroduced (e.g.
+to shrink the dependency), re-verify against this version-23 case first.
 
 ### `tools/examples/` is self-contained, not generated
 

@@ -16,14 +16,20 @@
   TagDrop Reader — scan TagDrop QR codes in any modern browser.
   Self-contained single HTML file, no server required.
 
-  QR decoding uses jsQR (CDN). For fully offline use, download
-  https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js and change the
-  script src below to a relative path.
+  QR decoding uses zxing-wasm (CDN) — a WebAssembly port of ZXing, the same
+  decoder family the Android app uses. jsQR was tried first but has a
+  confirmed, unfixed bug (cozmo/jsQR#155) where it fails to detect ANY QR
+  symbol, alphanumeric or byte-mode, at QR version 23; zxing-wasm decodes
+  those correctly. For fully offline use, download
+  https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.0/dist/iife/reader/index.js
+  plus the matching zxing_reader.wasm, change the script src below to a
+  relative path, and pass `overrides: { wasmBinary }` (or a relative
+  `locateFile`) to prepareZXingModule().
 
   Rendering text/markdown content dynamically imports marked (CDN) on
   first use; if that fails (e.g. offline), it falls back to plain text.
 -->
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.0/dist/iife/reader/index.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; }
 body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
@@ -229,6 +235,10 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 
 <script>
 'use strict';
+
+// Kick off the zxing-wasm module fetch/compile immediately on page load, so it's
+// likely ready by the time the user's first scan happens instead of stalling on it.
+ZXingWASM.prepareZXingModule({ fireImmediately: true });
 
 // ── Base41 decoder (QR/URI-safe alphabet, packed like RFC 9285 Base45 — see SPEC.md §2) ─
 // Decoding is case-insensitive (tolerates manual transcription); encoding always emits uppercase.
@@ -560,6 +570,13 @@ async function parseUri(uri) {
   try { seq = base41Decode(uri.slice('tagdrop:'.length)); }
   catch (e) { return { type: 'invalid' }; }
 
+  return parseEnvelope(seq);
+}
+
+// Decodes a version/type/payload CBOR-sequence envelope (SPEC §2) directly from raw bytes —
+// shared by parseUri()'s Base41-decoded text path and parseScannedBytes()'s binary/byte-mode
+// QR path (no tagdrop:/Base41 wrapper, SPEC.md's "Binary mode vs alphanumeric Base41" note).
+async function parseEnvelope(seq) {
   let items, trailing;
   try { ({ items, trailing } = cborDecodeSequencePrefix(seq, 3)); }
   catch (e) { return { type: 'invalid' }; }
@@ -874,18 +891,27 @@ function stopScan(stream) {
   document.getElementById('scanOverlay').classList.add('hidden');
 }
 
-function tickScan(video, canvas, stream) {
+// Wraps zxing-wasm's readBarcodes — see the offline-use note at the top of this file for
+// why zxing-wasm replaced jsQR. `result.bytes` is the symbol's raw decoded content
+// regardless of its internal encoding mode (alphanumeric vs byte/binary).
+async function scanQr(imgData) {
+  const results = await ZXingWASM.readBarcodes(imgData, { formats: ['QRCode'], tryHarder: true });
+  return results[0] || null;
+}
+
+async function tickScan(video, canvas, stream) {
   if (!scanning) return;
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
     canvas.width  = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(video, 0, 0);
-    const img  = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
-    if (code) {
+    const img    = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const result = await scanQr(img);
+    if (!scanning) return; // stopScan() may have run while the await above was pending
+    if (result) {
       stopScan(stream);
-      handleScanned(code.data);
+      handleScanned(result.bytes);
       return;
     }
   }
@@ -897,13 +923,37 @@ let activePaperHash = null;
 let lastScannedCbor = null;
 let lastScannedTitle = null;
 
+const TAGDROP_TEXT_PREFIX = [0x74, 0x61, 0x67, 0x64, 0x72, 0x6f, 0x70, 0x3a]; // ASCII "tagdrop:"
+
+// Maps each byte to the Unicode code point of the same value (U+0000-U+00FF) — unlike
+// TextDecoder('latin1'), which browsers treat as windows-1252 and remap 0x80-0x9F to
+// unrelated characters, this is a lossless 1:1 byte<->char round trip.
+function bytesToBinaryString(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return s;
+}
+
+// scanQr() (above) gives us a scanned QR symbol's raw decoded bytes regardless of its
+// internal encoding mode — for a normal alphanumeric tagdrop: URI those bytes are just its
+// ASCII characters, but for byte-mode (binary) QR symbols they're the raw CBOR envelope, not
+// valid UTF-8 text. Detect a text URI by its literal ASCII prefix and reuse the text path;
+// anything else is a raw CBOR-sequence envelope carried directly in a binary/byte-mode QR
+// (SPEC.md binary-mode-chunks note) — mirrors the Android reference reader's raw byte-segment
+// fallback.
+async function parseScannedBytes(bytes) {
+  const looksLikeTagdropText = TAGDROP_TEXT_PREFIX.every((b, i) => bytes[i] === b);
+  return looksLikeTagdropText ? parseUri(bytesToBinaryString(bytes)) : parseEnvelope(bytes);
+}
+
 function updateCborButton() {
   document.getElementById('btnCbor').disabled = !lastScannedCbor;
 }
 
-async function handleScanned(raw) {
+async function handleScanned(rawBytes) {
+  const bytes = rawBytes instanceof Uint8Array ? rawBytes : new Uint8Array(rawBytes);
   let parsed;
-  try { parsed = await parseUri(raw); }
+  try { parsed = await parseScannedBytes(bytes); }
   catch (e) { showMsg('Parse error: ' + e.message, 'err'); return; }
   if (!parsed) { showMsg('Not a TagDrop QR code.', 'err'); return; }
 
@@ -1304,12 +1354,12 @@ async function decodeQrFromFile(file) {
   const ctx = offscreen.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(bitmap, 0, 0);
   const imgData = ctx.getImageData(0, 0, offscreen.width, offscreen.height);
-  const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
-  if (!code) {
+  const result = await scanQr(imgData);
+  if (!result) {
     showErr('No QR code found in this image — try a higher-resolution version or check that the code scanned correctly.');
     return;
   }
-  await handleScanned(code.data);
+  await handleScanned(result.bytes);
 }
 
 (function () {
