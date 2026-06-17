@@ -8,6 +8,28 @@ permissions:
   contents: read
 
 jobs:
+  web-tools-roundtrip:
+    name: Web tools QR round-trip test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Install dependencies
+        working-directory: tools
+        run: npm ci
+
+      - name: Run round-trip test
+        working-directory: tools
+        run: npm test
+
   test-and-build:
     name: Unit tests & APK builds
     runs-on: ubuntu-latest

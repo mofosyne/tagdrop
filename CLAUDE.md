@@ -50,9 +50,9 @@ paired with a build step that inlines it back into the HTML (extra tooling)
 independent Node port for verification: `tools/test-qr-roundtrip.mjs`
 (`tools/package.json`) builds Single and Manifest+Chunk payloads, renders
 them as real QR images (`qrcode`), decodes them back via zxing-wasm, and
-asserts round-trip correctness — run with `cd tools && npm install && npm
-test`. **It is not wired into CI** (`.github/workflows/ci.yml` only runs
-`./gradlew testDebugUnitTest` + APK builds) — it has to be run manually.
+asserts round-trip correctness — run locally with `cd tools && npm install
+&& npm test`, and gated in CI as its own job (`.github/workflows/ci.yml`,
+`web-tools-roundtrip`) alongside the Gradle unit tests.
 
 ### Why the reader uses zxing-wasm, not jsQR, to scan QR codes
 

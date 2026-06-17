@@ -112,7 +112,7 @@ The unit tests cover the format layer (Base41, MiniCbor, TagDropCodec, ChunkAsse
 ./gradlew connectedDebugAndroidTest
 ```
 
-### Web tools round-trip test (Node, not run by CI)
+### Web tools round-trip test (Node)
 
 ```bash
 cd tools
@@ -123,8 +123,10 @@ npm test
 Builds Single and Manifest+Chunk payloads with the browser tools' codec logic
 ported to Node, renders them as real QR images, decodes them back via
 zxing-wasm, and asserts round-trip correctness. This is separate from the
-Gradle unit tests above and isn't part of `.github/workflows/ci.yml` — run it
-manually after touching `tools/generator/index.html` or `tools/reader/index.html`.
+Gradle unit tests above — it's its own CI job (`web-tools-roundtrip` in
+`.github/workflows/ci.yml`), so run it locally after touching
+`tools/generator/index.html` or `tools/reader/index.html` to catch problems
+before pushing.
 
 ---
 
@@ -153,7 +155,7 @@ tagdrop/
 │   ├── reader/index.html    # Static HTML reader (scan + view in browser)
 │   ├── examples/index.html  # Self-contained gallery of example codes
 │   ├── package.json         # Deps (qrcode, zxing-wasm) for the test below
-│   └── test-qr-roundtrip.mjs# Node round-trip test (not wired into CI — run manually)
+│   └── test-qr-roundtrip.mjs# Node round-trip test (own CI job)
 └── SPEC.md                  # Wire format specification
 ```
 
