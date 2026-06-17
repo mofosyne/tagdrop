@@ -158,6 +158,29 @@
     </div>
     <div class="row">
       <div>
+        <label>Icon <small>(optional — emoji shown as a visual badge)</small></label>
+        <input type="text" id="s-icon" placeholder="e.g. 🌳" maxlength="8">
+      </div>
+      <div>
+        <label>Collection label <small>(optional — name for this code's collection)</small></label>
+        <input type="text" id="s-collection-label" placeholder="e.g. Spring Sticker Hunt">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Collection ID <small>(optional, hex — same value on every code in the collection, see §7 Collections)</small></label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="s-collection-id" placeholder="e.g. a1b2c3d4e5f60718" style="font-family:monospace">
+          <button type="button" class="secondary" style="margin-top:12px;white-space:nowrap" onclick="document.getElementById('s-collection-id').value=toHex(crypto.getRandomValues(new Uint8Array(8)))">🎲 Generate random</button>
+        </div>
+      </div>
+      <div>
+        <label>Collection tag <small>(optional — short hashtag-style cross-reference)</small></label>
+        <input type="text" id="s-collection-tag" placeholder="e.g. springtrail2026">
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>MIME type</label>
         <select id="s-mime">
           <option value="text/plain">text/plain</option>
@@ -244,6 +267,29 @@
     <div>
       <label>Slug <small>(optional — this paper's address within the set)</small></label>
       <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
+    </div>
+    <div class="row">
+      <div>
+        <label>Icon <small>(optional — emoji shown as a visual badge)</small></label>
+        <input type="text" id="p-icon" placeholder="e.g. 🌳" maxlength="8">
+      </div>
+      <div>
+        <label>Collection label <small>(optional — name for this paper's collection)</small></label>
+        <input type="text" id="p-collection-label" placeholder="e.g. Spring Sticker Hunt">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Collection ID <small>(optional, hex — stamped onto the manifest and every file code, see §7 Collections)</small></label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="p-collection-id" placeholder="e.g. a1b2c3d4e5f60718" style="font-family:monospace">
+          <button type="button" class="secondary" style="margin-top:12px;white-space:nowrap" onclick="document.getElementById('p-collection-id').value=toHex(crypto.getRandomValues(new Uint8Array(8)))">🎲 Generate random</button>
+        </div>
+      </div>
+      <div>
+        <label>Collection tag <small>(optional — short hashtag-style cross-reference)</small></label>
+        <input type="text" id="p-collection-tag" placeholder="e.g. springtrail2026">
+      </div>
     </div>
   </div>
 
@@ -414,7 +460,8 @@ async function zlibCompress(bytes) {
 const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
-             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, LAT:26, LNG:27,
+             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
+             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24, LAT:26, LNG:27,
              ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
              KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39 };
 
@@ -483,7 +530,7 @@ async function encryptOverrideMap(override, key, compression) {
  *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_params
  *     in the clear map so the reader knows to prompt for a passphrase
  */
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, kdfPassphrase, declareEncryption = true }) {
+async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, kdfPassphrase, declareEncryption = true, collectionId, collectionLabel, collectionTag, icon }) {
   let content = rawBytes, compression = null;
   if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
   let cacheId, overrideBlob = null, encryption = null;
@@ -513,6 +560,10 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
     [K.KDF_ALG,     kdfAlg],
     [K.KDF_SALT,    kdfSalt],
     // kdf_iters is the default (100000) — omit to save bytes
+    [K.COLLECTION_ID,    collectionId || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag || null],
+    [K.ICON,             icon || null],
   ]));
   const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
   const assembledLength = overrideBlob ? overrideBlob.length : content.length;
@@ -534,7 +585,7 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
  * Each chunk's `raw` field is the full CBOR-sequence envelope bytes (for binary/byte-mode
  * QR rendering); `uri` is the same bytes Base41-encoded as a tagdrop: URI (text fallback).
  */
-async function encodeManifestAndChunks({ hint, filename, mimeType, rawBytes, compress, chunkCount, override, encryptionKey, declareEncryption = true }) {
+async function encodeManifestAndChunks({ hint, filename, mimeType, rawBytes, compress, chunkCount, override, encryptionKey, declareEncryption = true, collectionId, collectionLabel, collectionTag, icon }) {
   let compression = null, compressed = rawBytes;
   if (compress) { compressed = await zlibCompress(rawBytes); compression = 1; }
 
@@ -560,6 +611,10 @@ async function encodeManifestAndChunks({ hint, filename, mimeType, rawBytes, com
     [K.TOTAL_BYTES, totalBytes],
     [K.SHA256,      sha256],
     [K.ENCRYPTION,  encryption],
+    [K.COLLECTION_ID,    collectionId || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag || null],
+    [K.ICON,             icon || null],
   ]));
   const manifestUri = 'tagdrop:' + base41Encode(manifestSeq);
 
@@ -596,7 +651,7 @@ function encodeKeyCode({ keyMaterial, hint }) {
   return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
 
-async function encodePaperManifest({ label, set, slug, files, related }) {
+async function encodePaperManifest({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
   // files = [{slug, mimeType, fileId:Uint8Array}]
   // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null}]
   // root_hash = SHA-256(envelope+payload CBOR sequence without root_hash)[0:8]
@@ -613,6 +668,10 @@ async function encodePaperManifest({ label, set, slug, files, related }) {
     [K.SLUG,     slug || null],
     [K.FILES,    filesField],
     [K.RELATED,  relatedField],
+    [K.COLLECTION_ID,    collectionId || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag || null],
+    [K.ICON,             icon || null],
   ]);
   const rootHash = await sha256first8(cborSequence(TYPE_PAPER_MANIFEST, payloadNoHash));
   const payload = cborMap([
@@ -622,11 +681,27 @@ async function encodePaperManifest({ label, set, slug, files, related }) {
     [K.SLUG,     slug || null],
     [K.FILES,    filesField],
     [K.RELATED,  relatedField],
+    [K.COLLECTION_ID,    collectionId || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag || null],
+    [K.ICON,             icon || null],
   ]);
   return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
+
+// Parses a hex string into bytes for the collection_id field (SPEC §7: 8 random bytes).
+// Returns null for blank input; throws on malformed hex (odd length or non-hex chars) so
+// callers can surface a clear error instead of silently encoding garbage.
+function hexToBytes(hex) {
+  const s = hex.trim();
+  if (!s) return null;
+  if (!/^[0-9a-fA-F]+$/.test(s) || s.length % 2 !== 0) throw new Error('Invalid hex string');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+  return out;
+}
 
 // ── QR rendering ──────────────────────────────────────────────────────────
 // Dynamically imported on first use (the npm "qrcode" package ships no
@@ -945,6 +1020,15 @@ async function generateSingle() {
   // checked when encrypt is on — this guards against stale state.
   const compress = encrypt || document.getElementById('s-compress').checked;
 
+  // Collection/icon fields (SPEC §7) — optional, never secret, so they're carried
+  // unchanged even when "Encrypt" replaces hint/filename/mimeType with a generic cover.
+  const icon            = document.getElementById('s-icon').value.trim() || null;
+  const collectionLabel = document.getElementById('s-collection-label').value.trim() || null;
+  const collectionTag   = document.getElementById('s-collection-tag').value.trim() || null;
+  let collectionId;
+  try { collectionId = hexToBytes(document.getElementById('s-collection-id').value); }
+  catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+
   if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
 
   let rawBytes;
@@ -968,6 +1052,7 @@ async function generateSingle() {
         compress,
         override: { hint, mimeType, content: rawBytes, filename },
         kdfPassphrase,
+        collectionId, collectionLabel, collectionTag, icon,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -979,10 +1064,11 @@ async function generateSingle() {
         compress,
         override: { hint, mimeType, content: rawBytes, filename },
         encryptionKey,
+        collectionId, collectionLabel, collectionTag, icon,
       };
     }
   } else {
-    encodeArgs = { hint, filename, mimeType, rawBytes, compress };
+    encodeArgs = { hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon };
   }
 
   let encoded;
@@ -1137,6 +1223,17 @@ async function generatePaper() {
   const set   = document.getElementById('p-set').value.trim() || null;
   const slug  = document.getElementById('p-slug').value.trim() || null;
 
+  // Collection/icon fields (SPEC §7) — optional. The same values are stamped onto the
+  // PaperManifest AND every file's Single QR below, so the finder's home screen can
+  // group all of this paper's codes into one ad-hoc collection regardless of which
+  // code they scan first (mirrors the Kotlin app's MainActivity demo-collection pattern).
+  const icon            = document.getElementById('p-icon').value.trim() || null;
+  const collectionLabel = document.getElementById('p-collection-label').value.trim() || null;
+  const collectionTag   = document.getElementById('p-collection-tag').value.trim() || null;
+  let collectionId;
+  try { collectionId = hexToBytes(document.getElementById('p-collection-id').value); }
+  catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+
   // Slugs identify files within the paper's directory (SPEC §7) — catch empty
   // or duplicate slugs before encoding anything.
   const slugs = fileEntries.map(id => document.getElementById('fslug-' + id)?.value.trim());
@@ -1159,7 +1256,10 @@ async function generatePaper() {
     try { rawBytes = bytesFromContent(fcontent, fmime); }
     catch (e) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" content isn't valid base64 for MIME type "${escHtml(fmime)}".</div>`; return; }
     try {
-      const enc = await encodeSingle({ hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr });
+      const enc = await encodeSingle({
+        hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr,
+        collectionId, collectionLabel, collectionTag, icon,
+      });
       encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
     } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${escHtml(fslug)}" failed: ${e.message}</div>`; return; }
   }
@@ -1181,7 +1281,12 @@ async function generatePaper() {
   // Encode paper manifest
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
   let manifestEnc;
-  try { manifestEnc = await encodePaperManifest({ label, set, slug, files: manifestFiles, related }); }
+  try {
+    manifestEnc = await encodePaperManifest({
+      label, set, slug, files: manifestFiles, related,
+      collectionId, collectionLabel, collectionTag, icon,
+    });
+  }
   catch(e) { msgs.innerHTML = `<div class="err">Manifest encoding failed: ${e.message}</div>`; return; }
 
   // Render all QR codes

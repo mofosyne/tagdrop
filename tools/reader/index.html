@@ -467,7 +467,8 @@ const K = {
   CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_IDX:9, CHUNK_DATA:10,
   FILENAME:11, COMPRESSION:12,
   SET:13, SLUG:14, FILES:15, RELATED:16,
-  FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23,
+  COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
+  FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
   LAT:26, LNG:27,
   ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
   KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39
@@ -616,6 +617,11 @@ async function parseEnvelope(seq) {
       kdfAlg:   m[K.KDF_ALG]  || 0,
       kdfSalt:  m[K.KDF_SALT]  || null,
       kdfIters: m[K.KDF_ITERS] || 100000,
+      // Collections/icon (SPEC §7) — optional ad-hoc grouping metadata, never secret.
+      collectionId:    m[K.COLLECTION_ID] ? toHex(m[K.COLLECTION_ID]) : null,
+      collectionLabel: m[K.COLLECTION_LABEL] || null,
+      collectionTag:   m[K.COLLECTION_TAG] || null,
+      icon:            m[K.ICON] || null,
       cbor: seq,
     };
   }
@@ -630,6 +636,11 @@ async function parseEnvelope(seq) {
       cbor: seq,
       keyMaterial: m[K.KEY_MATERIAL] || null,
       retainKey:   m[K.RETAIN_KEY] !== false,
+      // Collections/icon (SPEC §7) — optional ad-hoc grouping metadata, never secret.
+      collectionId:    m[K.COLLECTION_ID] ? toHex(m[K.COLLECTION_ID]) : null,
+      collectionLabel: m[K.COLLECTION_LABEL] || null,
+      collectionTag:   m[K.COLLECTION_TAG] || null,
+      icon:            m[K.ICON] || null,
       files: (m[K.FILES] || []).map(f => ({
         slug:     f[K.FILE_SLUG],
         mimeType: f[K.FILE_MIME],
@@ -660,6 +671,11 @@ async function parseEnvelope(seq) {
       encryption:  m[K.ENCRYPTION] || 0,
       keyMaterial: m[K.KEY_MATERIAL] || null,
       retainKey:   m[K.RETAIN_KEY] !== false,
+      // Collections/icon (SPEC §7) — optional ad-hoc grouping metadata, never secret.
+      collectionId:    m[K.COLLECTION_ID] ? toHex(m[K.COLLECTION_ID]) : null,
+      collectionLabel: m[K.COLLECTION_LABEL] || null,
+      collectionTag:   m[K.COLLECTION_TAG] || null,
+      icon:            m[K.ICON] || null,
       cbor: seq,
     };
   }
@@ -1011,7 +1027,10 @@ async function handleScanned(rawBytes) {
         showMsg('Loaded: ' + label, 'ok');
       }
 
-      await showContent(fields.mimeType, content, label, parsed.cacheId);
+      await showContent(fields.mimeType, content, label, parsed.cacheId, {
+        icon: parsed.icon, collectionLabel: parsed.collectionLabel,
+        collectionTag: parsed.collectionTag, collectionId: parsed.collectionId,
+      });
       // Refresh directory if this file belongs to the active paper
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
@@ -1097,7 +1116,10 @@ async function handleScanned(rawBytes) {
       const { content, merged, fields } = result;
       const label = fields.filename || fields.hint || fields.mimeType;
       showMsg(merged ? '🔓 All chunks assembled and decrypted!' : 'All chunks assembled!', 'ok');
-      await showContent(fields.mimeType, content, label, manifest.cacheId);
+      await showContent(fields.mimeType, content, label, manifest.cacheId, {
+        icon: manifest.icon, collectionLabel: manifest.collectionLabel,
+        collectionTag: manifest.collectionTag, collectionId: manifest.collectionId,
+      });
       if (activePaperHash) await renderPaper(activePaperHash);
       break;
     }
@@ -1153,9 +1175,14 @@ async function renderPaper(rootHash) {
   const cacheById = new Map(allCaches.map(c => [c.cacheId, c]));
 
   // Build header
-  let hdr = '<strong>' + escHtml(paper.label || 'Untitled Paper') + '</strong>';
+  let hdr = '';
+  if (paper.icon) hdr += escHtml(paper.icon) + ' ';
+  hdr += '<strong>' + escHtml(paper.label || 'Untitled Paper') + '</strong>';
+  if (paper.collectionLabel) hdr += ' <span class="chip">' + escHtml(paper.collectionLabel) + '</span>';
   if (paper.set)  hdr += ' <span class="chip">' + escHtml(paper.set) + '</span>';
   if (paper.slug) hdr += ' <span class="chip">/' + escHtml(paper.slug) + '</span>';
+  if (paper.collectionTag) hdr += ' <span class="chip">#' + escHtml(paper.collectionTag) + '</span>';
+  if (paper.collectionId)  hdr += ' <span class="chip">id:' + escHtml(paper.collectionId) + '</span>';
 
   // Homepage convention: a file with slug "index", "index.html", or "index.md" is this
   // paper's landing page — surfaced as a primary "Open" action once cached (mirrors the
@@ -1243,10 +1270,28 @@ function renderHtmlInIframe(area, html) {
   area.appendChild(frame);
 }
 
-async function showContent(mimeType, content, title, cacheId) {
+// `meta` (optional) carries SPEC §7 collection/icon fields from a freshly-scanned
+// Single/Manifest's parsed payload — { icon, collectionLabel, collectionTag, collectionId }.
+// Only available right after a scan (not persisted to the caches/papers DB), so callers
+// reopening already-cached content (file list, paper homepage button) omit it and the
+// plain title is shown instead — these fields are optional, so omitting them is harmless.
+async function showContent(mimeType, content, title, cacheId, meta) {
   const area = document.getElementById('contentArea');
   area.innerHTML = '';
-  document.getElementById('contentTitle').textContent = title;
+  const titleEl = document.getElementById('contentTitle');
+  if (meta && (meta.icon || meta.collectionLabel || meta.collectionTag || meta.collectionId)) {
+    let html = '';
+    if (meta.icon) html += '<span title="icon">' + escHtml(meta.icon) + '</span> ';
+    html += '<span>' + escHtml(title) + '</span>';
+    if (meta.collectionLabel) html += ' <span class="chip">' + escHtml(meta.collectionLabel) + '</span>';
+    if (meta.collectionTag) html += ' <span class="chip">#' + escHtml(meta.collectionTag) + '</span>';
+    if (meta.collectionId) html += ' <span class="chip">id:' + escHtml(meta.collectionId) + '</span>';
+    titleEl.innerHTML = html;
+    titleEl.style.whiteSpace = 'normal';
+  } else {
+    titleEl.textContent = title;
+    titleEl.style.whiteSpace = '';
+  }
 
   if (mimeType.startsWith('text/html')) {
     renderHtmlInIframe(area, new TextDecoder().decode(content));

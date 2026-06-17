@@ -64,7 +64,26 @@ tagdrop://<rootHash-hex>/<slug>
 
 **Why Base41?** QR codes have an alphanumeric mode (charset 0–9, A–Z, space, `$%*+-./:`, 45 characters) that stores 5.5 bits per character vs 8 bits per character in binary mode. RFC 9285's Base45 uses that full 45-character set, encoding 2 bytes → 3 alphanumeric characters (~3% overhead over QR's alphanumeric capacity) — far better than Base64 (33% overhead, and forces binary mode since Base64 needs lowercase letters). TagDrop uses **Base41**: the same 2-bytes-to-3-characters packing as Base45, but over a 41-character subset of the QR alphanumeric set — `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:` — that drops the 4 characters which cause trouble outside QR codes: space and `%` aren't valid unescaped in a URI (RFC 3986), and `+`/`/` carry special meaning in URLs (`+` as a space in query strings, `/` as a path separator). 41 is the smallest alphabet for which 3 characters can still represent every 16-bit value (41³ = 68921 ≥ 65536; 40³ = 64000 does not), so this costs nothing — Base41 output is exactly the same length as Base45 output would be for the same bytes. The result is a string that's always a strictly valid, unescaped URI component, with no percent-encoding step needed on either side. This alphabet is also a safe (if non-optimal) subset of Data Matrix's C40 mode and Aztec's Upper/Digit modes, so the same encoded string stays reasonably dense on those carriers too (§13).
 
-Credit: this is the "BYOA" (bring-your-own-alphabet) variant of Philippe Majerus' [Base41 scheme](https://github.com/sveljko/base41), using his QR/URL-safe alphabet. There's no RFC for this specific alphabet — TagDrop defines it here as its own encoding, reusing Base45's well-understood packing algorithm.
+**Credit:** TagDrop's Base41 builds on two independent lines of prior art. The
+base scheme — packing 2 bytes into 3 characters, exactly like RFC 9285's
+Base45 but over a smaller alphabet — was created and placed in the public
+domain in 2014 by GitHub user [sveljko](https://github.com/sveljko/base41),
+whose repo also ships an independent reference encoder/decoder and test
+vectors (`base41_test.go`) — useful for cross-checking any new
+implementation of this format. That repo's "BYOA" (bring-your-own-alphabet)
+variant — swapping the fixed 41-character alphabet for a use-case-specific
+one — was proposed by Philippe Majerus
+([PhMajerus](https://github.com/PhMajerus)), who suggested exactly the
+QR/URL-safe alphabet TagDrop uses here:
+`0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:`. Botta and Cavagnino
+independently arrived at the same idea and formalized it in a peer-reviewed
+paper, [*"Base41: A proposal for printable encoding of bit
+strings"*](https://doi.org/10.1002/eng2.12606) (Engineering Reports, 2022),
+which cites sveljko's repo as prior art and discusses the same URL-safe BYOA
+alphabet choice — useful further reading on the reasoning behind this
+approach. There's no RFC for this specific alphabet — TagDrop defines it
+here as its own encoding, reusing Base45's well-understood packing
+algorithm.
 
 **Case:** encoders MUST emit uppercase letters only. Decoders MUST accept lowercase letters as equivalent to their uppercase counterparts (case-insensitive decode) — this tolerates content that's been manually retyped (e.g. a `tagdrop://` link copied by hand), since `$*-.:` and the digits have no case to confuse and the QR alphanumeric mode itself is uppercase-only by convention.
 
@@ -294,7 +313,7 @@ Two QR codes encoding the same bytes will have the same `cache_id`. This enables
 ```
 root_hash = SHA-256(paper manifest's CBOR sequence bytes)[0:8]
 ```
-A paper's root hash is computed from its manifest's CBOR sequence (envelope + payload map, §2), which includes the root hash field itself (key 2). This is the same chicken-and-egg situation IPFS solves the same way: encode the manifest *without* the hash, compute the hash, insert it, then re-encode. The root hash is the paper's permanent, immutable address. Because paper is inherently immutable (you can't update a sticker), this is fine — a new revision gets a new root hash.
+A paper's root hash is computed from its manifest's CBOR sequence (envelope + payload map, §2), which includes the root hash field itself (key 2). This is the same chicken-and-egg situation [IPFS](https://ipfs.tech/) solves the same way: encode the manifest *without* the hash, compute the hash, insert it, then re-encode. The root hash is the paper's permanent, immutable address. Because paper is inherently immutable (you can't update a sticker), this is fine — a new revision gets a new root hash.
 
 **Three-level hierarchy:**
 
@@ -756,8 +775,9 @@ whichever order they arrive in.
 A few of the choices above double as standard **plausible deniability**
 measures — the inability for an observer to distinguish "this contains
 something hidden" from "this is just opaque data," even with some of the
-format in plain view. The same property underlies things like VeraCrypt's
-hidden volumes or OTR's deniable authentication.
+format in plain view. The same property underlies things like
+[VeraCrypt](https://www.veracrypt.fr/)'s hidden volumes or
+[OTR](https://otr.cypherpunks.ca/)'s deniable authentication.
 
 - **Ciphertext is indistinguishable from random.** AES-GCM ciphertext with a
   fresh nonce is computationally indistinguishable from random bytes. Without
@@ -875,9 +895,11 @@ backups) need no signature at all.
 implemented in either reference implementation (§15). ML-DSA-44 is not
 available in `java.security`/Android's crypto providers or in
 `SubtleCrypto` (Web Crypto), so adding it requires a new dependency in both
-— e.g. BouncyCastle for the Kotlin app, and a pure-JS PQC library (such as
-`@noble/post-quantum`) for the browser tools, which currently depend on
-nothing but a QR CDN script. Readers that don't recognise keys 32–36 ignore
+— e.g. [BouncyCastle](https://www.bouncycastle.org/) for the Kotlin app, and
+a pure-JS PQC library (such as
+[`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum))
+for the browser tools, which currently depend on nothing but a QR CDN
+script. Readers that don't recognise keys 32–36 ignore
 them per §3's forward-compatibility rule and treat the code as unsigned.
 
 **Why post-quantum, not ECDSA/Ed25519?** Shor's algorithm breaks the
@@ -887,8 +909,8 @@ schemes entirely. By contrast, Grover's algorithm only *halves* AES's
 effective key length, which is why AES-256-GCM (§9) needs no change for
 quantum resistance. A signature scheme adopted now should not be one that a
 sufficiently large quantum computer invalidates retroactively for every code
-ever signed with it. ML-DSA-44 (Dilithium2, NIST security category 2, FIPS
-204, standardized 2024) is a lattice-based scheme with no known efficient
+ever signed with it. ML-DSA-44 ([Dilithium2](https://pq-crystals.org/dilithium/), NIST security category 2, [FIPS
+204](https://csrc.nist.gov/pubs/fips/204/final), standardized 2024) is a lattice-based scheme with no known efficient
 quantum attack, and its sizes are **fixed regardless of message length** —
 2420-byte signature, 1312-byte public key, 2560-byte private key (never
 transmitted). For small codes (a few hundred bytes) that's significant

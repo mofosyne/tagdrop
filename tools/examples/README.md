@@ -15,7 +15,8 @@ it directly in a browser: it encodes each example and renders the resulting
   Manifest QR (type 1) plus three Chunk QRs (type 2). Scan the manifest and
   the chunks (any order) to test reassembly and SHA-256 verification.
 - **Paper set** — a manifest QR plus three file QRs (`readme`, `note`,
-  `badge`) demonstrating a multi-file paper drop. Scan the manifest first.
+  `images/badge.svg`) demonstrating a multi-file paper drop. Scan the
+  manifest first.
 - **Mini e-book** — "The Lighthouse Keeper's Almanac": a manifest plus a
   `style.css`, a Markdown cover/table-of-contents (`index.md`), and three
   Markdown chapters that link to each other and the cover via ordinary
