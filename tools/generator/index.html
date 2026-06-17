@@ -827,14 +827,17 @@ function encodeKeyCode({ keyMaterial, hint }) {
 
 async function encodePaperManifest({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
   // files = [{slug, mimeType, fileId:Uint8Array}]
-  // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null}]
+  // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
+  //             keyMaterial:Uint8Array|null, retainKey:boolean}]
   // root_hash = SHA-256(envelope+payload CBOR sequence without root_hash)[0:8]
   const filesField = files.map(f => subMap([
     [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
   ]));
   const relatedField = related.map(r => subMap([
     [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-    [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null]
+    [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
+    [K.KEY_MATERIAL, r.keyMaterial || null],
+    [K.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null]
   ]));
   const payloadNoHash = cborMap([
     [K.HINT,     label || null],
@@ -1381,7 +1384,12 @@ function addRelatedEntry() {
     <div class="row">
       <div><label>Latitude <small>(optional — for a placeholder map pin)</small></label><input type="text" id="rlat-${id}" placeholder="e.g. -33.8688"></div>
       <div><label>Longitude <small>(optional)</small></label><input type="text" id="rlng-${id}" placeholder="e.g. 151.2093"></div>
-    </div>`;
+    </div>
+    <label>Paper ID <small>(optional, hex — that paper's root hash, for stable cross-referencing even after a re-scan changes set/slug)</small></label>
+    <input type="text" id="rpaperid-${id}" placeholder="e.g. a1b2c3d4e5f60718">
+    <label>Key material <small>(optional, hex — a decryption key this code reveals for the related paper's content, see SPEC §9)</small></label>
+    <input type="text" id="rkeymaterial-${id}" placeholder="64 hex chars (32 bytes)">
+    <label><input type="checkbox" id="rretainkey-${id}" checked> Retain this key after use <small>(uncheck for one-time/deniable use — see SPEC §9)</small></label>`;
   document.getElementById('p-related').appendChild(div);
 }
 
@@ -1441,18 +1449,27 @@ async function generatePaper() {
   }
 
   // Build related list
-  const related = relatedEntries.map(id => {
-    const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
-    const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
-    return {
-      hint:   document.getElementById('rhint-' + id)?.value.trim() || '(hint)',
-      set:    document.getElementById('rset-' + id)?.value.trim() || null,
-      slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
-      paperId: null,
-      lat: Number.isFinite(lat) ? lat : null,
-      lng: Number.isFinite(lng) ? lng : null,
-    };
-  });
+  let related;
+  try {
+    related = relatedEntries.map(id => {
+      const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
+      const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
+      const hint = document.getElementById('rhint-' + id)?.value.trim() || '(hint)';
+      let paperId, keyMaterial;
+      try { paperId = hexToBytes(document.getElementById('rpaperid-' + id)?.value); }
+      catch (e) { throw new Error(`Related paper "${hint}": Paper ID must be hex (e.g. a1b2c3d4e5f60718).`); }
+      try { keyMaterial = hexToBytes(document.getElementById('rkeymaterial-' + id)?.value); }
+      catch (e) { throw new Error(`Related paper "${hint}": Key material must be hex (64 hex chars / 32 bytes).`); }
+      return {
+        hint, paperId, keyMaterial,
+        set:    document.getElementById('rset-' + id)?.value.trim() || null,
+        slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
+        retainKey: document.getElementById('rretainkey-' + id)?.checked ?? true,
+        lat: Number.isFinite(lat) ? lat : null,
+        lng: Number.isFinite(lng) ? lng : null,
+      };
+    });
+  } catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
 
   // Encode paper manifest
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
