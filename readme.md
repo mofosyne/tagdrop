@@ -1,5 +1,12 @@
 # TagDrop — Tag Dead Drop
 
+<img src="./docs/icon.png" alt="TagDrop Logo" width="100" height="100">
+<a href="https://f-droid.org/packages/com.github.mofosyne.tagdrop">
+    <img src="https://f-droid.org/badge/get-it-on.png"
+    alt="Get it on F-Droid"
+    height="80">
+</a>
+
 TagDrop turns small files — text, HTML pages, images, audio, SVGs — into
 self-contained QR codes that work completely offline. Print one on a sticker
 or sheet of paper and leave it somewhere; anyone with the TagDrop app (or any
@@ -121,6 +128,10 @@ running from source.
 relative-link navigation, geographic trails via `related` hints, ad-hoc
 collections, an in-app scanner with a live scan board, a Map tab for located
 finds, and AES-256-GCM encryption via key-code QR or passphrase (PBKDF2-SHA256).
+
+## Extra Readings
+
+* [#nfcdab](https://nfcdab.org) : A DIY international and independent digital art biennale in Wroclaw, Poland, that uses wireless technology, light waves and electromagnetic fields e.g.: Wi-Fi routers, QR codes or NFC tags for accessing content with your 📱 smartphone
 
 ## Extra
 
