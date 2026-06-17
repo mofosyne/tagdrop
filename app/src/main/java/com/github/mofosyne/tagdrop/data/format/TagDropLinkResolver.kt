@@ -162,6 +162,12 @@ class TagDropLinkResolver(private val db: AppDatabase) {
          */
         val HOME_SLUGS = setOf("index", "index.html", "index.md")
 
-        private val HEX_ROOT_HASH = Regex("[0-9a-f]{16}")
+        /**
+         * Matches a root hash as lowercase hex pairs, with no fixed length pinned to today's
+         * 8-byte truncation. root_hash's actual byte length is defined by the versioned CBOR
+         * payload (SPEC §2/§3, key 2) -- if a future version changes it, this still matches,
+         * and an unknown hash is rejected by the DB lookup (PaperNotFound) rather than here.
+         */
+        private val HEX_ROOT_HASH = Regex("([0-9a-f]{2})+")
     }
 }

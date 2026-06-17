@@ -549,7 +549,9 @@ async function parseUri(uri) {
     const slash = rest.indexOf('/');
     const rootHashHex = (slash < 0 ? rest : rest.slice(0, slash)).toLowerCase();
     const slug = slash < 0 ? null : (rest.slice(slash + 1) || null);
-    if (!/^[0-9a-f]{16}$/.test(rootHashHex)) return { type: 'invalid' };
+    // No fixed length pinned to today's 8-byte truncation -- root_hash's actual byte
+    // length is defined by the versioned CBOR payload (SPEC §2/§3, key 2).
+    if (!/^([0-9a-f]{2})+$/.test(rootHashHex)) return { type: 'invalid' };
     return { type: 'nav', rootHashHex, slug };
   }
 
