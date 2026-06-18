@@ -123,3 +123,33 @@ again or a concrete need emerges.
   `collection_label`/`icon` may be sufficient; only add this if a real case
   shows up where users need to designate/re-designate a collection's home
   item explicitly.
+- **Analog/graffiti "find" logger** (assessed: *rejected as a SPEC.md
+  feature*). The idea: TagDrop's dead-drop spirit naturally extends to
+  fully analog drops — graffiti, a poster, a handwritten note on a wall —
+  scanned via a photo + OCR instead of a QR code. This doesn't fit the
+  `tagdrop:` wire format: every payload type assumes byte-exact,
+  author-encoded content (content-addressed `cache_id`/`sha256`, §4.5),
+  but OCR output from a photo is never byte-reproducible (lighting, angle,
+  handwriting), so there's nothing to hash, dedupe, or verify, and no
+  author-side encode step ever happened. If this is ever built, it should
+  be a separate Android-app-only capture flow (photo + transcription + GPS,
+  stored like a scanned cache but with no `cache_id`/`sha256` semantics),
+  not a SPEC.md change.
+- **Fiducial-frame analog content capture** (assessed: *plausible,
+  long-term, not started*). A middle ground between a normal `tagdrop:`
+  code and the free-form graffiti idea above: a printed frame around an
+  analog photo/drawing, where a small standard `tagdrop:` QR in one corner
+  carries identity/metadata (Single, `cache_id` random — same exception
+  §9 already makes for encrypted override maps, since captured bytes
+  aren't reproducible either — plus `hint`/`collection_id`/`icon`, with
+  `content` deliberately omitted), and the frame's printed border is
+  detected and perspective-corrected by the app (same "document scanner"
+  contour-detection problem as Adobe Scan/CamScanner — no custom fiducial
+  markers like ArUco/AprilTag should be needed) to crop the interior into
+  a bitmap stored against that `cache_id`. Needs zero SPEC.md changes — the
+  QR/CBOR/Base41 half is just an existing Single payload — but is a
+  substantial net-new Android subsystem: today `ReceiveActivity.kt`'s
+  ZXing integration (`decodeContinuous`) only ever returns decoded barcode
+  text, never raw camera frames/bitmaps, so this would need a parallel
+  capture pipeline (frame access, contour detection, homography warp,
+  crop) built from scratch.
