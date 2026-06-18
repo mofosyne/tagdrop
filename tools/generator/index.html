@@ -895,12 +895,20 @@ async function encodePaperManifest({ label, set, slug, files, related, collectio
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
 
+// Turns a human-readable label (a file slug, hint, or caption fragment) into a
+// safe filename component — keeps ZIP entries self-describing instead of
+// relying solely on the opaque cache_id hex (see manifest.txt for the full
+// caption either way).
+function slugifyForFilename(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'file';
+}
+
 // Small reusable brand stamp — the same ink-drop + QR finder-mark artwork as
 // the page header/favicon (see ARTASSET/icon/HISTORY.md), printed beside each
 // QR code so a paper page reads as a TagDrop artifact even before it's
 // scanned (geocache-log-book style — the stamp travels with the code if it's
 // cut out and stuck elsewhere, unlike a one-off page header).
-const QR_STAMP_SVG = `<svg viewBox="0 0 108 108" width="28" height="28" aria-hidden="true">
+const QR_STAMP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="28" height="28" aria-hidden="true">
   <rect width="108" height="108" rx="20" fill="#F3EDE1"/>
   <path d="M 96.795,104.000 C 86.145,104.016 72.638,103.041 62.658,101.535 C 46.697,99.128 34.242,95.205 25.549,89.847 C 14.904,83.288 7.211,71.291 5.162,58.055 C 4.572,54.243 4.723,46.205 5.456,42.418 C 9.261,22.771 25.249,7.367 44.959,4.358 C 48.792,3.773 56.838,3.927 60.610,4.657 C 74.128,7.275 86.090,15.811 92.131,27.150 C 98.068,38.294 101.732,54.800 102.865,75.512 C 103.226,82.107 103.310,92.503 103.050,98.385 C 102.916,101.400 102.773,103.894 102.732,103.928 C 102.691,103.963 100.019,103.995 96.795,104.000 Z" fill="#2A3941"/>
   <path d="M 50.265,51.118 C 51.874,50.713 53.469,49.118 53.874,47.509 C 54.289,45.863 54.289,27.243 53.874,25.596 C 53.469,23.987 51.874,22.392 50.265,21.987 C 48.618,21.572 29.998,21.572 28.351,21.987 C 26.743,22.392 25.147,23.987 24.742,25.596 C 24.328,27.243 24.328,45.863 24.742,47.509 C 25.121,49.013 26.760,50.724 28.181,51.099 C 29.645,51.487 48.738,51.503 50.265,51.118 Z M 29.825,36.553 L 29.825,27.070 L 39.308,27.070 L 48.791,27.070 L 48.791,36.553 L 48.791,46.036 L 39.308,46.036 L 29.825,46.036 Z M 43.965,41.254 C 44.383,40.876 44.434,40.373 44.434,36.597 C 44.434,33.018 44.369,32.292 44.010,31.895 C 43.632,31.477 43.128,31.427 39.353,31.427 C 35.773,31.427 35.047,31.492 34.651,31.851 C 34.233,32.229 34.182,32.733 34.182,36.508 C 34.182,40.087 34.248,40.814 34.606,41.210 C 34.985,41.628 35.488,41.679 39.264,41.679 C 42.843,41.679 43.569,41.613 43.965,41.254 Z" fill="#D9652B"/>
@@ -1015,7 +1023,7 @@ async function downloadQrPng(data, filename) {
 // `qrData` (defaults to `uri`) is what's actually rendered/downloaded as the QR — pass raw
 // Uint8Array bytes here for a binary/byte-mode QR while `uri` still carries the text
 // tagdrop: form for the "Copy URI" button.
-async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, qrData = uri, itemClass }) {
+async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, qrData = uri, itemClass, slugBase = sub }) {
   const item = document.createElement('div');
   item.className = 'qr-item' + (itemClass ? ' ' + itemClass : '');
   const visual = document.createElement('div');
@@ -1036,7 +1044,7 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   grid.appendChild(item);
 
   await renderQr(qrDiv, qrData); // throws on failure — caller handles
-  singleBulkItems.push({ filename: `tagdrop-${id}.png`, qrData, caption: `${sub} (${id})` });
+  singleBulkItems.push({ filename: `tagdrop-${slugifyForFilename(slugBase)}-${id}.png`, qrData, caption: `${sub} (${id})` });
 
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row';
@@ -1132,6 +1140,9 @@ function buildZip(entries) {
 
 // Re-renders every item's QR at full download resolution and bundles the PNGs into
 // a single ZIP — avoids forcing N separate browser downloads for a multi-file result.
+// Also drops in a manifest.txt mapping each (already human-readable, see
+// slugifyForFilename) filename to its full caption, since filenames alone get
+// truncated/sanitized and can't carry everything (mime type, chunk counts, etc).
 async function downloadAllAsZip(items) {
   try {
     const QRCode = await loadQRCode();
@@ -1141,6 +1152,8 @@ async function downloadAllAsZip(items) {
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       entries.push({ name: item.filename, bytes: new Uint8Array(await blob.arrayBuffer()) });
     }
+    const manifestText = items.map(item => `${item.filename}\t${item.caption}`).join('\n') + '\n';
+    entries.push({ name: 'manifest.txt', bytes: new TextEncoder().encode(manifestText) });
     const zip = buildZip(entries);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(zip);
@@ -1152,8 +1165,30 @@ async function downloadAllAsZip(items) {
   }
 }
 
-// Lays out `perSheet` QR codes per A4 page (near-square grid) with a caption under
-// each, starting a new page every `perSheet` items.
+// Rasterizes an inline SVG string (the QR_STAMP_SVG brand mark) to a PNG data URL —
+// jsPDF's addImage() only accepts raster images, not arbitrary SVG markup.
+function svgToPngDataUrl(svgMarkup, sizePx) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([svgMarkup], { type: 'image/svg+xml' }));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = sizePx; canvas.height = sizePx;
+      canvas.getContext('2d').drawImage(img, 0, 0, sizePx, sizePx);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('logo rasterization failed')); };
+    img.src = url;
+  });
+}
+
+// Lays out `perSheet` QR codes per A4 page with a caption under each, starting a
+// new page every `perSheet` items. The grid is sized to the page's own aspect
+// ratio (not assumed square) so e.g. 6-per-sheet on A4 portrait lands on a
+// near-square 2x3 instead of a wide-but-short 3x2. Page 1 also carries a
+// letterhead-style banner (brand stamp + scan instructions); its grid area
+// shrinks to make room, but still comfortably fits the same `perSheet` count.
 async function downloadPdfSheet(items, perSheet) {
   try {
     const QRCode = await loadQRCode();
@@ -1163,18 +1198,39 @@ async function downloadPdfSheet(items, perSheet) {
     const pageHeight = pdf.internal.pageSize.getHeight();
     const margin = 10;
 
-    const cols = Math.ceil(Math.sqrt(perSheet));
+    const bannerHeight = 22;
+    try {
+      const logoDataUrl = await svgToPngDataUrl(QR_STAMP_SVG, 128);
+      const logoSize = 14;
+      pdf.addImage(logoDataUrl, 'PNG', margin, margin, logoSize, logoSize);
+      pdf.setFontSize(13);
+      pdf.text('TagDrop', margin + logoSize + 4, margin + 6);
+      pdf.setFontSize(9);
+      pdf.text('Scan each QR code with the TagDrop app (or any reader that follows tagdrop: links) — works fully offline.',
+        margin + logoSize + 4, margin + 12, { maxWidth: pageWidth - margin * 2 - logoSize - 4 });
+    } catch (e) {
+      // Logo/instructions are decorative — still produce the sheet without them,
+      // but warn since this failure is otherwise invisible (no UI error shown).
+      console.warn('PDF banner logo/instructions skipped:', e.message);
+    }
+    pdf.setDrawColor(200);
+    pdf.line(margin, margin + bannerHeight, pageWidth - margin, margin + bannerHeight);
+
+    const aspect = pageWidth / pageHeight;
+    const cols = Math.max(1, Math.round(Math.sqrt(perSheet * aspect)));
     const rows = Math.ceil(perSheet / cols);
     const cellW = (pageWidth - margin * 2) / cols;
-    const cellH = (pageHeight - margin * 2) / rows;
-    const qrSize = Math.min(cellW, cellH) - 10; // leaves room for the caption below
 
+    let pageIndex = 0;
     for (let i = 0; i < items.length; i++) {
       const posInSheet = i % perSheet;
-      if (i > 0 && posInSheet === 0) pdf.addPage();
+      if (i > 0 && posInSheet === 0) { pdf.addPage(); pageIndex++; }
+      const gridTop = pageIndex === 0 ? margin + bannerHeight + 4 : margin;
+      const cellH = (pageHeight - gridTop - margin) / rows;
+      const qrSize = Math.min(cellW, cellH) - 10; // leaves room for the caption below
       const col = posInSheet % cols, row = Math.floor(posInSheet / cols);
       const x = margin + col * cellW + (cellW - qrSize) / 2;
-      const y = margin + row * cellH;
+      const y = gridTop + row * cellH;
 
       const canvas = await qrToCanvas(QRCode, items[i].qrData, 600);
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, qrSize, qrSize);
@@ -1202,13 +1258,13 @@ function appendBulkActions(result, items) {
     <button class="secondary zip-all">📦 Download All as ZIP (${items.length})</button>
     <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.9rem">
       QR codes per sheet:
-      <input type="number" class="per-sheet" value="4" min="1" max="30" style="width:4em">
+      <input type="number" class="per-sheet" value="6" min="1" max="30" style="width:4em">
     </label>
     <button class="secondary pdf-sheet">📄 Download PDF Sheet (multiple per page)</button>`;
   row.querySelector('.zip-all').addEventListener('click', () => downloadAllAsZip(items));
   const perSheetInput = row.querySelector('.per-sheet');
   row.querySelector('.pdf-sheet').addEventListener('click', () => {
-    const perSheet = Math.max(1, parseInt(perSheetInput.value, 10) || 4);
+    const perSheet = Math.max(1, parseInt(perSheetInput.value, 10) || 6);
     downloadPdfSheet(items, perSheet);
   });
   result.appendChild(row);
@@ -1357,6 +1413,7 @@ async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPa
         id: toHex(keyEncoded.cacheId),
         uri: keyEncoded.uri,
         itemClass: 'key-item',
+        slugBase: 'key',
       });
     } catch (e) {
       msgs.innerHTML += `<div class="err">QR rendering failed for the key code.</div>`;
@@ -1399,6 +1456,7 @@ async function renderChunkedResult(chunked, { encodeArgs, compress, encrypt, enc
   result.innerHTML = '<div class="qr-grid"></div>';
   const grid = result.querySelector('.qr-grid');
 
+  const nameBase = encodeArgs.hint || encodeArgs.filename || 'tagdrop';
   const coverLabel = encodeArgs.hint ? escHtml(encodeArgs.hint) : (encodeArgs.filename ? escHtml(encodeArgs.filename) : 'TagDrop');
   try {
     await addGeneratorQrCard(grid, {
@@ -1408,6 +1466,7 @@ async function renderChunkedResult(chunked, { encodeArgs, compress, encrypt, enc
       badgeClass: 'encrypted',
       id: toHex(chunked.cacheId),
       uri: chunked.manifestUri,
+      slugBase: `${nameBase}-manifest`,
     });
   } catch (e) {
     msgs.innerHTML += `<div class="err">QR rendering failed for the manifest. Is the qrcode library loaded? (requires internet on first use)</div>`;
@@ -1424,6 +1483,7 @@ async function renderChunkedResult(chunked, { encodeArgs, compress, encrypt, enc
         id: `${toHex(chunked.cacheId)}-chunk${c.index}`,
         uri: c.uri,
         qrData: useBinary ? c.raw : c.uri,
+        slugBase: `${nameBase}-chunk${c.index + 1}`,
       });
     } catch (e) {
       msgs.innerHTML += `<div class="err">QR rendering failed for chunk ${c.index + 1}.</div>`;
@@ -1548,6 +1608,7 @@ async function generateSingle() {
       badgeClass: 'encrypted',
       id: toHex(encoded.cacheId),
       uri: encoded.uri,
+      slugBase: encodeArgs.hint || encodeArgs.filename || 'tagdrop',
     });
   } catch (e) {
     msgs.innerHTML += `<div class="err">QR rendering failed. Is the qrcode library loaded? (requires internet on first use)</div>`;
@@ -1757,7 +1818,7 @@ async function generatePaper() {
   try {
     await renderQr(mItem.qrDiv, manifestEnc.uri);
     paperBulkItems.push({
-      filename: `tagdrop-${toHex(manifestEnc.rootHash)}.png`,
+      filename: `tagdrop-${slugifyForFilename((label || 'paper') + '-manifest')}-${toHex(manifestEnc.rootHash)}.png`,
       qrData: manifestEnc.uri,
       caption: `${label || 'Manifest'} (manifest)`,
     });
@@ -1780,7 +1841,7 @@ async function generatePaper() {
       grid.appendChild(mfItem.div);
       try {
         await renderQr(mfItem.qrDiv, f.chunked.manifestUri);
-        paperBulkItems.push({ filename: `tagdrop-${toHex(f.chunked.cacheId)}.png`, qrData: f.chunked.manifestUri, caption: `${f.slug} (manifest)` });
+        paperBulkItems.push({ filename: `tagdrop-${slugifyForFilename(f.slug + '-manifest')}-${toHex(f.chunked.cacheId)}.png`, qrData: f.chunked.manifestUri, caption: `${f.slug} (manifest)` });
       } catch(e) {
         mfItem.div.querySelector('.action-row')?.remove();
         mfItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed for manifest.</div>');
@@ -1794,7 +1855,7 @@ async function generatePaper() {
         grid.appendChild(cItem.div);
         try {
           await renderQr(cItem.qrDiv, qrData);
-          paperBulkItems.push({ filename: `tagdrop-${toHex(f.chunked.cacheId)}-chunk${c.index}.png`, qrData, caption: `${f.slug} chunk ${c.index + 1}/${f.chunked.chunkCount}` });
+          paperBulkItems.push({ filename: `tagdrop-${slugifyForFilename(f.slug + '-chunk' + (c.index + 1))}-${toHex(f.chunked.cacheId)}.png`, qrData, caption: `${f.slug} chunk ${c.index + 1}/${f.chunked.chunkCount}` });
         } catch(e) {
           cItem.div.querySelector('.action-row')?.remove();
           cItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed for chunk ${c.index + 1}.</div>`);
@@ -1808,7 +1869,7 @@ async function generatePaper() {
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
     try {
       await renderQr(fItem.qrDiv, f.uri);
-      paperBulkItems.push({ filename: `tagdrop-${toHex(f.fileId)}.png`, qrData: f.uri, caption: `${f.slug} (${f.mimeType})` });
+      paperBulkItems.push({ filename: `tagdrop-${slugifyForFilename(f.slug)}-${toHex(f.fileId)}.png`, qrData: f.uri, caption: `${f.slug} (${f.mimeType})` });
     } catch(e) {
       fItem.div.querySelector('.action-row')?.remove();
       fItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed — content too large for a single QR code</div>');
