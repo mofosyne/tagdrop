@@ -72,6 +72,13 @@
              box-shadow: 0 1px 3px rgba(0,0,0,.1); min-width: 380px; }
   .qr-item canvas, .qr-item img { display: block; margin: 0 auto 8px;
     image-rendering: pixelated; image-rendering: crisp-edges; }
+  /* Title-card footer: brand stamp sits beside the label/sub/id text, below the
+     QR canvas — never touching it, so it can't intrude on the QR's quiet zone
+     (see ARTASSET/icon/HISTORY.md for the stamp's printable-marker role). */
+  .qr-footer { display: flex; align-items: center; gap: 10px; text-align: left; }
+  .qr-stamp  { flex-shrink: 0; }
+  .qr-stamp svg { display: block; width: 32px; height: 32px; }
+  .qr-meta  { flex: 1; min-width: 0; }
   .qr-label { font-weight: 600; font-size: 0.9rem; word-break: break-all; }
   .qr-sub   { font-size: 0.75rem; color: #888; margin-top: 2px; }
   .qr-id    { font-family: monospace; font-size: 0.7rem; color: #aaa; margin-top: 4px; }
@@ -877,6 +884,19 @@ async function encodePaperManifest({ label, set, slug, files, related, collectio
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
 
+// Small reusable brand stamp — the same ink-drop + QR finder-mark artwork as
+// the page header/favicon (see ARTASSET/icon/HISTORY.md), printed beside each
+// QR code so a paper page reads as a TagDrop artifact even before it's
+// scanned (geocache-log-book style — the stamp travels with the code if it's
+// cut out and stuck elsewhere, unlike a one-off page header).
+const QR_STAMP_SVG = `<svg viewBox="0 0 108 108" width="28" height="28" aria-hidden="true">
+  <rect width="108" height="108" rx="20" fill="#F3EDE1"/>
+  <path d="M 96.795,104.000 C 86.145,104.016 72.638,103.041 62.658,101.535 C 46.697,99.128 34.242,95.205 25.549,89.847 C 14.904,83.288 7.211,71.291 5.162,58.055 C 4.572,54.243 4.723,46.205 5.456,42.418 C 9.261,22.771 25.249,7.367 44.959,4.358 C 48.792,3.773 56.838,3.927 60.610,4.657 C 74.128,7.275 86.090,15.811 92.131,27.150 C 98.068,38.294 101.732,54.800 102.865,75.512 C 103.226,82.107 103.310,92.503 103.050,98.385 C 102.916,101.400 102.773,103.894 102.732,103.928 C 102.691,103.963 100.019,103.995 96.795,104.000 Z" fill="#2A3941"/>
+  <path d="M 50.265,51.118 C 51.874,50.713 53.469,49.118 53.874,47.509 C 54.289,45.863 54.289,27.243 53.874,25.596 C 53.469,23.987 51.874,22.392 50.265,21.987 C 48.618,21.572 29.998,21.572 28.351,21.987 C 26.743,22.392 25.147,23.987 24.742,25.596 C 24.328,27.243 24.328,45.863 24.742,47.509 C 25.121,49.013 26.760,50.724 28.181,51.099 C 29.645,51.487 48.738,51.503 50.265,51.118 Z M 29.825,36.553 L 29.825,27.070 L 39.308,27.070 L 48.791,27.070 L 48.791,36.553 L 48.791,46.036 L 39.308,46.036 L 29.825,46.036 Z M 43.965,41.254 C 44.383,40.876 44.434,40.373 44.434,36.597 C 44.434,33.018 44.369,32.292 44.010,31.895 C 43.632,31.477 43.128,31.427 39.353,31.427 C 35.773,31.427 35.047,31.492 34.651,31.851 C 34.233,32.229 34.182,32.733 34.182,36.508 C 34.182,40.087 34.248,40.814 34.606,41.210 C 34.985,41.628 35.488,41.679 39.264,41.679 C 42.843,41.679 43.569,41.613 43.965,41.254 Z" fill="#D9652B"/>
+  <path d="M 79.378,39.841 C 80.336,39.600 81.286,38.650 81.527,37.692 C 81.774,36.712 81.774,25.626 81.527,24.645 C 81.286,23.687 80.336,22.738 79.378,22.496 C 78.398,22.249 67.312,22.249 66.331,22.496 C 65.374,22.738 64.424,23.687 64.183,24.645 C 63.936,25.626 63.936,36.712 64.183,37.692 C 64.408,38.587 65.384,39.606 66.230,39.830 C 67.102,40.060 78.469,40.070 79.378,39.841 Z M 67.209,31.169 L 67.209,25.523 L 72.855,25.523 L 78.501,25.523 L 78.501,31.169 L 78.501,36.815 L 72.855,36.815 L 67.209,36.815 Z M 75.628,33.968 C 75.877,33.743 75.907,33.443 75.907,31.195 C 75.907,29.064 75.868,28.632 75.654,28.396 C 75.429,28.147 75.129,28.117 72.881,28.117 C 70.750,28.117 70.318,28.156 70.082,28.369 C 69.833,28.595 69.803,28.894 69.803,31.142 C 69.803,33.273 69.842,33.705 70.056,33.941 C 70.281,34.190 70.581,34.220 72.828,34.220 C 74.959,34.220 75.392,34.181 75.628,33.968 Z" fill="#D9652B"/>
+  <path d="M 40.897,79.060 C 41.855,78.818 42.804,77.869 43.046,76.911 C 43.292,75.930 43.292,64.844 43.046,63.864 C 42.804,62.906 41.855,61.956 40.897,61.715 C 39.916,61.468 28.830,61.468 27.850,61.715 C 26.892,61.956 25.942,62.906 25.701,63.864 C 25.454,64.844 25.454,75.930 25.701,76.911 C 25.926,77.806 26.902,78.824 27.749,79.048 C 28.620,79.279 39.988,79.288 40.897,79.060 Z M 28.727,70.387 L 28.727,64.741 L 34.373,64.741 L 40.019,64.741 L 40.019,70.387 L 40.019,76.033 L 34.373,76.033 L 28.727,76.033 Z M 37.146,73.187 C 37.395,72.961 37.425,72.662 37.425,70.414 C 37.425,68.283 37.386,67.850 37.173,67.614 C 36.947,67.366 36.648,67.335 34.400,67.335 C 32.269,67.335 31.836,67.374 31.600,67.588 C 31.352,67.813 31.321,68.113 31.321,70.361 C 31.321,72.492 31.360,72.924 31.574,73.160 C 31.799,73.409 32.099,73.439 34.347,73.439 C 36.478,73.439 36.910,73.400 37.146,73.187 Z" fill="#D9652B"/>
+</svg>`;
+
 // Parses a hex string into bytes for the collection_id field (SPEC §7: 8 random bytes).
 // Returns null for blank input; throws on malformed hex (odd length or non-hex chars) so
 // callers can surface a clear error instead of silently encoding garbage.
@@ -905,11 +925,27 @@ function qrPayloadFor(data) {
   return typeof data === 'string' ? data : [{ data: new Uint8ClampedArray(data), mode: 'byte' }];
 }
 
+// Picks the highest error-correction level that doesn't push the QR past the
+// version (module grid size) that plain 'L' would already need. Under normal
+// (undamaged) conditions, scan speed/reliability comes down to module pixel
+// size, not error correction — EC only helps when the print is physically
+// degraded (torn, smudged, faded). So this gets that resilience for free
+// whenever there's spare capacity in the current version, without ever
+// making the code bigger/denser than the 'L' baseline.
+function pickErrorCorrectionLevel(QRCode, payload) {
+  const baseVersion = QRCode.create(payload, { errorCorrectionLevel: 'L' }).version;
+  for (const ec of ['H', 'Q', 'M', 'L']) {
+    if (QRCode.create(payload, { errorCorrectionLevel: ec }).version === baseVersion) return ec;
+  }
+}
+
 // Renders a QR code for `data` (a tagdrop: URI string, or raw Uint8Array bytes
 // for binary/byte-mode QR) onto a fresh canvas at the given pixel width.
 function qrToCanvas(QRCode, data, width) {
   return new Promise((resolve, reject) => {
-    QRCode.toCanvas(qrPayloadFor(data), { errorCorrectionLevel: 'L', margin: 2, width }, (err, canvas) => {
+    const payload = qrPayloadFor(data);
+    const errorCorrectionLevel = pickErrorCorrectionLevel(QRCode, payload);
+    QRCode.toCanvas(payload, { errorCorrectionLevel, margin: 2, width }, (err, canvas) => {
       if (err) reject(err); else resolve(canvas);
     });
   });
@@ -953,9 +989,14 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   item.appendChild(qrDiv);
   const badgeHtml = badge ? ` <span class="qr-badge ${badgeClass || ''}">${escHtml(badge)}</span>` : '';
   item.insertAdjacentHTML('beforeend', `
-    <div class="qr-label">${label}</div>
-    <div class="qr-sub">${escHtml(sub)}${badgeHtml}</div>
-    <div class="qr-id">ID: ${escHtml(id)}</div>`);
+    <div class="qr-footer">
+      <div class="qr-stamp">${QR_STAMP_SVG}</div>
+      <div class="qr-meta">
+        <div class="qr-label">${label}</div>
+        <div class="qr-sub">${escHtml(sub)}${badgeHtml}</div>
+        <div class="qr-id">ID: ${escHtml(id)}</div>
+      </div>
+    </div>`);
   grid.appendChild(item);
 
   await renderQr(qrDiv, qrData); // throws on failure — caller handles
@@ -1546,9 +1587,14 @@ function makeQrItem(label, sub, id, uri, badge) {
   div.appendChild(qrDiv);
   const badgeHtml = badge ? ` <span class="qr-badge home">${escHtml(badge)}</span>` : '';
   div.insertAdjacentHTML('beforeend',
-    `<div class="qr-label">${escHtml(label)}</div>
-     <div class="qr-sub">${escHtml(sub)}${badgeHtml}</div>
-     <div class="qr-id">${id}</div>`);
+    `<div class="qr-footer">
+       <div class="qr-stamp">${QR_STAMP_SVG}</div>
+       <div class="qr-meta">
+         <div class="qr-label">${escHtml(label)}</div>
+         <div class="qr-sub">${escHtml(sub)}${badgeHtml}</div>
+         <div class="qr-id">${id}</div>
+       </div>
+     </div>`);
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row';
   actionRow.innerHTML = `
