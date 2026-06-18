@@ -18,7 +18,8 @@
   No server required — open this file directly in a browser.
 
   Requires internet for QR rendering (dynamically imports the qrcode library
-  from a CDN as an ES module on first use).
+  from a CDN as an ES module on first use) and, only when exporting a
+  printable PDF sheet, the jsPDF library (same CDN ES-module pattern).
 -->
 <style>
   *, *::before, *::after { box-sizing: border-box; }
@@ -921,6 +922,21 @@ function loadQRCode() {
   return qrcodeModulePromise;
 }
 
+// Same CDN-import pattern, used only by the "Download PDF Sheet" bulk export below.
+let jspdfModulePromise;
+function loadJsPDF() {
+  if (!jspdfModulePromise) jspdfModulePromise = import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
+  return jspdfModulePromise;
+}
+
+// Successfully-rendered QR items for the current Single File / Paper Layout result,
+// feeding the "Download All as ZIP" / "Download PDF Sheet" bulk actions. Kept separate
+// (not shared) because both tabs' result panes stay resident in the DOM at once
+// (CSS-hidden, not removed) — a shared list would let a stale tab's buttons silently
+// export the other tab's items after switching tabs and generating again.
+let singleBulkItems = [];
+let paperBulkItems = [];
+
 // Converts QR content to the form QRCode.toCanvas/toFile expects: a plain text
 // string for tagdrop: URIs, or a byte-mode segment for raw binary (Uint8Array)
 // data such as a binary-QR chunk payload — see the qrcode package's "Binary data" docs.
@@ -1013,6 +1029,7 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   grid.appendChild(item);
 
   await renderQr(qrDiv, qrData); // throws on failure — caller handles
+  singleBulkItems.push({ filename: `tagdrop-${id}.png`, qrData, caption: `${sub} (${id})` });
 
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row';
@@ -1024,6 +1041,170 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(qrData, `tagdrop-${id}.png`));
   actionRow.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromUri(uri, id));
   item.appendChild(actionRow);
+}
+
+// ── Bulk export (ZIP / PDF sheet) ───────────────────────────────────────────
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC32_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// Minimal ZIP writer: Stored (uncompressed) entries only — fine here since every
+// entry is a PNG, which is already compressed. Mirrors the layout parseZip() above
+// reads: local file header per entry, then a central directory, then the EOCD record.
+function buildZip(entries) {
+  const STORED = 0, DOS_TIME = 0, DOS_DATE = 0x21; // arbitrary fixed timestamp (1980-01-01)
+  const localParts = [], centralParts = [];
+  let offset = 0;
+
+  for (const { name, bytes } of entries) {
+    const nameBytes = new TextEncoder().encode(name);
+    const crc = crc32(bytes);
+
+    const lfh = new DataView(new ArrayBuffer(30));
+    lfh.setUint32(0, 0x04034b50, true);
+    lfh.setUint16(4, 20, true);            // version needed to extract
+    lfh.setUint16(6, 0, true);             // flags
+    lfh.setUint16(8, STORED, true);
+    lfh.setUint16(10, DOS_TIME, true);
+    lfh.setUint16(12, DOS_DATE, true);
+    lfh.setUint32(14, crc, true);
+    lfh.setUint32(18, bytes.length, true); // compressed size
+    lfh.setUint32(22, bytes.length, true); // uncompressed size
+    lfh.setUint16(26, nameBytes.length, true);
+    lfh.setUint16(28, 0, true);            // extra field length
+    localParts.push(new Uint8Array(lfh.buffer), nameBytes, bytes);
+
+    const cdh = new DataView(new ArrayBuffer(46));
+    cdh.setUint32(0, 0x02014b50, true);
+    cdh.setUint16(4, 20, true);            // version made by
+    cdh.setUint16(6, 20, true);            // version needed to extract
+    cdh.setUint16(8, 0, true);             // flags
+    cdh.setUint16(10, STORED, true);
+    cdh.setUint16(12, DOS_TIME, true);
+    cdh.setUint16(14, DOS_DATE, true);
+    cdh.setUint32(16, crc, true);
+    cdh.setUint32(20, bytes.length, true);
+    cdh.setUint32(24, bytes.length, true);
+    cdh.setUint16(28, nameBytes.length, true);
+    cdh.setUint16(30, 0, true);            // extra field length
+    cdh.setUint16(32, 0, true);            // comment length
+    cdh.setUint16(34, 0, true);            // disk number start
+    cdh.setUint16(36, 0, true);            // internal attrs
+    cdh.setUint32(38, 0, true);            // external attrs
+    cdh.setUint32(42, offset, true);       // local header offset
+    centralParts.push(new Uint8Array(cdh.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + bytes.length;
+  }
+
+  const centralSize = centralParts.reduce((n, p) => n + p.length, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(4, 0, true);
+  eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, entries.length, true);
+  eocd.setUint16(10, entries.length, true);
+  eocd.setUint32(12, centralSize, true);
+  eocd.setUint32(16, offset, true);
+  eocd.setUint16(20, 0, true);
+
+  return new Blob([...localParts, ...centralParts, new Uint8Array(eocd.buffer)], { type: 'application/zip' });
+}
+
+// Re-renders every item's QR at full download resolution and bundles the PNGs into
+// a single ZIP — avoids forcing N separate browser downloads for a multi-file result.
+async function downloadAllAsZip(items) {
+  try {
+    const QRCode = await loadQRCode();
+    const entries = [];
+    for (const item of items) {
+      const canvas = await qrToCanvas(QRCode, item.qrData, 1024);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      entries.push({ name: item.filename, bytes: new Uint8Array(await blob.arrayBuffer()) });
+    }
+    const zip = buildZip(entries);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(zip);
+    a.download = 'tagdrop-qrcodes.zip';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert('ZIP export failed: ' + e.message);
+  }
+}
+
+// Lays out `perSheet` QR codes per A4 page (near-square grid) with a caption under
+// each, starting a new page every `perSheet` items.
+async function downloadPdfSheet(items, perSheet) {
+  try {
+    const QRCode = await loadQRCode();
+    const { jsPDF } = await loadJsPDF();
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageWidth  = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 10;
+
+    const cols = Math.ceil(Math.sqrt(perSheet));
+    const rows = Math.ceil(perSheet / cols);
+    const cellW = (pageWidth - margin * 2) / cols;
+    const cellH = (pageHeight - margin * 2) / rows;
+    const qrSize = Math.min(cellW, cellH) - 10; // leaves room for the caption below
+
+    for (let i = 0; i < items.length; i++) {
+      const posInSheet = i % perSheet;
+      if (i > 0 && posInSheet === 0) pdf.addPage();
+      const col = posInSheet % cols, row = Math.floor(posInSheet / cols);
+      const x = margin + col * cellW + (cellW - qrSize) / 2;
+      const y = margin + row * cellH;
+
+      const canvas = await qrToCanvas(QRCode, items[i].qrData, 600);
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, qrSize, qrSize);
+      pdf.setFontSize(8);
+      pdf.text(items[i].caption, margin + col * cellW + cellW / 2, y + qrSize + 4,
+        { align: 'center', maxWidth: cellW - 4 });
+    }
+
+    pdf.save('tagdrop-qrcodes.pdf');
+  } catch (e) {
+    alert('PDF export failed: ' + e.message);
+  }
+}
+
+// Appends the "Download All as ZIP" / "Download PDF Sheet" action row to `result`,
+// once at least one QR rendered successfully. Wired via closures rather than
+// id/getElementById since #s-result and #p-result both stay resident in the DOM
+// (only CSS-hidden when their tab isn't active) — duplicate ids would risk one
+// tab's button acting on the other tab's stale item list.
+function appendBulkActions(result, items) {
+  if (items.length === 0) return;
+  const row = document.createElement('div');
+  row.className = 'action-row'; row.id = 'no-print';
+  row.innerHTML = `
+    <button class="secondary zip-all">📦 Download All as ZIP (${items.length})</button>
+    <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.9rem">
+      QR codes per sheet:
+      <input type="number" class="per-sheet" value="4" min="1" max="30" style="width:4em">
+    </label>
+    <button class="secondary pdf-sheet">📄 Download PDF Sheet</button>`;
+  row.querySelector('.zip-all').addEventListener('click', () => downloadAllAsZip(items));
+  const perSheetInput = row.querySelector('.per-sheet');
+  row.querySelector('.pdf-sheet').addEventListener('click', () => {
+    const perSheet = Math.max(1, parseInt(perSheetInput.value, 10) || 4);
+    downloadPdfSheet(items, perSheet);
+  });
+  result.appendChild(row);
 }
 
 // ── File / ZIP upload helpers ───────────────────────────────────────────────
@@ -1244,12 +1425,13 @@ async function renderChunkedResult(chunked, { encodeArgs, compress, encrypt, enc
   }
 
   if (encrypt) await renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType });
+  appendBulkActions(result, singleBulkItems);
 }
 
 async function generateSingle() {
   const msgs   = document.getElementById('s-messages');
   const result = document.getElementById('s-result');
-  msgs.innerHTML = ''; result.innerHTML = '';
+  msgs.innerHTML = ''; result.innerHTML = ''; singleBulkItems = [];
 
   const hint     = document.getElementById('s-hint').value.trim() || null;
   const filename = document.getElementById('s-filename').value.trim() || null;
@@ -1366,6 +1548,7 @@ async function generateSingle() {
   }
 
   if (encrypt) await renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType });
+  appendBulkActions(result, singleBulkItems);
 }
 
 // ── Paper layout generator ─────────────────────────────────────────────────
@@ -1464,7 +1647,7 @@ function removeEntry(divId, arr, id) {
 async function generatePaper() {
   const msgs   = document.getElementById('p-messages');
   const result = document.getElementById('p-result');
-  msgs.innerHTML = ''; result.innerHTML = '';
+  msgs.innerHTML = ''; result.innerHTML = ''; paperBulkItems = [];
 
   const label = document.getElementById('p-label').value.trim() || null;
   const set   = document.getElementById('p-set').value.trim() || null;
@@ -1557,8 +1740,14 @@ async function generatePaper() {
   // Manifest QR first
   const mItem = makeQrItem(`📋 ${label || 'Manifest'}`, 'paper manifest', toHex(manifestEnc.rootHash), manifestEnc.uri);
   grid.appendChild(mItem.div);
-  try { await renderQr(mItem.qrDiv, manifestEnc.uri); }
-  catch(e) {
+  try {
+    await renderQr(mItem.qrDiv, manifestEnc.uri);
+    paperBulkItems.push({
+      filename: `tagdrop-${toHex(manifestEnc.rootHash)}.png`,
+      qrData: manifestEnc.uri,
+      caption: `${label || 'Manifest'} (manifest)`,
+    });
+  } catch(e) {
     mItem.div.querySelector('.action-row')?.remove();
     msgs.innerHTML = '<div class="err">QR rendering failed — is the qrcode library loaded?</div>';
     return;
@@ -1570,8 +1759,10 @@ async function generatePaper() {
     grid.appendChild(fItem.div);
     if (f.uri.length > MAX_URI_LENGTH)
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
-    try { await renderQr(fItem.qrDiv, f.uri); }
-    catch(e) {
+    try {
+      await renderQr(fItem.qrDiv, f.uri);
+      paperBulkItems.push({ filename: `tagdrop-${toHex(f.fileId)}.png`, qrData: f.uri, caption: `${f.slug} (${f.mimeType})` });
+    } catch(e) {
       fItem.div.querySelector('.action-row')?.remove();
       fItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed — content too large for a single QR code</div>');
     }
@@ -1591,6 +1782,8 @@ async function generatePaper() {
   actionRow.className = 'action-row'; actionRow.id = 'no-print';
   actionRow.innerHTML = `<button class="secondary" onclick="window.print()">🖨 Print Paper Layout</button>`;
   result.appendChild(actionRow);
+
+  appendBulkActions(result, paperBulkItems);
 }
 
 function makeQrItem(label, sub, id, uri, badge) {
