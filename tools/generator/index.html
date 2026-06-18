@@ -938,8 +938,15 @@ function qrPayloadFor(data) {
 function pickErrorCorrectionLevel(QRCode, payload) {
   const baseVersion = QRCode.create(payload, { errorCorrectionLevel: 'L' }).version;
   for (const ec of ['H', 'Q', 'M', 'L']) {
-    if (QRCode.create(payload, { errorCorrectionLevel: ec }).version === baseVersion) return ec;
+    // Higher EC levels have less data capacity, so payloads near the 'L' limit
+    // for their version can throw ("data too big") at 'H'/'Q'/'M' even though
+    // 'L' itself fits fine — catch and fall through to the next level instead
+    // of letting that abort the whole render.
+    try {
+      if (QRCode.create(payload, { errorCorrectionLevel: ec }).version === baseVersion) return ec;
+    } catch { /* doesn't fit at this EC level — try the next */ }
   }
+  return 'L';
 }
 
 // Renders a QR code for `data` (a tagdrop: URI string, or raw Uint8Array bytes
