@@ -1041,7 +1041,7 @@ async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row';
   actionRow.innerHTML = `
-    <button class="secondary" onclick="window.print()">🖨 Print</button>
+    <button class="secondary" onclick="window.print()">🖨 Print (one code per page)</button>
     <button class="secondary download-png">⬇ Download PNG</button>
     <button class="secondary" onclick="copyToClipboard('${uri.replace(/'/g,"\\'")}')">Copy URI</button>
     <button class="secondary inspect-cbor">🔍 Inspect CBOR</button>`;
@@ -1204,7 +1204,7 @@ function appendBulkActions(result, items) {
       QR codes per sheet:
       <input type="number" class="per-sheet" value="4" min="1" max="30" style="width:4em">
     </label>
-    <button class="secondary pdf-sheet">📄 Download PDF Sheet</button>`;
+    <button class="secondary pdf-sheet">📄 Download PDF Sheet (multiple per page)</button>`;
   row.querySelector('.zip-all').addEventListener('click', () => downloadAllAsZip(items));
   const perSheetInput = row.querySelector('.per-sheet');
   row.querySelector('.pdf-sheet').addEventListener('click', () => {
@@ -1827,7 +1827,7 @@ async function generatePaper() {
 
   const actionRow = document.createElement('div');
   actionRow.className = 'action-row'; actionRow.id = 'no-print';
-  actionRow.innerHTML = `<button class="secondary" onclick="window.print()">🖨 Print Paper Layout</button>`;
+  actionRow.innerHTML = `<button class="secondary" onclick="window.print()">🖨 Print Paper Layout (one code per page)</button>`;
   result.appendChild(actionRow);
 
   appendBulkActions(result, paperBulkItems);
