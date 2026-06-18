@@ -70,6 +70,10 @@
   .qr-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; }
   .qr-item { background: #fff; border-radius: 8px; padding: 16px; text-align: center;
              box-shadow: 0 1px 3px rgba(0,0,0,.1); min-width: 380px; }
+  /* Pinned to the on-screen QR render width (renderQr() always renders at
+     400px) and centered the same way the canvas is, so the footer below
+     lines up with the QR's left/right edges instead of the wider card. */
+  .qr-visual { width: 400px; margin: 0 auto; }
   .qr-item canvas, .qr-item img { display: block; margin: 0 auto 8px;
     image-rendering: pixelated; image-rendering: crisp-edges; }
   /* Title-card footer: brand stamp sits beside the label/sub/id text, below the
@@ -985,10 +989,13 @@ async function downloadQrPng(data, filename) {
 async function addGeneratorQrCard(grid, { label, sub, badge, badgeClass, id, uri, qrData = uri, itemClass }) {
   const item = document.createElement('div');
   item.className = 'qr-item' + (itemClass ? ' ' + itemClass : '');
+  const visual = document.createElement('div');
+  visual.className = 'qr-visual';
   const qrDiv = document.createElement('div');
-  item.appendChild(qrDiv);
+  visual.appendChild(qrDiv);
+  item.appendChild(visual);
   const badgeHtml = badge ? ` <span class="qr-badge ${badgeClass || ''}">${escHtml(badge)}</span>` : '';
-  item.insertAdjacentHTML('beforeend', `
+  visual.insertAdjacentHTML('beforeend', `
     <div class="qr-footer">
       <div class="qr-stamp">${QR_STAMP_SVG}</div>
       <div class="qr-meta">
@@ -1583,10 +1590,13 @@ async function generatePaper() {
 function makeQrItem(label, sub, id, uri, badge) {
   const div = document.createElement('div');
   div.className = 'qr-item';
+  const visual = document.createElement('div');
+  visual.className = 'qr-visual';
   const qrDiv = document.createElement('div');
-  div.appendChild(qrDiv);
+  visual.appendChild(qrDiv);
+  div.appendChild(visual);
   const badgeHtml = badge ? ` <span class="qr-badge home">${escHtml(badge)}</span>` : '';
-  div.insertAdjacentHTML('beforeend',
+  visual.insertAdjacentHTML('beforeend',
     `<div class="qr-footer">
        <div class="qr-stamp">${QR_STAMP_SVG}</div>
        <div class="qr-meta">
