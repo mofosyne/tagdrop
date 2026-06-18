@@ -107,7 +107,8 @@ See [SPEC.md](SPEC.md) for the full wire format and design rationale.
   located finds. Includes a Key Management screen for retained AES keys.
 - **[Web generator](tools/generator/)** — build single codes or full
   multi-file "paper" layouts with a printable QR sheet, entirely in the
-  browser. Supports both key-code QR and passphrase encryption modes.
+  browser. Supports both key-code QR and passphrase encryption modes, and
+  bulk export of generated codes as a ZIP of PNGs or a printable PDF sheet.
 - **[Web reader](tools/reader/)** — decode and preview `tagdrop:` codes in
   any browser, with camera scanning, passphrase prompts, and persistent key
   retention.
