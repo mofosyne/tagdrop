@@ -345,7 +345,14 @@
       <code style="font-size:0.8rem">&lt;audio controls src="tagdrop://ROOTHASH/song.mid"&gt;</code><br>
       Slugs can contain <code>/</code> to mimic folder paths
       (e.g. <code>images/photo.jpg</code>) — they are matched as plain strings.
+      A file too large for one QR code is automatically split into a manifest
+      + chunk codes, same as the Single File tab.
     </p>
+    <label style="margin:0 0 10px;display:block">
+      <input type="checkbox" id="p-binary-chunks" checked>
+      🔢 Use binary QR for chunks
+      <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only to files that need multiple QR codes</small>
+    </label>
     <div id="p-files"></div>
     <div class="dropzone" id="p-dropzone">
       <div class="dropzone-hint">Drag files or a ZIP archive here to add them as pages</div>
@@ -1685,12 +1692,19 @@ async function generatePaper() {
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
     catch (e) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" content isn't valid base64 for MIME type "${escHtml(fmime)}".</div>`; return; }
+    const fileArgs = {
+      hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr,
+      collectionId, collectionLabel, collectionTag, icon,
+    };
     try {
-      const enc = await encodeSingle({
-        hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr,
-        collectionId, collectionLabel, collectionTag, icon,
-      });
-      encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
+      const enc = await encodeSingle(fileArgs);
+      const chunkCount = chunkCountForBytes(enc.assembledLength);
+      if (chunkCount > 1) {
+        const chunked = await encodeManifestAndChunks({ ...fileArgs, chunkCount });
+        encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: chunked.cacheId, chunked });
+      } else {
+        encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
+      }
     } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${escHtml(fslug)}" failed: ${e.message}</div>`; return; }
   }
 
@@ -1753,9 +1767,42 @@ async function generatePaper() {
     return;
   }
 
-  // File QRs
+  // File QRs — a file too large for one QR was split into a Manifest + Chunks
+  // above (cache_id is shared between the two forms, so the paper's file_id
+  // resolves correctly either way once the reader has scanned/assembled it).
+  const useBinaryChunks = document.getElementById('p-binary-chunks')?.checked;
   for (const f of encodedFiles) {
-    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri, HOME_SLUGS.includes(f.slug) ? '🏠 homepage' : null);
+    const homeBadge = HOME_SLUGS.includes(f.slug) ? '🏠 homepage' : null;
+    if (f.chunked) {
+      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.chunked.totalBytes} bytes — split into 1 manifest QR
+        + ${f.chunked.chunkCount} chunk QR code${f.chunked.chunkCount === 1 ? '' : 's'}.</div>`;
+      const mfItem = makeQrItem(f.slug, `${f.mimeType} · manifest`, toHex(f.chunked.cacheId), f.chunked.manifestUri, homeBadge);
+      grid.appendChild(mfItem.div);
+      try {
+        await renderQr(mfItem.qrDiv, f.chunked.manifestUri);
+        paperBulkItems.push({ filename: `tagdrop-${toHex(f.chunked.cacheId)}.png`, qrData: f.chunked.manifestUri, caption: `${f.slug} (manifest)` });
+      } catch(e) {
+        mfItem.div.querySelector('.action-row')?.remove();
+        mfItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed for manifest.</div>');
+        continue;
+      }
+      for (const c of f.chunked.chunks) {
+        const qrData = useBinaryChunks ? c.raw : c.uri;
+        const cItem = makeQrItem(`${f.slug} — chunk ${c.index + 1}/${f.chunked.chunkCount}`,
+          useBinaryChunks ? `${c.raw.length} raw bytes · binary QR` : `${c.uri.length} chars · text QR`,
+          `${toHex(f.chunked.cacheId)}-chunk${c.index}`, c.uri, null, qrData);
+        grid.appendChild(cItem.div);
+        try {
+          await renderQr(cItem.qrDiv, qrData);
+          paperBulkItems.push({ filename: `tagdrop-${toHex(f.chunked.cacheId)}-chunk${c.index}.png`, qrData, caption: `${f.slug} chunk ${c.index + 1}/${f.chunked.chunkCount}` });
+        } catch(e) {
+          cItem.div.querySelector('.action-row')?.remove();
+          cItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed for chunk ${c.index + 1}.</div>`);
+        }
+      }
+      continue;
+    }
+    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri, homeBadge);
     grid.appendChild(fItem.div);
     if (f.uri.length > MAX_URI_LENGTH)
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
@@ -1786,7 +1833,11 @@ async function generatePaper() {
   appendBulkActions(result, paperBulkItems);
 }
 
-function makeQrItem(label, sub, id, uri, badge) {
+// `qrData` (defaults to `uri`) is what's actually rendered/downloaded as the QR — pass
+// raw Uint8Array bytes here for a binary/byte-mode chunk QR while `uri` still carries
+// the text tagdrop: form for "Inspect CBOR" (always text-decodable regardless of how
+// the QR itself was rendered).
+function makeQrItem(label, sub, id, uri, badge, qrData = uri) {
   const div = document.createElement('div');
   div.className = 'qr-item';
   const visual = document.createElement('div');
@@ -1809,7 +1860,7 @@ function makeQrItem(label, sub, id, uri, badge) {
   actionRow.innerHTML = `
     <button class="secondary download-png">⬇ Download PNG</button>
     <button class="secondary inspect-cbor">🔍 Inspect CBOR</button>`;
-  actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(uri, `tagdrop-${id}.png`));
+  actionRow.querySelector('.download-png').addEventListener('click', () => downloadQrPng(qrData, `tagdrop-${id}.png`));
   actionRow.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromUri(uri, id));
   div.appendChild(actionRow);
   return { div, qrDiv };
