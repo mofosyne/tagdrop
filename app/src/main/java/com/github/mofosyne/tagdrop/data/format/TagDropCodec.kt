@@ -253,7 +253,26 @@ object TagDropCodec {
     }
 
     /** [resolveSingle]'s result: a Single's final hint/mime_type/filename/content after any override merge (SPEC §9). */
-    data class ResolvedSingle(val hint: String?, val mimeType: String, val filename: String?, val content: ByteArray)
+    data class ResolvedSingle(val hint: String?, val mimeType: String, val filename: String?, val content: ByteArray) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as ResolvedSingle
+            if (hint != other.hint) return false
+            if (mimeType != other.mimeType) return false
+            if (filename != other.filename) return false
+            if (!content.contentEquals(other.content)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = hint?.hashCode() ?: 0
+            result = 31 * result + mimeType.hashCode()
+            result = 31 * result + (filename?.hashCode() ?: 0)
+            result = 31 * result + content.contentHashCode()
+            return result
+        }
+    }
 
     /**
      * Resolves a Single's final view (SPEC §9). If [payload] carries an [TagDropPayload.Single.overrideBlob]
@@ -264,7 +283,7 @@ object TagDropCodec {
      */
     fun resolveSingle(payload: TagDropPayload.Single, key: ByteArray? = null): ResolvedSingle {
         val blob = payload.overrideBlob
-        val override = if (blob != null && key != null) tryDecryptOverrideMap(blob, key, payload.compression) else null
+        val override = if ((blob != null) && (key != null)) tryDecryptOverrideMap(blob, key, payload.compression) else null
         return if (override != null) {
             ResolvedSingle(
                 hint     = override.hint ?: payload.hint,

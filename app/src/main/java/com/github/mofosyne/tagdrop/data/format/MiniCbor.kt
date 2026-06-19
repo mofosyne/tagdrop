@@ -84,7 +84,7 @@ object MiniCbor {
     private fun writeFloat64(out: ByteArrayOutputStream, v: Double) {
         out.write((7 shl 5) or 27)
         val bits = java.lang.Double.doubleToLongBits(v)
-        repeat(8) { i -> out.write((bits ushr (56 - i * 8)).toInt() and 0xFF) }
+        repeat(8) { i -> out.write((bits ushr (56 - (i * 8))).toInt() and 0xFF) }
     }
 
     private fun writeHead(out: ByteArrayOutputStream, major: Int, n: Long) {

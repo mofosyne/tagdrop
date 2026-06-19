@@ -17,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.edit
 import androidx.core.content.getSystemService
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
@@ -85,7 +86,7 @@ class ReceiveActivity : AppCompatActivity() {
             val rawPayload = rawBytes?.let { TagDropCodec.decodeRaw(it) }
             if (rawPayload != null) {
                 val key = "raw:" + rawBytes.toHex()
-                if (key == lastDecodedText && now - lastDecodedAt < SCAN_COOLDOWN_MS) return
+                if (key == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
                 lastDecodedText = key
                 lastDecodedAt = now
                 processDecoded(rawPayload)
@@ -93,7 +94,7 @@ class ReceiveActivity : AppCompatActivity() {
             }
 
             val text = result.text ?: return
-            if (text == lastDecodedText && now - lastDecodedAt < SCAN_COOLDOWN_MS) return
+            if (text == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
             lastDecodedText = text
             lastDecodedAt = now
             processScanned(text)
@@ -248,7 +249,7 @@ class ReceiveActivity : AppCompatActivity() {
             locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
             return
         }
-        prefs.edit().putBoolean(PREF_LOCATION_RATIONALE_SHOWN, true).apply()
+        prefs.edit { putBoolean(PREF_LOCATION_RATIONALE_SHOWN, true) }
         AlertDialog.Builder(this)
             .setTitle(R.string.location_permission_title)
             .setMessage(R.string.location_permission_message)

@@ -126,7 +126,7 @@ class MainActivity : AppCompatActivity() {
                 cacheDao.insert(
                     FoundCache(
                         cacheId         = item.cacheId,
-                        discoveredAt    = now - index * 60_000L,
+                        discoveredAt    = now - (index * 60_000L),
                         hint            = item.hint,
                         filename        = item.filename,
                         mimeType        = "text/plain",

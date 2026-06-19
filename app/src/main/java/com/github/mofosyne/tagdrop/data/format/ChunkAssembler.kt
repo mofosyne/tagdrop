@@ -30,7 +30,28 @@ class ChunkAssembler {
             val cacheId: ByteArray,
             val hint: String?,
             val missingIndices: List<Int>
-        ) : State()
+        ) : State() {
+            override fun equals(other: Any?): Boolean {
+                if (this === other) return true
+                if (javaClass != other?.javaClass) return false
+                other as Collecting
+                if (received != other.received) return false
+                if (total != other.total) return false
+                if (!cacheId.contentEquals(other.cacheId)) return false
+                if (hint != other.hint) return false
+                if (missingIndices != other.missingIndices) return false
+                return true
+            }
+
+            override fun hashCode(): Int {
+                var result = received
+                result = 31 * result + total
+                result = 31 * result + cacheId.contentHashCode()
+                result = 31 * result + (hint?.hashCode() ?: 0)
+                result = 31 * result + missingIndices.hashCode()
+                return result
+            }
+        }
 
         /** All chunks received and SHA-256 verified. Content is ready. */
         data class Complete(
@@ -51,7 +72,40 @@ class ChunkAssembler {
             val pendingOverrideBlob: ByteArray? = null,
             /** Compression to apply when decoding [pendingOverrideBlob]'s plaintext, if non-null (SPEC §9). */
             val pendingOverrideCompression: Int = TagDropCodec.COMPRESSION_NONE
-        ) : State()
+        ) : State() {
+            override fun equals(other: Any?): Boolean {
+                if (this === other) return true
+                if (javaClass != other?.javaClass) return false
+                other as Complete
+                if (!cacheId.contentEquals(other.cacheId)) return false
+                if (hint != other.hint) return false
+                if (filename != other.filename) return false
+                if (mimeType != other.mimeType) return false
+                if (!content.contentEquals(other.content)) return false
+                if (!collectionId.contentEquals(other.collectionId)) return false
+                if (collectionLabel != other.collectionLabel) return false
+                if (collectionTag != other.collectionTag) return false
+                if (icon != other.icon) return false
+                if (!pendingOverrideBlob.contentEquals(other.pendingOverrideBlob)) return false
+                if (pendingOverrideCompression != other.pendingOverrideCompression) return false
+                return true
+            }
+
+            override fun hashCode(): Int {
+                var result = cacheId.contentHashCode()
+                result = 31 * result + (hint?.hashCode() ?: 0)
+                result = 31 * result + (filename?.hashCode() ?: 0)
+                result = 31 * result + mimeType.hashCode()
+                result = 31 * result + content.contentHashCode()
+                result = 31 * result + (collectionId?.contentHashCode() ?: 0)
+                result = 31 * result + (collectionLabel?.hashCode() ?: 0)
+                result = 31 * result + (collectionTag?.hashCode() ?: 0)
+                result = 31 * result + (icon?.hashCode() ?: 0)
+                result = 31 * result + (pendingOverrideBlob?.contentHashCode() ?: 0)
+                result = 31 * result + pendingOverrideCompression
+                return result
+            }
+        }
 
         /** All chunks received but assembly failed integrity check. */
         object HashMismatch : State()
