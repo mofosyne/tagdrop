@@ -309,6 +309,10 @@
       <label>Slug <small>(optional — this paper's address within the set)</small></label>
       <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
     </div>
+    <div>
+      <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "Day 2 of the sunset trail: a poem and a hand-drawn map")</small></label>
+      <input type="text" id="p-description" placeholder="e.g. Day 2 of the sunset trail: a poem and a hand-drawn map">
+    </div>
     <div class="row">
       <div>
         <label>Icon <small>(optional — emoji shown as a visual badge)</small></label>
@@ -560,7 +564,8 @@ const KEY_NAMES = {
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
-  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters'
+  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
+  40: 'description', 41: 'description'
 };
 
 function toHexDump(bytes) {
@@ -664,7 +669,8 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
              FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24, LAT:26, LNG:27,
              ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
-             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39 };
+             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
+             PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41 };
 
 // Chunk sizing (mirrors Kotlin TagDropCodec.MAX_CHUNK_DATA_BYTES /
 // chunkCountForBytes): keeps each chunk's Base41-encoded tagdrop: URI under
@@ -852,13 +858,14 @@ function encodeKeyCode({ keyMaterial, hint }) {
   return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
 }
 
-async function encodePaperManifest({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
-  // files = [{slug, mimeType, fileId:Uint8Array}]
+async function encodePaperManifest({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon }) {
+  // files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
   // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
   //             keyMaterial:Uint8Array|null, retainKey:boolean}]
   // root_hash = SHA-256(envelope+payload CBOR sequence without root_hash)[0:8]
   const filesField = files.map(f => subMap([
-    [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
+    [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
+    [K.FILE_DESCRIPTION, f.description || null]
   ]));
   const relatedField = related.map(r => subMap([
     [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
@@ -876,6 +883,7 @@ async function encodePaperManifest({ label, set, slug, files, related, collectio
     [K.COLLECTION_LABEL, collectionLabel || null],
     [K.COLLECTION_TAG,   collectionTag || null],
     [K.ICON,             icon || null],
+    [K.PAPER_DESCRIPTION, description || null],
   ]);
   const rootHash = await sha256first8(cborSequence(TYPE_PAPER_MANIFEST, payloadNoHash));
   const payload = cborMap([
@@ -889,6 +897,7 @@ async function encodePaperManifest({ label, set, slug, files, related, collectio
     [K.COLLECTION_LABEL, collectionLabel || null],
     [K.COLLECTION_TAG,   collectionTag || null],
     [K.ICON,             icon || null],
+    [K.PAPER_DESCRIPTION, description || null],
   ]);
   return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
 }
@@ -1662,6 +1671,8 @@ function addFileEntry() {
         </select>
       </div>
     </div>
+    <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "A poem to read")</small></label>
+    <input type="text" id="fdesc-${id}" placeholder="e.g. A poem to read">
     <label><input type="checkbox" id="fcompress-${id}"> Compress with DEFLATE</label>
     <label>Content</label>
     <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
@@ -1717,9 +1728,10 @@ async function generatePaper() {
   const result = document.getElementById('p-result');
   msgs.innerHTML = ''; result.innerHTML = ''; paperBulkItems = [];
 
-  const label = document.getElementById('p-label').value.trim() || null;
-  const set   = document.getElementById('p-set').value.trim() || null;
-  const slug  = document.getElementById('p-slug').value.trim() || null;
+  const label       = document.getElementById('p-label').value.trim() || null;
+  const set         = document.getElementById('p-set').value.trim() || null;
+  const slug        = document.getElementById('p-slug').value.trim() || null;
+  const description = document.getElementById('p-description').value.trim() || null;
 
   // Collection/icon fields (SPEC §7) — optional. The same values are stamped onto the
   // PaperManifest AND every file's Single QR below, so the finder's home screen can
@@ -1749,6 +1761,7 @@ async function generatePaper() {
     const fmime    = document.getElementById('fmime-' + id)?.value;
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
+    const fdesc    = document.getElementById('fdesc-' + id)?.value.trim() || null;
     if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" has no content.</div>`; return; }
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
@@ -1762,9 +1775,9 @@ async function generatePaper() {
       const chunkCount = chunkCountForBytes(enc.assembledLength);
       if (chunkCount > 1) {
         const chunked = await encodeManifestAndChunks({ ...fileArgs, chunkCount });
-        encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: chunked.cacheId, chunked });
+        encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: chunked.cacheId, chunked, description: fdesc });
       } else {
-        encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
+        encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId, description: fdesc });
       }
     } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${escHtml(fslug)}" failed: ${e.message}</div>`; return; }
   }
@@ -1793,11 +1806,11 @@ async function generatePaper() {
   } catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
 
   // Encode paper manifest
-  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
+  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description }));
   let manifestEnc;
   try {
     manifestEnc = await encodePaperManifest({
-      label, set, slug, files: manifestFiles, related,
+      label, set, slug, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
     });
   }

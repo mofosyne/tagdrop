@@ -227,6 +227,45 @@ class TagDropCodecTest {
         assertNull(decoded.related[1].lng)
     }
 
+    @Test fun paperManifestWithDescriptionRoundTrip() {
+        val original = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            label    = "Trail Stop 3 — Oak Tree",
+            set      = null, slug = null,
+            files    = listOf(
+                TagDropPayload.FileEntry("poem", "text/plain", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), description = "A poem to read"),
+                TagDropPayload.FileEntry("map",  "image/svg+xml", byteArrayOf(9, 10, 11, 12, 13, 14, 15, 16), description = "A hand-drawn map")
+            ),
+            related  = emptyList(),
+            description = "Day 2 of the sunset trail: a poem and a hand-drawn map"
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.PaperManifest
+        assertEquals("Day 2 of the sunset trail: a poem and a hand-drawn map", decoded.description)
+        assertEquals("A poem to read", decoded.files[0].description)
+        assertEquals("A hand-drawn map", decoded.files[1].description)
+    }
+
+    @Test fun paperManifestDescriptionOptionalNull() {
+        val original = TagDropPayload.PaperManifest(
+            rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            label = null, set = null, slug = null,
+            files = listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))),
+            related = emptyList()
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.PaperManifest
+        assertNull(decoded.description)
+        assertNull(decoded.files[0].description)
+
+        val cbor = TagDropCodec.paperManifestCbor(original)
+        val items = MiniCbor.decodeSequence(cbor)
+        @Suppress("UNCHECKED_CAST")
+        val map = items[2] as Map<Int, Any>
+        assertFalse("description (40) should be omitted when null", map.containsKey(40))
+        @Suppress("UNCHECKED_CAST")
+        val filesList = map[15] as List<Map<Int, Any>>
+        assertFalse("file description (41) should be omitted when null", filesList[0].containsKey(41))
+    }
+
     @Test fun relatedPaperKeyMaterialAndRetainKeyRoundTrip() {
         val keyMaterial = ByteArray(32) { it.toByte() }
         val original = TagDropPayload.PaperManifest(
@@ -519,10 +558,11 @@ class TagDropCodecTest {
             rootHash = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte(), 0xDD.toByte(),
                                     0xEE.toByte(), 0xFF.toByte(), 0x11, 0x22),
             label = "Test Paper", set = "test-set", slug = "test-slug",
-            files = listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(5, 6, 7, 8, 9, 10, 11, 12))),
+            files = listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(5, 6, 7, 8, 9, 10, 11, 12), description = "A poem to read")),
             related = listOf(TagDropPayload.RelatedPaper("hint text", set = "test-set", slug = "other",
                 lat = -33.8688, lng = 151.2093)),
-            icon = "🌳"
+            icon = "🌳",
+            description = "Day 2 of the sunset trail"
         )
         val cbor = TagDropCodec.paperManifestCbor(original)
         val text = TagDropCodec.describeCbor(cbor)
@@ -538,6 +578,8 @@ class TagDropCodecTest {
         assertTrue(text.contains("24 (icon): \"🌳\""))
         assertTrue(text.contains("26 (lat): -33.8688"))
         assertTrue(text.contains("27 (lng): 151.2093"))
+        assertTrue(text.contains("40 (description): \"Day 2 of the sunset trail\""))
+        assertTrue(text.contains("41 (description): \"A poem to read\""))
     }
 
     @Test fun describeCborHandlesMalformedBytes() {
@@ -799,6 +841,19 @@ class TagDropCodecTest {
         assertEquals("Sunset Trail 2026", decoded.collectionLabel)
         assertEquals("sunsettrail", decoded.collectionTag)
         assertEquals("🌲", decoded.icon)
+    }
+
+    @Test fun createPaperManifestWithDescriptionRoundTrip() {
+        val files = listOf(
+            TagDropPayload.FileEntry("poem", "text/plain", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), description = "A poem to read")
+        )
+        val original = TagDropCodec.createPaperManifest(
+            label = "Trail Stop 3 — Oak Tree", set = "sunset-trail", slug = "oak-tree",
+            files = files, description = "Day 2 of the sunset trail: a poem and a hand-drawn map"
+        )
+        val decoded = TagDropCodec.decode(TagDropCodec.encode(original)) as TagDropPayload.PaperManifest
+        assertEquals("Day 2 of the sunset trail: a poem and a hand-drawn map", decoded.description)
+        assertEquals("A poem to read", decoded.files[0].description)
     }
 
     @Test fun createPaperManifestEmptyFilesAndRelated() {

@@ -99,6 +99,9 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
                align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .chip { background: #e9ecef; padding: 2px 8px; border-radius: 12px;
         font-size: 0.78rem; color: #555; }
+#paperDescription { font-size: 0.85rem; color: #666; font-style: italic;
+                     margin: -6px 0 12px; }
+#paperDescription.hidden { display: none; }
 
 #fileList { list-style: none; margin: 0; padding: 0; }
 .file-item { display: flex; align-items: center; gap: 8px; padding: 8px 0;
@@ -107,6 +110,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 .file-item .slug { font-family: monospace; font-size: 0.88rem; flex: 1; min-width: 0;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-item .mime { font-size: 0.75rem; color: #888; white-space: nowrap; }
+.file-item .desc { flex-basis: 100%; font-size: 0.78rem; color: #888; font-style: italic; }
 .file-item.have .slug { color: #155724; }
 .file-item.missing .slug { color: #999; }
 .missing-label { font-size: 0.75rem; color: #aaa; font-style: italic; }
@@ -228,6 +232,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 
   <section id="paperSection" class="hidden">
     <div id="paperHeader"></div>
+    <div id="paperDescription" class="hidden"></div>
     <ul id="fileList"></ul>
     <div class="paper-actions">
       <button id="btnScanFile" class="secondary">📷 Scan a file QR</button>
@@ -481,7 +486,8 @@ const K = {
   FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
   LAT:26, LNG:27,
   ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
-  KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39
+  KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
+  PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41
 };
 
 // CBOR-sequence envelope (SPEC §2): tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(payload) )>
@@ -500,7 +506,8 @@ const KEY_NAMES = {
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
-  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters'
+  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
+  40: 'description', 41: 'description'
 };
 
 function toHexDump(bytes) {
@@ -642,6 +649,7 @@ async function parseEnvelope(seq) {
       label:    m[K.HINT] || null,
       set:      m[K.SET]  || null,
       slug:     m[K.SLUG] || null,
+      description: m[K.PAPER_DESCRIPTION] || null,
       scannedAt: Date.now(),
       cbor: seq,
       keyMaterial: m[K.KEY_MATERIAL] || null,
@@ -655,6 +663,7 @@ async function parseEnvelope(seq) {
         slug:     f[K.FILE_SLUG],
         mimeType: f[K.FILE_MIME],
         fileId:   toHex(f[K.FILE_ID]),
+        description: f[K.FILE_DESCRIPTION] || null,
       })),
       related: (m[K.RELATED] || []).map(r => ({
         hint:    r[K.HINT],
@@ -1205,12 +1214,21 @@ async function renderPaper(rootHash) {
   }
   document.getElementById('paperHeader').innerHTML = hdr;
 
+  const descEl = document.getElementById('paperDescription');
+  if (paper.description) {
+    descEl.textContent = paper.description;
+    descEl.classList.remove('hidden');
+  } else {
+    descEl.classList.add('hidden');
+  }
+
   const list = document.getElementById('fileList');
   list.innerHTML = '';
   for (const f of paper.files) {
     const cache = cacheById.get(f.fileId);
     const li   = document.createElement('li');
     li.className = 'file-item ' + (cache ? 'have' : 'missing');
+    const descHtml = f.description ? '<span class="desc">' + escHtml(f.description) + '</span>' : '';
     if (cache) {
       // SPEC §9: a pending override blob means this file's cover content is shown but a
       // later key could "self-correct" hint/filename/mime_type/content.
@@ -1219,13 +1237,15 @@ async function renderPaper(rootHash) {
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + lock + home + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
-        '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>';
+        '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>' +
+        descHtml;
     } else {
       const label = awaitingManifests[f.fileId] ? '🔒 needs key' : 'not scanned';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
-        '<span class="missing-label">' + label + '</span>';
+        '<span class="missing-label">' + label + '</span>' +
+        descHtml;
     }
     list.appendChild(li);
   }

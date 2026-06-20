@@ -52,6 +52,7 @@ import javax.crypto.spec.SecretKeySpec
  *   29 reserved and unused — see SPEC §9 (an override map's nonce travels embedded in its blob)
  *   30 key_material  bytes(32), optional — a decryption key for OTHER content (Single, Manifest, PaperManifest) — SPEC §9
  *   31 retain_key    bool, optional, default true — wherever key_material appears — SPEC §9
+ *   40 description   text, optional — content teaser for the whole paper (PaperManifest only) — SPEC §4.4, issue #35
  *
  * A Single's raw trailing bytes (after its 3-item CBOR sequence), if >= 28 bytes, or a
  * Manifest's assembled chunk bytes (§5), if >= 28 bytes, are a candidate self-contained
@@ -63,6 +64,7 @@ import javax.crypto.spec.SecretKeySpec
  *   20 slug        text
  *   21 mime_type   text
  *   22 file_id     bytes(8)
+ *   41 description text, optional — content teaser for this file, e.g. "A poem to read" — SPEC §4.4, issue #35
  *
  * Related paper sub-keys (within key 16 elements):
  *   3  hint        text
@@ -143,6 +145,8 @@ object TagDropCodec {
     private const val K_KDF_ALG       = 37
     private const val K_KDF_SALT      = 38
     private const val K_KDF_ITERS     = 39
+    private const val K_PAPER_DESCRIPTION = 40
+    private const val K_FILE_DESCRIPTION  = 41
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -556,7 +560,8 @@ object TagDropCodec {
                 MiniCbor.CborMap(listOf(
                     K_FILE_SLUG to f.slug,
                     K_FILE_MIME to f.mimeType,
-                    K_FILE_ID   to f.fileId
+                    K_FILE_ID   to f.fileId,
+                    K_FILE_DESCRIPTION to f.description
                 ))
             },
             K_RELATED  to payload.related.map { r ->
@@ -575,6 +580,7 @@ object TagDropCodec {
             K_COLLECTION_LABEL to payload.collectionLabel,
             K_COLLECTION_TAG   to payload.collectionTag,
             K_ICON             to payload.icon,
+            K_PAPER_DESCRIPTION to payload.description,
             K_KEY_MATERIAL to payload.keyMaterial,
             K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
         )
@@ -589,13 +595,14 @@ object TagDropCodec {
     fun createPaperManifest(
         label: String?, set: String?, slug: String?,
         files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
+        description: String? = null,
         collectionId: ByteArray? = null, collectionLabel: String? = null,
         collectionTag: String? = null, icon: String? = null,
         keyMaterial: ByteArray? = null, retainKey: Boolean = true
     ): TagDropPayload.PaperManifest {
         val draft = TagDropPayload.PaperManifest(
             rootHash = ByteArray(8), label = label, set = set, slug = slug,
-            files = files, related = related,
+            files = files, related = related, description = description,
             collectionId = collectionId, collectionLabel = collectionLabel,
             collectionTag = collectionTag, icon = icon,
             keyMaterial = keyMaterial, retainKey = retainKey
@@ -710,9 +717,10 @@ object TagDropCodec {
         val files = (m[K_FILES] as? List<*>)?.mapNotNull { entry ->
             val em = entry as? Map<Int, Any> ?: return@mapNotNull null
             TagDropPayload.FileEntry(
-                slug     = em.text(K_FILE_SLUG) ?: return@mapNotNull null,
-                mimeType = em.text(K_FILE_MIME) ?: return@mapNotNull null,
-                fileId   = (em[K_FILE_ID] as? ByteArray) ?: return@mapNotNull null
+                slug        = em.text(K_FILE_SLUG) ?: return@mapNotNull null,
+                mimeType    = em.text(K_FILE_MIME) ?: return@mapNotNull null,
+                fileId      = (em[K_FILE_ID] as? ByteArray) ?: return@mapNotNull null,
+                description = em.text(K_FILE_DESCRIPTION)
             )
         } ?: emptyList()
 
@@ -737,6 +745,7 @@ object TagDropCodec {
             slug            = m.text(K_SLUG),
             files           = files,
             related         = related,
+            description     = m.text(K_PAPER_DESCRIPTION),
             collectionId    = m.bytesOrNull(K_COLLECTION_ID),
             collectionLabel = m.text(K_COLLECTION_LABEL),
             collectionTag   = m.text(K_COLLECTION_TAG),
@@ -794,7 +803,8 @@ object TagDropCodec {
         K_LAT to "lat", K_LNG to "lng",
         K_ENCRYPTION to "encryption",
         K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key",
-        K_KDF_ALG to "kdf_alg", K_KDF_SALT to "kdf_salt", K_KDF_ITERS to "kdf_iters"
+        K_KDF_ALG to "kdf_alg", K_KDF_SALT to "kdf_salt", K_KDF_ITERS to "kdf_iters",
+        K_PAPER_DESCRIPTION to "description", K_FILE_DESCRIPTION to "description"
     )
 
     /** Human-readable names for the envelope's `type` values, used by [describeCbor]. */

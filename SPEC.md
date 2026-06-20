@@ -131,6 +131,7 @@ The `payload` map — the third item of the envelope sequence (§2) — uses **i
 | 37 | `kdf_alg` | uint (opt) | S, M |
 | 38 | `kdf_salt` | bytes (16, opt) | S, M |
 | 39 | `kdf_iters` | uint (opt, default 100000) | S, M |
+| 40 | `description` | text (opt) | P |
 
 **S** = Single, **M** = Manifest, **C** = Chunk, **P** = PaperManifest
 
@@ -161,6 +162,7 @@ Each element is a CBOR map:
 | 20 | `slug` | text |
 | 21 | `mime_type` | text |
 | 22 | `file_id` | bytes (8) — `cache_id` of the file's root QR |
+| 41 | `description` | text (opt) — what this file is, e.g. "A poem to read" |
 
 ### Related paper sub-keys (elements of key 16)
 
@@ -270,11 +272,12 @@ envelope: version=1, type=3
 payload map {
   2: h'<8-byte root hash>',         // SHA-256(envelope+payload)[0:8] — paper's permanent address
   3: "Trail Stop 3 — Oak Tree",     // label — human-readable paper name (optional)
+  40: "Day 2 of the sunset trail: a poem and a hand-drawn map", // description — optional content teaser for the paper
   13: "sunset-trail",               // set — which network/trail (optional)
   14: "oak-tree",                   // slug — this paper's address within the set (optional)
   15: [                             // files — directory of codes on this paper
-    {20: "index",   21: "text/html",  22: h'<file_id>'},
-    {20: "map",     21: "image/svg+xml", 22: h'<file_id>'},
+    {20: "index",   21: "text/html",  22: h'<file_id>', 41: "A poem to read"},
+    {20: "map",     21: "image/svg+xml", 22: h'<file_id>', 41: "A hand-drawn map"},
   ],
   16: [                             // related — hints to other papers
     {3: "Next stop: the red letterbox 200m north", 14: "letterbox", 23: h'<paper_id>',
@@ -290,6 +293,19 @@ payload map {
 
 `root_hash` (key 2) is computed externally after the rest of the sequence is finalised — see §4.5.
 
+**`label` vs. `description` (issue #35):** `label` (key 3) is the paper's
+*name or location* — "Trail Stop 3 — Oak Tree" tells you where you are, not
+what's on it. `description` (key 40, optional) is a content teaser for the
+whole paper — the same role `hint` plays for a Single/Manifest, but for a
+paper that's already been scanned and is showing its directory rather than
+a "should I look for this" decision. A per-file `description` (key 41,
+optional, in each `files[]` entry alongside `slug`/`mime_type`) plays the
+analogous role for an individual file, e.g. "A poem to read" or "A
+hand-drawn map" — letting a finder choose among files they can already see
+listed, before scanning each one's own code. Both fields are optional;
+omitting them just means the directory shows filenames/MIME types with no
+content teaser, as before this addition.
+
 **Located related papers:** A `related` entry (key 16) may include `lat`/`lng`
 (keys 26/27) — the approximate coordinates of that related paper, if the
 author knows them. The app shows these as a "❓" placeholder pin on the map
@@ -302,6 +318,17 @@ from the device's GPS at scan time) replaces the placeholder.
 <a href="tagdrop://<paper-root-hash-hex>/map">See the map</a>
 ```
 The TagDrop app intercepts these links and resolves them from the local database.
+
+**Practical size limits (issue #37):** A typical `files[]` entry
+(`slug`+`mime_type`+`file_id`, §3) costs roughly 30–40 CBOR bytes; a typical
+`related[]` entry (`hint` plus whichever of `slug`/`paper_id`/`lat`/`lng` are
+present) costs roughly 45–90 bytes, depending mostly on hint length. Within
+the ~800-byte decoded budget recommended for a comfortably-scannable single
+code (§4.1), that leaves room for roughly 15–20 file entries, or 8–12
+related entries, before a Paper Manifest should be split — e.g. into
+multiple linked papers (via `related`) rather than grown further. These are
+estimates, not hard limits: measure the actual encoded size for
+content-heavy manifests (long hints, many lat/lng pins, many files).
 
 ### 4.5 Content-Addressed IDs (IPFS-inspired)
 
@@ -349,6 +376,19 @@ Paper (root hash)
 
 **Geographic distribution:** Each chunk is an independent, self-contained QR code. Chunks can be placed at geographically separate locations (along a trail, in different rooms, across a city). The finder accumulates them over time. The hint in the manifest can describe the treasure hunt.
 
+**Chunk-index forward compatibility (issue #37):** Step 3 above only ever
+reads `chunk_index` values `0` through `chunk_count − 1` — both reference
+implementations (§15) build the assembled byte array by indexing exactly
+that range, never by iterating "every chunk seen so far." A chunk carrying
+any other `chunk_index` (e.g. `≥ chunk_count`) is therefore already
+silently and safely ignored by today's parsers, with no explicit "chunk
+type" discriminator needed. This is a MUST, not an implementation accident:
+a future redundancy/erasure-coding scheme that places extra recovery chunks
+at indices `≥ chunk_count` is additive and safe for old parsers by
+construction. Reusing an index *within* `0..chunk_count-1` for anything
+other than that exact data chunk would not be safe — that range is reserved
+for the data chunks, in that order, with no exceptions.
+
 ---
 
 ## 6. Placing Codes in the Field
@@ -372,6 +412,16 @@ Location D: [ Chunk 2:  tagdrop:<base41> ]
 Or the manifest can be omitted from the field and provided out-of-band (e.g. posted online, given at registration). In that case all codes in the field are chunks — the app will queue them and complete assembly once the manifest is provided.
 
 **Chunk size recommendation:** Target ~600 bytes per chunk (decoded), which encodes to ~900 Base41 characters and fits in a QR Version 15 (M error correction) that prints cleanly at 3cm × 3cm.
+
+**Redundancy (issue #37):** There is currently no recovery path if a single
+physical chunk sticker is lost, damaged, or destroyed, even though every
+*other* chunk in the set remains independently hash-verifiable. Until a
+parity/erasure-coding scheme exists at the format level (see §5's
+chunk-index forward-compatibility note, which such a scheme would rely on),
+the practical mitigation is physical: duplicate the sticker for any chunk
+whose loss would strand the whole cache — same QR, same content, printed or
+placed twice (e.g. two copies at the same spot, or at two nearby spots).
+This costs nothing at the format level and is available today.
 
 ---
 
@@ -1039,6 +1089,19 @@ The format is carrier-agnostic. Any medium that can carry a UTF-8 string support
 
 `version` is the first item of the envelope sequence (§2) — a single CBOR integer, decodable independently of everything that follows it. A reader encountering an unsupported `version` should stop immediately and show a human-readable "unsupported format version" message, without attempting to decode `type` or `payload` — a future version is free to redefine either, even to something other than CBOR.
 
+**Additive fields vs. version bumps (issue #37):** §3's "unknown keys are
+ignored" rule gives forward compatibility for fields that add *optional*
+information an old parser can simply not act on (e.g. `description`, issue
+#35; a future hash-commitment field, issue #36). It does **not** cover
+fields that would change whether data an old parser already understands is
+*complete* — an old parser that ignores an unrecognized "more parts exist"
+flag would silently treat a truncated `files[]`/`related[]` list, or a
+partially-transmitted Manifest, as the whole thing, which is worse than
+refusing outright (silent data loss vs. a visible error). Any future
+mechanism for splitting a Manifest or Paper Manifest itself across multiple
+codes MUST therefore be gated by a version bump, not an additive key, so old
+parsers stop per the rule above rather than silently truncate.
+
 Version history:
 
 **Version 1** (initial release, current)
@@ -1048,6 +1111,7 @@ Version history:
 - Base41 URI encoding: `tagdrop:<base41>`. DEFLATE compression (key 12). Content-addressed IDs via SHA-256 (§4.5).
 - Paper manifests (type 3) with file directories, `set`/`slug` navigation, and `related` paper hints with optional `lat`/`lng` placeholder coordinates (keys 26/27). TagDropNet relative-link and `tagdrop://` navigation (§7).
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
+- Paper Manifest content-teaser `description` (key 40, paper-level) and per-file `description` (key 41, in `files[]` entries) — distinct from the paper's `label`/file's `slug` (§4.4).
 - AES-256-GCM hidden override maps (§9): self-contained `nonce||ciphertext||tag` blob carried as trailing bytes (Single) or assembled-chunk bytes (Manifest), applied after compression. Optional non-binding `encryption` hint (key 28). Key 29 reserved, unused. `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 

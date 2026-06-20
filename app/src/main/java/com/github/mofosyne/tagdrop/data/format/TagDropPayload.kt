@@ -96,7 +96,8 @@ sealed class TagDropPayload {
     data class FileEntry(
         val slug: String,        // URL-safe name for this file within the paper
         val mimeType: String,
-        val fileId: ByteArray    // cache_id of the file's root QR (Single or Manifest)
+        val fileId: ByteArray,   // cache_id of the file's root QR (Single or Manifest)
+        val description: String? = null  // optional content teaser, e.g. "A poem to read" (SPEC §4.4, issue #35)
     ) {
         override fun equals(other: Any?) = other is FileEntry && slug == other.slug && fileId.contentEquals(other.fileId)
         override fun hashCode() = 31 * slug.hashCode() + fileId.contentHashCode()
@@ -136,6 +137,7 @@ sealed class TagDropPayload {
         val slug: String?,                 // this paper's address within the set
         val files: List<FileEntry>,        // directory of files on this paper
         val related: List<RelatedPaper>,   // hints to other papers / locations
+        val description: String? = null,        // optional content teaser for the whole paper (SPEC §4.4, issue #35)
         val collectionId: ByteArray? = null,    // optional — groups related QR codes (see SPEC §7)
         val collectionLabel: String? = null,    // optional — human-readable name for the collection
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
