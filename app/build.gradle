@@ -1,7 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    id 'org.jetbrains.kotlin.kapt'
+    id 'com.google.devtools.ksp'
 }
 
 android {
@@ -51,7 +51,7 @@ dependencies {
     // Room database for found-cache collection
     implementation 'androidx.room:room-runtime:2.7.0'
     implementation 'androidx.room:room-ktx:2.7.0'
-    kapt 'androidx.room:room-compiler:2.7.0'
+    ksp 'androidx.room:room-compiler:2.7.0'
 
     // ZXing embedded scanner (no separate app required)
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
