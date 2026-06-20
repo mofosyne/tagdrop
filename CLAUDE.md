@@ -80,6 +80,24 @@ payloads are inlined as JS data and encoded/rendered as QR codes in-browser on
 page load. Edit the example data directly in `index.html` and reload — no
 build step.
 
+## Wire-format version policy
+
+SPEC.md's `version` field (currently `1`) is independent of the Android
+app's `versionName` (currently `2.0.0`, already accepted by F-Droid as of
+June 2026) — bumping one never requires bumping the other.
+
+Version 1 is currently a **draft, not frozen** (see SPEC.md's `Status`
+line): no real TagDrop code has been printed or distributed yet, so no
+deployed content depends on its exact byte layout. F-Droid accepting the
+app only means a binary *could* eventually reach a stranger — it doesn't
+mean any version-1 *content* exists yet for that binary to misread.
+Breaking changes (key reuse, envelope changes, semantics changes) are fine
+without a version bump **until the first real code is deployed** — printed,
+shared, or otherwise placed somewhere a third party might scan it. At that
+point treat version 1 as frozen: breaking changes from then on require a
+version bump (SPEC.md §14), and SPEC.md's `Status` line should flip back to
+`Stable`.
+
 ## Authoring tools: web generator is primary
 
 `tools/generator/index.html` (Single File + Paper Layout tabs) is the

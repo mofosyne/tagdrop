@@ -1,7 +1,11 @@
 # TagDrop Encoding Specification
 
 **Version:** 1  
-**Status:** Stable — feedback welcome via GitHub issues
+**Status:** Draft — version 1 has no real-world deployments yet (no printed
+or distributed codes), so it may still change incompatibly without a version
+bump. Once the first real code ships, that freeze point ends: breaking
+changes from then on require a version bump (§14). Feedback welcome via
+GitHub issues.
 
 ---
 
