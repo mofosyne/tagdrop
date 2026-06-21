@@ -476,60 +476,119 @@ function escHtml(s) {
                   .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ── CBOR payload-map keys (key 1 "version" is retired — it lives in the envelope) ──
+// ── CBOR map integer keys (SPEC §3) ──────────────────────────────────────
+// See SPEC §3 for the full table and where each lives (part_meta / core_meta_item /
+// bulky_meta_item / override map / file entry / related paper).
 const K = {
   CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
-  CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_IDX:9, CHUNK_DATA:10,
-  FILENAME:11, COMPRESSION:12,
-  SET:13, SLUG:14, FILES:15, RELATED:16,
+  TOTAL_BYTES:7, CONTENT_SHA:8,
+  FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
   COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
   FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
   LAT:26, LNG:27,
   ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
   KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
-  PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41
+  PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
+  SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
+  BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47
 };
 
-// CBOR-sequence envelope (SPEC §2): tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(payload) )>
-const ENVELOPE_VERSION = 1;
-const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
+// CBOR-sequence envelope (SPEC §2):
+// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
+// Every code — standalone or one of several pieces — is a "sector" (SPEC §4.1).
+const VERSION = 1;
+const TYPE_CONTENT = 0, TYPE_PAPER = 1;
+
+// True if a value decoded by cborDecodeSequencePrefix's readVal() is a CBOR map
+// (plain object) rather than a uint/string/bytes/array/null/bool/float64.
+function isCborMap(v) {
+  return v !== null && typeof v === 'object' && !(v instanceof Uint8Array) && !Array.isArray(v);
+}
+
+/**
+ * Splits a reassembled `stream` into core_meta_item, bulky_meta_item, and content
+ * (SPEC §4.2). bulky_meta_item is read per core's bulky_meta_compression declaration:
+ * if absent, CBOR's self-delimiting structure marks its end; if present, exactly
+ * bulky_meta_compressed_bytes are read and decompressed. Mirrors Kotlin
+ * TagDropCodec.splitReassembledStream.
+ */
+async function splitReassembledStream(stream) {
+  try {
+    const { items: coreItems, trailing: afterCore } = cborDecodeSequencePrefix(stream, 1);
+    const core = coreItems[0];
+    if (!isCborMap(core)) return null;
+    const bulkyCompression = core[K.BULKY_COMPRESSION] ?? 0;
+    if (bulkyCompression !== 0) {
+      const n = core[K.BULKY_COMPRESSED_BYTES];
+      if (n == null || n > afterCore.length) return null;
+      const bulky = cborDecodeSequencePrefix(await zlibDecompress(afterCore.slice(0, n)), 1).items[0];
+      if (!isCborMap(bulky)) return null;
+      return { core, bulky, content: afterCore.slice(n) };
+    } else {
+      const { items: bulkyItems, trailing: afterBulky } = cborDecodeSequencePrefix(afterCore, 1);
+      const bulky = bulkyItems[0];
+      if (!isCborMap(bulky)) return null;
+      return { core, bulky, content: afterBulky };
+    }
+  } catch (e) {
+    return null;
+  }
+}
 
 // ── CBOR debug ────────────────────────────────────────────────────────────
 // Mirrors TagDropCodec.describeCbor/describeMap (Kotlin) for the "View raw CBOR"
-// debug view: hex dump, version/type envelope, key-by-key payload breakdown.
-const TYPE_NAMES = { 0: 'Single', 1: 'Manifest', 2: 'Chunk', 3: 'PaperManifest' };
+// debug view: hex dump, four-item envelope, part_meta breakdown, and (for a
+// complete single-sector payload) the core/bulky/content split of its stream.
+const TYPE_NAMES = { 0: 'Content', 1: 'Paper' };
 const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
-  6: 'chunk_count', 7: 'total_bytes', 8: 'sha256', 9: 'chunk_index', 10: 'chunk_data',
-  11: 'filename', 12: 'compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
+  7: 'total_bytes', 8: 'content_sha256',
+  11: 'filename', 12: 'content_compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
-  40: 'description', 41: 'description'
+  40: 'description', 41: 'description',
+  42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
+  45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
 };
 
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }
 
-/** Pretty-prints a raw TagDrop CBOR sequence: hex dump, version/type envelope, and a
- *  key-by-key breakdown of the payload map annotated with KEY_NAMES. */
-function describeCbor(bytes) {
+/** Pretty-prints a raw TagDrop sector CBOR sequence: hex dump, the four-item envelope
+ *  (SPEC §2) with part_meta broken out by field name, and — for a complete single-sector
+ *  payload — the core_meta_item/bulky_meta_item/content split of its reassembled stream. */
+async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
   try {
-    const { items, trailing } = cborDecodeSequencePrefix(bytes, 3);
-    if (items.length < 3) throw new Error('Expected version, type, payload — got ' + items.length + ' item(s)');
-    const [version, type, payload] = items;
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
+    if (items.length < 4) throw new Error('Expected version, type, part_meta, sector_bytes — got ' + items.length + ' item(s)');
+    const [version, type, partMeta, sectorBytes] = items;
     out += 'version: ' + version + '\n';
     out += 'type: ' + type + ' (' + (TYPE_NAMES[type] || 'unknown') + ')\n\n';
-    out += describeMap(payload, 0);
+    out += 'part_meta:\n' + describeMap(partMeta, 1);
+    out += '\nsector_bytes: ' + sectorBytes.length + ' bytes\n';
+    const count = partMeta[K.SECTOR_COUNT] ?? 1;
+    const index = partMeta[K.SECTOR_INDEX] ?? 0;
+    if (count === 1 && index === 0) {
+      const parts = await splitReassembledStream(sectorBytes);
+      if (parts) {
+        out += '  core_meta_item:\n' + describeMap(parts.core, 2);
+        out += '  bulky_meta_item:\n' + describeMap(parts.bulky, 2);
+        out += '  content: ' + parts.content.length + ' bytes\n';
+        if (parts.content.length > 0) out += '    ' + toHexDump(parts.content) + '\n';
+      } else {
+        out += '  ' + toHexDump(sectorBytes) + '\n';
+      }
+    } else {
+      out += '  (sector ' + index + ' of ' + count + ' — reassemble before parsing)\n';
+      out += '  ' + toHexDump(sectorBytes) + '\n';
+    }
     if (trailing.length > 0) {
-      const note = trailing.length >= OVERRIDE_BLOB_MIN_BYTES
-        ? 'candidate encrypted override map, SPEC §9'
-        : 'too short to be an override map, SPEC §9';
-      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes, ' + note + ')\n';
+      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes — stacked envelope or padding, SPEC §9)\n';
     }
   } catch (e) {
     out += 'Failed to decode as CBOR sequence: ' + e.message;
@@ -564,6 +623,45 @@ function describeMap(map, indent) {
   return out;
 }
 
+// ── TagDrop sector decode (SPEC §2, §4.1) ────────────────────────────────
+// Decodes a sector's four-item CBOR sequence directly from raw bytes — shared by
+// parseUri()'s Base41-decoded text path and parseScannedBytes()'s binary/byte-mode QR
+// path (no tagdrop:/Base41 wrapper, SPEC.md's "Binary mode vs alphanumeric Base41"
+// note). Trailing bytes after the four items are tolerated, never an error (SPEC §9:
+// may be a stacked independent envelope under a different key). Mirrors Kotlin
+// TagDropCodec's private decodeSector. cache_id/root_hash is hex-encoded here (rather
+// than kept as raw bytes) since every id in this reader's IndexedDB/UI layer is a hex
+// string (cacheId, fileId, paperId, rootHash all share that convention).
+function decodeSector(bytes) {
+  try {
+    const { items } = cborDecodeSequencePrefix(bytes, 4);
+    if (items.length < 4) return null;
+    const [version, type, pm, sectorBytes] = items;
+    if (version !== VERSION) return null;
+    if (!isCborMap(pm) || !(sectorBytes instanceof Uint8Array)) return null;
+    const cacheIdBytes = pm[K.CACHE_ID];
+    return {
+      type,
+      partMeta: {
+        cacheId:         cacheIdBytes ? toHex(cacheIdBytes) : null,
+        sectorIndex:     pm[K.SECTOR_INDEX] ?? 0,
+        sectorCount:     pm[K.SECTOR_COUNT] ?? 1,
+        totalBytes:      pm[K.TOTAL_BYTES] ?? sectorBytes.length,
+        paritySchemeRaw: pm[K.PARITY] ?? null,
+      },
+      sectorBytes,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Wraps decodeSector's result (or failure) in the shape handleScanned()'s switch expects. */
+function sectorScanResult(bytes) {
+  const sector = decodeSector(bytes);
+  return sector ? { type: 'sector', sector, cbor: bytes } : { type: 'invalid' };
+}
+
 // ── TagDrop URI parser ────────────────────────────────────────────────────
 async function parseUri(uri) {
   if (!uri.startsWith('tagdrop:')) return null;
@@ -588,126 +686,353 @@ async function parseUri(uri) {
   try { seq = base41Decode(uri.slice('tagdrop:'.length)); }
   catch (e) { return { type: 'invalid' }; }
 
-  return parseEnvelope(seq);
+  return sectorScanResult(seq);
 }
 
-// Decodes a version/type/payload CBOR-sequence envelope (SPEC §2) directly from raw bytes —
-// shared by parseUri()'s Base41-decoded text path and parseScannedBytes()'s binary/byte-mode
-// QR path (no tagdrop:/Base41 wrapper, SPEC.md's "Binary mode vs alphanumeric Base41" note).
-async function parseEnvelope(seq) {
-  let items, trailing;
-  try { ({ items, trailing } = cborDecodeSequencePrefix(seq, 3)); }
-  catch (e) { return { type: 'invalid' }; }
-  if (items.length < 3) return { type: 'invalid' };
-  const [version, kind, m] = items;
-  if (version !== ENVELOPE_VERSION) return { type: 'invalid' };
+// ── Reassembled-stream parsing (SPEC §4.2, §5) ───────────────────────────
+async function sha256(bytes) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+}
 
-  if (kind === TYPE_SINGLE) {
-    const keyMaterial = m[K.KEY_MATERIAL] || null;
-    const retainKey   = m[K.RETAIN_KEY] !== false;
-    // Key-only code (SPEC §9): carries key_material for other content, no content/mime
-    // of its own. Per "discovery, not declaration", nothing says which content it unlocks.
-    if (keyMaterial && !m[K.CONTENT] && !m[K.MIME]) {
+function bytesEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function concatBytes(...arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+/**
+ * Parses a reassembled Content stream into its fields (SPEC §4.2, §5). Verifies
+ * `content_sha256` over the content slot as transmitted, if present — the
+ * transmission-integrity check, independent of any later override decryption (§9).
+ * `partMeta.cacheId` becomes the Content's id (null for a key-only code). Cover/override
+ * resolution is the caller's job (see SectorAssembler). Mirrors Kotlin
+ * TagDropCodec.parseContentStream. Returns { kind: 'Ok', content } | { kind: 'HashMismatch' }
+ * | { kind: 'Malformed' }.
+ */
+async function parseContentStream(stream, partMeta) {
+  const parts = await splitReassembledStream(stream);
+  if (!parts) return { kind: 'Malformed' };
+  const core = parts.core;
+  const slot = parts.content;
+  const declaredSha = core[K.CONTENT_SHA];
+  if (declaredSha && !bytesEqual(await sha256(slot), declaredSha)) {
+    return { kind: 'HashMismatch' };
+  }
+  return {
+    kind: 'Ok',
+    content: {
+      cacheId:         partMeta.cacheId,
+      hint:            core[K.HINT] ?? null,
+      filename:        core[K.FILENAME] ?? null,
+      mimeType:        core[K.MIME] ?? '',
+      compression:     core[K.COMPRESSION] ?? 0,
+      content:         slot,
+      overrideBlob:    slot.length >= OVERRIDE_BLOB_MIN_BYTES ? slot : null,
+      encryption:      core[K.ENCRYPTION] ?? 0,
+      keyMaterial:     core[K.KEY_MATERIAL] ?? null,
+      retainKey:       core[K.RETAIN_KEY] !== false,
+      collectionId:    core[K.COLLECTION_ID] ? toHex(core[K.COLLECTION_ID]) : null,
+      collectionLabel: core[K.COLLECTION_LABEL] ?? null,
+      collectionTag:   core[K.COLLECTION_TAG] ?? null,
+      icon:            core[K.ICON] ?? null,
+      kdfAlg:          core[K.KDF_ALG] ?? 0,
+      kdfSalt:         core[K.KDF_SALT] ?? null,
+      kdfIters:        core[K.KDF_ITERS] ?? 100000,
+    },
+  };
+}
+
+/** Parses a reassembled Paper stream (SPEC §4.2, §4.3), using partMeta's root_hash as the
+ *  paper's address (falling back to hashing the stream if absent). Mirrors Kotlin
+ *  TagDropCodec.parsePaperStream. Returns null if malformed. */
+async function parsePaperStream(stream, partMeta) {
+  const parts = await splitReassembledStream(stream);
+  if (!parts) return null;
+  const rootHash = partMeta.cacheId ?? toHex((await sha256(stream)).slice(0, 8));
+  return paperFromParts(parts, rootHash);
+}
+
+function paperFromParts(parts, rootHash) {
+  const filesRaw = parts.bulky[K.FILES];
+  const files = Array.isArray(filesRaw) ? filesRaw.flatMap(entry => {
+    if (!isCborMap(entry)) return [];
+    const slug = entry[K.FILE_SLUG], mimeType = entry[K.FILE_MIME], fileId = entry[K.FILE_ID];
+    if (!slug || !mimeType || !fileId) return [];
+    return [{ slug, mimeType, fileId: toHex(fileId), description: entry[K.FILE_DESCRIPTION] ?? null }];
+  }) : [];
+
+  const relatedRaw = parts.bulky[K.RELATED];
+  const related = Array.isArray(relatedRaw) ? relatedRaw.flatMap(entry => {
+    if (!isCborMap(entry)) return [];
+    const hint = entry[K.HINT];
+    if (!hint) return [];
+    return [{
+      hint,
+      set:         entry[K.SET] ?? null,
+      slug:        entry[K.SLUG] ?? null,
+      paperId:     entry[K.PAPER_ID] ? toHex(entry[K.PAPER_ID]) : null,
+      lat:         entry[K.LAT] ?? null,
+      lng:         entry[K.LNG] ?? null,
+      keyMaterial: entry[K.KEY_MATERIAL] ?? null,
+      retainKey:   entry[K.RETAIN_KEY] !== false,
+    }];
+  }) : [];
+
+  return {
+    rootHash,
+    label:           parts.core[K.HINT] ?? null,
+    set:             parts.core[K.SET] ?? null,
+    slug:            parts.core[K.SLUG] ?? null,
+    files,
+    related,
+    description:     parts.core[K.PAPER_DESCRIPTION] ?? null,
+    collectionId:    parts.core[K.COLLECTION_ID] ? toHex(parts.core[K.COLLECTION_ID]) : null,
+    collectionLabel: parts.core[K.COLLECTION_LABEL] ?? null,
+    collectionTag:   parts.core[K.COLLECTION_TAG] ?? null,
+    icon:            parts.core[K.ICON] ?? null,
+    keyMaterial:     parts.core[K.KEY_MATERIAL] ?? null,
+    retainKey:       parts.core[K.RETAIN_KEY] !== false,
+  };
+}
+
+// ── Sector assembly (SPEC §5) ─────────────────────────────────────────────
+// JS port of Kotlin SectorAssembler. Tracks several payloads concurrently, keyed by
+// (type, cache_id/root_hash): sectors from different payloads can be interleaved in any
+// order, any session (SPEC §4.1, §5), and each is matched to its own group as it arrives.
+// A single-sector payload (the common case) completes on its first add(). Multi-sector
+// payloads accumulate until every sector_index 0..sector_count-1 is in; an optional XOR
+// parity sector (SPEC §5) can reconstruct one missing data sector.
+//
+// State shapes (mirror the Kotlin sealed class):
+//   { kind: 'Idle' }
+//   { kind: 'Collecting', received, total, type, cacheId, hint, missingIndices }
+//   { kind: 'ContentReady', cacheId, hint, filename, mimeType, content, collectionId,
+//     collectionLabel, collectionTag, icon, keyMaterial, retainKey, pendingOverrideBlob,
+//     pendingOverrideCompression, kdfAlg, kdfSalt, kdfIters, wasEncrypted }
+//   { kind: 'PaperReady', paper, streamBytes }
+//   { kind: 'AwaitingKey', cacheId, hint, contentSlot, compression, kdfAlg, kdfSalt, kdfIters }
+//   { kind: 'HashMismatch' }
+//   { kind: 'Failed' }
+class SectorAssembler {
+  constructor() {
+    this.groups = new Map();
+    this.lastGroupKey = null;
+  }
+
+  _key(sector) {
+    return sector.type + ':' + (sector.partMeta.cacheId ?? 'nokey');
+  }
+
+  /** Adds a scanned sector, matching it to (or starting) its payload group, and returns that group's state. */
+  async add(sector) {
+    const key = this._key(sector);
+    let group = this.groups.get(key);
+    if (!group) {
+      group = { type: sector.type, meta: null, data: new Map(), parity: null, resolvedOverride: null };
+      this.groups.set(key, group);
+    }
+    group.meta = sector.partMeta;
+    if (sector.partMeta.paritySchemeRaw != null) {
+      group.parity = sector.sectorBytes;
+    } else {
+      group.data.set(sector.partMeta.sectorIndex, sector.sectorBytes);
+    }
+    this.lastGroupKey = key;
+    const state = await this._computeState(group);
+    if (isTerminalState(state)) this.groups.delete(key);
+    return state;
+  }
+
+  /** State of the most-recently-touched group, for status display; Idle if none pending. */
+  async currentState() {
+    if (!this.lastGroupKey) return { kind: 'Idle' };
+    const group = this.groups.get(this.lastGroupKey);
+    return group ? this._computeState(group) : { kind: 'Idle' };
+  }
+
+  /** True while any payload is still being collected (or awaiting a key). */
+  get hasPending() { return this.groups.size > 0; }
+
+  /** True if cacheIdHex names a fully-collected Content group still sitting in AwaitingKey
+   *  (used by the paper directory's "needs key" label — a non-terminal group stays tracked
+   *  until a key resolves it or reset() is called). */
+  isAwaitingKey(cacheIdHex) {
+    const group = this.groups.get(TYPE_CONTENT + ':' + cacheIdHex);
+    return !!(group && group.meta && group.data.size === group.meta.sectorCount);
+  }
+
+  /**
+   * Tries keyMaterial against every fully-collected Content group still awaiting a key
+   * (SPEC §9, "discovery, not declaration"): if it decrypts the content slot as an override
+   * map, that group resolves and is returned (and dropped from tracking). A non-matching key
+   * changes nothing.
+   */
+  async tryKey(keyMaterial) {
+    const resolved = [];
+    for (const [key, group] of [...this.groups]) {
+      if (group.type !== TYPE_CONTENT || group.resolvedOverride || !group.meta) continue;
+      const stream = reassembleSectors(group.data, group.meta.sectorCount);
+      if (!stream) continue;
+      const parsed = await parseContentStream(stream, group.meta);
+      if (parsed.kind !== 'Ok') continue;
+      const slot = parsed.content.content;
+      if (slot.length < OVERRIDE_BLOB_MIN_BYTES) continue;
+      const override = await tryDecryptOverrideMap(slot, keyMaterial, parsed.content.compression);
+      if (!override) continue;
+      group.resolvedOverride = override;
+      const state = await this._contentState(group, parsed.content);
+      if (state.kind === 'ContentReady') {
+        resolved.push(state);
+        this.groups.delete(key);
+      }
+    }
+    return resolved;
+  }
+
+  reset() {
+    this.groups.clear();
+    this.lastGroupKey = null;
+  }
+
+  async _computeState(group) {
+    const meta = group.meta;
+    if (!meta) return { kind: 'Idle' };
+    const count = meta.sectorCount;
+    const missing = [];
+    for (let i = 0; i < count; i++) if (!group.data.has(i)) missing.push(i);
+
+    if (missing.length === 0) {
+      return this._finish(group, group.data, meta, count);
+    }
+
+    // Single missing data sector + a parity sector → try XOR reconstruction (SPEC §5).
+    if (missing.length === 1 && group.parity) {
+      const reconstructed = reconstructSector(group, missing[0], count, meta.totalBytes);
+      if (reconstructed) {
+        const trial = new Map(group.data);
+        trial.set(missing[0], reconstructed);
+        const state = await this._finish(group, trial, meta, count);
+        // Trust the reconstruction only if it parses/verifies; otherwise keep waiting.
+        if (state.kind !== 'HashMismatch' && state.kind !== 'Failed') {
+          if (isTerminalState(state)) group.data.set(missing[0], reconstructed);
+          return state;
+        }
+      }
+    }
+
+    return {
+      kind: 'Collecting', received: group.data.size, total: count, type: group.type,
+      cacheId: meta.cacheId, hint: bestEffortHint(group, count), missingIndices: missing,
+    };
+  }
+
+  /** Reassembles data and parses it into a terminal/awaiting state per group's type. */
+  async _finish(group, data, meta, count) {
+    const stream = reassembleSectors(data, count);
+    if (!stream) return { kind: 'Failed' };
+    if (group.type === TYPE_PAPER) {
+      const paper = await parsePaperStream(stream, meta);
+      return paper ? { kind: 'PaperReady', paper, streamBytes: stream } : { kind: 'Failed' };
+    }
+    const parsed = await parseContentStream(stream, meta);
+    if (parsed.kind === 'Malformed') return { kind: 'Failed' };
+    if (parsed.kind === 'HashMismatch') return { kind: 'HashMismatch' };
+    return this._contentState(group, parsed.content);
+  }
+
+  /** Resolves a parsed Content into a ready/awaiting state: override (if a key matched) → cover → awaiting key. */
+  async _contentState(group, content) {
+    const override = group.resolvedOverride;
+    if (override) {
+      return readyContentState(content, override.hint ?? content.hint, override.filename ?? content.filename,
+        override.mimeType ?? content.mimeType, override.content ?? new Uint8Array(0), null, true);
+    }
+    // SPEC §5 step 5: try the cover/plain-content reading per content_compression.
+    let cover;
+    try { cover = content.compression === 1 ? await zlibDecompress(content.content) : content.content; }
+    catch (e) { cover = undefined; }
+    if (cover === undefined) {
       return {
-        type: 'key',
-        cacheId: toHex(m[K.CACHE_ID]),
-        hint:    m[K.HINT] || null,
-        keyMaterial,
-        retainKey,
-        cbor: seq,
+        kind: 'AwaitingKey', cacheId: content.cacheId, hint: content.hint,
+        contentSlot: content.content, compression: content.compression,
+        kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
       };
     }
-    // A Single's raw trailing bytes (after its 3-item CBOR sequence), if >= 28 bytes, are a
-    // candidate hidden override-map blob (SPEC §9) — may carry real content+key together.
-    return {
-      type: 'single',
-      cacheId:     toHex(m[K.CACHE_ID]),
-      hint:        m[K.HINT]     || null,
-      filename:    m[K.FILENAME] || null,
-      mimeType:    m[K.MIME] || '',
-      content:     m[K.CONTENT] || new Uint8Array(0),
-      compression: m[K.COMPRESSION] || 0,
-      encryption:  m[K.ENCRYPTION] || 0,
-      overrideBlob: trailing.length >= OVERRIDE_BLOB_MIN_BYTES ? trailing : null,
-      keyMaterial,
-      retainKey,
-      kdfAlg:   m[K.KDF_ALG]  || 0,
-      kdfSalt:  m[K.KDF_SALT]  || null,
-      kdfIters: m[K.KDF_ITERS] || 100000,
-      // Collections/icon (SPEC §7) — optional ad-hoc grouping metadata, never secret.
-      collectionId:    m[K.COLLECTION_ID] ? toHex(m[K.COLLECTION_ID]) : null,
-      collectionLabel: m[K.COLLECTION_LABEL] || null,
-      collectionTag:   m[K.COLLECTION_TAG] || null,
-      icon:            m[K.ICON] || null,
-      cbor: seq,
-    };
+    const pendingBlob = content.overrideBlob;
+    return readyContentState(content, content.hint, content.filename, content.mimeType, cover,
+      pendingBlob, pendingBlob != null);
   }
-  if (kind === TYPE_PAPER_MANIFEST) {
-    return {
-      type:     'paper',
-      rootHash: toHex(m[K.CACHE_ID]),
-      label:    m[K.HINT] || null,
-      set:      m[K.SET]  || null,
-      slug:     m[K.SLUG] || null,
-      description: m[K.PAPER_DESCRIPTION] || null,
-      scannedAt: Date.now(),
-      cbor: seq,
-      keyMaterial: m[K.KEY_MATERIAL] || null,
-      retainKey:   m[K.RETAIN_KEY] !== false,
-      // Collections/icon (SPEC §7) — optional ad-hoc grouping metadata, never secret.
-      collectionId:    m[K.COLLECTION_ID] ? toHex(m[K.COLLECTION_ID]) : null,
-      collectionLabel: m[K.COLLECTION_LABEL] || null,
-      collectionTag:   m[K.COLLECTION_TAG] || null,
-      icon:            m[K.ICON] || null,
-      files: (m[K.FILES] || []).map(f => ({
-        slug:     f[K.FILE_SLUG],
-        mimeType: f[K.FILE_MIME],
-        fileId:   toHex(f[K.FILE_ID]),
-        description: f[K.FILE_DESCRIPTION] || null,
-      })),
-      related: (m[K.RELATED] || []).map(r => ({
-        hint:    r[K.HINT],
-        set:     r[K.SET]     || null,
-        slug:    r[K.SLUG]    || null,
-        paperId: r[K.PAPER_ID] ? toHex(r[K.PAPER_ID]) : null,
-        lat:     r[K.LAT] ?? null,
-        lng:     r[K.LNG] ?? null,
-        keyMaterial: r[K.KEY_MATERIAL] || null,
-        retainKey:   r[K.RETAIN_KEY] !== false,
-      })),
-    };
+}
+
+function isTerminalState(state) {
+  return state.kind === 'ContentReady' || state.kind === 'PaperReady' ||
+         state.kind === 'HashMismatch' || state.kind === 'Failed';
+}
+
+function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted) {
+  return {
+    kind: 'ContentReady',
+    cacheId: content.cacheId, hint, filename, mimeType, content: resolved,
+    collectionId: content.collectionId, collectionLabel: content.collectionLabel,
+    collectionTag: content.collectionTag, icon: content.icon,
+    keyMaterial: content.keyMaterial, retainKey: content.retainKey,
+    pendingOverrideBlob: pendingBlob,
+    pendingOverrideCompression: pendingBlob != null ? content.compression : 0,
+    kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
+    wasEncrypted,
+  };
+}
+
+/** Concatenates sector_bytes for indices 0..count-1 in order, or null if any is missing. */
+function reassembleSectors(dataMap, count) {
+  const parts = [];
+  for (let i = 0; i < count; i++) {
+    const b = dataMap.get(i);
+    if (!b) return null;
+    parts.push(b);
   }
-  if (kind === TYPE_MANIFEST) {
-    return {
-      type:        'manifest',
-      cacheId:     toHex(m[K.CACHE_ID]),
-      hint:        m[K.HINT]     || null,
-      filename:    m[K.FILENAME] || null,
-      mimeType:    m[K.MIME],
-      compression: m[K.COMPRESSION] || 0,
-      chunkCount:  m[K.CHUNK_COUNT],
-      sha256:      m[K.SHA256],
-      encryption:  m[K.ENCRYPTION] || 0,
-      keyMaterial: m[K.KEY_MATERIAL] || null,
-      retainKey:   m[K.RETAIN_KEY] !== false,
-      // Collections/icon (SPEC §7) — optional ad-hoc grouping metadata, never secret.
-      collectionId:    m[K.COLLECTION_ID] ? toHex(m[K.COLLECTION_ID]) : null,
-      collectionLabel: m[K.COLLECTION_LABEL] || null,
-      collectionTag:   m[K.COLLECTION_TAG] || null,
-      icon:            m[K.ICON] || null,
-      cbor: seq,
-    };
+  return concatBytes(...parts);
+}
+
+/**
+ * Reconstructs the single missing data sector [index] by XOR-ing the parity sector against
+ * every present data sector (each implicitly zero-padded), then truncating to that sector's
+ * real length derived from totalBytes (SPEC §5).
+ */
+function reconstructSector(group, index, count, totalBytes) {
+  const parity = group.parity;
+  if (!parity) return null;
+  const sectorSize = Math.ceil(totalBytes / count);
+  const x = parity.slice();
+  for (const [i, bytes] of group.data) {
+    if (i === index) continue;
+    for (let k = 0; k < bytes.length && k < x.length; k++) x[k] = x[k] ^ bytes[k];
   }
-  if (kind === TYPE_CHUNK) {
-    return {
-      type:    'chunk',
-      cacheId: toHex(m[K.CACHE_ID]),
-      index:   m[K.CHUNK_IDX],
-      data:    m[K.CHUNK_DATA],
-      cbor: seq,
-    };
+  const realLen = (index === count - 1) ? totalBytes - (count - 1) * sectorSize : sectorSize;
+  if (realLen < 0 || realLen > x.length) return null;
+  return x.slice(0, realLen);
+}
+
+/** Best-effort hint/label from the contiguous run of sectors starting at index 0 (SPEC §5). */
+function bestEffortHint(group, count) {
+  const parts = [];
+  let i = 0;
+  while (i < count && group.data.has(i)) { parts.push(group.data.get(i)); i++; }
+  if (parts.length === 0) return null;
+  try {
+    const item = cborDecodeSequencePrefix(concatBytes(...parts), 1).items[0];
+    return isCborMap(item) ? (item[K.HINT] ?? null) : null;
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
@@ -765,134 +1090,248 @@ async function dbClear() {
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
   });
-  for (const id of Object.keys(awaitingManifests)) delete awaitingManifests[id];
 }
 
-// ── Chunk assembly ────────────────────────────────────────────────────────
-// In-memory only — multi-code sets must be scanned in one session.
-const assemblies = {};
+// ── Sector-driven assembly & key resolution (SPEC §5, §9) ────────────────
+// In-memory only — multi-sector payloads must be scanned in one session.
+const assembler = new SectorAssembler();
 
-// ── Assembled bytes awaiting a key (SPEC §9) ─────────────────────────────
-// In-memory only, keyed by cacheId hex: hash-verified, fully-assembled chunk bytes
-// that could not be decompressed as plain `content` per `compression` (SPEC §5
-// step 5) — they must be a hidden override-map blob, but no retained key has
-// authenticated it yet. Resolved by processDiscoveredKey when a matching key
-// arrives ("discovery, not declaration" — scan order doesn't matter).
-const awaitingManifests = {};
+/** All `key_material` (SPEC §9) retained from previous discoveries, available to try against new ciphertext. */
+async function retainedKeys() {
+  return (await dbGetAll('keys')).map(k => k.keyMaterial);
+}
+
+/** [retainedKeys] plus, if `kdfSalt` matches one cached this session, the session-only passphrase key. */
+async function candidateKeys(kdfSalt) {
+  const keys = await retainedKeys();
+  const sessionKey = kdfSalt ? sessionPassphraseKeys.get(toHex(kdfSalt)) : null;
+  if (sessionKey) keys.push(sessionKey);
+  return keys;
+}
 
 /**
- * Decompresses `clearContentBytes` per `compression` as the "cover" view, then — if
- * `overrideBlob` is present — tries every retained key against it as an encrypted
- * override map (SPEC §9). On a match, the override's fields overlay the cover and the
- * fully-resolved result is stored; otherwise the cover is stored with the blob kept as
- * `pendingOverrideBlob` for a later key to "self-correct". A Single always reaches
- * "Complete" — its `content` decompression doesn't depend on the override blob.
+ * Stores a fully-resolved Content item and shows it. Always shows the content view, then —
+ * if a paper is active — immediately re-renders the paper directory on top (mirrors the
+ * previous behaviour: scanning a paper's file lands back on the directory, not the viewer,
+ * so continuous scanning isn't interrupted). `collectionId`/`collectionLabel`/`collectionTag`/
+ * `icon` are passed through to the content view only — not persisted to the `caches` store
+ * (see showContent's doc comment: ephemeral, scan-time-only metadata).
  */
-async function resolveSingleAndStore(cacheId, clearContentBytes, overrideBlob, { compression, mimeType, hint, filename }, extraKeys = []) {
-  const cover = compression === 1 ? await zlibDecompress(clearContentBytes) : clearContentBytes;
-  if (overrideBlob) {
-    const storedKeys = await dbGetAll('keys');
-    for (const k of [...storedKeys, ...extraKeys]) {
-      const override = await tryDecryptOverrideMap(overrideBlob, k.keyMaterial, compression);
-      if (override) {
-        const merged = mergeOverride({ hint, mimeType, filename, content: null }, override, new Uint8Array(0));
-        await dbPut('caches', { cacheId, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
-        return { content: merged.content, merged: true, fields: merged };
-      }
-    }
-  }
+async function completeSingle(cacheId, hint, filename, mimeType, content, opts = {}) {
+  const {
+    collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
+    pendingOverrideBlob = null, pendingCompression = 0, wasEncrypted = false,
+    kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
+  } = opts;
   await dbPut('caches', {
-    cacheId, mimeType, content: cover, hint, filename,
-    pendingOverrideBlob: overrideBlob || null, pendingCompression: compression
+    cacheId, hint, filename, mimeType, content,
+    pendingOverrideBlob, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
   });
-  return { content: cover, merged: false, fields: { hint, mimeType, filename } };
-}
-
-/**
- * Implements SPEC §5 step 5 for a Manifest+Chunks' assembled (hash-verified) bytes: if
- * `assembled` is long enough, tries every retained key against it as an encrypted
- * override map first. On a match, the override's fields overlay the manifest's clear
- * fields and the fully-resolved result is stored. Otherwise tries decompressing
- * `assembled` per `compression` as the "cover" content — `compression === 0` always
- * trivially succeeds (identity). On success, the cover is stored with `assembled` kept
- * as `pendingOverrideBlob` (if long enough) for a later key to self-correct. If neither
- * succeeds (real ciphertext, no matching key yet), stashes `assembled` in
- * `awaitingManifests` and returns null — SPEC §9 AwaitingKey.
- */
-async function resolveAssembledAndStore(cacheId, assembled, manifestParsed) {
-  const { compression, mimeType, hint, filename } = manifestParsed;
-  if (assembled.length >= OVERRIDE_BLOB_MIN_BYTES) {
-    for (const k of await dbGetAll('keys')) {
-      const override = await tryDecryptOverrideMap(assembled, k.keyMaterial, compression);
-      if (override) {
-        const merged = mergeOverride({ hint, mimeType, filename, content: null }, override, new Uint8Array(0));
-        await dbPut('caches', { cacheId, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
-        return { content: merged.content, merged: true, fields: merged };
-      }
-    }
-  }
-  let cover;
-  try {
-    cover = compression === 1 ? await zlibDecompress(assembled) : assembled;
-  } catch (e) {
-    awaitingManifests[cacheId] = { assembled, manifest: manifestParsed };
-    return null;
-  }
-  const pendingBlob = assembled.length >= OVERRIDE_BLOB_MIN_BYTES ? assembled : null;
-  await dbPut('caches', {
-    cacheId, mimeType, content: cover, hint, filename,
-    pendingOverrideBlob: pendingBlob, pendingCompression: pendingBlob ? compression : 0
-  });
-  return { content: cover, merged: false, fields: { hint, mimeType, filename } };
-}
-
-/**
- * Tries `keyMaterial` against all currently-locked content: assemblies in `awaitingManifests`
- * and cached items with a `pendingOverrideBlob`. Returns true if anything was unlocked.
- * Does NOT store the key — callers decide whether and how to retain it.
- */
-async function unlockWithKey(keyMaterial) {
-  let unlockedAny = false;
-
-  for (const [cacheId, entry] of Object.entries(awaitingManifests)) {
-    const override = await tryDecryptOverrideMap(entry.assembled, keyMaterial, entry.manifest.compression);
-    if (!override) continue;
-    const { hint: h, mimeType, filename } = entry.manifest;
-    const merged = mergeOverride({ hint: h, mimeType, filename, content: null }, override, new Uint8Array(0));
-    await dbPut('caches', { cacheId, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
-    delete awaitingManifests[cacheId];
-    unlockedAny = true;
-    showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
-    await showContent(merged.mimeType, merged.content, merged.filename || merged.hint || merged.mimeType, cacheId);
-  }
-
-  for (const cached of await dbGetAll('caches')) {
-    if (!cached.pendingOverrideBlob) continue;
-    const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, keyMaterial, cached.pendingCompression);
-    if (!override) continue;
-    const merged = mergeOverride(cached, override, cached.content);
-    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingCompression: 0 });
-    unlockedAny = true;
-    showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
-  }
-
+  const label = filename || hint || mimeType;
+  await showContent(mimeType, content, label, cacheId, { icon, collectionLabel, collectionTag, collectionId });
   if (activePaperHash) await renderPaper(activePaperHash);
-  return unlockedAny;
+  return label;
 }
 
 /**
- * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
- * it against everything currently locked. "Discovery, not declaration": scan order between
- * a key and the content it unlocks doesn't matter.
+ * Handles a fully-reassembled Content payload (SPEC §9): discovers any carried `key_material`
+ * first, then checks its pending override blob against every retained/session key. If one
+ * authenticates, the override map's fields replace the clear map's. Otherwise, if the code
+ * declares passphrase KDF, prompts for it; failing that, the clear map's own content is cached
+ * as-is — a cover story, decoy, or genuine unremarkable content — with the still-unresolved
+ * blob kept for [unlockPending]/[handleDiscoveredKey] to retry later. A code that carries only
+ * a key (empty content/mime_type) is never cached.
  */
-async function processDiscoveredKey(keyMaterial, retainKey, hint) {
+async function handleContentReady(state) {
+  let keyUnlockedAny = false;
+  if (state.keyMaterial) {
+    keyUnlockedAny = (await handleDiscoveredKey(state.keyMaterial, state.retainKey, state.hint)) > 0;
+  }
+
+  if (state.content.length === 0 && !state.mimeType) {
+    if (state.keyMaterial && !keyUnlockedAny) {
+      showMsg('Key code scanned' + (state.retainKey ? ' and stored' : '') + ' — scan its content code to unlock.', 'info');
+    }
+    return;
+  }
+
+  const cacheId = state.cacheId;
+  if (!cacheId) return;
+  const blob = state.pendingOverrideBlob;
+
+  let override = null;
+  if (blob) {
+    for (const key of await candidateKeys(state.kdfAlg === 1 ? state.kdfSalt : null)) {
+      override = await tryDecryptOverrideMap(blob, key, state.pendingOverrideCompression);
+      if (override) break;
+    }
+  }
+
+  if (override) {
+    const label = await completeSingle(
+      cacheId, override.hint ?? state.hint, override.filename ?? state.filename,
+      override.mimeType ?? state.mimeType, override.content ?? new Uint8Array(0),
+      { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
+        collectionTag: state.collectionTag, icon: state.icon, wasEncrypted: true }
+    );
+    showMsg('🔓 Decrypted: ' + label, 'ok');
+    return;
+  }
+
+  if (blob && state.kdfAlg === 1 && state.kdfSalt) {
+    await unlockWithPassphrase({
+      hint: state.hint, cacheId, blob, compression: state.pendingOverrideCompression,
+      kdfSalt: state.kdfSalt, kdfIters: state.kdfIters, fallbackContent: state.content,
+      filename: state.filename, mimeType: state.mimeType,
+      collectionId: state.collectionId, collectionLabel: state.collectionLabel,
+      collectionTag: state.collectionTag, icon: state.icon,
+    });
+    return;
+  }
+
+  const label = await completeSingle(
+    cacheId, state.hint, state.filename, state.mimeType, state.content,
+    { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
+      collectionTag: state.collectionTag, icon: state.icon,
+      pendingOverrideBlob: blob, pendingCompression: state.pendingOverrideCompression,
+      wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters }
+  );
+  showMsg(blob ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
+}
+
+/**
+ * A Content payload assembled but its content slot can't be read as plain content (SPEC §9):
+ * try every retained/session key via the assembler (which may resolve a *different* group than
+ * this one — "discovery, not declaration"), then a passphrase-derived key if the code declares
+ * one. If nothing unlocks it, it stays in the assembler (uncached) and reports "still locked".
+ */
+async function handleAwaitingKey(state) {
+  for (const key of await candidateKeys(state.kdfAlg === 1 ? state.kdfSalt : null)) {
+    const resolved = await assembler.tryKey(key);
+    if (resolved.length > 0) {
+      for (const r of resolved) await completeContentReady(r);
+      return;
+    }
+  }
+  if (state.kdfAlg === 1 && state.kdfSalt && state.cacheId) {
+    await unlockWithPassphrase({
+      hint: state.hint, cacheId: state.cacheId, blob: state.contentSlot,
+      compression: state.compression, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
+      fallbackContent: null, filename: null, mimeType: '',
+      collectionId: null, collectionLabel: null, collectionTag: null, icon: null,
+    });
+    return;
+  }
+  showMsg('🔒 All sectors assembled, but still locked — scan the key code to unlock.', 'info');
+  if (activePaperHash) await renderPaper(activePaperHash);
+}
+
+/**
+ * Prompts for a passphrase (SPEC §9), derives the key, and tries it against `blob`. On success,
+ * optionally retains the derived key (permanently and/or for this session, per the dialog's
+ * checkboxes), completes with the override map's fields, and — since the same passphrase may
+ * protect more than one item — also tries it against everything else currently locked. On
+ * failure/cancel, falls back to caching `fallbackContent` (if any) with the blob kept pending —
+ * unless there's nothing to show, in which case the code stays locked.
+ */
+async function unlockWithPassphrase({
+  hint, cacheId, blob, compression, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
+  collectionId, collectionLabel, collectionTag, icon
+}) {
+  const saltHex = toHex(kdfSalt);
+  const info = hint
+    ? `"${hint}" is passphrase-protected. Enter the passphrase to unlock.`
+    : 'This content is passphrase-protected. Enter the passphrase to unlock.';
+  const result = await askPassphrase(info);
+  let wrongPassphrase = false;
+  if (result) {
+    const derived = await deriveKeyFromPassphrase(result.passphrase, kdfSalt, kdfIters || 100000);
+    const override = await tryDecryptOverrideMap(blob, derived, compression);
+    if (override) {
+      if (result.sessionOnly) sessionPassphraseKeys.set(saltHex, derived);
+      if (result.store) {
+        await dbPut('keys', {
+          id: toHex(derived), keyMaterial: derived,
+          hint: 'passphrase (salt: ' + saltHex.slice(0, 8) + '…)',
+        });
+      }
+      const label = await completeSingle(
+        cacheId, override.hint ?? hint, override.filename ?? filename, override.mimeType ?? mimeType,
+        override.content ?? new Uint8Array(0),
+        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true }
+      );
+      await unlockPending(derived);
+      for (const r of await assembler.tryKey(derived)) await completeContentReady(r);
+      showMsg('🔓 Passphrase accepted: ' + label, 'ok');
+      return;
+    }
+    wrongPassphrase = true;
+  }
+  if (fallbackContent != null) {
+    const label = await completeSingle(
+      cacheId, hint, filename, mimeType, fallbackContent,
+      { collectionId, collectionLabel, collectionTag, icon,
+        pendingOverrideBlob: blob, pendingCompression: compression, wasEncrypted: true,
+        kdfAlg: 1, kdfSalt, kdfIters }
+    );
+    showMsg(wrongPassphrase
+      ? 'Wrong passphrase. Loaded: ' + label + ' (🔒 still locked)'
+      : 'Loaded: ' + label + ' (🔒 enter passphrase to unlock)', wrongPassphrase ? 'err' : 'ok');
+  } else if (wrongPassphrase) {
+    showMsg('Wrong passphrase — scan the code again to retry.', 'err');
+  } else {
+    showMsg('🔒 Still locked — scan the code again to enter the passphrase.', 'info');
+    if (activePaperHash) await renderPaper(activePaperHash);
+  }
+}
+
+/**
+ * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try it
+ * against everything currently locked: cached items with a pending override blob, and any
+ * in-progress encrypted assembly. "Discovery, not declaration": scan order between a key and
+ * the content it unlocks doesn't matter. Returns the number of items unlocked.
+ */
+async function handleDiscoveredKey(keyMaterial, retainKey, hint) {
   if (retainKey) {
     await dbPut('keys', { id: toHex(keyMaterial), keyMaterial, hint });
   }
-  const unlockedAny = await unlockWithKey(keyMaterial);
-  if (!unlockedAny) {
-    showMsg('Key code scanned' + (retainKey ? ' and stored' : '') + ' — scan its content code to unlock.', 'info');
+  const unlockedCount = await unlockPending(keyMaterial);
+  const resolved = await assembler.tryKey(keyMaterial);
+  for (const state of resolved) await completeContentReady(state);
+  return unlockedCount + resolved.length;
+}
+
+/** Bridges an assembler.tryKey()-resolved group into storage+display, with its own unlock message. */
+async function completeContentReady(state) {
+  if (!state.cacheId) return;
+  const label = await completeSingle(
+    state.cacheId, state.hint, state.filename, state.mimeType, state.content,
+    { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
+      collectionTag: state.collectionTag, icon: state.icon,
+      pendingOverrideBlob: state.pendingOverrideBlob, pendingCompression: state.pendingOverrideCompression,
+      wasEncrypted: state.wasEncrypted }
+  );
+  showMsg('🔓 Unlocked: ' + label, 'ok');
+}
+
+/**
+ * Tries `key` against every cached item with a still-unresolved `pendingOverrideBlob` (SPEC §9),
+ * "self-correcting" any whose override map it decrypts: the override's present fields overlay
+ * the cached clear-map fields, and the blob is cleared. Returns the number unlocked.
+ */
+async function unlockPending(key) {
+  let unlocked = 0;
+  for (const cached of await dbGetAll('caches')) {
+    if (!cached.pendingOverrideBlob) continue;
+    const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, key, cached.pendingCompression);
+    if (!override) continue;
+    const merged = mergeOverride(cached, override, cached.content);
+    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingCompression: 0, wasEncrypted: true });
+    unlocked++;
+    showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
   }
+  if (unlocked > 0 && activePaperHash) await renderPaper(activePaperHash);
+  return unlocked;
 }
 
 // ── Camera / QR scanner ───────────────────────────────────────────────────
@@ -978,7 +1417,7 @@ function bytesToBinaryString(bytes) {
 // fallback.
 async function parseScannedBytes(bytes) {
   const looksLikeTagdropText = TAGDROP_TEXT_PREFIX.every((b, i) => bytes[i] === b);
-  return looksLikeTagdropText ? parseUri(bytesToBinaryString(bytes)) : parseEnvelope(bytes);
+  return looksLikeTagdropText ? parseUri(bytesToBinaryString(bytes)) : sectorScanResult(bytes);
 }
 
 function updateCborButton() {
@@ -994,152 +1433,12 @@ async function handleScanned(rawBytes) {
 
   switch (parsed.type) {
 
-    case 'single': {
+    case 'sector': {
       lastScannedCbor = parsed.cbor;
-      lastScannedTitle = parsed.cacheId;
+      lastScannedTitle = parsed.sector.partMeta.cacheId || '(no cache_id)';
       updateCborButton();
-      // SPEC §9: discover any carried key_material first, so a combined content+key code
-      // can resolve its own overrideBlob below in one pass.
-      if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
-
-      // If this code uses passphrase-based KDF (SPEC §9 kdf_params), check the session
-      // cache so a previously-entered passphrase in this session is tried automatically.
-      const saltHex = parsed.kdfAlg === 1 && parsed.kdfSalt ? toHex(parsed.kdfSalt) : null;
-      const sessionKey = saltHex ? sessionPassphraseKeys.get(saltHex) : null;
-      const extraKeys = sessionKey ? [{ keyMaterial: sessionKey }] : [];
-
-      const { content, merged, fields } = await resolveSingleAndStore(parsed.cacheId, parsed.content, parsed.overrideBlob, parsed, extraKeys);
-      const label = fields.filename || fields.hint || fields.mimeType;
-
-      // Passphrase prompt: only if the code advertises KDF, has an override blob, and
-      // no retained/session key has already unlocked it.
-      if (!merged && parsed.overrideBlob && parsed.kdfAlg === 1 && saltHex) {
-        const info = parsed.hint
-          ? `"${parsed.hint}" is passphrase-protected. Enter the passphrase to unlock.`
-          : 'This content is passphrase-protected. Enter the passphrase to unlock.';
-        const result = await askPassphrase(info);
-        if (result) {
-          const derived = await deriveKeyFromPassphrase(result.passphrase, parsed.kdfSalt, parsed.kdfIters || 100000);
-          const testOv = await tryDecryptOverrideMap(parsed.overrideBlob, derived, parsed.compression);
-          if (!testOv) {
-            document.getElementById('passphraseError').textContent = '';
-            showMsg('Wrong passphrase — scan the code again to retry.', 'err');
-          } else {
-            if (result.sessionOnly) sessionPassphraseKeys.set(saltHex, derived);
-            if (result.store) {
-              await dbPut('keys', {
-                id: toHex(derived), keyMaterial: derived,
-                hint: 'passphrase (salt: ' + saltHex.slice(0, 8) + '…)',
-              });
-            }
-            await unlockWithKey(derived);
-            showMsg('🔓 Passphrase accepted — content unlocked!', 'ok');
-          }
-        } else {
-          showMsg('Loaded: ' + label + ' (🔒 enter passphrase to unlock)', 'ok');
-        }
-      } else if (merged) {
-        showMsg('🔓 Decrypted: ' + label, 'ok');
-      } else if (parsed.overrideBlob) {
-        showMsg('Loaded: ' + label + ' (🔒 hidden content not yet unlocked)', 'ok');
-      } else {
-        showMsg('Loaded: ' + label, 'ok');
-      }
-
-      await showContent(fields.mimeType, content, label, parsed.cacheId, {
-        icon: parsed.icon, collectionLabel: parsed.collectionLabel,
-        collectionTag: parsed.collectionTag, collectionId: parsed.collectionId,
-      });
-      // Refresh directory if this file belongs to the active paper
-      if (activePaperHash) await renderPaper(activePaperHash);
-      break;
-    }
-
-    case 'key':
-      lastScannedCbor = parsed.cbor;
-      lastScannedTitle = parsed.cacheId;
-      updateCborButton();
-      await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
-      break;
-
-    case 'paper':
-      await dbPut('papers', parsed);
-      activePaperHash = parsed.rootHash;
-      lastScannedCbor = parsed.cbor;
-      lastScannedTitle = parsed.rootHash;
-      updateCborButton();
-      // SPEC §9: a paper manifest (and its related[] entries) may each carry their own
-      // key_material for other content discovered along the way.
-      if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.label);
-      for (const related of parsed.related) {
-        if (related.keyMaterial) await processDiscoveredKey(related.keyMaterial, related.retainKey, related.hint);
-      }
-      showMsg('Paper: ' + (parsed.label || 'untitled') + ' — ' + parsed.files.length + ' file(s)', 'ok');
-      await renderPaper(parsed.rootHash);
-      break;
-
-    case 'manifest':
-      if (parsed.keyMaterial) await processDiscoveredKey(parsed.keyMaterial, parsed.retainKey, parsed.hint);
-      assemblies[parsed.cacheId] = { manifest: parsed, chunks: new Map() };
-      lastScannedCbor = parsed.cbor;
-      lastScannedTitle = parsed.cacheId;
-      updateCborButton();
-      showMsg('Manifest scanned — need ' + parsed.chunkCount + ' chunk(s). Scan them now.', 'info');
-      showAssemblyProgress(parsed.cacheId, new Map(), parsed.chunkCount);
-      break;
-
-    case 'chunk': {
-      const a = assemblies[parsed.cacheId];
-      if (!a) {
-        showMsg('Chunk received but no manifest yet — scan the manifest QR first.', 'warn');
-        return;
-      }
-      lastScannedCbor = parsed.cbor;
-      lastScannedTitle = parsed.cacheId + ' #' + parsed.index;
-      updateCborButton();
-      a.chunks.set(parsed.index, parsed.data);
-      const got = a.chunks.size, need = a.manifest.chunkCount;
-      if (got < need) {
-        showMsg('Chunk ' + got + '/' + need + ' received. Still need: ' + missingChunkLabels(a.chunks, need), 'info');
-        showAssemblyProgress(parsed.cacheId, a.chunks, need);
-        return;
-      }
-      // All chunks present — assemble in order
-      const parts = [];
-      for (let i = 0; i < need; i++) {
-        const chunk = a.chunks.get(i);
-        if (!chunk) { showMsg('Missing chunk #' + (i + 1) + '. Scan it.', 'err'); return; }
-        parts.push(chunk);
-      }
-      const raw = new Uint8Array(parts.reduce((s, c) => s + c.length, 0));
-      let off = 0;
-      for (const p of parts) { raw.set(p, off); off += p.length; }
-      // SHA-256 integrity check (against the assembled bytes, matching Android ChunkAssembler)
-      const hashBuf  = await crypto.subtle.digest('SHA-256', raw);
-      const hashBytes = new Uint8Array(hashBuf);
-      const expected  = a.manifest.sha256;
-      let ok = expected && hashBytes.length === expected.length;
-      if (ok) for (let i = 0; i < hashBytes.length; i++) if (hashBytes[i] !== expected[i]) { ok = false; break; }
-      if (!ok) { showMsg('Integrity check failed — try rescanning all chunks.', 'err'); return; }
-      const manifest = a.manifest;
-      delete assemblies[manifest.cacheId];
-      hideAssemblyProgress();
-      // SPEC §5 step 5 / §9: try the assembled bytes as a hidden override-map blob first,
-      // then as plain content per `compression` — may still end up AwaitingKey.
-      const result = await resolveAssembledAndStore(manifest.cacheId, raw, manifest);
-      if (result === null) {
-        showMsg('🔒 All chunks assembled, but still locked — scan the key code to unlock.', 'info');
-        if (activePaperHash) await renderPaper(activePaperHash);
-        break;
-      }
-      const { content, merged, fields } = result;
-      const label = fields.filename || fields.hint || fields.mimeType;
-      showMsg(merged ? '🔓 All chunks assembled and decrypted!' : 'All chunks assembled!', 'ok');
-      await showContent(fields.mimeType, content, label, manifest.cacheId, {
-        icon: manifest.icon, collectionLabel: manifest.collectionLabel,
-        collectionTag: manifest.collectionTag, collectionId: manifest.collectionId,
-      });
-      if (activePaperHash) await renderPaper(activePaperHash);
+      const state = await assembler.add(parsed.sector);
+      await handleState(state);
       break;
     }
 
@@ -1154,6 +1453,67 @@ async function handleScanned(rawBytes) {
     default:
       showMsg('Unrecognised QR content.', 'err');
   }
+}
+
+/** Routes a freshly-computed SectorAssembler state (SPEC §5) to its handler/UI update. */
+async function handleState(state) {
+  switch (state.kind) {
+
+    case 'Collecting': {
+      showAssemblyProgress(state.received, state.total, state.missingIndices);
+      const label = state.hint ? ' — "' + state.hint + '"' : '';
+      showMsg('Sector ' + state.received + '/' + state.total + ' received' + label +
+        '. Still need: ' + formatMissingIndices(state.missingIndices), 'info');
+      break;
+    }
+
+    case 'ContentReady':
+      hideAssemblyProgress();
+      await handleContentReady(state);
+      break;
+
+    case 'PaperReady':
+      hideAssemblyProgress();
+      await handlePaper(state.paper);
+      break;
+
+    case 'AwaitingKey':
+      hideAssemblyProgress();
+      await handleAwaitingKey(state);
+      break;
+
+    case 'HashMismatch':
+      hideAssemblyProgress();
+      showMsg('Integrity check failed — try rescanning all sectors.', 'err');
+      break;
+
+    case 'Failed':
+      hideAssemblyProgress();
+      showMsg('Could not parse assembled sectors — try rescanning.', 'err');
+      break;
+  }
+}
+
+/** Persists a fully-reassembled Paper payload (SPEC §4.2) and discovers any keys it carries.
+ *  Stores `lastScannedCbor` (the completing sector's raw envelope, set in handleScanned above)
+ *  as this paper's `cbor` field rather than the reassembled stream, since describeCbor() expects
+ *  a single four-item sector envelope, not the bare core/bulky/content concatenation. */
+async function handlePaper(paper) {
+  await dbPut('papers', { ...paper, cbor: lastScannedCbor, scannedAt: Date.now() });
+  activePaperHash = paper.rootHash;
+  // SPEC §9: a paper manifest (and its related[] entries) may each carry their own
+  // key_material for other content discovered along the way.
+  if (paper.keyMaterial) await handleDiscoveredKey(paper.keyMaterial, paper.retainKey, paper.label);
+  for (const related of paper.related) {
+    if (related.keyMaterial) await handleDiscoveredKey(related.keyMaterial, related.retainKey, related.hint);
+  }
+  showMsg('Paper: ' + (paper.label || 'untitled') + ' — ' + paper.files.length + ' file(s)', 'ok');
+  await renderPaper(paper.rootHash);
+}
+
+/** `missingIndices` (0-based sector_index values) formatted as human-facing "#1, #3" labels. */
+function formatMissingIndices(missingIndices) {
+  return missingIndices.map(i => '#' + (i + 1)).join(', ');
 }
 
 // ── Navigation link resolution ────────────────────────────────────────────
@@ -1240,7 +1600,7 @@ async function renderPaper(rootHash) {
         '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>' +
         descHtml;
     } else {
-      const label = awaitingManifests[f.fileId] ? '🔒 needs key' : 'not scanned';
+      const label = assembler.isAwaitingKey(f.fileId) ? '🔒 needs key' : 'not scanned';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
@@ -1389,19 +1749,13 @@ window.addEventListener('message', async e => {
 });
 
 // ── Assembly progress bar ─────────────────────────────────────────────────
-// Chunks can be scanned in any order (SPEC.md §5), so callers pass the Map of
-// chunks received so far rather than just a count — lets the UI point out
-// exactly which chunk(s) are still missing instead of leaving the finder to
-// guess which one they skipped.
-function missingChunkLabels(receivedChunks, need) {
-  const missing = [];
-  for (let i = 0; i < need; i++) if (!receivedChunks.has(i)) missing.push('#' + (i + 1));
-  return missing.join(', ');
-}
-function showAssemblyProgress(cacheId, receivedChunks, need) {
-  const got = receivedChunks.size;
-  let text = 'Multi-code: ' + got + '/' + need + ' chunks';
-  if (got < need) text += ' — still need: ' + missingChunkLabels(receivedChunks, need);
+// Sectors can be scanned in any order (SPEC §5), so callers pass the list of
+// still-missing sector_index values rather than just a count — lets the UI
+// point out exactly which sector(s) are still missing instead of leaving the
+// finder to guess which one they skipped.
+function showAssemblyProgress(received, total, missingIndices) {
+  let text = 'Multi-sector: ' + received + '/' + total + ' sectors';
+  if (missingIndices.length > 0) text += ' — still need: ' + formatMissingIndices(missingIndices);
   document.getElementById('assemblyText').textContent = text;
   document.getElementById('btnScanChunk').onclick = startScan;
   document.getElementById('assemblyBar').classList.remove('hidden');
@@ -1503,10 +1857,10 @@ document.getElementById('paperHeader').addEventListener('click', async e => {
   if (cached) await showContent(cached.mimeType, cached.content, btn.dataset.slug, btn.dataset.id);
 });
 
-document.getElementById('btnCbor').onclick = () => {
+document.getElementById('btnCbor').onclick = async () => {
   if (!lastScannedCbor) return;
   document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + lastScannedTitle;
-  document.getElementById('cborDump').textContent = describeCbor(lastScannedCbor);
+  document.getElementById('cborDump').textContent = await describeCbor(lastScannedCbor);
   document.getElementById('cborOverlay').classList.remove('hidden');
 };
 
@@ -1517,6 +1871,8 @@ document.getElementById('btnCloseCbor').onclick = () => {
 document.getElementById('btnClear').onclick = async () => {
   if (!confirm('Clear all cached TagDrop content from this browser?')) return;
   await dbClear();
+  assembler.reset();
+  hideAssemblyProgress();
   activePaperHash = null;
   document.getElementById('paperSection').classList.add('hidden');
   document.getElementById('contentSection').classList.add('hidden');
