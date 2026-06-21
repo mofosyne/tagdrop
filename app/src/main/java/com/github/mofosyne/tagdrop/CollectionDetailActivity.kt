@@ -24,7 +24,6 @@ import com.github.mofosyne.tagdrop.data.db.hasPendingPassphrase
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import kotlinx.coroutines.CompletableDeferred
-import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
 import com.github.mofosyne.tagdrop.ui.CollectionDetailAdapter
@@ -107,9 +106,9 @@ class CollectionDetailActivity : AppCompatActivity() {
             val paper = latestPaper ?: return
             currentPaper = paper
             invalidateOptionsMenu()
-            val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)
-            val files = manifest?.files.orEmpty()
-            val related = manifest?.related.orEmpty()
+            val parsedPaper = TagDropCodec.decodePaperStream(paper.cborBytes)
+            val files = parsedPaper?.files.orEmpty()
+            val related = parsedPaper?.related.orEmpty()
             val cachesById = latestCaches.associateBy { it.cacheId }
 
             val fileItems = files.map { f -> PageItem.PaperFile(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) }
@@ -353,21 +352,19 @@ class CollectionDetailActivity : AppCompatActivity() {
         }
     }
 
-    /** Reconstructs the CBOR for a cached page from its decoded fields and shows the debug dialog. */
+    /** Reconstructs a single-sector Content CBOR from a cached page's decoded fields and shows the debug dialog. */
     private fun inspectCacheCbor(cache: FoundCache) {
-        val payload = TagDropPayload.Single(
-            cacheId         = cache.cacheId.hexToBytes(),
+        val cbor = TagDropCodec.inspectableContentCbor(
             hint            = cache.hint,
             filename        = cache.filename,
             mimeType        = cache.mimeType,
-            compression     = TagDropCodec.COMPRESSION_NONE,
             content         = cache.contentBytes ?: ByteArray(0),
             collectionId    = cache.collectionId?.hexToBytes(),
             collectionLabel = cache.collectionLabel,
             collectionTag   = cache.collectionTag,
             icon            = cache.icon
         )
-        showCborDebugDialog(TagDropCodec.singleCbor(payload), cache.cacheId)
+        showCborDebugDialog(cbor, cache.cacheId)
     }
 
     private fun jumpToMap(lat: Double, lng: Double) {

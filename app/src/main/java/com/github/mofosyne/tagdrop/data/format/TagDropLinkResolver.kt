@@ -83,7 +83,7 @@ class TagDropLinkResolver(private val db: AppDatabase) {
 
         val slug = ref.slug ?: return Resolution.PaperFound(paper, null)
 
-        val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)
+        val manifest = TagDropCodec.decodePaperStream(paper.cborBytes)
             ?: return Resolution.PaperFound(paper, slug)   // can't decode, show paper info
 
         val file = manifest.files.find { it.slug == slug }
@@ -102,7 +102,7 @@ class TagDropLinkResolver(private val db: AppDatabase) {
      */
     suspend fun findPaperContext(cacheId: String): PaperContext? {
         for (paper in db.paperDao().getAllPapers()) {
-            val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes) ?: continue
+            val manifest = TagDropCodec.decodePaperStream(paper.cborBytes) ?: continue
             val file = manifest.files.find { it.fileId.toHex() == cacheId } ?: continue
             return PaperContext(paper.rootHash, file.slug)
         }
@@ -116,7 +116,7 @@ class TagDropLinkResolver(private val db: AppDatabase) {
      */
     suspend fun findStylesheet(rootHashHex: String): String? {
         val paper = db.paperDao().getByRootHash(rootHashHex) ?: return null
-        val manifest = TagDropCodec.decodePaperManifestCbor(paper.cborBytes) ?: return null
+        val manifest = TagDropCodec.decodePaperStream(paper.cborBytes) ?: return null
         val cssFile = manifest.files.find { it.slug == STYLESHEET_SLUG && it.mimeType == "text/css" } ?: return null
         val cache = db.cacheDao().getById(cssFile.fileId.toHex()) ?: return null
         return cache.contentBytes?.let { String(it, Charsets.UTF_8) }

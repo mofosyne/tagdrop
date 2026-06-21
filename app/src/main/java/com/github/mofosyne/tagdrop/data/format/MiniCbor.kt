@@ -50,6 +50,14 @@ object MiniCbor {
         return out.toByteArray()
     }
 
+    /** Encodes a single CBOR byte string (major type 2) — e.g. a sequence envelope item. */
+    fun encodeBytes(bytes: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        writeHead(out, 2, bytes.size.toLong())
+        out.write(bytes)
+        return out.toByteArray()
+    }
+
     private fun encodeValue(v: Any): ByteArray {
         val out = ByteArrayOutputStream()
         when (v) {

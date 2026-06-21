@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
  * for printing (or "Save as PDF" via the system print dialog).
  *
  * Mirrors the Paper Layout tab of the web generator (tools/generator/index.html),
- * but runs entirely on-device using [TagDropCodec.createPaperManifest].
+ * but runs entirely on-device using [TagDropCodec.createPaper].
  */
 class CreatePaperActivity : AppCompatActivity() {
 
@@ -41,7 +41,7 @@ class CreatePaperActivity : AppCompatActivity() {
     /** A generated file's raw content, kept alongside [QrEntry] so it can be persisted to My Drops. */
     private data class FileContent(val idHex: String, val slug: String, val mimeType: String, val rawContent: ByteArray)
 
-    private var lastManifest: TagDropPayload.PaperManifest? = null
+    private var lastManifest: TagDropPayload.Paper? = null
     private var lastEntries: List<QrEntry> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,29 +150,30 @@ class CreatePaperActivity : AppCompatActivity() {
             val mimeType = mimeTypes[entry.spinnerFileMime.selectedItemPosition]
             val compress = entry.checkFileCompress.isChecked
             val rawContent = content.toByteArray(Charsets.UTF_8)
-            val payload = TagDropCodec.createSingle(null, fileSlug, mimeType, rawContent, compress)
-            val uri = TagDropCodec.encode(payload)
-            files.add(TagDropPayload.FileEntry(fileSlug, mimeType, payload.cacheId))
-            fileEntries.add(QrEntry(fileSlug, mimeType, hex(payload.cacheId), uri))
-            fileContents.add(FileContent(hex(payload.cacheId), fileSlug, mimeType, rawContent))
+            val sector = TagDropCodec.createContentSectors(null, fileSlug, mimeType, rawContent, compress).first()
+            val uri = TagDropCodec.encode(sector)
+            val fileId = sector.partMeta.cacheId ?: ByteArray(0)
+            files.add(TagDropPayload.FileEntry(fileSlug, mimeType, fileId))
+            fileEntries.add(QrEntry(fileSlug, mimeType, hex(fileId), uri))
+            fileContents.add(FileContent(hex(fileId), fileSlug, mimeType, rawContent))
 
             if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
         }
 
-        val manifest = TagDropCodec.createPaperManifest(label, set, slug, files)
-        val manifestUri = TagDropCodec.encode(manifest)
+        val (paper, paperSectors) = TagDropCodec.createPaper(label, set, slug, files)
+        val manifestUri = TagDropCodec.encode(paperSectors.first())
 
-        lastManifest = manifest
+        lastManifest = paper
         lastEntries = listOf(
-            QrEntry(label ?: getString(R.string.paper_manifest_label), getString(R.string.paper_manifest_sub), hex(manifest.rootHash), manifestUri)
+            QrEntry(label ?: getString(R.string.paper_manifest_label), getString(R.string.paper_manifest_sub), hex(paper.rootHash), manifestUri)
         ) + fileEntries
 
-        renderResults(manifest)
-        saveToMyDrops(manifest, fileContents)
+        renderResults(paper)
+        saveToMyDrops(paper, fileContents)
     }
 
     /** Persists the generated paper (manifest + files) to the local DB (My Drops) so it can be revisited or re-shared later. */
-    private fun saveToMyDrops(manifest: TagDropPayload.PaperManifest, files: List<FileContent>) {
+    private fun saveToMyDrops(manifest: TagDropPayload.Paper, files: List<FileContent>) {
         lifecycleScope.launch {
             val db = AppDatabase.get(this@CreatePaperActivity)
             val now = System.currentTimeMillis()
@@ -196,7 +197,7 @@ class CreatePaperActivity : AppCompatActivity() {
                     label       = manifest.label,
                     set         = manifest.set,
                     slug        = manifest.slug,
-                    cborBytes   = TagDropCodec.paperManifestCbor(manifest),
+                    cborBytes   = TagDropCodec.paperStreamBytes(manifest),
                     createdByMe = true
                 )
             )
@@ -204,7 +205,7 @@ class CreatePaperActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderResults(manifest: TagDropPayload.PaperManifest) {
+    private fun renderResults(manifest: TagDropPayload.Paper) {
         binding.containerQrGrid.removeAllViews()
 
         binding.textRootHash.text = getString(R.string.paper_root_hash, hex(manifest.rootHash))
@@ -250,7 +251,7 @@ class CreatePaperActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildPrintHtml(manifest: TagDropPayload.PaperManifest, entries: List<QrEntry>): String {
+    private fun buildPrintHtml(manifest: TagDropPayload.Paper, entries: List<QrEntry>): String {
         val header = buildString {
             append("<h2>").append(Html.escapeHtml(manifest.label ?: getString(R.string.title_create_paper))).append("</h2>")
             val set = manifest.set

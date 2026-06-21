@@ -18,9 +18,9 @@ import kotlinx.coroutines.launch
  * scan — an offline alternative to the Share sheet when the receiver only has a camera.
  *
  * Content that fits in one QR is shown as a single static code. Larger content is split
- * into a Manifest + Chunks ([TagDropCodec.createManifestAndChunks]) and cycled through on
- * a timer; the receiver's continuous scan loop (ReceiveActivity / web reader) assembles
- * them in any order via SHA-256-verified [com.github.mofosyne.tagdrop.data.format.ChunkAssembler].
+ * into multiple sectors ([TagDropCodec.createContentSectors]) and cycled through on a timer;
+ * the receiver's continuous scan loop (ReceiveActivity / web reader) reassembles them in any
+ * order via [com.github.mofosyne.tagdrop.data.format.SectorAssembler] (SPEC §5).
  */
 class ShareQrActivity : AppCompatActivity() {
 
@@ -64,7 +64,7 @@ class ShareQrActivity : AppCompatActivity() {
         scheduleNext()
     }
 
-    /** One URI if [cache]'s content fits in a single QR, otherwise a Manifest + Chunk URIs. */
+    /** One URI if [cache]'s content fits in a single QR, otherwise one URI per sector (SPEC §4.1, §5). */
     private fun buildFrames(cache: FoundCache): List<String> {
         val rawContent = cache.contentBytes!!
         val collectionId = cache.collectionId?.hexToBytes()
@@ -73,19 +73,19 @@ class ShareQrActivity : AppCompatActivity() {
         // or binary content), mirroring the manual checkbox in CreateActivity/CreatePaperActivity.
         val compress = TagDropCodec.compress(rawContent).size < rawContent.size
 
-        val single = TagDropCodec.createSingle(
-            cache.hint, cache.filename, cache.mimeType, rawContent, compress,
-            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon
+        val single = TagDropCodec.encode(
+            TagDropCodec.createContentSectors(
+                cache.hint, cache.filename, cache.mimeType, rawContent, compress,
+                collectionId, cache.collectionLabel, cache.collectionTag, cache.icon
+            ).first()
         )
-        val singleUri = TagDropCodec.encode(single)
-        if (singleUri.length <= TagDropCodec.MAX_URI_LENGTH) return listOf(singleUri)
+        if (single.length <= TagDropCodec.MAX_URI_LENGTH) return listOf(single)
 
-        val chunkCount = TagDropCodec.chunkCountForBytes(single.content.size)
-        val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
-            cache.hint, cache.filename, cache.mimeType, rawContent, compress, chunkCount,
-            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon
-        )
-        return listOf(TagDropCodec.encode(manifest)) + chunks.map { TagDropCodec.encode(it) }
+        return TagDropCodec.createContentSectors(
+            cache.hint, cache.filename, cache.mimeType, rawContent, compress,
+            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon,
+            maxSectorDataBytes = TagDropCodec.MAX_SECTOR_DATA_BYTES
+        ).map { TagDropCodec.encode(it) }
     }
 
     private fun showFrame() {

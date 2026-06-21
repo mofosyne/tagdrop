@@ -186,7 +186,7 @@ class MapFragment : Fragment() {
         // Placeholder pins for related papers with a known location that haven't been scanned yet.
         val seenRelatedKeys = mutableSetOf<String>()
         for (paper in latestPapers) {
-            val related = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)?.related.orEmpty()
+            val related = TagDropCodec.decodePaperStream(paper.cborBytes)?.related.orEmpty()
             for (r in related) {
                 val lat = r.lat
                 val lng = r.lng

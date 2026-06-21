@@ -48,7 +48,7 @@ sealed class CollectionItem {
             val claimedIds = mutableSetOf<String>()
 
             val paperItems = papers.map { paper ->
-                val files = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)?.files.orEmpty()
+                val files = TagDropCodec.decodePaperStream(paper.cborBytes)?.files.orEmpty()
                 var cachedCount = 0
                 for (file in files) {
                     val fileId = file.fileId.toHex()

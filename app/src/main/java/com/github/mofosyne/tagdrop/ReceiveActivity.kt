@@ -29,9 +29,11 @@ import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
-import com.github.mofosyne.tagdrop.data.format.ChunkAssembler
+import com.github.mofosyne.tagdrop.data.format.Sector
+import com.github.mofosyne.tagdrop.data.format.SectorAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
+import com.github.mofosyne.tagdrop.data.format.TagDropScan
 import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
@@ -47,21 +49,21 @@ import kotlinx.coroutines.launch
 
 /**
  * Continuously scans QR/Data Matrix/Aztec codes via an embedded camera preview and
- * assembles the TagDrop payload as each code is decoded.
+ * reassembles the TagDrop payload as each sector is decoded (SPEC §5).
  *
- * Single-code caches are saved and opened immediately.
- * Multi-code caches accumulate until all chunks + manifest are received
- * (order-independent — useful for geographic distribution across a trail).
- * Paper manifests are saved as directories and displayed for browsing.
- * Legacy data: URI fragments use dumb-append mode for backward compatibility.
+ * Every `tagdrop:` code is a sector ([SectorAssembler]); a single-sector cache is saved and
+ * opened immediately, while a multi-sector cache accumulates until every sector is collected
+ * (order-independent — useful for geographic distribution across a trail). Papers are saved
+ * as directories and displayed for browsing. Legacy data: URI fragments use dumb-append mode
+ * for backward compatibility.
  */
 class ReceiveActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityReceiveBinding
 
-    private val assembler = ChunkAssembler()
+    private val assembler = SectorAssembler()
     private val legacyChunks = mutableListOf<String>()
-    private var lastPaper: TagDropPayload.PaperManifest? = null
+    private var lastPaper: TagDropPayload.Paper? = null
 
     /** All cached items, used to mark a scanned paper's files as found on the scan board. */
     private var latestCaches: List<FoundCache> = emptyList()
@@ -71,8 +73,8 @@ class ReceiveActivity : AppCompatActivity() {
         openContent(cache.mimeType, cache.contentBytes!!, cache.cacheId)
     })
 
-    /** The most recently decoded payload, kept for the "Inspect CBOR" diagnostic menu item. */
-    private var lastScannedPayload: TagDropPayload? = null
+    /** The most recently decoded sector, kept for the "Inspect CBOR" diagnostic menu item. */
+    private var lastScannedSector: Sector? = null
 
     /** Debounce so the same code isn't reprocessed on every camera frame it's visible in. */
     private var lastDecodedText: String? = null
@@ -84,16 +86,16 @@ class ReceiveActivity : AppCompatActivity() {
 
             // Fully-binary codes carry the raw CBOR sequence directly in the symbol's byte-mode
             // segment, with no `tagdrop:`/Base41 text wrapper (SPEC §13's "raw CBOR sequence
-            // form") -- denser than Base41, worthwhile for Chunks since those are always
-            // camera-scanned and never hand-typed/shared as text, unlike a `tagdrop:` link.
+            // form") -- denser than Base41, worthwhile for non-initial sectors since those are
+            // always camera-scanned and never hand-typed/shared as text, unlike a `tagdrop:` link.
             val rawBytes = rawByteSegment(result)
-            val rawPayload = rawBytes?.let { TagDropCodec.decodeRaw(it) }
-            if (rawPayload != null) {
+            val rawScan = rawBytes?.let { TagDropCodec.decodeRaw(it) }
+            if (rawScan != null) {
                 val key = "raw:" + rawBytes.toHex()
                 if (key == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
                 lastDecodedText = key
                 lastDecodedAt = now
-                processDecoded(rawPayload)
+                processScan(rawScan)
                 return
             }
 
@@ -188,8 +190,7 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        menu.findItem(R.id.action_inspect_cbor).isEnabled =
-            lastScannedPayload?.let { TagDropCodec.rawCbor(it) } != null
+        menu.findItem(R.id.action_inspect_cbor).isEnabled = lastScannedSector != null
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -198,18 +199,12 @@ class ReceiveActivity : AppCompatActivity() {
         else -> super.onOptionsItemSelected(item)
     }
 
-    /** Shows the raw CBOR of the most recently scanned QR code, as decoded — pre-decompression/storage. */
+    /** Shows the raw CBOR of the most recently scanned sector, as decoded — pre-reassembly/storage. */
     private fun inspectLastScannedCbor() {
-        val payload = lastScannedPayload ?: return
-        val cbor = TagDropCodec.rawCbor(payload) ?: return
-        val title = when (payload) {
-            is TagDropPayload.Single -> payload.cacheId.toHex()
-            is TagDropPayload.Manifest -> payload.cacheId.toHex()
-            is TagDropPayload.Chunk -> "${payload.cacheId.toHex()} #${payload.index}"
-            is TagDropPayload.PaperManifest -> payload.rootHash.toHex()
-            is TagDropPayload.Legacy -> return
-        }
-        showCborDebugDialog(cbor, title)
+        val sector = lastScannedSector ?: return
+        val title = (sector.partMeta.cacheId?.toHex() ?: "key-only") +
+            if (sector.partMeta.sectorCount > 1) " #${sector.partMeta.sectorIndex + 1}" else ""
+        showCborDebugDialog(TagDropCodec.sectorCbor(sector), title)
     }
 
     private fun hasCameraPermission() =
@@ -278,8 +273,8 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     private fun processScanned(scanned: String) {
-        val decoded = TagDropCodec.decode(scanned)
-        if (decoded != null) { processDecoded(decoded); return }
+        val scan = TagDropCodec.decode(scanned)
+        if (scan != null) { processScan(scan); return }
         when {
             // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
             scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
@@ -296,31 +291,19 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     /**
-     * Dispatches an already-decoded payload, regardless of whether it arrived as `tagdrop:` URI
+     * Dispatches an already-decoded scan, regardless of whether it arrived as `tagdrop:` URI
      * text (Base41) or a fully-binary code's raw CBOR sequence (SPEC §13) — see [barcodeCallback].
-     * A failed raw-bytes decode never reaches here: unlike [processScanned]'s text path, there's
-     * no "not a TagDrop code" fallback to fall into (no nav-link/legacy-fragment text to inspect),
-     * so the caller just drops it silently.
+     * A sector is fed to [SectorAssembler]; a legacy data: URI joins the dumb-append buffer.
      */
-    private fun processDecoded(payload: TagDropPayload) {
-        lastScannedPayload = payload
-        invalidateOptionsMenu()
-        when (payload) {
-            is TagDropPayload.Single -> handleSingle(payload)
-            is TagDropPayload.Manifest -> {
-                payload.keyMaterial?.let { key ->
-                    lifecycleScope.launch { handleDiscoveredKey(key, payload.retainKey, payload.hint) }
-                }
-                assembler.add(payload)
-                updateDisplay()
-                toast(getString(R.string.manifest_scanned, payload.chunkCount))
+    private fun processScan(scan: TagDropScan) {
+        when (scan) {
+            is TagDropScan.SectorScan -> {
+                lastScannedSector = scan.sector
+                invalidateOptionsMenu()
+                handleState(assembler.add(scan.sector))
             }
-            is TagDropPayload.Chunk -> {
-                lifecycleScope.launch { handleAssemblerState(assembler.add(payload)) }
-            }
-            is TagDropPayload.PaperManifest -> handlePaperManifest(payload)
-            is TagDropPayload.Legacy -> {
-                legacyChunks.add(payload.dataUri)
+            is TagDropScan.LegacyScan -> {
+                legacyChunks.add(scan.payload.dataUri)
                 if (!tryCompleteLegacy()) {
                     updateDisplay()
                     toast(getString(R.string.legacy_fragment, legacyChunks.size))
@@ -329,34 +312,49 @@ class ReceiveActivity : AppCompatActivity() {
         }
     }
 
-    private fun handlePaperManifest(payload: TagDropPayload.PaperManifest) {
-        val cbor = TagDropCodec.paperManifestCbor(payload)
+    /** Routes a freshly-computed [SectorAssembler.State] for the just-scanned sector's payload. */
+    private fun handleState(state: SectorAssembler.State) {
+        when (state) {
+            is SectorAssembler.State.Collecting -> {
+                updateDisplay()
+                toast(getString(R.string.chunk_progress, state.received, state.total, formatMissingIndices(state.missingIndices)))
+            }
+            is SectorAssembler.State.ContentReady -> lifecycleScope.launch { handleContentReady(state) }
+            is SectorAssembler.State.PaperReady -> handlePaper(state.paper, state.streamBytes)
+            is SectorAssembler.State.AwaitingKey -> lifecycleScope.launch { handleAwaitingKey(state) }
+            is SectorAssembler.State.HashMismatch -> { toast(getString(R.string.hash_mismatch)); updateDisplay() }
+            is SectorAssembler.State.Failed -> { toast(getString(R.string.unsupported_code)); updateDisplay() }
+            is SectorAssembler.State.Idle -> updateDisplay()
+        }
+    }
+
+    private fun handlePaper(paper: TagDropPayload.Paper, streamBytes: ByteArray) {
         val location = getLastKnownLocation()
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).paperDao().insert(
                 ScannedPaper(
-                    rootHash        = payload.rootHash.toHex(),
+                    rootHash        = paper.rootHash.toHex(),
                     scannedAt       = System.currentTimeMillis(),
-                    label           = payload.label,
-                    set             = payload.set,
-                    slug            = payload.slug,
-                    cborBytes       = cbor,
-                    collectionId    = payload.collectionId?.toHex(),
-                    collectionLabel = payload.collectionLabel,
-                    collectionTag   = payload.collectionTag,
+                    label           = paper.label,
+                    set             = paper.set,
+                    slug            = paper.slug,
+                    cborBytes       = streamBytes,
+                    collectionId    = paper.collectionId?.toHex(),
+                    collectionLabel = paper.collectionLabel,
+                    collectionTag   = paper.collectionTag,
                     lat             = location?.first,
                     lng             = location?.second,
-                    icon            = payload.icon
+                    icon            = paper.icon
                 )
             )
-            payload.keyMaterial?.let { handleDiscoveredKey(it, payload.retainKey, payload.label) }
-            for (related in payload.related) {
+            paper.keyMaterial?.let { handleDiscoveredKey(it, paper.retainKey, paper.label) }
+            for (related in paper.related) {
                 related.keyMaterial?.let { handleDiscoveredKey(it, related.retainKey, related.hint) }
             }
         }
-        lastPaper = payload
+        lastPaper = paper
         updateDisplay()
-        toast(getString(R.string.paper_scanned, payload.files.size))
+        toast(getString(R.string.paper_scanned, paper.files.size))
     }
 
     /**
@@ -400,7 +398,6 @@ class ReceiveActivity : AppCompatActivity() {
                 )
             )
             if (paper != null) {
-                assembler.reset()
                 val slug = paper.files.find { it.fileId.toHex() == cacheId }?.slug
                 toast(getString(R.string.file_cached, slug ?: hint ?: filename ?: cacheId.take(8)))
             } else {
@@ -412,108 +409,131 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     /**
-     * Handles a single-code payload (SPEC §9): discovers any carried `key_material` first,
-     * then checks any [TagDropPayload.Single.overrideBlob] against every retained key. If one
-     * authenticates, the override map's fields replace the clear map's. Otherwise, the clear
-     * map's own (decompressed) content is cached as-is — a cover story, decoy, or genuine
-     * unremarkable content — with the still-unresolved blob kept for [unlockPending] to retry
-     * later. A code that carries only a key (empty content/mimeType) is never cached.
+     * Handles a fully-reassembled Content payload (SPEC §9): discovers any carried `key_material`
+     * first, then checks its pending override blob against every retained key. If one
+     * authenticates, the override map's fields replace the clear map's. Otherwise the clear
+     * map's own content is cached as-is — a cover story, decoy, or genuine unremarkable
+     * content — with the still-unresolved blob kept for [unlockPending] to retry later. A code
+     * that carries only a key (empty content/mimeType) is never cached.
      */
-    private fun handleSingle(payload: TagDropPayload.Single) {
-        lifecycleScope.launch {
-            payload.keyMaterial?.let { handleDiscoveredKey(it, payload.retainKey, payload.hint) }
+    private suspend fun handleContentReady(state: SectorAssembler.State.ContentReady) {
+        state.keyMaterial?.let { handleDiscoveredKey(it, state.retainKey, state.hint) }
 
-            if (payload.content.isEmpty() && payload.mimeType.isEmpty()) {
-                if (payload.keyMaterial != null) toast(getString(R.string.key_code_scanned))
-                return@launch
+        if (state.content.isEmpty() && state.mimeType.isEmpty()) {
+            if (state.keyMaterial != null) toast(getString(R.string.key_code_scanned))
+            return
+        }
+
+        val cacheId = state.cacheId ?: return
+        val blob = state.pendingOverrideBlob
+
+        val override = blob?.let { b ->
+            retainedKeys().firstNotNullOfOrNull { key ->
+                TagDropCodec.tryDecryptOverrideMap(b, key, state.pendingOverrideCompression)
             }
+        }
+        if (override != null) {
+            completeSingle(
+                cacheId.toHex(),
+                override.hint ?: state.hint,
+                override.filename ?: state.filename,
+                override.mimeType ?: state.mimeType,
+                override.content ?: ByteArray(0),
+                state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
+                wasEncrypted = true
+            )
+            return
+        }
 
-            val blob = payload.overrideBlob
-            val override = blob?.let { b ->
-                retainedKeys().firstNotNullOfOrNull { key ->
-                    TagDropCodec.tryDecryptOverrideMap(b, key, payload.compression)
-                }
-            }
+        if (blob != null && state.kdfAlg == TagDropCodec.KDF_PBKDF2_SHA256 && state.kdfSalt != null) {
+            unlockWithPassphrase(
+                hint = state.hint, cacheIdHex = cacheId.toHex(), blob = blob,
+                compression = state.pendingOverrideCompression, kdfSalt = state.kdfSalt, kdfIters = state.kdfIters,
+                fallbackContent = state.content, filename = state.filename, mimeType = state.mimeType,
+                collectionId = state.collectionId?.toHex(), collectionLabel = state.collectionLabel,
+                collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg
+            )
+            return
+        }
 
+        completeSingle(
+            cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
+            state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
+            pendingOverrideBlob = blob, pendingCompression = state.pendingOverrideCompression,
+            wasEncrypted = state.wasEncrypted
+        )
+    }
+
+    /**
+     * A Content payload assembled but its content slot can't be read as plain content (SPEC §9):
+     * try every retained key, then a passphrase-derived key if the code declares one. If nothing
+     * unlocks it, leave it in the assembler (uncached) and report "still locked".
+     */
+    private suspend fun handleAwaitingKey(state: SectorAssembler.State.AwaitingKey) {
+        for (key in retainedKeys()) {
+            val resolved = assembler.tryKey(key)
+            if (resolved.isNotEmpty()) { resolved.forEach { completeContentReady(it) }; return }
+        }
+        if (state.kdfAlg == TagDropCodec.KDF_PBKDF2_SHA256 && state.kdfSalt != null && state.cacheId != null) {
+            unlockWithPassphrase(
+                hint = state.hint, cacheIdHex = state.cacheId.toHex(), blob = state.contentSlot,
+                compression = state.compression, kdfSalt = state.kdfSalt, kdfIters = state.kdfIters,
+                fallbackContent = null, filename = null, mimeType = "", collectionId = null,
+                collectionLabel = null, collectionTag = null, icon = null, kdfAlg = state.kdfAlg
+            )
+            return
+        }
+        toast(getString(R.string.awaiting_key))
+        updateDisplay()
+    }
+
+    /**
+     * Prompts for a passphrase (SPEC §9), derives the key, and tries it against [blob]. On
+     * success, optionally retains the derived key and completes with the override map's fields.
+     * On failure/cancel, falls back to caching [fallbackContent] (if any) with the blob kept
+     * pending — unless there's nothing to show, in which case the code stays locked.
+     */
+    private suspend fun unlockWithPassphrase(
+        hint: String?, cacheIdHex: String, blob: ByteArray, compression: Int,
+        kdfSalt: ByteArray, kdfIters: Int, fallbackContent: ByteArray?, filename: String?, mimeType: String,
+        collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int
+    ) {
+        val result = askPassphrase(hint)
+        if (result != null) {
+            val (passphrase, shouldStore) = result
+            val derivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, kdfSalt, kdfIters)
+            val override = TagDropCodec.tryDecryptOverrideMap(blob, derivedKey, compression)
             if (override != null) {
-                // Override decrypted immediately — blob != null so wasEncrypted = true.
-                completeSingle(
-                    payload.cacheId.toHex(),
-                    override.hint ?: payload.hint,
-                    override.filename ?: payload.filename,
-                    override.mimeType ?: payload.mimeType,
-                    override.content ?: ByteArray(0),
-                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
-                    wasEncrypted = true
-                )
-            } else if (
-                blob != null &&
-                payload.kdfAlg == TagDropCodec.KDF_PBKDF2_SHA256 &&
-                payload.kdfSalt != null
-            ) {
-                // Passphrase-derived key — show dialog to get the passphrase from the user.
-                val passphraseResult = askPassphrase(payload.hint)
-                if (passphraseResult != null) {
-                    val (passphrase, shouldStore) = passphraseResult
-                    val derivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, payload.kdfSalt, payload.kdfIters)
-                    val passphraseOverride = TagDropCodec.tryDecryptOverrideMap(blob, derivedKey, payload.compression)
-                    if (passphraseOverride != null) {
-                        if (shouldStore) {
-                            val saltHint = payload.kdfSalt.take(4).joinToString("") { "%02x".format(it) }
-                            AppDatabase.get(this@ReceiveActivity).keyDao().insert(
-                                RetainedKey(
-                                    keyHex      = derivedKey.toHex(),
-                                    discoveredAt = System.currentTimeMillis(),
-                                    hint        = "passphrase (salt: $saltHint…)"
-                                )
-                            )
-                        }
-                        completeSingle(
-                            payload.cacheId.toHex(),
-                            passphraseOverride.hint ?: payload.hint,
-                            passphraseOverride.filename ?: payload.filename,
-                            passphraseOverride.mimeType ?: payload.mimeType,
-                            passphraseOverride.content ?: ByteArray(0),
-                            payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
-                            wasEncrypted = true
-                        )
-                    } else {
-                        toast(getString(R.string.passphrase_wrong))
-                        // Fall back to caching the clear-map content with blob + kdf fields pending for retry.
-                        val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
-                        completeSingle(
-                            payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                            payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
-                            pendingOverrideBlob = blob, pendingCompression = payload.compression,
-                            wasEncrypted = true,
-                            kdfAlg = payload.kdfAlg, kdfSalt = payload.kdfSalt
-                        )
-                    }
-                } else {
-                    // User cancelled — cache clear-map content with blob + kdf fields pending for retry.
-                    val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
-                    completeSingle(
-                        payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                        payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
-                        pendingOverrideBlob = blob, pendingCompression = payload.compression,
-                        wasEncrypted = true,
-                        kdfAlg = payload.kdfAlg, kdfSalt = payload.kdfSalt
+                if (shouldStore) {
+                    val saltHint = kdfSalt.take(4).joinToString("") { "%02x".format(it) }
+                    AppDatabase.get(this).keyDao().insert(
+                        RetainedKey(derivedKey.toHex(), System.currentTimeMillis(), "passphrase (salt: $saltHint…)")
                     )
                 }
-            } else {
-                val content = TagDropCodec.decompressPayload(payload.content, payload.compression)
                 completeSingle(
-                    payload.cacheId.toHex(), payload.hint, payload.filename, payload.mimeType, content,
-                    payload.collectionId?.toHex(), payload.collectionLabel, payload.collectionTag, payload.icon,
-                    pendingOverrideBlob = blob, pendingCompression = payload.compression,
-                    wasEncrypted = blob != null
+                    cacheIdHex, override.hint ?: hint, override.filename ?: filename,
+                    override.mimeType ?: mimeType, override.content ?: ByteArray(0),
+                    collectionId, collectionLabel, collectionTag, icon, wasEncrypted = true
                 )
+                return
             }
+            toast(getString(R.string.passphrase_wrong))
+        }
+        if (fallbackContent != null) {
+            completeSingle(
+                cacheIdHex, hint, filename, mimeType, fallbackContent,
+                collectionId, collectionLabel, collectionTag, icon,
+                pendingOverrideBlob = blob, pendingCompression = compression,
+                wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt
+            )
+        } else {
+            toast(getString(R.string.awaiting_key))
+            updateDisplay()
         }
     }
 
     /**
-     * Suspends the coroutine while showing a passphrase input dialog (SPEC §10).
+     * Suspends the coroutine while showing a passphrase input dialog (SPEC §9).
      * Returns a pair of (passphrase, shouldStore) when the user submits, or null if cancelled.
      * Uses [CompletableDeferred] to bridge the AlertDialog callback into the coroutine.
      */
@@ -547,9 +567,9 @@ class ReceiveActivity : AppCompatActivity() {
 
     /**
      * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
-     * it against everything currently locked: cached ciphertext awaiting a key, and an
-     * in-progress encrypted chunk assembly. "Discovery, not declaration": scan order between
-     * a key and the content it unlocks doesn't matter.
+     * it against everything currently locked: cached ciphertext awaiting a key, and any
+     * in-progress encrypted assembly. "Discovery, not declaration": scan order between a key
+     * and the content it unlocks doesn't matter.
      */
     private suspend fun handleDiscoveredKey(key: ByteArray, retain: Boolean, hint: String?) {
         if (key.size != KEY_MATERIAL_BYTES) return
@@ -557,8 +577,18 @@ class ReceiveActivity : AppCompatActivity() {
             AppDatabase.get(this).keyDao().insert(RetainedKey(key.toHex(), System.currentTimeMillis(), hint))
         }
         unlockPending(key)
-        val state = runCatching { assembler.tryKey(key) }.getOrElse { assembler.currentState() }
-        if (state is ChunkAssembler.State.Complete) completeFromState(state)
+        runCatching { assembler.tryKey(key) }.getOrDefault(emptyList()).forEach { completeContentReady(it) }
+    }
+
+    private fun completeContentReady(state: SectorAssembler.State.ContentReady) {
+        val cacheId = state.cacheId ?: return
+        completeSingle(
+            cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
+            state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
+            pendingOverrideBlob = state.pendingOverrideBlob,
+            pendingCompression = state.pendingOverrideCompression,
+            wasEncrypted = state.wasEncrypted
+        )
     }
 
     /**
@@ -591,50 +621,6 @@ class ReceiveActivity : AppCompatActivity() {
     /** All `key_material` (SPEC §9) retained from previous discoveries, available to try against new ciphertext. */
     private suspend fun retainedKeys(): List<ByteArray> =
         AppDatabase.get(this).keyDao().getAll().map { it.keyHex.hexToBytes() }
-
-    /**
-     * Handles the result of [ChunkAssembler.add] for a scanned chunk. If assembly finished
-     * but is still locked (SPEC §9 [ChunkAssembler.State.AwaitingKey]), tries every retained
-     * key before falling back to the "still locked" message.
-     */
-    private suspend fun handleAssemblerState(initial: ChunkAssembler.State) {
-        var state = initial
-        if (state is ChunkAssembler.State.AwaitingKey) {
-            for (key in retainedKeys()) {
-                state = runCatching { assembler.tryKey(key) }.getOrElse { assembler.currentState() }
-                if (state !is ChunkAssembler.State.AwaitingKey) break
-            }
-        }
-        when (val s = state) {
-            is ChunkAssembler.State.Collecting -> {
-                updateDisplay()
-                toast(getString(R.string.chunk_progress, s.received, s.total, formatMissingIndices(s.missingIndices)))
-            }
-            is ChunkAssembler.State.Complete -> completeFromState(s)
-            is ChunkAssembler.State.HashMismatch -> {
-                toast(getString(R.string.hash_mismatch))
-                updateDisplay()
-            }
-            is ChunkAssembler.State.WaitingForManifest -> {
-                toast(getString(R.string.chunk_before_manifest))
-                updateDisplay()
-            }
-            is ChunkAssembler.State.AwaitingKey -> {
-                toast(getString(R.string.awaiting_key))
-                updateDisplay()
-            }
-        }
-    }
-
-    private fun completeFromState(state: ChunkAssembler.State.Complete) {
-        completeSingle(
-            state.cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
-            state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
-            pendingOverrideBlob = state.pendingOverrideBlob,
-            pendingCompression = state.pendingOverrideCompression,
-            wasEncrypted = state.pendingOverrideBlob != null
-        )
-    }
 
     /** Best-known device location at scan time, or null if unavailable/permission not granted. */
     private fun getLastKnownLocation(): Pair<Double, Double>? {
@@ -730,15 +716,15 @@ class ReceiveActivity : AppCompatActivity() {
                     getString(R.string.status_legacy, legacyChunks.size) + "\n\n" +
                         legacyChunks.joinToString("").take(300)
                 }
-                !assembler.hasManifest -> getString(R.string.status_ready)
+                !assembler.hasPending -> getString(R.string.status_ready)
                 else -> when (val state = assembler.currentState()) {
-                    is ChunkAssembler.State.Collecting ->
+                    is SectorAssembler.State.Collecting ->
                         getString(
                             R.string.status_collecting,
                             state.received, state.total, state.hint ?: "",
                             formatMissingIndices(state.missingIndices)
                         )
-                    is ChunkAssembler.State.AwaitingKey -> getString(R.string.awaiting_key)
+                    is SectorAssembler.State.AwaitingKey -> getString(R.string.awaiting_key)
                     else -> getString(R.string.status_ready)
                 }
             }
@@ -746,11 +732,11 @@ class ReceiveActivity : AppCompatActivity() {
         binding.buttonLaunch.isEnabled = legacyChunks.isNotEmpty()
     }
 
-    /** Renders 0-based missing chunk indices as 1-based "#1, #2" for display — chunks can be scanned in any order, so list all of them, not just the next. */
+    /** Renders 0-based missing sector indices as 1-based "#1, #2" for display — sectors can be scanned in any order, so list all of them, not just the next. */
     private fun formatMissingIndices(missingIndices: List<Int>): String =
         missingIndices.joinToString(", ") { "#${it + 1}" }
 
-    private fun buildPaperStatusText(paper: TagDropPayload.PaperManifest): String = buildString {
+    private fun buildPaperStatusText(paper: TagDropPayload.Paper): String = buildString {
         appendLine(paper.label ?: getString(R.string.paper_manifest_label))
         if (paper.set != null) appendLine(getString(R.string.paper_set, paper.set))
         if (paper.slug != null) appendLine("/${paper.slug}")

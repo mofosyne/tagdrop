@@ -68,14 +68,14 @@ class TagDropLinkResolverTest {
 
     /** Stores a paper with the given files and returns it (with its computed root hash already lowercase-hex). */
     private fun storePaper(label: String? = "Test Paper", files: List<TagDropPayload.FileEntry> = emptyList()): ScannedPaper {
-        val manifest = TagDropCodec.createPaperManifest(label = label, set = null, slug = null, files = files)
+        val (manifest, _) = TagDropCodec.createPaper(label = label, set = null, slug = null, files = files)
         val paper = ScannedPaper(
             rootHash = manifest.rootHash.toHex(),
             scannedAt = 0L,
             label = label,
             set = null,
             slug = null,
-            cborBytes = TagDropCodec.paperManifestCbor(manifest)
+            cborBytes = TagDropCodec.paperStreamBytes(manifest)
         )
         paperDao.papers[paper.rootHash] = paper
         return paper
