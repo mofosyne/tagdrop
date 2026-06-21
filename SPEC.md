@@ -1295,10 +1295,10 @@ Version history:
 ## 15. Reference Implementations
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
-  - `TagDropCodec.kt` — encode/decode all payload types; `contentId()`, `rootHashOf()`, `createSingle()`
+  - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
   - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
   - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742) for the version/type envelope
-  - `ChunkAssembler.kt` — multi-code assembly with SHA-256 verification
+  - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `(type, cache_id)` groups concurrently
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
   - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark
 
@@ -1317,7 +1317,7 @@ Version history:
 
 **Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§12).
 
-**Binary mode vs alphanumeric Base41:** Raw binary QR codes store 8 bits/char. Alphanumeric Base41 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain for most codes: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable/typable. Non-initial sectors are the exception — they're always camera-scanned, never hand-typed or shared as text — so the Android reference reader also accepts a QR byte-mode segment carrying the raw CBOR sequence directly (no `tagdrop:`/Base41 wrapper), per §13. The web generator (`tools/generator/index.html`) splits content too large for one QR into a Manifest + Chunks and, by default, renders Chunk QR codes in binary mode (toggleable back to alphanumeric `tagdrop:` URIs); the Manifest QR is always alphanumeric, since it must stay human-typable/shareable like a Single. The Android app's only Manifest+Chunks generator, `ShareQrActivity` (re-sharing an already-cached item too large for one QR), still emits alphanumeric `tagdrop:` URIs for every Chunk.
+**Binary mode vs alphanumeric Base41:** Raw binary QR codes store 8 bits/char. Alphanumeric Base41 stores 2 bytes in 3 characters at 5.5 bits/char = ~8.25 bits/byte of original data. The tiny efficiency loss is worth the interoperability gain for most codes: alphanumeric QR codes are more reliably decoded by all readers, and the `tagdrop:` prefix is human-readable/typable. Non-initial sectors are the exception — they're always camera-scanned, never hand-typed or shared as text — so the Android reference reader also accepts a QR byte-mode segment carrying the raw CBOR sequence directly (no `tagdrop:`/Base41 wrapper), per §13. The web generator (`tools/generator/index.html`) splits content too large for one QR into a Manifest + Chunks and, by default, renders Chunk QR codes in binary mode (toggleable back to alphanumeric `tagdrop:` URIs); the Manifest QR is always alphanumeric, since it must stay human-typable/shareable like a Single. The Android app's only multi-sector generator, `ShareQrActivity` (re-sharing an already-cached item too large for one QR), still emits alphanumeric `tagdrop:` URIs for every sector.
 
 **Compression:** DEFLATE was chosen over LZMA (issue #2) because it is available in every Java/Android standard library (`java.util.zip`), requiring no dependency. LZMA achieves better ratios for larger payloads but is a future extension (compression value 2).
 
