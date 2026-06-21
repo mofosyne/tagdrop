@@ -618,7 +618,6 @@ function cborDecodeSequencePrefix(bytes, n) {
   return { items, trailing: bytes.slice(pos) };
 }
 
-const OVERRIDE_BLOB_MIN_BYTES = 28;
 const TYPE_NAMES = { 0: 'Content', 1: 'Paper' };
 const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
@@ -708,10 +707,7 @@ async function describeCbor(bytes) {
       out += '  ' + toHexDump(sectorBytes) + '\n';
     }
     if (trailing.length > 0) {
-      const note = trailing.length >= OVERRIDE_BLOB_MIN_BYTES
-        ? 'candidate encrypted override map, SPEC §9'
-        : 'too short to be an override map, SPEC §9';
-      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes, ' + note + ')\n';
+      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes — stacked envelope or padding, SPEC §9)\n';
     }
   } catch (e) {
     out += 'Failed to decode as CBOR sequence: ' + e.message;
