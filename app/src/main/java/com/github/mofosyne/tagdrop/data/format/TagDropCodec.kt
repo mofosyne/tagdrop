@@ -638,14 +638,20 @@ object TagDropCodec {
      * [partMeta]'s `root_hash` as the paper's address. Verifies `bulky_meta_sha256` (key 47,
      * SPEC §3, §5 step 4) — required whenever [partMeta] reports more than one sector, since
      * that's the only integrity check over the `files`/`related` directory once a multi-sector
-     * paper is reassembled from independently scanned codes. Returns null if malformed, or if a
-     * required/declared hash doesn't verify.
+     * paper is reassembled from independently scanned codes. Also verifies a declared
+     * `partMeta.cacheId` against the recomputed root hash (SPEC §4.4) — `root_hash` is this
+     * paper's permanent, content-addressed storage key (`ScannedPaper.rootHash`, replace-on-
+     * conflict), so trusting an attacker-declared value verbatim would let a forged sector
+     * silently overwrite an unrelated, previously-scanned paper's stored directory. Returns null
+     * if malformed, or if a required/declared hash doesn't verify.
      */
     fun parsePaperStream(stream: ByteArray, partMeta: PartMeta): TagDropPayload.Paper? {
         val parts = splitReassembledStream(stream) ?: return null
         if (!verifyBulkyMetaSha(parts, partMeta.sectorCount)) return null
-        val rootHash = partMeta.cacheId ?: sha256(stream).copyOf(8)
-        return paperFromParts(parts, rootHash)
+        val computedHash = sha256(stream).copyOf(8)
+        val declaredHash = partMeta.cacheId
+        if (declaredHash != null && !declaredHash.contentEquals(computedHash)) return null
+        return paperFromParts(parts, computedHash)
     }
 
     /**

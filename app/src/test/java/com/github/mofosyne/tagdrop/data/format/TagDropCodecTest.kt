@@ -388,6 +388,20 @@ class TagDropCodecTest {
         assertTrue(assemble(tampered) is SectorAssembler.State.Failed)
     }
 
+    @Test fun paperWithForgedCacheIdIsRejected() {
+        // root_hash is this paper's permanent, content-addressed storage key
+        // (ScannedPaper.rootHash, replace-on-conflict) — trusting a declared cache_id that
+        // doesn't match the recomputed hash would let a forged sector silently overwrite an
+        // unrelated, previously-scanned paper's stored directory.
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (paper, sectors) = TagDropCodec.createPaper("Real Paper", "real-set", "real-slug", files)
+        assertEquals(1, sectors.size)
+        val forgedCacheId = ByteArray(8) { 0xAB.toByte() }
+        assertFalse(forgedCacheId.contentEquals(paper.rootHash))
+        val forged = sectors[0].copy(partMeta = sectors[0].partMeta.copy(cacheId = forgedCacheId))
+        assertTrue(assemble(listOf(forged)) is SectorAssembler.State.Failed)
+    }
+
     // ── Key-only code (SPEC §9) ────────────────────────────────────────────────
 
     @Test fun keyCodeOmitsCacheIdAndContent() {

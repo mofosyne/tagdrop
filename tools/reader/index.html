@@ -760,15 +760,20 @@ async function parseContentStream(stream, partMeta) {
 
 /** Parses a reassembled Paper stream (SPEC §4.2, §4.3), using partMeta's root_hash as the
  *  paper's address (falling back to hashing the stream if absent). Mirrors Kotlin
- *  TagDropCodec.parsePaperStream. Returns null if malformed or, for a multi-sector paper,
- *  if `bulky_meta_sha256` is missing or doesn't match — the only integrity check over the
- *  files/related directory once reassembled from independently scanned sectors. */
+ *  TagDropCodec.parsePaperStream. Returns null if malformed; for a multi-sector paper, if
+ *  `bulky_meta_sha256` is missing or doesn't match — the only integrity check over the
+ *  files/related directory once reassembled from independently scanned sectors; or if a
+ *  declared partMeta.cacheId doesn't match the recomputed root hash (SPEC §4.4) — root_hash
+ *  is this paper's permanent, content-addressed storage key (IndexedDB 'papers' keyPath),
+ *  so trusting an attacker-declared value verbatim would let a forged sector silently
+ *  overwrite an unrelated, previously-scanned paper's stored directory. */
 async function parsePaperStream(stream, partMeta) {
   const parts = await splitReassembledStream(stream);
   if (!parts) return null;
   if (!(await verifyBulkyMetaSha(parts, partMeta.sectorCount))) return null;
-  const rootHash = partMeta.cacheId ?? toHex((await sha256(stream)).slice(0, 8));
-  return paperFromParts(parts, rootHash);
+  const computedHash = toHex((await sha256(stream)).slice(0, 8));
+  if (partMeta.cacheId != null && partMeta.cacheId !== computedHash) return null;
+  return paperFromParts(parts, computedHash);
 }
 
 async function verifyBulkyMetaSha(parts, sectorCount) {

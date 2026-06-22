@@ -48,16 +48,8 @@
             android:name=".ViewDataUriActivity"
             android:configChanges="orientation|keyboardHidden|screenSize"
             android:label="Content"
-            android:exported="true"
-            android:parentActivityName=".ReceiveActivity">
-            <!-- data: URI intent filter so openWebPage works via implicit intents -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="data" />
-            </intent-filter>
-        </activity>
+            android:exported="false"
+            android:parentActivityName=".ReceiveActivity" />
 
         <!-- Cache creator / QR generator -->
         <activity

@@ -152,13 +152,15 @@ class SectorAssemblerTest {
     }
 
     @Test fun sameCacheIdDifferentTypeAreTrackedAsSeparateGroups() {
-        val id = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val (paper, paperSectors) = TagDropCodec.createPaper("Label", null, null, emptyList())
+        val paperSector = paperSectors.single()
         val contentBytes = contentStream("hello".toByteArray(), hint = null)
-        val paperSectors = TagDropCodec.createPaper("Label", null, null, emptyList()).second
-        // Force the paper sector to carry the same id bytes as the content's cache_id, purely to
-        // exercise group identity being (type, id) together, not id alone (SPEC §4.1).
-        val paperSector = paperSectors.single().let { Sector(it.type, it.partMeta.copy(cacheId = id), it.sectorBytes) }
-        val contentSector = Sector(TagDropCodec.TYPE_CONTENT, PartMeta(id, 0, 1, contentBytes.size), contentBytes)
+        // Force the content sector to carry the same id bytes as the paper's real root_hash,
+        // purely to exercise group identity being (type, id) together, not id alone (SPEC §4.1).
+        // Content's cache_id isn't verified against its bytes (SPEC §9 allows a random id for
+        // override-map/key-only payloads), so the collision has to be made content-side — a
+        // forged id on the paper side would now correctly fail root_hash verification.
+        val contentSector = Sector(TagDropCodec.TYPE_CONTENT, PartMeta(paper.rootHash, 0, 1, contentBytes.size), contentBytes)
 
         val a = SectorAssembler()
         val contentState = a.add(contentSector)
