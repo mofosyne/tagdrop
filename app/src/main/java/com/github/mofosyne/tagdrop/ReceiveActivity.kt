@@ -37,6 +37,7 @@ import com.github.mofosyne.tagdrop.data.format.TagDropScan
 import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
+import com.github.mofosyne.tagdrop.util.LocationUtils
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.ResultMetadataType
@@ -330,6 +331,10 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun handlePaper(paper: TagDropPayload.Paper, streamBytes: ByteArray) {
         val location = getLastKnownLocation()
+        val resolved = LocationUtils.resolveLocation(
+            paper.lat, paper.lng, paper.radiusM, paper.preferDeclaredLocation,
+            location?.first, location?.second
+        )
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).paperDao().insert(
                 ScannedPaper(
@@ -342,8 +347,9 @@ class ReceiveActivity : AppCompatActivity() {
                     collectionId    = paper.collectionId?.toHex(),
                     collectionLabel = paper.collectionLabel,
                     collectionTag   = paper.collectionTag,
-                    lat             = location?.first,
-                    lng             = location?.second,
+                    lat             = resolved.lat,
+                    lng             = resolved.lng,
+                    locationRadiusM = resolved.radiusM,
                     icon            = paper.icon
                 )
             )
@@ -369,9 +375,12 @@ class ReceiveActivity : AppCompatActivity() {
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
         pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0,
         wasEncrypted: Boolean = false,
-        kdfAlg: Int = 0, kdfSalt: ByteArray? = null
+        kdfAlg: Int = 0, kdfSalt: ByteArray? = null,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false
     ) {
         val location = getLastKnownLocation()
+        val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second)
         val paper = lastPaper
         lifecycleScope.launch {
             val cacheDao = AppDatabase.get(this@ReceiveActivity).cacheDao()
@@ -387,8 +396,9 @@ class ReceiveActivity : AppCompatActivity() {
                     collectionId       = collectionId,
                     collectionLabel    = collectionLabel,
                     collectionTag      = collectionTag,
-                    lat                = location?.first,
-                    lng                = location?.second,
+                    lat                = resolved.lat,
+                    lng                = resolved.lng,
+                    locationRadiusM    = resolved.radiusM,
                     icon               = icon,
                     pendingOverrideBlob = pendingOverrideBlob,
                     pendingCompression  = pendingCompression,
@@ -440,7 +450,9 @@ class ReceiveActivity : AppCompatActivity() {
                 override.mimeType ?: state.mimeType,
                 override.content ?: ByteArray(0),
                 state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
-                wasEncrypted = true
+                wasEncrypted = true,
+                lat = state.lat, lng = state.lng, radiusM = state.radiusM,
+                preferDeclaredLocation = state.preferDeclaredLocation
             )
             return
         }
@@ -451,7 +463,9 @@ class ReceiveActivity : AppCompatActivity() {
                 compression = state.pendingOverrideCompression, kdfSalt = state.kdfSalt, kdfIters = state.kdfIters,
                 fallbackContent = state.content, filename = state.filename, mimeType = state.mimeType,
                 collectionId = state.collectionId?.toHex(), collectionLabel = state.collectionLabel,
-                collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg
+                collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg,
+                lat = state.lat, lng = state.lng, radiusM = state.radiusM,
+                preferDeclaredLocation = state.preferDeclaredLocation
             )
             return
         }
@@ -460,7 +474,9 @@ class ReceiveActivity : AppCompatActivity() {
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = blob, pendingCompression = state.pendingOverrideCompression,
-            wasEncrypted = state.wasEncrypted
+            wasEncrypted = state.wasEncrypted,
+            lat = state.lat, lng = state.lng, radiusM = state.radiusM,
+            preferDeclaredLocation = state.preferDeclaredLocation
         )
     }
 
@@ -496,7 +512,9 @@ class ReceiveActivity : AppCompatActivity() {
     private suspend fun unlockWithPassphrase(
         hint: String?, cacheIdHex: String, blob: ByteArray, compression: Int,
         kdfSalt: ByteArray, kdfIters: Int, fallbackContent: ByteArray?, filename: String?, mimeType: String,
-        collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int
+        collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false
     ) {
         val result = askPassphrase(hint)
         if (result != null) {
@@ -513,7 +531,8 @@ class ReceiveActivity : AppCompatActivity() {
                 completeSingle(
                     cacheIdHex, override.hint ?: hint, override.filename ?: filename,
                     override.mimeType ?: mimeType, override.content ?: ByteArray(0),
-                    collectionId, collectionLabel, collectionTag, icon, wasEncrypted = true
+                    collectionId, collectionLabel, collectionTag, icon, wasEncrypted = true,
+                    lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation
                 )
                 return
             }
@@ -524,7 +543,8 @@ class ReceiveActivity : AppCompatActivity() {
                 cacheIdHex, hint, filename, mimeType, fallbackContent,
                 collectionId, collectionLabel, collectionTag, icon,
                 pendingOverrideBlob = blob, pendingCompression = compression,
-                wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt
+                wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt,
+                lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation
             )
         } else {
             toast(getString(R.string.awaiting_key))
@@ -587,7 +607,9 @@ class ReceiveActivity : AppCompatActivity() {
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = state.pendingOverrideBlob,
             pendingCompression = state.pendingOverrideCompression,
-            wasEncrypted = state.wasEncrypted
+            wasEncrypted = state.wasEncrypted,
+            lat = state.lat, lng = state.lng, radiusM = state.radiusM,
+            preferDeclaredLocation = state.preferDeclaredLocation
         )
     }
 

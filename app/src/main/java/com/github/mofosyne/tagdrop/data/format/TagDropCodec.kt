@@ -50,7 +50,11 @@ import javax.crypto.spec.SecretKeySpec
  *                     5 content, 11 filename
  *   file entry (within key 15):   20 slug, 21 mime_type, 22 file_id, 41 description
  *   related paper (within key 16): 3 hint, 13 set, 14 slug, 23 paper_id, 26 lat,
- *                     27 lng, 30 key_material, 31 retain_key
+ *                     27 lng, 30 key_material, 31 retain_key, 48 radius_m
+ *   core_meta_item also carries 26 lat / 27 lng (author-declared location of THIS
+ *                     Content/Paper, distinct from a related paper's hint location),
+ *                     48 radius_m (circle of uncertainty, shared wherever lat/lng
+ *                     appears), 49 prefer_declared_location
  */
 object TagDropCodec {
 
@@ -130,6 +134,8 @@ object TagDropCodec {
     private const val K_BULKY_COMPRESSION      = 45
     private const val K_BULKY_COMPRESSED_BYTES = 46
     private const val K_BULKY_SHA              = 47
+    private const val K_RADIUS_M               = 48  // circle-of-uncertainty radius in meters, wherever lat/lng appears
+    private const val K_PREFER_DECLARED_LOCATION = 49  // core_meta_item only — lat/lng wins over live GPS when true
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -250,6 +256,14 @@ object TagDropCodec {
      * the content slot IS the AES-256-GCM-encrypted override blob (SPEC §9) rather than
      * [rawContent]; `cacheId` becomes random (see [randomCacheId]), and `encryption` is set
      * to the AES-256-GCM hint unless [declareEncryption] is false (the hint is cosmetic).
+     *
+     * [lat]/[lng] are the author's own declared coordinates for this content's physical
+     * location (distinct from a [TagDropPayload.RelatedPaper]'s hint about a *different*
+     * paper) — useful when the author knows where they're placing this code but the finder's
+     * device may lack a GPS lock. [radiusM] is an optional circle-of-uncertainty radius in
+     * meters. [preferDeclaredLocation] defaults to false (live GPS wins when available,
+     * declared location is a fallback); set true to make the declared location win even over
+     * an available live GPS fix.
      */
     fun createContentSectors(
         hint: String?, filename: String?, mimeType: String,
@@ -259,6 +273,8 @@ object TagDropCodec {
         keyMaterial: ByteArray? = null, retainKey: Boolean = true,
         override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
         declareEncryption: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): List<Sector> {
         val (compressedContent, compression) =
@@ -290,7 +306,11 @@ object TagDropCodec {
             K_COLLECTION_TAG   to collectionTag,
             K_ICON             to icon,
             K_KEY_MATERIAL to keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { keyMaterial != null && !retainKey }
+            K_RETAIN_KEY   to false.takeIf { keyMaterial != null && !retainKey },
+            K_LAT     to lat,
+            K_LNG     to lng,
+            K_RADIUS_M to radiusM,
+            K_PREFER_DECLARED_LOCATION to true.takeIf { preferDeclaredLocation }
         )
 
         // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
@@ -331,6 +351,8 @@ object TagDropCodec {
         collectionId: ByteArray? = null, collectionLabel: String? = null,
         collectionTag: String? = null, icon: String? = null,
         keyMaterial: ByteArray? = null, retainKey: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val draft = TagDropPayload.Paper(
@@ -338,7 +360,8 @@ object TagDropCodec {
             files = files, related = related, description = description,
             collectionId = collectionId, collectionLabel = collectionLabel,
             collectionTag = collectionTag, icon = icon,
-            keyMaterial = keyMaterial, retainKey = retainKey
+            keyMaterial = keyMaterial, retainKey = retainKey,
+            lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation
         )
         val stream = buildPaperStream(draft)
         val rootHash = sha256(stream).copyOf(8)
@@ -377,6 +400,7 @@ object TagDropCodec {
                     K_PAPER_ID to r.paperId,
                     K_LAT      to r.lat,
                     K_LNG      to r.lng,
+                    K_RADIUS_M to r.radiusM,
                     K_KEY_MATERIAL to r.keyMaterial,
                     K_RETAIN_KEY   to false.takeIf { r.keyMaterial != null && !r.retainKey }
                 ))
@@ -394,6 +418,10 @@ object TagDropCodec {
             K_ICON             to paper.icon,
             K_KEY_MATERIAL to paper.keyMaterial,
             K_RETAIN_KEY   to false.takeIf { paper.keyMaterial != null && !paper.retainKey },
+            K_LAT      to paper.lat,
+            K_LNG      to paper.lng,
+            K_RADIUS_M to paper.radiusM,
+            K_PREFER_DECLARED_LOCATION to true.takeIf { paper.preferDeclaredLocation },
             K_BULKY_SHA to sha256(bulkyBytes)
         )
         val out = ByteArrayOutputStream()
@@ -628,7 +656,11 @@ object TagDropCodec {
                 icon            = core.text(K_ICON),
                 kdfAlg          = core.uint(K_KDF_ALG)?.toInt() ?: KDF_NONE,
                 kdfSalt         = core.bytesOrNull(K_KDF_SALT),
-                kdfIters        = core.uint(K_KDF_ITERS)?.toInt() ?: DEFAULT_KDF_ITERS
+                kdfIters        = core.uint(K_KDF_ITERS)?.toInt() ?: DEFAULT_KDF_ITERS,
+                lat             = core.doubleOrNull(K_LAT),
+                lng             = core.doubleOrNull(K_LNG),
+                radiusM         = core.doubleOrNull(K_RADIUS_M),
+                preferDeclaredLocation = core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false
             )
         )
     }
@@ -695,6 +727,7 @@ object TagDropCodec {
                 paperId     = em.bytesOrNull(K_PAPER_ID),
                 lat         = em.doubleOrNull(K_LAT),
                 lng         = em.doubleOrNull(K_LNG),
+                radiusM     = em.doubleOrNull(K_RADIUS_M),
                 keyMaterial = em.bytesOrNull(K_KEY_MATERIAL),
                 retainKey   = em.boolOrNull(K_RETAIN_KEY) ?: true
             )
@@ -713,7 +746,11 @@ object TagDropCodec {
             collectionTag   = parts.core.text(K_COLLECTION_TAG),
             icon            = parts.core.text(K_ICON),
             keyMaterial     = parts.core.bytesOrNull(K_KEY_MATERIAL),
-            retainKey       = parts.core.boolOrNull(K_RETAIN_KEY) ?: true
+            retainKey       = parts.core.boolOrNull(K_RETAIN_KEY) ?: true,
+            lat             = parts.core.doubleOrNull(K_LAT),
+            lng             = parts.core.doubleOrNull(K_LNG),
+            radiusM         = parts.core.doubleOrNull(K_RADIUS_M),
+            preferDeclaredLocation = parts.core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false
         )
     }
 
@@ -759,7 +796,8 @@ object TagDropCodec {
         K_PAPER_DESCRIPTION to "description", K_FILE_DESCRIPTION to "description",
         K_SECTOR_INDEX to "sector_index", K_SECTOR_COUNT to "sector_count", K_PARITY to "parity_scheme",
         K_BULKY_COMPRESSION to "bulky_meta_compression",
-        K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256"
+        K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
+        K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location"
     )
 
     private val TYPE_NAMES = mapOf(TYPE_CONTENT to "Content", TYPE_PAPER to "Paper")

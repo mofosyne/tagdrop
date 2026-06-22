@@ -35,7 +35,11 @@ sealed class TagDropPayload {
         val icon: String? = null,               // optional — emoji icon for this page/collection
         val kdfAlg: Int = 0,                    // 0 = none, 1 = PBKDF2-SHA256 (SPEC §9)
         val kdfSalt: ByteArray? = null,         // 16-byte random salt (present when kdfAlg != 0)
-        val kdfIters: Int = 100000              // PBKDF2 iteration count
+        val kdfIters: Int = 100000,             // PBKDF2 iteration count
+        val lat: Double? = null,                // optional — author-declared latitude of this content's physical location
+        val lng: Double? = null,                // optional — author-declared longitude of this content's physical location
+        val radiusM: Double? = null,            // optional — circle-of-uncertainty radius in meters around lat/lng
+        val preferDeclaredLocation: Boolean = false  // if true, lat/lng wins over live GPS even when a fix is available
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Content && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId?.contentHashCode() ?: 0
@@ -73,6 +77,7 @@ sealed class TagDropPayload {
         val paperId: ByteArray? = null,// root hash of that paper, if pre-computed
         val lat: Double? = null,       // latitude of the related paper, if known
         val lng: Double? = null,       // longitude of the related paper, if known
+        val radiusM: Double? = null,   // optional — circle-of-uncertainty radius in meters around lat/lng
         val keyMaterial: ByteArray? = null,  // optional — a decryption key for the related paper (SPEC §9)
         val retainKey: Boolean = true        // recommendation for whether keyMaterial should be remembered (SPEC §9)
     ) {
@@ -109,7 +114,11 @@ sealed class TagDropPayload {
         val collectionTag: String? = null,      // optional — hashtag-style cross-collection tag
         val icon: String? = null,               // optional — emoji icon for this page/collection
         val keyMaterial: ByteArray? = null,     // optional — a decryption key for OTHER content (SPEC §9)
-        val retainKey: Boolean = true           // recommendation for whether keyMaterial should be remembered (SPEC §9)
+        val retainKey: Boolean = true,          // recommendation for whether keyMaterial should be remembered (SPEC §9)
+        val lat: Double? = null,                // optional — author-declared latitude of this paper's physical location
+        val lng: Double? = null,                // optional — author-declared longitude of this paper's physical location
+        val radiusM: Double? = null,            // optional — circle-of-uncertainty radius in meters around lat/lng
+        val preferDeclaredLocation: Boolean = false  // if true, lat/lng wins over live GPS even when a fix is available
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Paper && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()

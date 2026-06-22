@@ -490,7 +490,8 @@ const K = {
   KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
   PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
-  BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47
+  BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
+  RADIUS_M:48, PREFER_DECLARED_LOCATION:49
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -556,6 +557,7 @@ const KEY_NAMES = {
   40: 'description', 41: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
+  48: 'radius_m', 49: 'prefer_declared_location',
 };
 
 function toHexDump(bytes) {
@@ -754,6 +756,10 @@ async function parseContentStream(stream, partMeta) {
       kdfAlg:          core[K.KDF_ALG] ?? 0,
       kdfSalt:         core[K.KDF_SALT] ?? null,
       kdfIters:        core[K.KDF_ITERS] ?? 100000,
+      lat:             core[K.LAT] ?? null,
+      lng:             core[K.LNG] ?? null,
+      radiusM:         core[K.RADIUS_M] ?? null,
+      preferDeclaredLocation: core[K.PREFER_DECLARED_LOCATION] === true,
     },
   };
 }
@@ -803,6 +809,7 @@ function paperFromParts(parts, rootHash) {
       paperId:     entry[K.PAPER_ID] ? toHex(entry[K.PAPER_ID]) : null,
       lat:         entry[K.LAT] ?? null,
       lng:         entry[K.LNG] ?? null,
+      radiusM:     entry[K.RADIUS_M] ?? null,
       keyMaterial: entry[K.KEY_MATERIAL] ?? null,
       retainKey:   entry[K.RETAIN_KEY] !== false,
     }];
@@ -822,6 +829,10 @@ function paperFromParts(parts, rootHash) {
     icon:            parts.core[K.ICON] ?? null,
     keyMaterial:     parts.core[K.KEY_MATERIAL] ?? null,
     retainKey:       parts.core[K.RETAIN_KEY] !== false,
+    lat:             parts.core[K.LAT] ?? null,
+    lng:             parts.core[K.LNG] ?? null,
+    radiusM:         parts.core[K.RADIUS_M] ?? null,
+    preferDeclaredLocation: parts.core[K.PREFER_DECLARED_LOCATION] === true,
   };
 }
 
@@ -838,7 +849,8 @@ function paperFromParts(parts, rootHash) {
 //   { kind: 'Collecting', received, total, type, cacheId, hint, missingIndices }
 //   { kind: 'ContentReady', cacheId, hint, filename, mimeType, content, collectionId,
 //     collectionLabel, collectionTag, icon, keyMaterial, retainKey, pendingOverrideBlob,
-//     pendingOverrideCompression, kdfAlg, kdfSalt, kdfIters, wasEncrypted }
+//     pendingOverrideCompression, kdfAlg, kdfSalt, kdfIters, wasEncrypted,
+//     lat, lng, radiusM, preferDeclaredLocation }
 //   { kind: 'PaperReady', paper, streamBytes }
 //   { kind: 'AwaitingKey', cacheId, hint, contentSlot, compression, kdfAlg, kdfSalt, kdfIters }
 //   { kind: 'HashMismatch' }
@@ -1010,6 +1022,8 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     pendingOverrideCompression: pendingBlob != null ? content.compression : 0,
     kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
     wasEncrypted,
+    lat: content.lat, lng: content.lng, radiusM: content.radiusM,
+    preferDeclaredLocation: content.preferDeclaredLocation,
   };
 }
 

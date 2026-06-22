@@ -24,12 +24,16 @@ class SectorAssemblerTest {
     private fun contentStream(
         content: ByteArray, hint: String? = "test hint", filename: String? = null,
         mimeType: String = "text/plain", compression: Int = TagDropCodec.COMPRESSION_NONE,
-        sha: ByteArray? = null
+        sha: ByteArray? = null,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false
     ): ByteArray {
         val core = MiniCbor.encodeMap(listOf(
             3 to hint, 4 to mimeType, 11 to filename,
             12 to compression.takeIf { it != TagDropCodec.COMPRESSION_NONE },
-            8 to sha
+            8 to sha,
+            26 to lat, 27 to lng, 48 to radiusM,
+            49 to preferDeclaredLocation.takeIf { it }
         ))
         val bulky = MiniCbor.encodeMap(emptyList())
         return core + bulky + content
@@ -64,6 +68,21 @@ class SectorAssemblerTest {
         assertEquals("text/plain", state.mimeType)
         assertEquals("test hint", state.hint)
         assertFalse("a terminal ContentReady group is dropped from tracking", a.hasPending)
+    }
+
+    @Test fun declaredLocationFieldsPropagateToContentReady() {
+        val content = "tiny payload".toByteArray()
+        val cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val stream = contentStream(
+            content, hint = null, lat = -33.8688, lng = 151.2093, radiusM = 25.0, preferDeclaredLocation = true
+        )
+        val a = SectorAssembler()
+
+        val state = a.add(sectorsOf(cacheId, stream, stream.size).single()) as SectorAssembler.State.ContentReady
+        assertEquals(-33.8688, state.lat!!, 0.0)
+        assertEquals(151.2093, state.lng!!, 0.0)
+        assertEquals(25.0, state.radiusM!!, 0.0)
+        assertTrue(state.preferDeclaredLocation)
     }
 
     // ── In-order multi-sector ─────────────────────────────────────────────────

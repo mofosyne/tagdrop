@@ -248,7 +248,7 @@ class TagDropCodecTest {
         )
         val related = listOf(
             TagDropPayload.RelatedPaper("letterbox 200m north", set = "sunset-trail", slug = "letterbox",
-                paperId = byteArrayOf(17, 18, 19, 20, 21, 22, 23, 24), lat = -33.8688, lng = 151.2093),
+                paperId = byteArrayOf(17, 18, 19, 20, 21, 22, 23, 24), lat = -33.8688, lng = 151.2093, radiusM = 50.0),
             TagDropPayload.RelatedPaper("trail start at town square")
         )
         val collectionId = byteArrayOf(1, 1, 2, 2, 3, 3, 4, 4)
@@ -280,8 +280,10 @@ class TagDropCodecTest {
         assertEquals("letterbox", decoded.related[0].slug)
         assertEquals(-33.8688, decoded.related[0].lat!!, 0.0)
         assertEquals(151.2093, decoded.related[0].lng!!, 0.0)
+        assertEquals(50.0, decoded.related[0].radiusM!!, 0.0)
         assertEquals("trail start at town square", decoded.related[1].hint)
         assertNull(decoded.related[1].lat)
+        assertNull(decoded.related[1].radiusM)
     }
 
     @Test fun paperRootHashIsContentAddressed() {
@@ -400,6 +402,42 @@ class TagDropCodecTest {
         assertFalse(forgedCacheId.contentEquals(paper.rootHash))
         val forged = sectors[0].copy(partMeta = sectors[0].partMeta.copy(cacheId = forgedCacheId))
         assertTrue(assemble(listOf(forged)) is SectorAssembler.State.Failed)
+    }
+
+    // ── Declared location and priority (SPEC §4.2) ─────────────────────────────
+
+    @Test fun contentDeclaredLocationRoundTrip() {
+        val sectors = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(),
+            lat = -33.8688, lng = 151.2093, radiusM = 25.0, preferDeclaredLocation = true
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals(-33.8688, state.lat!!, 0.0)
+        assertEquals(151.2093, state.lng!!, 0.0)
+        assertEquals(25.0, state.radiusM!!, 0.0)
+        assertTrue(state.preferDeclaredLocation)
+    }
+
+    @Test fun contentDeclaredLocationDefaultsAreNullAndFalse() {
+        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertNull(state.lat)
+        assertNull(state.lng)
+        assertNull(state.radiusM)
+        assertFalse(state.preferDeclaredLocation)
+    }
+
+    @Test fun paperDeclaredLocationRoundTrip() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (_, sectors) = TagDropCodec.createPaper(
+            "Trail Stop", "sunset-trail", "oak-tree", files,
+            lat = -37.8136, lng = 144.9631, radiusM = 10.0, preferDeclaredLocation = true
+        )
+        val decoded = (assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady).paper
+        assertEquals(-37.8136, decoded.lat!!, 0.0)
+        assertEquals(144.9631, decoded.lng!!, 0.0)
+        assertEquals(10.0, decoded.radiusM!!, 0.0)
+        assertTrue(decoded.preferDeclaredLocation)
     }
 
     // ── Key-only code (SPEC §9) ────────────────────────────────────────────────

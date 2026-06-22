@@ -69,7 +69,11 @@ class SectorAssembler {
             val kdfAlg: Int = TagDropCodec.KDF_NONE,
             val kdfSalt: ByteArray? = null,
             val kdfIters: Int = 100000,
-            val wasEncrypted: Boolean = false
+            val wasEncrypted: Boolean = false,
+            val lat: Double? = null,
+            val lng: Double? = null,
+            val radiusM: Double? = null,
+            val preferDeclaredLocation: Boolean = false
         ) : State()
 
         /** A Paper payload fully reassembled. [streamBytes] is the reassembled stream, stored as `ScannedPaper.cborBytes`. */
@@ -238,7 +242,11 @@ class SectorAssembler {
         kdfAlg = content.kdfAlg,
         kdfSalt = content.kdfSalt,
         kdfIters = content.kdfIters,
-        wasEncrypted = wasEncrypted
+        wasEncrypted = wasEncrypted,
+        lat = content.lat,
+        lng = content.lng,
+        radiusM = content.radiusM,
+        preferDeclaredLocation = content.preferDeclaredLocation
     )
 
     /** Concatenates `sector_bytes` for indices `0..count-1` in order, or null if any is missing. */

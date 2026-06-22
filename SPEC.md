@@ -122,6 +122,8 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 18 | `collection_label` | text (opt) | `core_meta_item` |
 | 19 | `collection_tag` | text (opt) | `core_meta_item` |
 | 24 | `icon` | text (opt) | `core_meta_item` |
+| 26 | `lat` | float64 (opt) | `core_meta_item` — author-declared latitude of this payload's own location |
+| 27 | `lng` | float64 (opt) | `core_meta_item` — author-declared longitude, same scope as `lat` |
 | 28 | `encryption` | uint (opt) | `core_meta_item`; Content only |
 | 30 | `key_material` | bytes (32, opt) | `core_meta_item` |
 | 31 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
@@ -140,6 +142,8 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 45 | `bulky_meta_compression` | uint (opt) | `core_meta_item` |
 | 46 | `bulky_meta_compressed_bytes` | uint (required iff key 45 present) | `core_meta_item` |
 | 47 | `bulky_meta_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
+| 48 | `radius_m` | float64 (opt) | wherever `lat`/`lng` appears — `core_meta_item` or a `related` entry |
+| 49 | `prefer_declared_location` | bool (opt, default `false`) | `core_meta_item` only |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -149,7 +153,8 @@ reused with the same meaning inside the encrypted override map structure only
 (§9). Key 25 is reserved for a future small embedded image icon (raw bytes),
 as an alternative to the emoji `icon` field. Keys 28, 30, 31 are defined in §9
 (Encryption); keys 32–36 in §10 (Verified Authorship); keys 37–39 in §9
-(Passphrase-based key derivation). Key 29 is reserved and unused — see §9 for
+(Passphrase-based key derivation); keys 26, 27, 48, 49 in §4.2 (Declared
+location and priority). Key 29 is reserved and unused — see §9 for
 why an encrypted override map's nonce doesn't need its own clear field.
 
 **`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
@@ -204,6 +209,7 @@ Each element is a CBOR map:
 | 23 | `paper_id` | bytes (8, opt) — root hash of the related paper |
 | 26 | `lat` | float64 (opt) — latitude of the related paper |
 | 27 | `lng` | float64 (opt) — longitude of the related paper |
+| 48 | `radius_m` | float64 (opt) — circle-of-uncertainty radius in meters around `lat`/`lng` |
 | 30 | `key_material` | bytes (32, opt) — decryption key for the related paper's content, see §9 |
 | 31 | `retain_key` | bool (opt, default `true`) — see §9 |
 
@@ -260,12 +266,33 @@ CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
 **`core_meta_item`** is always plain CBOR (never compressed) and always
 small — by authoring convention, meant to fit in the first sector or two. It
 carries the preview-tier fields — `hint`/`label`, `mime_type`, `filename`,
-`set`/`slug`, `description`, collection fields, `icon`, `key_material`/
+`set`/`slug`, `description`, collection fields, `icon`, declared location
+(`lat`/`lng`/`radius_m`/`prefer_declared_location`), `key_material`/
 `retain_key`, kdf fields, the small signature fields — plus declarations
 about what follows: `bulky_meta_compression`, `bulky_meta_compressed_bytes`
 (only present when key 45 is, since uncompressed `bulky_meta_item` keeps the
 free self-delimiting boundary — §3), `bulky_meta_sha256`,
 `content_compression`, `content_sha256`.
+
+**Declared location and priority:** `core_meta_item` may carry `lat`/`lng`
+(keys 26/27) — the *author's declared* coordinates for this Content's or
+Paper's own physical placement, useful when the scanning device lacks a GPS
+lock, or simply to record where the code was placed regardless of whether it
+does. This is distinct from a `related` entry's `lat`/`lng` (§4.3), which
+hints at a *different*, not-yet-scanned paper's location rather than this
+payload's own. An optional `radius_m` (key 48, float64) gives a
+circle-of-uncertainty radius in meters around the point — valid wherever
+`lat`/`lng` appears, whether at `core_meta_item` level or inside a `related`
+entry. By default, a live GPS fix at scan time takes priority over the
+declared location when both are available — the declared location is only a
+fallback for when GPS is unavailable. Setting `prefer_declared_location`
+(key 49, bool, default `false`) flips that priority so the declared
+coordinates win even when a live GPS fix is available, for placements where
+the author's coordinates are known to be more reliable than whatever fix the
+scanning device manages (e.g. deep indoors, under tree cover, in a
+basement). Implementations are expected to resolve and store only the single
+effective `(lat, lng, radius_m)` triple after applying this priority, not
+both candidate locations.
 
 **`bulky_meta_item`** holds whatever doesn't need to be in the early preview
 but isn't raw content — for a Paper, that's `files[]` and `related[]`; for
@@ -319,6 +346,9 @@ core_meta_item {
   18: "Spring Sticker Hunt",    // collection_label — optional, see §7 Collections
   19: "springtrail2026",        // collection_tag — optional, see §7 Collections
   24: "🌳",                      // icon — optional, see §7 Icons
+  26: -33.8688,                  // lat — optional, author-declared location of this paper
+  27: 151.2093,                  // lng — optional, author-declared location of this paper
+  48: 25.0,                      // radius_m — optional, circle of uncertainty in meters
 }
 bulky_meta_item {
   15: [                         // files — directory of codes on this paper
@@ -327,7 +357,7 @@ bulky_meta_item {
   ],
   16: [                         // related — hints to other papers
     {3: "Next stop: the red letterbox 200m north", 14: "letterbox",
-     23: h'<paper_id>', 26: -33.8688, 27: 151.2093},
+     23: h'<paper_id>', 26: -33.8688, 27: 151.2093, 48: 50.0},
     {3: "Start of trail: town square notice board"},
   ],
 }
@@ -364,10 +394,14 @@ content teaser.
 
 **Located related papers:** A `related` entry (key 16) may include `lat`/`lng`
 (keys 26/27) — the approximate coordinates of that related paper, if the
-author knows them. The app shows these as a "❓" placeholder pin on the map
-for related papers that haven't been scanned yet, helping the finder navigate
-toward them. Once that paper is scanned, its own `ScannedPaper` location (set
-from the device's GPS at scan time) replaces the placeholder.
+author knows them — and an optional `radius_m` (key 48) circle-of-uncertainty
+radius in meters around that point, the same field and semantics as the
+core-level declared location (§4.2). The app shows these as a "❓" placeholder
+pin (plus an uncertainty circle when `radius_m` is set) on the map for
+related papers that haven't been scanned yet, helping the finder navigate
+toward them. Once that paper is scanned, its own `ScannedPaper` location
+(resolved from the device's live GPS fix and/or that paper's own declared
+location, per §4.2's priority rule) replaces the placeholder.
 
 **Navigation:** HTML files on the paper can link to other files using:
 ```html
@@ -1280,7 +1314,7 @@ Version history:
   `sector_bytes` in order, is `core_meta_item || bulky_meta_item || content`
   — small/plain identity and declaration fields, then whatever's bulky or
   worth compressing, then raw content bytes with no declared length.
-- Payload map integer keys 2–19, 20–24, 26–28, 30–40, 42–47. Keys 1, 6, 9, 10
+- Payload map integer keys 2–19, 20–24, 26–28, 30–40, 42–49. Keys 1, 6, 9, 10
   retired (superseded by the envelope and by `part_meta`'s sector fields —
   §3). Key 25 reserved for a future binary image icon; key 29 reserved,
   unused (§9).
@@ -1293,6 +1327,15 @@ Version history:
   (keys 26/27). No practical size limit on `files[]`/`related[]` (issue #37,
   §4.3) now that `bulky_meta_item` can span as many sectors as it needs.
   TagDropNet relative-link and `tagdrop://` navigation (§7).
+- Author-declared location for a Content/Paper's own physical placement,
+  reusing `lat`/`lng` (keys 26/27) at `core_meta_item` level — distinct from
+  a `related` entry's hint-location use of the same keys. `radius_m`
+  (key 48) adds a circle-of-uncertainty radius in meters, valid wherever
+  `lat`/`lng` appears (core-level or inside a `related` entry).
+  `prefer_declared_location` (key 49, default `false`) lets the author's
+  declared coordinates take priority over the device's live GPS fix at scan
+  time, for placements where the scanning device may lack a GPS lock or the
+  author's coordinates are known to be more reliable (§4.2).
 - Single-loss erasure coding (issue #37): a full-XOR parity sector
   (`parity_scheme` 1) at `sector_index == sector_count` reconstructs exactly
   one lost data sector per payload (§5).

@@ -222,6 +222,29 @@
     </div>
     <div class="row">
       <div>
+        <label>Latitude <small>(optional — this code's own declared location, see §4.2)</small></label>
+        <input type="text" id="s-lat" placeholder="e.g. -33.8688">
+      </div>
+      <div>
+        <label>Longitude <small>(optional)</small></label>
+        <input type="text" id="s-lng" placeholder="e.g. 151.2093">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Location uncertainty radius <small>(optional, meters)</small></label>
+        <input type="text" id="s-radius" placeholder="e.g. 25">
+      </div>
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-prefer-declared-location">
+          Prefer declared location over live GPS
+          <small style="display:block;color:#888;margin-top:2px">For placements where the author's coordinates are more reliable than the scanning device's GPS fix (e.g. indoors)</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>MIME type</label>
         <select id="s-mime">
           <option value="text/plain">text/plain</option>
@@ -334,6 +357,29 @@
       <div>
         <label>Collection tag <small>(optional — short hashtag-style cross-reference)</small></label>
         <input type="text" id="p-collection-tag" placeholder="e.g. springtrail2026">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Latitude <small>(optional — this paper's own declared location, see §4.2)</small></label>
+        <input type="text" id="p-lat" placeholder="e.g. -33.8688">
+      </div>
+      <div>
+        <label>Longitude <small>(optional)</small></label>
+        <input type="text" id="p-lng" placeholder="e.g. 151.2093">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Location uncertainty radius <small>(optional, meters)</small></label>
+        <input type="text" id="p-radius" placeholder="e.g. 25">
+      </div>
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="p-prefer-declared-location">
+          Prefer declared location over live GPS
+          <small style="display:block;color:#888;margin-top:2px">For placements where the author's coordinates are more reliable than the scanning device's GPS fix (e.g. indoors)</small>
+        </label>
       </div>
     </div>
   </div>
@@ -631,6 +677,7 @@ const KEY_NAMES = {
   40: 'description', 41: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
+  48: 'radius_m', 49: 'prefer_declared_location',
 };
 
 function toHexDump(bytes) {
@@ -814,7 +861,8 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
              PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
-             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47 };
+             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
+             RADIUS_M:48, PREFER_DECLARED_LOCATION:49 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // keeps each sector's Base41-encoded tagdrop: URI under MAX_URI_LENGTH (~20 bytes
@@ -892,6 +940,7 @@ async function createContentSectors({
   collectionId, collectionLabel, collectionTag, icon,
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
+  lat, lng, radiusM, preferDeclaredLocation = false,
   maxSectorDataBytes = Infinity,
 }) {
   let compression = null, compressedContent = rawBytes;
@@ -932,6 +981,9 @@ async function createContentSectors({
       [K.KDF_ALG,  kdfAlg],
       [K.KDF_SALT, kdfSalt],
       // kdf_iters is the default (100000) — omit to save bytes
+      [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
+      [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
+      [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
     ];
   }
 
@@ -977,7 +1029,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * TagDropCodec.buildPaperStream.
  *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
  *   related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
- *               keyMaterial:Uint8Array|null, retainKey:boolean}]
+ *               radiusM:number|null, keyMaterial:Uint8Array|null, retainKey:boolean}]
  *
  * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
  * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
@@ -989,7 +1041,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true }) {
+async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
@@ -998,6 +1050,7 @@ async function buildPaperStream({ label, set, slug, files, related, description,
     [K.RELATED, related.map(r => subMap([
       [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
       [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
+      [K.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
       [K.KEY_MATERIAL, r.keyMaterial || null],
       [K.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
     ]))],
@@ -1014,6 +1067,9 @@ async function buildPaperStream({ label, set, slug, files, related, description,
     [K.ICON,             icon || null],
     [K.KEY_MATERIAL, keyMaterial || null],
     [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
+    [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
+    [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
+    [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
@@ -1658,6 +1714,16 @@ async function generateSingle() {
   try { collectionId = hexToBytes(document.getElementById('s-collection-id').value); }
   catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
 
+  // Declared location (SPEC §4.2) — also never secret, carried through encryption the
+  // same way as collection/icon above.
+  const declaredLat   = parseFloat(document.getElementById('s-lat').value.trim());
+  const declaredLng   = parseFloat(document.getElementById('s-lng').value.trim());
+  const declaredRadius = parseFloat(document.getElementById('s-radius').value.trim());
+  const lat    = Number.isFinite(declaredLat) ? declaredLat : null;
+  const lng    = Number.isFinite(declaredLng) ? declaredLng : null;
+  const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
+  const preferDeclaredLocation = document.getElementById('s-prefer-declared-location').checked;
+
   if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
 
   let rawBytes;
@@ -1682,6 +1748,7 @@ async function generateSingle() {
         override: { hint, mimeType, content: rawBytes, filename },
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
+        lat, lng, radiusM, preferDeclaredLocation,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -1694,10 +1761,14 @@ async function generateSingle() {
         override: { hint, mimeType, content: rawBytes, filename },
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
+        lat, lng, radiusM, preferDeclaredLocation,
       };
     }
   } else {
-    encodeArgs = { hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon };
+    encodeArgs = {
+      hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
+      lat, lng, radiusM, preferDeclaredLocation,
+    };
   }
 
   let sectors;
@@ -1830,6 +1901,8 @@ function addRelatedEntry() {
       <div><label>Latitude <small>(optional — for a placeholder map pin)</small></label><input type="text" id="rlat-${id}" placeholder="e.g. -33.8688"></div>
       <div><label>Longitude <small>(optional)</small></label><input type="text" id="rlng-${id}" placeholder="e.g. 151.2093"></div>
     </div>
+    <label>Location uncertainty radius <small>(optional, meters — circle drawn around the pin above)</small></label>
+    <input type="text" id="rradius-${id}" placeholder="e.g. 50">
     <label>Paper ID <small>(optional, hex — that paper's root hash, for stable cross-referencing even after a re-scan changes set/slug)</small></label>
     <input type="text" id="rpaperid-${id}" placeholder="e.g. a1b2c3d4e5f60718">
     <label>Key material <small>(optional, hex — a decryption key this code reveals for the related paper's content, see SPEC §9)</small></label>
@@ -1863,6 +1936,16 @@ async function generatePaper() {
   let collectionId;
   try { collectionId = hexToBytes(document.getElementById('p-collection-id').value); }
   catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+
+  // Declared location (SPEC §4.2) — this paper's own placement, distinct from a related
+  // entry's hint-location use of the same lat/lng/radius_m fields.
+  const declaredLat   = parseFloat(document.getElementById('p-lat').value.trim());
+  const declaredLng   = parseFloat(document.getElementById('p-lng').value.trim());
+  const declaredRadius = parseFloat(document.getElementById('p-radius').value.trim());
+  const lat    = Number.isFinite(declaredLat) ? declaredLat : null;
+  const lng    = Number.isFinite(declaredLng) ? declaredLng : null;
+  const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
+  const preferDeclaredLocation = document.getElementById('p-prefer-declared-location').checked;
 
   // Slugs identify files within the paper's directory (SPEC §7) — catch empty
   // or duplicate slugs before encoding anything.
@@ -1902,6 +1985,7 @@ async function generatePaper() {
     related = relatedEntries.map(id => {
       const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
       const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
+      const radiusM = parseFloat(document.getElementById('rradius-' + id)?.value.trim());
       const hint = document.getElementById('rhint-' + id)?.value.trim() || '(hint)';
       let paperId, keyMaterial;
       try { paperId = hexToBytes(document.getElementById('rpaperid-' + id)?.value); }
@@ -1915,6 +1999,7 @@ async function generatePaper() {
         retainKey: document.getElementById('rretainkey-' + id)?.checked ?? true,
         lat: Number.isFinite(lat) ? lat : null,
         lng: Number.isFinite(lng) ? lng : null,
+        radiusM: Number.isFinite(radiusM) ? radiusM : null,
       };
     });
   } catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
@@ -1926,6 +2011,7 @@ async function generatePaper() {
     paper = await createPaperAutoSized({
       label, set, slug, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
+      lat, lng, radiusM, preferDeclaredLocation,
     });
   }
   catch(e) { msgs.innerHTML = `<div class="err">Paper encoding failed: ${e.message}</div>`; return; }

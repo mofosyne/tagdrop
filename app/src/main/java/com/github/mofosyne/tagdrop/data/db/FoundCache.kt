@@ -14,8 +14,9 @@ data class FoundCache(
     val collectionId: String? = null,     // hex-encoded 8-byte ID, groups related scans
     val collectionLabel: String? = null,  // human-readable name for the collection
     val collectionTag: String? = null,    // hashtag-style cross-collection tag
-    val lat: Double? = null,              // latitude where this was scanned, if available
-    val lng: Double? = null,              // longitude where this was scanned, if available
+    val lat: Double? = null,              // effective latitude (live GPS, or author-declared if it won — SPEC §3 prefer_declared_location)
+    val lng: Double? = null,              // effective longitude, same resolution rule as lat
+    val locationRadiusM: Double? = null,  // circle-of-uncertainty radius in meters; only set when lat/lng came from a declared (not live-GPS) source
     val icon: String? = null,             // optional emoji icon
     val createdByMe: Boolean = false,     // true if authored in-app (Create Cache/Paper), not scanned
     val pendingOverrideBlob: ByteArray? = null,  // candidate encrypted override-map blob not yet unlocked by any retained key (SPEC §9)
