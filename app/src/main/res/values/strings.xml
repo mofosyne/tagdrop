@@ -11,6 +11,8 @@
     <!-- Main screen -->
     <string name="empty_collection">No collections yet.\nTap the camera button to scan your first TagDrop.</string>
     <string name="empty_history">No scans yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="search_hint">Search, or #tag</string>
+    <string name="search_no_results">No matches for \"%1$s\".</string>
     <string name="map_no_locations">No located scans yet.\nGrant location access and scan a TagDrop to see it here.</string>
     <string name="button_enable_location">Enable location</string>
     <string name="button_open_settings">Open Settings</string>
@@ -85,6 +87,14 @@
     <string name="menu_demo_collection">Add Demo Collection</string>
     <string name="demo_collection_label">Demo Trail</string>
     <string name="demo_collection_added">Demo collection added — check Collections, History, and Map.</string>
+
+    <!-- Backup / restore -->
+    <string name="action_backup">Backup data</string>
+    <string name="action_restore">Restore data</string>
+    <string name="backup_ready_message">Backup created — save it somewhere safe, or share it to another device.</string>
+    <string name="restore_confirm_message">This replaces all scans, papers, and keys currently on this device with the contents of the backup file. This cannot be undone.</string>
+    <string name="restore_incompatible">This backup was made with a newer version of TagDrop and can\'t be restored here. Update the app first.</string>
+    <string name="restore_invalid">That file isn\'t a valid TagDrop backup.</string>
 
     <!-- Create screen -->
     <string name="hint_hint">Placement hint (optional)</string>

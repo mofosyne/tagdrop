@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.fragment.app.activityViewModels
@@ -43,11 +44,19 @@ class HistoryFragment : Fragment() {
 
         var latestPapers: List<ScannedPaper> = emptyList()
         var latestCaches: List<FoundCache> = emptyList()
+        var query = ""
 
         fun render() {
-            val items = HistoryItem.build(latestPapers, latestCaches)
+            val items = HistoryItem.build(latestPapers, latestCaches).filter { it.matches(query) }
             adapter.submitList(items)
             binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+            binding.textEmpty.text = if (query.isBlank()) getString(R.string.empty_history)
+                else getString(R.string.search_no_results, query.trim())
+        }
+
+        binding.editSearch.doAfterTextChanged { text ->
+            query = text?.toString().orEmpty()
+            render()
         }
 
         val db = AppDatabase.get(requireContext())

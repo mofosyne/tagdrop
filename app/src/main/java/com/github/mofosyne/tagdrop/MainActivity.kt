@@ -1,6 +1,7 @@
 package com.github.mofosyne.tagdrop
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
@@ -8,6 +9,8 @@ import android.view.View
 import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.viewModels
 import androidx.core.view.ViewCompat
@@ -17,13 +20,27 @@ import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.databinding.ActivityMainBinding
+import com.github.mofosyne.tagdrop.util.BackupManager
 import com.github.mofosyne.tagdrop.util.LocationUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val viewModel: MainViewModel by viewModels()
+
+    /** The freshly created backup zip's content:// URI, awaiting a destination from [backupSaveLauncher]. */
+    private var pendingBackupUri: Uri? = null
+
+    private val backupSaveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) writeBackupToUri(uri)
+    }
+
+    private val restorePickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) confirmRestore(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -117,9 +134,78 @@ class MainActivity : AppCompatActivity() {
         return when (item.itemId) {
             R.id.action_demo_collection -> { addDemoCollection(); true }
             R.id.action_retained_keys -> { startActivity(Intent(this, RetainedKeysActivity::class.java)); true }
+            R.id.action_backup -> { startBackup(); true }
+            R.id.action_restore -> { restorePickLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")); true }
             R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }
+    }
+
+    /** Snapshots the whole local database (every cache, paper, and retained key) as a zip the user can save or share. */
+    private fun startBackup() {
+        lifecycleScope.launch {
+            val uri = withContext(Dispatchers.IO) { BackupManager.export(this@MainActivity) }
+            pendingBackupUri = uri
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(R.string.action_backup)
+                .setMessage(R.string.backup_ready_message)
+                .setPositiveButton(R.string.action_save) { _, _ -> backupSaveLauncher.launch(BackupManager.suggestFilename()) }
+                .setNeutralButton(R.string.action_share) { _, _ ->
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(intent, getString(R.string.share_uri_title)))
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        }
+    }
+
+    private fun writeBackupToUri(uri: Uri) {
+        val backupUri = pendingBackupUri ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    contentResolver.openInputStream(backupUri)?.use { input ->
+                        contentResolver.openOutputStream(uri)?.use { output -> input.copyTo(output) }
+                    }
+                }.isSuccess
+            }
+            Toast.makeText(this@MainActivity, getString(if (ok) R.string.export_saved else R.string.export_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Restoring overwrites every cache, paper, and key currently on this device — confirm before touching anything. */
+    private fun confirmRestore(uri: Uri) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.action_restore)
+            .setMessage(R.string.restore_confirm_message)
+            .setPositiveButton(R.string.action_restore) { _, _ -> performRestore(uri) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun performRestore(uri: Uri) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { BackupManager.restore(this@MainActivity, uri) }
+            when (result) {
+                BackupManager.RestoreResult.Success -> restartApp()
+                BackupManager.RestoreResult.IncompatibleVersion ->
+                    Toast.makeText(this@MainActivity, R.string.restore_incompatible, Toast.LENGTH_LONG).show()
+                BackupManager.RestoreResult.InvalidFile ->
+                    Toast.makeText(this@MainActivity, R.string.restore_invalid, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /** Every existing Room/LiveData handle still points at the connection [BackupManager.restore] just closed, so the whole process restarts rather than trying to reload state in place. */
+    private fun restartApp() {
+        val intent = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        startActivity(intent)
+        Runtime.getRuntime().exit(0)
     }
 
     /**
