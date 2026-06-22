@@ -1,0 +1,5 @@
+- New: set a known location and an "uncertainty radius" on a code's content, with the option to have it take priority over your live GPS — useful when you already know exactly where it's being placed. Shown on the Map tab as a circle.
+- Paper directories can now show a short description for the paper and for each file inside it, so you know what something is before opening it.
+- Paper layouts too big for one QR code now split automatically across several, just like oversized files already did.
+- Security: closed a hole that let other apps hijack TagDrop's page viewer with an arbitrary link, and fixed a flaw that could let a malicious code overwrite an unrelated paper you'd already saved.
+- Stronger integrity checks on codes split across multiple QR parts.
