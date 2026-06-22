@@ -120,6 +120,10 @@
     <string name="paper_file_content_error">File \"%1$s\" has no content.</string>
     <string name="paper_root_hash">Root hash: %1$s</string>
     <string name="paper_manifest_sub">paper manifest</string>
+    <string name="paper_split_warning">\"%1$s\" is %2$d bytes — split into %3$d sector QR codes.</string>
+    <string name="paper_sector_label">%1$s — sector %2$d/%3$d</string>
+    <string name="paper_parity_label">%1$s — parity</string>
+    <string name="paper_parity_sub">Parity recovery code</string>
 
     <!-- Paper manifest -->
     <string name="paper_manifest_label">Paper Manifest</string>
@@ -162,6 +166,7 @@
     <string name="share_qr_progress">%1$d / %2$d</string>
     <string name="button_pause">Pause</string>
     <string name="button_resume">Resume</string>
+    <string name="share_qr_add_parity">🛟 Add a parity recovery code</string>
 
     <!-- Passphrase unlock dialog -->
     <string name="passphrase_dialog_title">🔒 Passphrase required</string>

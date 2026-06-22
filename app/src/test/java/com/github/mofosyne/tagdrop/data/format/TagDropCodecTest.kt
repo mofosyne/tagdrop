@@ -111,6 +111,23 @@ class TagDropCodecTest {
         assertEquals("big file", state.hint)
     }
 
+    @Test fun contentSectorsAutoSizedUsesSingleSectorWhenItFits() {
+        val sectors = TagDropCodec.createContentSectorsAutoSized(null, null, "text/plain", "hi".toByteArray())
+        assertEquals(1, sectors.size)
+        assertTrue(TagDropCodec.encode(sectors.first()).length <= TagDropCodec.MAX_URI_LENGTH)
+    }
+
+    @Test fun contentSectorsAutoSizedSplitsWhenTooLarge() {
+        val content = ByteArray(5000) { it.toByte() }
+        val sectors = TagDropCodec.createContentSectorsAutoSized(
+            "big file", "data.bin", "application/octet-stream", content
+        )
+        assertTrue("expected several sectors", sectors.size > 1)
+        sectors.forEach { assertTrue(TagDropCodec.encode(it).length <= TagDropCodec.MAX_URI_LENGTH) }
+        val state = assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.ContentReady
+        assertArrayEquals(content, state.content)
+    }
+
     @Test fun multiSectorAddsContentSha256ButSingleSectorOmitsIt() {
         val small = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
         assertFalse("single-sector content omits content_sha256", coreOf(small.first()).containsKey(8))
@@ -351,6 +368,25 @@ class TagDropCodecTest {
         }
         val (paper, sectors) = TagDropCodec.createPaper("Big Paper", null, null, files, maxSectorDataBytes = 400)
         assertTrue("a large paper should span several sectors", sectors.size > 1)
+        val decoded = (assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.PaperReady).paper
+        assertArrayEquals(paper.rootHash, decoded.rootHash)
+        assertEquals(60, decoded.files.size)
+    }
+
+    @Test fun paperAutoSizedUsesSingleSectorWhenItFits() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (_, sectors) = TagDropCodec.createPaperAutoSized("Small Paper", null, null, files)
+        assertEquals(1, sectors.size)
+        assertTrue(TagDropCodec.encode(sectors.first()).length <= TagDropCodec.MAX_URI_LENGTH)
+    }
+
+    @Test fun paperAutoSizedSplitsWhenTooLarge() {
+        val files = (0 until 60).map {
+            TagDropPayload.FileEntry("file-$it", "text/plain", ByteArray(8) { (it).toByte() })
+        }
+        val (paper, sectors) = TagDropCodec.createPaperAutoSized("Big Paper", null, null, files)
+        assertTrue("expected several sectors", sectors.size > 1)
+        sectors.forEach { assertTrue(TagDropCodec.encode(it).length <= TagDropCodec.MAX_URI_LENGTH) }
         val decoded = (assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.PaperReady).paper
         assertArrayEquals(paper.rootHash, decoded.rootHash)
         assertEquals(60, decoded.files.size)

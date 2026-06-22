@@ -95,6 +95,7 @@
   .qr-badge.key       { background: #fff3e0; color: #e65100; }
   .qr-badge.home      { background: #e8f5e9; color: #2e7d32; }
   .qr-badge.binary    { background: #ede7f6; color: #512da8; }
+  .qr-badge.parity    { background: #e0f7fa; color: #00838f; }
   .qr-item.key-item   { border: 2px dashed #e65100; }
 
   .warn { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px;
@@ -273,6 +274,15 @@
     <div class="row">
       <div style="display:flex;align-items:flex-end;padding-bottom:6px">
         <label style="margin:0">
+          <input type="checkbox" id="s-add-parity">
+          🛟 Add a parity recovery code
+          <small style="display:block;color:#888;margin-top:2px">One extra code that can reconstruct any single lost sector — applies only if content needs multiple QR codes</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
           <input type="checkbox" id="s-encrypt"> 🔒 Encrypt this content (AES-256-GCM)
           <small style="display:block;color:#888;margin-top:2px">Hides the real content inside an encrypted override map (SPEC §9)</small>
         </label>
@@ -402,6 +412,11 @@
       <input type="checkbox" id="p-binary-sectors" checked>
       🔢 Use binary QR for sectors
       <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only to files/papers that need multiple QR codes</small>
+    </label>
+    <label style="margin:0 0 10px;display:block">
+      <input type="checkbox" id="p-add-parity">
+      🛟 Add a parity recovery code
+      <small style="display:block;color:#888;margin-top:2px">One extra code per multi-sector file or paper manifest that can reconstruct any single lost sector</small>
     </label>
     <div id="p-files"></div>
     <div class="dropzone" id="p-dropzone">
@@ -539,7 +554,7 @@ function concatBytes(...arrays) {
 
 // part_meta (SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
 // 0-based sector_index, sector_count, parity_scheme (only on a parity sector, at index
-// >= sector_count — no current encoder emits one).
+// >= sector_count — see paritySector below).
 function partMetaMap(pm) {
   return cborMap([
     [K.CACHE_ID,     pm.cacheId || null],
@@ -587,6 +602,31 @@ function sectorize(type, cacheId, stream, maxSectorDataBytes) {
     });
   }
   return sectors;
+}
+
+/**
+ * Builds the single full-XOR parity sector (parity_scheme 1, SPEC §5) for dataSectors — the
+ * byte-wise XOR of every data sector's sectorBytes, each implicitly zero-padded to the longest
+ * before XOR-ing. Placed at sector_index == sector_count, it recovers any one lost data sector.
+ * dataSectors must be a complete 0..sector_count-1 run of one payload. Mirrors Kotlin
+ * TagDropCodec.paritySector verbatim.
+ */
+function paritySector(dataSectors) {
+  const first = dataSectors[0].partMeta;
+  const width = Math.max(...dataSectors.map(s => s.sectorBytes.length));
+  const parity = new Uint8Array(width);
+  for (const sector of dataSectors) {
+    const b = sector.sectorBytes;
+    for (let j = 0; j < b.length; j++) parity[j] ^= b[j];
+  }
+  return {
+    type: dataSectors[0].type,
+    partMeta: {
+      cacheId: first.cacheId, sectorIndex: first.sectorCount, sectorCount: first.sectorCount,
+      totalBytes: first.totalBytes, paritySchemeRaw: PARITY_XOR,
+    },
+    sectorBytes: parity,
+  };
 }
 
 // Concatenates CBOR(core_meta_item) || CBOR(bulky_meta_item) || content (SPEC §4.2).
@@ -869,6 +909,9 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
 // CBOR/envelope overhead, Base41 expands 2 bytes->3 chars).
 const MAX_URI_LENGTH = 2000;
 const MAX_SECTOR_DATA_BYTES = 1300;
+
+// parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5).
+const PARITY_XOR = 1;
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -1649,11 +1692,16 @@ async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPa
 // the single-sector flow.
 async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result }) {
   const useBinary = document.getElementById('s-binary-sectors').checked;
+  const addParity = document.getElementById('s-add-parity').checked;
   const count = sectors.length;
   const idHex = toHex(sectors[0].partMeta.cacheId);
 
   msgs.innerHTML += `<div class="warn">Content is ${sectors[0].partMeta.totalBytes} bytes — split into
     ${count} sector QR codes.</div>`;
+  if (addParity) {
+    msgs.innerHTML += `<div class="warn">🛟 An extra parity code is included below — scanning it together with
+      any ${count - 1} of the ${count} sectors above reconstructs the one you're missing.</div>`;
+  }
   if (encrypt) {
     msgs.innerHTML += `<div class="warn">🔒 The real hint/filename/content are hidden inside these codes as an
       encrypted override map (SPEC §9) — every sector shows only the generic cover below.
@@ -1681,6 +1729,27 @@ async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, enc
       });
     } catch (e) {
       msgs.innerHTML += `<div class="err">QR rendering failed for sector ${sector.partMeta.sectorIndex + 1}.</div>`;
+      return;
+    }
+  }
+
+  if (addParity) {
+    const parity = paritySector(sectors);
+    const enc = encodeSector(parity);
+    const qrData = useBinary ? enc.raw : enc.uri;
+    try {
+      await addGeneratorQrCard(grid, {
+        label: 'Parity (recovery)',
+        sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
+        badge: 'parity',
+        badgeClass: 'parity',
+        id: `${idHex}-parity`,
+        uri: enc.uri,
+        qrData,
+        slugBase: `${nameBase}-parity`,
+      });
+    } catch (e) {
+      msgs.innerHTML += `<div class="err">QR rendering failed for parity sector.</div>`;
       return;
     }
   }
@@ -2025,6 +2094,7 @@ async function generatePaper() {
     <div class="qr-grid" id="p-qr-grid"></div>`;
   const grid = document.getElementById('p-qr-grid');
   const useBinarySectors = document.getElementById('p-binary-sectors')?.checked;
+  const addParity = document.getElementById('p-add-parity')?.checked;
   const rootHashHex = toHex(paper.rootHash);
 
   // Paper QR(s) first — readers need these to resolve every file_id below. A Paper that
@@ -2033,7 +2103,7 @@ async function generatePaper() {
   const mCount = paper.sectors.length;
   if (mCount > 1) {
     msgs.innerHTML += `<div class="warn">Paper layout is ${paper.sectors[0].partMeta.totalBytes} bytes
-      — split into ${mCount} sector QR codes.</div>`;
+      — split into ${mCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
   }
   for (const sector of paper.sectors) {
     const enc = encodeSector(sector);
@@ -2058,6 +2128,27 @@ async function generatePaper() {
       return;
     }
   }
+  if (mCount > 1 && addParity) {
+    const parity = paritySector(paper.sectors);
+    const enc = encodeSector(parity);
+    const qrData = useBinarySectors ? enc.raw : enc.uri;
+    const pSub = useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`;
+    const pId = `${rootHashHex}-parity`;
+    const pItem = makeQrItem(`📋 ${label || 'Manifest'} — parity`, pSub, pId, enc.uri, 'parity', qrData, 'parity');
+    grid.appendChild(pItem.div);
+    try {
+      await renderQr(pItem.qrDiv, qrData);
+      paperBulkItems.push({
+        filename: `tagdrop-${slugifyForFilename((label || 'paper') + '-parity')}-${rootHashHex}.png`,
+        qrData,
+        caption: `${label || 'Manifest'} (parity)`,
+      });
+    } catch(e) {
+      pItem.div.querySelector('.action-row')?.remove();
+      msgs.innerHTML += `<div class="err">QR rendering failed for the paper's parity sector — is the qrcode library loaded?</div>`;
+      return;
+    }
+  }
 
   // File QRs — file_id (above) is the cache_id shared by every sector of a file
   // regardless of how many QR codes it took, so it resolves correctly either way
@@ -2068,7 +2159,7 @@ async function generatePaper() {
     const fIdHex = toHex(f.fileId);
     if (fCount > 1) {
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.sectors[0].partMeta.totalBytes} bytes
-        — split into ${fCount} sector QR codes.</div>`;
+        — split into ${fCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
     }
     for (const sector of f.sectors) {
       const enc = encodeSector(sector);
@@ -2094,6 +2185,26 @@ async function generatePaper() {
         fItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed${fCount > 1 ? ` for sector ${sector.partMeta.sectorIndex + 1}` : ' — content too large for a single QR code'}.</div>`);
       }
     }
+    if (fCount > 1 && addParity) {
+      const parity = paritySector(f.sectors);
+      const enc = encodeSector(parity);
+      const qrData = useBinarySectors ? enc.raw : enc.uri;
+      const pSub = useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`;
+      const pId = `${fIdHex}-parity`;
+      const pItem = makeQrItem(`${f.slug} — parity`, pSub, pId, enc.uri, 'parity', qrData, 'parity');
+      grid.appendChild(pItem.div);
+      try {
+        await renderQr(pItem.qrDiv, qrData);
+        paperBulkItems.push({
+          filename: `tagdrop-${slugifyForFilename(f.slug + '-parity')}-${fIdHex}.png`,
+          qrData,
+          caption: `${f.slug} (parity)`,
+        });
+      } catch(e) {
+        pItem.div.querySelector('.action-row')?.remove();
+        pItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed for parity sector.</div>`);
+      }
+    }
   }
 
   // Navigation link info
@@ -2117,7 +2228,7 @@ async function generatePaper() {
 // raw Uint8Array bytes here for a binary/byte-mode chunk QR while `uri` still carries
 // the text tagdrop: form for "Inspect CBOR" (always text-decodable regardless of how
 // the QR itself was rendered).
-function makeQrItem(label, sub, id, uri, badge, qrData = uri) {
+function makeQrItem(label, sub, id, uri, badge, qrData = uri, badgeClass = 'home') {
   const div = document.createElement('div');
   div.className = 'qr-item';
   const visual = document.createElement('div');
@@ -2125,7 +2236,7 @@ function makeQrItem(label, sub, id, uri, badge, qrData = uri) {
   const qrDiv = document.createElement('div');
   visual.appendChild(qrDiv);
   div.appendChild(visual);
-  const badgeHtml = badge ? ` <span class="qr-badge home">${escHtml(badge)}</span>` : '';
+  const badgeHtml = badge ? ` <span class="qr-badge ${badgeClass}">${escHtml(badge)}</span>` : '';
   visual.insertAdjacentHTML('beforeend',
     `<div class="qr-footer">
        <div class="qr-stamp">${QR_STAMP_SVG}</div>

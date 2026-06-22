@@ -321,6 +321,41 @@ object TagDropCodec {
     }
 
     /**
+     * Two-pass auto-sizing wrapper around [createContentSectors] (mirrors the web generator's
+     * createContentSectorsAutoSized): builds with an unbounded sector size first; if the single
+     * resulting sector's `tagdrop:` URI fits under [MAX_URI_LENGTH], uses it as-is; otherwise
+     * rebuilds the whole payload with [MAX_SECTOR_DATA_BYTES] forced, producing several uniform
+     * sectors.
+     */
+    fun createContentSectorsAutoSized(
+        hint: String?, filename: String?, mimeType: String,
+        rawContent: ByteArray, compress: Boolean = false,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true,
+        override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
+        declareEncryption: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false
+    ): List<Sector> {
+        val first = createContentSectors(
+            hint, filename, mimeType, rawContent, compress,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey, override, encryptionKey, declareEncryption,
+            lat, lng, radiusM, preferDeclaredLocation,
+            maxSectorDataBytes = Int.MAX_VALUE
+        )
+        if (encode(first.first()).length <= MAX_URI_LENGTH) return first
+        return createContentSectors(
+            hint, filename, mimeType, rawContent, compress,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey, override, encryptionKey, declareEncryption,
+            lat, lng, radiusM, preferDeclaredLocation,
+            maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
+        )
+    }
+
+    /**
      * Builds a single "key-only" Content sector (SPEC §9): carries [keyMaterial] for other
      * content, with no content/mime_type of its own and — referencing no content to address —
      * no `cache_id` in its `part_meta` either.
@@ -367,6 +402,34 @@ object TagDropCodec {
         val rootHash = sha256(stream).copyOf(8)
         val paper = draft.copy(rootHash = rootHash)
         return paper to sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes)
+    }
+
+    /** Two-pass auto-sizing wrapper around [createPaper] — see [createContentSectorsAutoSized]. */
+    fun createPaperAutoSized(
+        label: String?, set: String?, slug: String?,
+        files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
+        description: String? = null,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false
+    ): Pair<TagDropPayload.Paper, List<Sector>> {
+        val first = createPaper(
+            label, set, slug, files, related, description,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey,
+            lat, lng, radiusM, preferDeclaredLocation,
+            maxSectorDataBytes = Int.MAX_VALUE
+        )
+        if (encode(first.second.first()).length <= MAX_URI_LENGTH) return first
+        return createPaper(
+            label, set, slug, files, related, description,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey,
+            lat, lng, radiusM, preferDeclaredLocation,
+            maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
+        )
     }
 
     /** The reassembled-stream bytes for [paper] — what the root hash covers, and what gets stored as `ScannedPaper.cborBytes`. */

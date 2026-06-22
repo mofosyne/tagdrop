@@ -58,6 +58,7 @@
   .qr-card .qr-badge.compress { background: #e8f5e9; color: #2e7d32; }
   .qr-card .qr-badge.encrypted { background: #fce4ec; color: #ad1457; }
   .qr-card .qr-badge.key        { background: #fff3e0; color: #e65100; }
+  .qr-card .qr-badge.parity     { background: #e0f7fa; color: #00838f; }
   .qr-card .qr-id   { font-family: monospace; font-size: 0.65rem; color: #aaa; margin-top: 4px; word-break: break-all; }
   .qr-card .qr-uri  { margin-top: 8px; width: 100%; }
   .qr-card .qr-uri input {
@@ -183,7 +184,10 @@
       code anymore. Every sector carries the same <code>sector_index</code>/
       <code>sector_count</code> and can be scanned in any order — even from
       different physical locations — and TagDrop reassembles and checksums
-      them once complete.
+      them once complete. An optional <strong>parity</strong> sector
+      (SPEC §5) can also be added: a single full-XOR recovery code that
+      reconstructs any one lost sector, so a damaged or missing code doesn't
+      sink the whole drop.
     </p>
     <div class="paper-info" id="multi-info"></div>
     <div class="qr-grid" id="multi-grid"></div>
@@ -325,7 +329,7 @@ function concatBytes(...arrays) {
 
 // part_meta (SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
 // 0-based sector_index, sector_count, parity_scheme (only on a parity sector, at index
-// >= sector_count — no current encoder emits one).
+// >= sector_count — see paritySector below).
 function partMetaMap(pm) {
   return cborMap([
     [K.CACHE_ID,     pm.cacheId || null],
@@ -372,6 +376,31 @@ function sectorize(type, cacheId, stream, maxSectorDataBytes) {
     });
   }
   return sectors;
+}
+
+/**
+ * Builds the single full-XOR parity sector (parity_scheme 1, SPEC §5) for dataSectors — the
+ * byte-wise XOR of every data sector's sectorBytes, each implicitly zero-padded to the longest
+ * before XOR-ing. Placed at sector_index == sector_count, it recovers any one lost data sector.
+ * dataSectors must be a complete 0..sector_count-1 run of one payload. Mirrors Kotlin
+ * TagDropCodec.paritySector / ../generator/index.html verbatim.
+ */
+function paritySector(dataSectors) {
+  const first = dataSectors[0].partMeta;
+  const width = Math.max(...dataSectors.map(s => s.sectorBytes.length));
+  const parity = new Uint8Array(width);
+  for (const sector of dataSectors) {
+    const b = sector.sectorBytes;
+    for (let j = 0; j < b.length; j++) parity[j] ^= b[j];
+  }
+  return {
+    type: dataSectors[0].type,
+    partMeta: {
+      cacheId: first.cacheId, sectorIndex: first.sectorCount, sectorCount: first.sectorCount,
+      totalBytes: first.totalBytes, paritySchemeRaw: PARITY_XOR,
+    },
+    sectorBytes: parity,
+  };
 }
 
 // Concatenates CBOR(core_meta_item) || CBOR(bulky_meta_item) || content (SPEC §4.2).
@@ -653,6 +682,9 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
 // MAX_URI_LENGTH.
 const MAX_URI_LENGTH = 2000;
 const MAX_SECTOR_DATA_BYTES = 1300;
+
+// parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5).
+const PARITY_XOR = 1;
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -1532,17 +1564,28 @@ async function main() {
     hint: mc.hint, filename: mc.filename, mimeType: mc.mimeType,
     rawBytes: mcRawBytes, compress: mc.compress, maxSectorDataBytes: mc.maxSectorDataBytes,
   });
+  const mcParity = paritySector(mcSectors);
 
   document.getElementById('multi-info').innerHTML = `
     <strong>${escHtml(mc.label)}</strong>
     — ${escHtml(mc.mimeType)}, ${mcSectors[0].partMeta.totalBytes} bytes total, ${mcSectors.length} sectors<br>
     Cache ID: <code>${toHex(mcSectors[0].partMeta.cacheId)}</code>
     <div class="step">① Scan each <strong>sector</strong> below, in any order.</div>
-    <div class="step">② TagDrop reassembles and verifies the SHA-256 checksum once all ${mcSectors.length} are collected.</div>`;
+    <div class="step">② TagDrop reassembles and verifies the SHA-256 checksum once all ${mcSectors.length} are collected.</div>
+    <div class="step">③ Or scan only ${mcSectors.length - 1} of the ${mcSectors.length} sectors plus the
+      🛟 <strong>parity</strong> code below — TagDrop XORs them together to reconstruct the one you missed.</div>`;
 
   const multiGrid = document.getElementById('multi-grid');
   await addContentSectorCards(multiGrid, mcSectors, {
     baseLabel: mc.label, mime: mc.mimeType, extraBadge: mc.compress ? 'deflate' : null,
+  });
+  await addCard(multiGrid, {
+    label: `${mc.label} — parity (recovery)`,
+    mime: 'parity recovery code',
+    extraBadge: 'parity', badgeClass: 'parity',
+    id: `${toHex(mcParity.partMeta.cacheId)}-parity`,
+    uri: encodeSector(mcParity).uri,
+    isManifest: false,
   });
 
   // Paper set
