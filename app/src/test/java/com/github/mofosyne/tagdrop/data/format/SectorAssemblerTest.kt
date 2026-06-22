@@ -71,7 +71,7 @@ class SectorAssemblerTest {
     @Test fun multiSectorInOrder() {
         val content = "hello world this is some longer test content for chunking".toByteArray()
         val cacheId = byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80.toByte())
-        val sectors = sectorsOf(cacheId, contentStream(content, hint = null), 8)
+        val sectors = sectorsOf(cacheId, contentStream(content, hint = null, sha = sha256(content)), 8)
         assertTrue(sectors.size > 1)
         val a = SectorAssembler()
 
@@ -89,7 +89,7 @@ class SectorAssemblerTest {
     @Test fun reverseOrderSectors() {
         val content = "abcdefghijklmnopqrstuvwxyz".toByteArray()
         val cacheId = byteArrayOf(5, 4, 3, 2, 1, 0, 9, 8)
-        val sectors = sectorsOf(cacheId, contentStream(content, hint = null), 5)
+        val sectors = sectorsOf(cacheId, contentStream(content, hint = null, sha = sha256(content)), 5)
         assertTrue(sectors.size > 1)
         val a = SectorAssembler()
 
@@ -101,7 +101,7 @@ class SectorAssemblerTest {
     @Test fun shuffledSectors() {
         val content = ByteArray(100) { it.toByte() }
         val cacheId = byteArrayOf(1, 1, 2, 3, 5, 8, 13, 21)
-        val sectors = sectorsOf(cacheId, contentStream(content, hint = null), 10)
+        val sectors = sectorsOf(cacheId, contentStream(content, hint = null, sha = sha256(content)), 10)
         assertTrue(sectors.size > 1)
         val a = SectorAssembler()
 
@@ -136,8 +136,8 @@ class SectorAssemblerTest {
         val contentB = "alpha beta gamma delta".toByteArray()
         val cacheIdA = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
         val cacheIdB = byteArrayOf(9, 10, 11, 12, 13, 14, 15, 16)
-        val sectorsA = sectorsOf(cacheIdA, contentStream(contentA, hint = null), 6)
-        val sectorsB = sectorsOf(cacheIdB, contentStream(contentB, hint = null), 6)
+        val sectorsA = sectorsOf(cacheIdA, contentStream(contentA, hint = null, sha = sha256(contentA)), 6)
+        val sectorsB = sectorsOf(cacheIdB, contentStream(contentB, hint = null, sha = sha256(contentB)), 6)
         assertTrue(sectorsA.size > 1 && sectorsB.size > 1)
 
         val a = SectorAssembler()

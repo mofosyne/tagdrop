@@ -111,7 +111,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 3 | `hint` / `label` | text (opt) | `core_meta_item` |
 | 4 | `mime_type` | text (opt) | `core_meta_item`; Content only |
 | 7 | `total_bytes` | uint | `part_meta` |
-| 8 | `content_sha256` | bytes (32, opt) | `core_meta_item` |
+| 8 | `content_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
 | 11 | `filename` | text (opt) | `core_meta_item`; Content only |
 | 12 | `content_compression` | uint (opt) | `core_meta_item` |
 | 13 | `set` | text (opt) | `core_meta_item`; Paper only |
@@ -139,7 +139,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 44 | `parity_scheme` | uint (opt) | `part_meta`; only on sectors at index ≥ `sector_count` |
 | 45 | `bulky_meta_compression` | uint (opt) | `core_meta_item` |
 | 46 | `bulky_meta_compressed_bytes` | uint (required iff key 45 present) | `core_meta_item` |
-| 47 | `bulky_meta_sha256` | bytes (32, opt) | `core_meta_item` |
+| 47 | `bulky_meta_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -152,9 +152,16 @@ as an alternative to the emoji `icon` field. Keys 28, 30, 31 are defined in §9
 (Passphrase-based key derivation). Key 29 is reserved and unused — see §9 for
 why an encrypted override map's nonce doesn't need its own clear field.
 
-**`content_sha256`/`bulky_meta_sha256` are optional**, recommended whenever
-`sector_count > 1` — for a single-sector payload there's nothing to verify
-completeness of, so the bytes aren't worth taxing every simple code with.
+**`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
+1`.** Without it, an adversary who substitutes one sector of a multi-sector
+payload after the fact (e.g. replacing one sticker in a physical multi-code
+layout) goes undetected — see §5, which requires decoders to reject a
+multi-sector payload whose hash is missing rather than silently accepting
+unverified reassembled bytes. They remain OPTIONAL for `sector_count == 1`,
+where there's nothing to verify completeness of — a single code's own QR
+error correction already guards against incidental corruption within one
+code, so the bytes aren't worth taxing every simple code with. Decoders MUST
+verify either hash whenever present, regardless of `sector_count`.
 
 **`bulky_meta_compressed_bytes`** is the one explicit length field anywhere in
 the stream: `bulky_meta_item` sits *between* `core_meta_item` and content, so
@@ -436,18 +443,22 @@ Paper (root_hash)
 4. Parse `core_meta_item` (plain CBOR, from the front of the stream). Parse
    `bulky_meta_item` next: if `bulky_meta_compression` is absent, CBOR's
    self-delimiting structure marks its end; if present, read exactly
-   `bulky_meta_compressed_bytes` and decompress. Verify
-   `SHA-256(bulky_meta_item bytes as transmitted) == bulky_meta_sha256` if
-   present. Whatever remains is `content`.
+   `bulky_meta_compressed_bytes` and decompress. If `sector_count > 1`,
+   `bulky_meta_sha256` is REQUIRED (§3) — reject the payload as malformed if
+   it's absent — and verify `SHA-256(bulky_meta_item bytes as transmitted) ==
+   bulky_meta_sha256`, rejecting on mismatch; for `sector_count == 1`, verify
+   it only if present. Whatever remains is `content`.
 5. If `content` is ≥ 28 bytes, try AES-256-GCM decryption as
    `nonce(12) || ciphertext || tag(16)` (§9) against every known
    `key_material`. If one authenticates, decompress the plaintext if
    `content_compression != 0` and CBOR-decode it as the override map (§9) —
    merge it onto `core_meta_item` (override map's keys win) to get the final
-   `hint`/`mime_type`/`content`/`filename`. Otherwise, verify
-   `SHA-256(content as transmitted) == content_sha256` if present, then
-   decompress `content` if `content_compression != 0`; `core_meta_item`'s
-   fields are final as-is.
+   `hint`/`mime_type`/`content`/`filename`. Otherwise: if `sector_count > 1`,
+   `content_sha256` is REQUIRED (§3) — reject the payload as malformed if
+   it's absent — and verify `SHA-256(content as transmitted) ==
+   content_sha256`, rejecting on mismatch; for `sector_count == 1`, verify it
+   only if present. Then decompress `content` if `content_compression != 0`;
+   `core_meta_item`'s fields are final as-is.
 6. Deliver MIME-typed content to the viewer (Content payloads), or render the
    directory (Paper payloads, §4.3).
 

@@ -873,8 +873,9 @@ async function encryptOverrideMap(override, key, compression) {
  * Kotlin app has no encode-side passphrase support — see CLAUDE.md). The reassembled
  * stream is CBOR(core_meta_item) || CBOR(bulky_meta_item) || content, split into sectors
  * of at most `maxSectorDataBytes` each — one sector for content that fits, more for
- * larger payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added only when more than
- * one sector is needed.
+ * larger payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added whenever more than
+ * one sector is needed (required for sector_count > 1, SPEC §3) — without it, a decoder
+ * has no way to detect a substituted/forged sector during reassembly.
  *
  * `hint`/`filename`/`mimeType`/`rawBytes` are the clear map's own fields — shown until a
  * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
@@ -977,20 +978,18 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
  *   related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
  *               keyMaterial:Uint8Array|null, retainKey:boolean}]
+ *
+ * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
+ * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
+ * than one sector, since that's the only integrity check over `files`/`related` (the
+ * slug -> file_id directory) once a multi-sector paper is reassembled from independently
+ * scanned codes. Always including it (rather than only above the sector-count threshold,
+ * as createContentSectors does for `content_sha256`) keeps this byte-reproducible from the
+ * function's arguments alone, with no hidden state to replay — Paper payloads are directory
+ * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
+ * directory.
  */
-function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true }) {
-  const core = [
-    [K.HINT,     label || null],
-    [K.PAPER_DESCRIPTION, description || null],
-    [K.SET,      set || null],
-    [K.SLUG,     slug || null],
-    [K.COLLECTION_ID,    collectionId || null],
-    [K.COLLECTION_LABEL, collectionLabel || null],
-    [K.COLLECTION_TAG,   collectionTag || null],
-    [K.ICON,             icon || null],
-    [K.KEY_MATERIAL, keyMaterial || null],
-    [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
-  ];
+async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
@@ -1003,7 +1002,21 @@ function buildPaperStream({ label, set, slug, files, related, description, colle
       [K.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
     ]))],
   ];
-  return buildStream(core, bulky, new Uint8Array(0));
+  const bulkyBytes = cborMap(bulky);
+  const core = [
+    [K.HINT,     label || null],
+    [K.PAPER_DESCRIPTION, description || null],
+    [K.SET,      set || null],
+    [K.SLUG,     slug || null],
+    [K.COLLECTION_ID,    collectionId || null],
+    [K.COLLECTION_LABEL, collectionLabel || null],
+    [K.COLLECTION_TAG,   collectionTag || null],
+    [K.ICON,             icon || null],
+    [K.KEY_MATERIAL, keyMaterial || null],
+    [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
+    [K.BULKY_SHA, await sha256(bulkyBytes)],
+  ];
+  return concatBytes(cborMap(core), bulkyBytes);
 }
 
 /**
@@ -1014,7 +1027,7 @@ function buildPaperStream({ label, set, slug, files, related, description, colle
  * into every sector.
  */
 async function createPaper(args) {
-  const stream = buildPaperStream(args);
+  const stream = await buildPaperStream(args);
   const rootHash = await sha256first8(stream);
   const maxSectorDataBytes = args.maxSectorDataBytes ?? Infinity;
   return { rootHash, sectors: sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes) };

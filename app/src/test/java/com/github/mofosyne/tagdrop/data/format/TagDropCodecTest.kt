@@ -133,6 +133,21 @@ class TagDropCodecTest {
         assertTrue(assemble(sectors) is SectorAssembler.State.HashMismatch)
     }
 
+    @Test fun multiSectorWithoutContentSha256IsRejected() {
+        // A forged stream that omits content_sha256 (key 8) entirely, split across two sectors —
+        // simulates an attacker substituting sectors with no hash left to disprove the forgery.
+        val core = MiniCbor.encodeMap(listOf(4 to "text/plain"))
+        val bulky = MiniCbor.encodeMap(emptyList())
+        val stream = core + bulky + "forged content, no hash".toByteArray()
+        val cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val mid = stream.size / 2
+        val sectors = listOf(
+            Sector(TagDropCodec.TYPE_CONTENT, PartMeta(cacheId, 0, 2, stream.size), stream.copyOfRange(0, mid)),
+            Sector(TagDropCodec.TYPE_CONTENT, PartMeta(cacheId, 1, 2, stream.size), stream.copyOfRange(mid, stream.size))
+        )
+        assertTrue(assemble(sectors) is SectorAssembler.State.Failed)
+    }
+
     @Test fun collectingReportsMissingIndices() {
         val sectors = TagDropCodec.createContentSectors(
             null, null, "text/plain", ByteArray(2500) { it.toByte() }, maxSectorDataBytes = 600
@@ -280,6 +295,17 @@ class TagDropCodecTest {
         assertFalse(a.rootHash.contentEquals(c.rootHash))
     }
 
+    @Test fun paperAlwaysIncludesBulkyMetaShaRegardlessOfSectorCount() {
+        // Unlike content_sha256 (added only once a payload needs >1 sector), bulky_meta_sha256
+        // is always present — keeps buildPaperStream byte-reproducible from Paper alone with no
+        // hidden "was it rebuilt" state to replay.
+        val (_, sectors) = TagDropCodec.createPaper(null, null, null, listOf(
+            TagDropPayload.FileEntry("a", "text/plain", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
+        ))
+        assertEquals(1, sectors.size)
+        assertTrue("even a single-sector paper carries bulky_meta_sha256", coreOf(sectors.first()).containsKey(47))
+    }
+
     @Test fun decodePaperStreamRoundTrip() {
         val (paper, _) = TagDropCodec.createPaper(
             "Test Paper", "test-set", "test-slug",
@@ -326,6 +352,40 @@ class TagDropCodecTest {
         val decoded = (assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.PaperReady).paper
         assertArrayEquals(paper.rootHash, decoded.rootHash)
         assertEquals(60, decoded.files.size)
+    }
+
+    @Test fun paperMultiSectorWithoutBulkyMetaShaIsRejected() {
+        // A forged Paper stream that omits bulky_meta_sha256 (key 47) — the only integrity
+        // check over the files/related directory once a multi-sector paper is reassembled
+        // from independently scanned codes.
+        val core = MiniCbor.encodeMap(listOf(3 to "Forged Paper"))
+        val bulky = MiniCbor.encodeMap(listOf(
+            15 to listOf(MiniCbor.CborMap(listOf(20 to "evil", 21 to "text/plain", 22 to byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9))))
+        ))
+        val stream = core + bulky
+        val rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val mid = stream.size / 2
+        val sectors = listOf(
+            Sector(TagDropCodec.TYPE_PAPER, PartMeta(rootHash, 0, 2, stream.size), stream.copyOfRange(0, mid)),
+            Sector(TagDropCodec.TYPE_PAPER, PartMeta(rootHash, 1, 2, stream.size), stream.copyOfRange(mid, stream.size))
+        )
+        assertTrue(assemble(sectors) is SectorAssembler.State.Failed)
+    }
+
+    @Test fun paperMultiSectorTamperedDirectoryFailsVerification() {
+        val files = (0 until 60).map {
+            TagDropPayload.FileEntry("file-$it", "text/plain", ByteArray(8) { (it).toByte() })
+        }
+        val (_, sectors) = TagDropCodec.createPaper("Big Paper", null, null, files, maxSectorDataBytes = 400)
+        assertTrue("a large paper should span several sectors", sectors.size > 1)
+        // Corrupt a byte in a later sector — for Paper, everything past core_meta_item is the
+        // files/related directory (content is always empty) — without bulky_meta_sha256 this
+        // would silently reassemble into a directory pointing at attacker-controlled file ids.
+        val tampered = sectors.toMutableList()
+        val victim = tampered[1]
+        val corruptedBytes = victim.sectorBytes.copyOf().also { it[it.lastIndex] = (it[it.lastIndex] + 1).toByte() }
+        tampered[1] = Sector(victim.type, victim.partMeta, corruptedBytes)
+        assertTrue(assemble(tampered) is SectorAssembler.State.Failed)
     }
 
     // ── Key-only code (SPEC §9) ────────────────────────────────────────────────

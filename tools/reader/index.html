@@ -506,11 +506,13 @@ function isCborMap(v) {
 }
 
 /**
- * Splits a reassembled `stream` into core_meta_item, bulky_meta_item, and content
- * (SPEC §4.2). bulky_meta_item is read per core's bulky_meta_compression declaration:
- * if absent, CBOR's self-delimiting structure marks its end; if present, exactly
- * bulky_meta_compressed_bytes are read and decompressed. Mirrors Kotlin
- * TagDropCodec.splitReassembledStream.
+ * Splits a reassembled `stream` into core_meta_item, bulky_meta_item, bulkyRaw, and
+ * content (SPEC §4.2). bulky_meta_item is read per core's bulky_meta_compression
+ * declaration: if absent, CBOR's self-delimiting structure marks its end; if present,
+ * exactly bulky_meta_compressed_bytes are read and decompressed. `bulkyRaw` is
+ * bulky_meta_item exactly as transmitted (compressed bytes if bulky_meta_compression was
+ * set, else its raw CBOR encoding) — what `bulky_meta_sha256` (key 47) is computed over
+ * (SPEC §3, §5 step 4). Mirrors Kotlin TagDropCodec.splitReassembledStream.
  */
 async function splitReassembledStream(stream) {
   try {
@@ -521,14 +523,16 @@ async function splitReassembledStream(stream) {
     if (bulkyCompression !== 0) {
       const n = core[K.BULKY_COMPRESSED_BYTES];
       if (n == null || n > afterCore.length) return null;
-      const bulky = cborDecodeSequencePrefix(await zlibDecompress(afterCore.slice(0, n)), 1).items[0];
+      const bulkyRaw = afterCore.slice(0, n);
+      const bulky = cborDecodeSequencePrefix(await zlibDecompress(bulkyRaw), 1).items[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, content: afterCore.slice(n) };
+      return { core, bulky, bulkyRaw, content: afterCore.slice(n) };
     } else {
       const { items: bulkyItems, trailing: afterBulky } = cborDecodeSequencePrefix(afterCore, 1);
       const bulky = bulkyItems[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, content: afterBulky };
+      const bulkyRaw = afterCore.slice(0, afterCore.length - afterBulky.length);
+      return { core, bulky, bulkyRaw, content: afterBulky };
     }
   } catch (e) {
     return null;
@@ -710,12 +714,14 @@ function concatBytes(...arrays) {
 
 /**
  * Parses a reassembled Content stream into its fields (SPEC §4.2, §5). Verifies
- * `content_sha256` over the content slot as transmitted, if present — the
- * transmission-integrity check, independent of any later override decryption (§9).
- * `partMeta.cacheId` becomes the Content's id (null for a key-only code). Cover/override
- * resolution is the caller's job (see SectorAssembler). Mirrors Kotlin
- * TagDropCodec.parseContentStream. Returns { kind: 'Ok', content } | { kind: 'HashMismatch' }
- * | { kind: 'Malformed' }.
+ * `content_sha256` over the content slot as transmitted — the transmission-integrity
+ * check, independent of any later override decryption (§9). Required whenever
+ * `partMeta.sectorCount > 1` (SPEC §3): without it, a decoder has no way to detect a
+ * substituted/forged sector during reassembly, so a multi-sector stream missing it is
+ * rejected as malformed rather than silently trusted. `partMeta.cacheId` becomes the
+ * Content's id (null for a key-only code). Cover/override resolution is the caller's job
+ * (see SectorAssembler). Mirrors Kotlin TagDropCodec.parseContentStream. Returns
+ * { kind: 'Ok', content } | { kind: 'HashMismatch' } | { kind: 'Malformed' }.
  */
 async function parseContentStream(stream, partMeta) {
   const parts = await splitReassembledStream(stream);
@@ -723,7 +729,9 @@ async function parseContentStream(stream, partMeta) {
   const core = parts.core;
   const slot = parts.content;
   const declaredSha = core[K.CONTENT_SHA];
-  if (declaredSha && !bytesEqual(await sha256(slot), declaredSha)) {
+  if (declaredSha == null) {
+    if (partMeta.sectorCount > 1) return { kind: 'Malformed' };
+  } else if (!bytesEqual(await sha256(slot), declaredSha)) {
     return { kind: 'HashMismatch' };
   }
   return {
@@ -752,12 +760,21 @@ async function parseContentStream(stream, partMeta) {
 
 /** Parses a reassembled Paper stream (SPEC §4.2, §4.3), using partMeta's root_hash as the
  *  paper's address (falling back to hashing the stream if absent). Mirrors Kotlin
- *  TagDropCodec.parsePaperStream. Returns null if malformed. */
+ *  TagDropCodec.parsePaperStream. Returns null if malformed or, for a multi-sector paper,
+ *  if `bulky_meta_sha256` is missing or doesn't match — the only integrity check over the
+ *  files/related directory once reassembled from independently scanned sectors. */
 async function parsePaperStream(stream, partMeta) {
   const parts = await splitReassembledStream(stream);
   if (!parts) return null;
+  if (!(await verifyBulkyMetaSha(parts, partMeta.sectorCount))) return null;
   const rootHash = partMeta.cacheId ?? toHex((await sha256(stream)).slice(0, 8));
   return paperFromParts(parts, rootHash);
+}
+
+async function verifyBulkyMetaSha(parts, sectorCount) {
+  const declared = parts.core[K.BULKY_SHA];
+  if (declared == null) return sectorCount <= 1;
+  return bytesEqual(await sha256(parts.bulkyRaw), declared);
 }
 
 function paperFromParts(parts, rootHash) {

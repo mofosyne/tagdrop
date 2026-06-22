@@ -269,10 +269,11 @@ function buildStream(corePairs, bulkyPairs, content) {
 /**
  * Builds Content sector(s) (SPEC §4.1/§4.2) for a file/text payload. Mirrors
  * tools/generator/index.html's createContentSectors, minus the encryption/
- * collection/key fields this test doesn't exercise. content_sha256 is only
- * included in core_meta_item when the unsplit stream doesn't fit in one
- * sector — single-sector payloads omit it as redundant (the sector's own
- * QR/CBOR framing is already integrity-checked).
+ * collection/key fields this test doesn't exercise. content_sha256 is included
+ * in core_meta_item whenever the unsplit stream doesn't fit in one sector —
+ * required for sector_count > 1 (SPEC §3), since that's the only way to detect a
+ * substituted/forged sector during reassembly. Single-sector payloads omit it as
+ * redundant (the sector's own QR/CBOR framing is already integrity-checked).
  */
 async function encodeContentSectors({ hint, filename, mimeType, rawBytes, compress, maxSectorDataBytes = Infinity }) {
   let compression = null, content = rawBytes;
@@ -341,13 +342,17 @@ function bytesEqual(a, b) {
 
 /**
  * Parses a reassembled Content stream into its fields (SPEC §4.2, §5), verifying
- * content_sha256 if present. Mirrors parseContentStream() in
- * tools/reader/index.html. Returns { kind: 'Ok', content } | { kind: 'HashMismatch' }.
+ * content_sha256. Required whenever partMeta.sectorCount > 1 (SPEC §3) — a multi-sector
+ * stream missing it is rejected rather than silently trusted. Mirrors parseContentStream()
+ * in tools/reader/index.html. Returns { kind: 'Ok', content } | { kind: 'HashMismatch' } |
+ * { kind: 'Malformed' }.
  */
 async function parseContentStream(stream, partMeta) {
   const { core, content: slot } = splitReassembledStream(stream);
   const declaredSha = core[K.CONTENT_SHA];
-  if (declaredSha && !bytesEqual(await sha256(slot), declaredSha)) {
+  if (declaredSha == null) {
+    if (partMeta.sectorCount > 1) return { kind: 'Malformed' };
+  } else if (!bytesEqual(await sha256(slot), declaredSha)) {
     return { kind: 'HashMismatch' };
   }
   return {

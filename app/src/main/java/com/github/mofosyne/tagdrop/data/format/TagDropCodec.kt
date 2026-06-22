@@ -238,8 +238,9 @@ object TagDropCodec {
      * Builds the sector(s) of a Content payload (`type` 0). The reassembled stream is
      * `CBOR(core_meta_item) || CBOR(bulky_meta_item) || content`, split into sectors of at
      * most [maxSectorDataBytes] each — one sector for content that fits, more for larger
-     * payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added only when more than one
-     * sector is needed (recommended for `sector_count > 1`, SPEC §3).
+     * payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added whenever more than one
+     * sector is needed (required for `sector_count > 1`, SPEC §3) — without it, a decoder
+     * has no way to detect a substituted/forged sector during reassembly.
      *
      * [hint]/[filename]/[mimeType]/[rawContent] become the **clear** view — shown until a
      * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a
@@ -348,19 +349,17 @@ object TagDropCodec {
     /** The reassembled-stream bytes for [paper] — what the root hash covers, and what gets stored as `ScannedPaper.cborBytes`. */
     fun paperStreamBytes(paper: TagDropPayload.Paper): ByteArray = buildPaperStream(paper)
 
+    /**
+     * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
+     * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
+     * than one sector, since that's the only integrity check over `files`/`related` (the
+     * slug → file_id directory) once a multi-sector paper is reassembled from independently
+     * scanned codes. Always including it (rather than only above the sector-count threshold,
+     * as [createContentSectors] does for `content_sha256`) keeps this byte-reproducible from
+     * [paper] alone, with no hidden state to replay — Paper payloads are directory structures
+     * where a constant ~36-byte cost is negligible next to the cost of an unverified directory.
+     */
     private fun buildPaperStream(paper: TagDropPayload.Paper): ByteArray {
-        val core = listOf(
-            K_HINT     to paper.label,
-            K_PAPER_DESCRIPTION to paper.description,
-            K_SET      to paper.set,
-            K_SLUG     to paper.slug,
-            K_COLLECTION_ID    to paper.collectionId,
-            K_COLLECTION_LABEL to paper.collectionLabel,
-            K_COLLECTION_TAG   to paper.collectionTag,
-            K_ICON             to paper.icon,
-            K_KEY_MATERIAL to paper.keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { paper.keyMaterial != null && !paper.retainKey }
-        )
         val bulky = listOf<Pair<Int, Any?>>(
             K_FILES   to paper.files.map { f ->
                 MiniCbor.CborMap(listOf(
@@ -383,7 +382,24 @@ object TagDropCodec {
                 ))
             }
         )
-        return buildStream(core, bulky, ByteArray(0))
+        val bulkyBytes = MiniCbor.encodeMap(bulky)
+        val core = listOf(
+            K_HINT     to paper.label,
+            K_PAPER_DESCRIPTION to paper.description,
+            K_SET      to paper.set,
+            K_SLUG     to paper.slug,
+            K_COLLECTION_ID    to paper.collectionId,
+            K_COLLECTION_LABEL to paper.collectionLabel,
+            K_COLLECTION_TAG   to paper.collectionTag,
+            K_ICON             to paper.icon,
+            K_KEY_MATERIAL to paper.keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { paper.keyMaterial != null && !paper.retainKey },
+            K_BULKY_SHA to sha256(bulkyBytes)
+        )
+        val out = ByteArrayOutputStream()
+        out.write(MiniCbor.encodeMap(core))
+        out.write(bulkyBytes)
+        return out.toByteArray()
     }
 
     /** Concatenates `CBOR(core_meta_item) || CBOR(bulky_meta_item) || content` (SPEC §4.2). */
@@ -526,8 +542,18 @@ object TagDropCodec {
 
     // ── Reassembled-stream parsing (SPEC §4.2, §5) ─────────────────────────────
 
-    /** Structural split of a reassembled stream into its three items (SPEC §4.2). */
-    data class StreamParts(val core: Map<Int, Any>, val bulky: Map<Int, Any>, val content: ByteArray)
+    /**
+     * Structural split of a reassembled stream into its three items (SPEC §4.2).
+     * [bulkyRawBytes] is `bulky_meta_item` exactly as transmitted (compressed bytes if
+     * `bulky_meta_compression` was set, else its raw CBOR encoding) — what
+     * `bulky_meta_sha256` (key 47) is computed over (SPEC §3, §5 step 4).
+     */
+    data class StreamParts(
+        val core: Map<Int, Any>,
+        val bulky: Map<Int, Any>,
+        val bulkyRawBytes: ByteArray,
+        val content: ByteArray
+    )
 
     /**
      * Splits a reassembled [stream] into `core_meta_item`, `bulky_meta_item`, and `content`
@@ -544,12 +570,14 @@ object TagDropCodec {
         if (bulkyCompression != COMPRESSION_NONE) {
             val n = core.uint(K_BULKY_COMPRESSED_BYTES)?.toInt() ?: return@runCatching null
             if (n > afterCore.size) return@runCatching null
-            val bulky = MiniCbor.decodeMap(decompress(afterCore.copyOfRange(0, n)))
-            StreamParts(core, bulky, afterCore.copyOfRange(n, afterCore.size))
+            val bulkyRaw = afterCore.copyOfRange(0, n)
+            val bulky = MiniCbor.decodeMap(decompress(bulkyRaw))
+            StreamParts(core, bulky, bulkyRaw, afterCore.copyOfRange(n, afterCore.size))
         } else {
             val (bulkyItems, afterBulky) = MiniCbor.decodeSequencePrefix(afterCore, 1)
             val bulky = bulkyItems[0] as? Map<Int, Any> ?: return@runCatching null
-            StreamParts(core, bulky, afterBulky)
+            val bulkyRaw = afterCore.copyOfRange(0, afterCore.size - afterBulky.size)
+            StreamParts(core, bulky, bulkyRaw, afterBulky)
         }
     }.getOrNull()
 
@@ -565,15 +593,19 @@ object TagDropCodec {
 
     /**
      * Parses a reassembled Content stream into a [TagDropPayload.Content] (SPEC §4.2, §5).
-     * Verifies `content_sha256` over the content slot **as transmitted** if present (key 8,
-     * SPEC §3) — that's the transmission-integrity check, independent of any later override
-     * decryption (§9). [partMeta]'s `cache_id` becomes the Content's id (null for a key-only
-     * code). Cover/override resolution is the caller's job (see [SectorAssembler]).
+     * Verifies `content_sha256` over the content slot **as transmitted** (key 8, SPEC §3) —
+     * that's the transmission-integrity check, independent of any later override decryption
+     * (§9). Required whenever [partMeta] reports more than one sector — without it a decoder
+     * can't detect a substituted/forged sector during reassembly — and otherwise checked only
+     * if present. [partMeta]'s `cache_id` becomes the Content's id (null for a key-only code).
+     * Cover/override resolution is the caller's job (see [SectorAssembler]).
      */
     fun parseContentStream(stream: ByteArray, partMeta: PartMeta): ContentParse {
         val parts = splitReassembledStream(stream) ?: return ContentParse.Malformed
         val declaredSha = parts.core.bytesOrNull(K_CONTENT_SHA)
-        if (declaredSha != null && !sha256(parts.content).contentEquals(declaredSha)) {
+        if (declaredSha == null) {
+            if (partMeta.sectorCount > 1) return ContentParse.Malformed
+        } else if (!sha256(parts.content).contentEquals(declaredSha)) {
             return ContentParse.HashMismatch
         }
         val core = parts.core
@@ -603,12 +635,27 @@ object TagDropCodec {
 
     /**
      * Parses a reassembled Paper stream into a [TagDropPayload.Paper] (SPEC §4.2, §4.3), using
-     * [partMeta]'s `root_hash` as the paper's address. Returns null if malformed.
+     * [partMeta]'s `root_hash` as the paper's address. Verifies `bulky_meta_sha256` (key 47,
+     * SPEC §3, §5 step 4) — required whenever [partMeta] reports more than one sector, since
+     * that's the only integrity check over the `files`/`related` directory once a multi-sector
+     * paper is reassembled from independently scanned codes. Returns null if malformed, or if a
+     * required/declared hash doesn't verify.
      */
     fun parsePaperStream(stream: ByteArray, partMeta: PartMeta): TagDropPayload.Paper? {
         val parts = splitReassembledStream(stream) ?: return null
+        if (!verifyBulkyMetaSha(parts, partMeta.sectorCount)) return null
         val rootHash = partMeta.cacheId ?: sha256(stream).copyOf(8)
         return paperFromParts(parts, rootHash)
+    }
+
+    /**
+     * Verifies [parts]' `bulky_meta_sha256` (key 47, SPEC §3, §5 step 4) against its transmitted
+     * `bulky_meta_item` bytes. Required when [sectorCount] > 1 (absence fails verification);
+     * checked only if present otherwise.
+     */
+    private fun verifyBulkyMetaSha(parts: StreamParts, sectorCount: Int): Boolean {
+        val declared = parts.core.bytesOrNull(K_BULKY_SHA) ?: return sectorCount <= 1
+        return sha256(parts.bulkyRawBytes).contentEquals(declared)
     }
 
     /**
