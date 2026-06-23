@@ -427,7 +427,8 @@ class ReceiveActivity : AppCompatActivity() {
                     lat             = resolved.lat,
                     lng             = resolved.lng,
                     locationRadiusM = resolved.radiusM,
-                    icon            = paper.icon
+                    icon            = paper.icon,
+                    inReplyTo       = paper.inReplyTo?.toHex()
                 )
             )
             paper.keyMaterial?.let { handleDiscoveredKey(it, paper.retainKey, paper.label) }
