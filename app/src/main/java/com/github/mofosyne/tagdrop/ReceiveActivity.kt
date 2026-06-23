@@ -349,13 +349,21 @@ class ReceiveActivity : AppCompatActivity() {
             scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
             // tagdrop:... that failed to decode: unsupported version or corrupted data — not a legacy fragment.
             scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
-            else -> {
+            // Already mid-accumulating a legacy data: URI split across codes (SPEC §11, started by
+            // a prior data:-prefixed scan, handled via TagDropScan.LegacyScan) -- this fragment
+            // continues it.
+            legacyChunks.isNotEmpty() -> {
                 legacyChunks.add(scanned)
                 if (!tryCompleteLegacy()) {
                     updateDisplay()
                     toast(getString(R.string.unknown_fragment, legacyChunks.size))
                 }
             }
+            // A complete, standalone non-TagDrop code (URL, plain text, vCard, Wi-Fi config, ...)
+            // -- SPEC.md defines no multi-fragment scheme for these (§11 is data: URIs only), so
+            // there's no "more fragments" to wait for. Cache it immediately as content-addressed
+            // raw content instead of stranding it in legacyChunks with no way to complete.
+            else -> completeRawScan(scanned)
         }
     }
 
@@ -755,6 +763,23 @@ class ReceiveActivity : AppCompatActivity() {
             content    = bytes
         )
         return true
+    }
+
+    /**
+     * Caches a complete non-TagDrop, non-legacy scan (a URL, plain text, vCard, Wi-Fi config,
+     * ...) as standalone content, the same way any other found item is cached -- content-
+     * addressed by [TagDropCodec.contentId] so re-scanning the same code is recognised as
+     * "already found" rather than duplicated.
+     */
+    private fun completeRawScan(text: String) {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        completeSingle(
+            cacheId  = TagDropCodec.contentId(bytes).toHex(),
+            hint     = null,
+            filename = null,
+            mimeType = "text/plain",
+            content  = bytes
+        )
     }
 
     private fun launchLegacyContent() {
