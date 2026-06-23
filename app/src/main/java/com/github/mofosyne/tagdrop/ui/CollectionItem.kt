@@ -18,6 +18,9 @@ sealed class CollectionItem {
     /** Text this card should be matched against for the search box, hashtags included as "#tag". */
     abstract val searchHaystack: String
 
+    /** Distinct tags on this card, for the quick-filter chip row (without the "#" prefix). */
+    abstract val tags: List<String>
+
     /** True if [query] is blank, or found case-insensitively in [searchHaystack] (so typing "#trail" filters by tag). */
     fun matches(query: String): Boolean = query.isBlank() || searchHaystack.contains(query.trim(), ignoreCase = true)
 
@@ -27,9 +30,10 @@ sealed class CollectionItem {
         override val searchHaystack get() = listOfNotNull(
             paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
         ).joinToString(" ")
+        override val tags get() = listOfNotNull(paper.collectionTag)
     }
 
-    data class AdHoc(val collectionId: String, val label: String?, val tags: List<String>, val icon: String?, val items: List<FoundCache>) : CollectionItem() {
+    data class AdHoc(val collectionId: String, val label: String?, override val tags: List<String>, val icon: String?, val items: List<FoundCache>) : CollectionItem() {
         override val key get() = "adhoc:$collectionId"
         override val timestamp get() = items.maxOf { it.discoveredAt }
         override val searchHaystack get() = (
@@ -43,6 +47,7 @@ sealed class CollectionItem {
         override val searchHaystack get() = listOfNotNull(
             cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
         ).joinToString(" ")
+        override val tags get() = listOfNotNull(cache.collectionTag)
     }
 
     /** True if this collection was authored in-app (Create Cache/Paper) rather than scanned from someone else's drop. */

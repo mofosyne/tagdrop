@@ -125,6 +125,11 @@ class MainActivity : AppCompatActivity() {
         binding.bottomNav.selectedItemId = R.id.nav_map
     }
 
+    /** Opens the file picker to restore a backup zip — called from the options menu and from the Collections/History empty states. */
+    fun triggerRestore() {
+        restorePickLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
         return true
@@ -135,7 +140,7 @@ class MainActivity : AppCompatActivity() {
             R.id.action_demo_collection -> { addDemoCollection(); true }
             R.id.action_retained_keys -> { startActivity(Intent(this, RetainedKeysActivity::class.java)); true }
             R.id.action_backup -> { startBackup(); true }
-            R.id.action_restore -> { restorePickLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")); true }
+            R.id.action_restore -> { triggerRestore(); true }
             R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }

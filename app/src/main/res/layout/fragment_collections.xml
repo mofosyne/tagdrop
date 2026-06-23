@@ -23,6 +23,22 @@
 
     </com.google.android.material.textfield.TextInputLayout>
 
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none">
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/chipGroupTags"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:layout_marginBottom="4dp"
+            app:singleLine="true" />
+
+    </HorizontalScrollView>
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -35,16 +51,34 @@
             android:padding="8dp"
             android:clipToPadding="false" />
 
-        <TextView
-            android:id="@+id/textEmpty"
+        <LinearLayout
+            android:id="@+id/emptyStateContainer"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:gravity="center"
+            android:orientation="vertical"
             android:padding="24dp"
-            android:text="@string/empty_collection"
-            android:textSize="16sp"
-            android:visibility="gone" />
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/textEmpty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/empty_collection"
+                android:textSize="16sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonRestoreEmpty"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/action_restore"
+                android:visibility="gone" />
+
+        </LinearLayout>
 
     </FrameLayout>
 
