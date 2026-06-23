@@ -135,7 +135,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 37 | `kdf_alg` | uint (opt) | `core_meta_item`; Content only |
 | 38 | `kdf_salt` | bytes (16, opt) | `core_meta_item`; Content only |
 | 39 | `kdf_iters` | uint (opt, default 100000) | `core_meta_item`; Content only |
-| 40 | `description` | text (opt) | `core_meta_item`; Paper only |
+| 40 | `description` | text (opt) | `core_meta_item` |
 | 42 | `sector_index` | uint | `part_meta` |
 | 43 | `sector_count` | uint | `part_meta` |
 | 44 | `parity_scheme` | uint (opt) | `part_meta`; only on sectors at index ≥ `sector_count` |
@@ -145,6 +145,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 48 | `radius_m` | float64 (opt) | wherever `lat`/`lng` appears — `core_meta_item` or a `related` entry |
 | 49 | `prefer_declared_location` | bool (opt, default `false`) | `core_meta_item` only |
 | 50 | `in_reply_to` | bytes (8, opt) | `core_meta_item` — `cache_id`/`root_hash` of the single parent this is replying to (§7) |
+| 51 | `title` | text (opt) | `core_meta_item` |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -266,11 +267,11 @@ CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
 
 **`core_meta_item`** is always plain CBOR (never compressed) and always
 small — by authoring convention, meant to fit in the first sector or two. It
-carries the preview-tier fields — `hint`/`label`, `mime_type`, `filename`,
-`set`/`slug`, `description`, collection fields, `icon`, declared location
-(`lat`/`lng`/`radius_m`/`prefer_declared_location`), `key_material`/
-`retain_key`, kdf fields, the small signature fields — plus declarations
-about what follows: `bulky_meta_compression`, `bulky_meta_compressed_bytes`
+carries the preview-tier fields — `hint`/`label`, `title`, `mime_type`,
+`filename`, `set`/`slug`, `description`, collection fields, `icon`, declared
+location (`lat`/`lng`/`radius_m`/`prefer_declared_location`), `key_material`/
+`retain_key`, kdf fields, the small signature fields, `in_reply_to` — plus
+declarations about what follows: `bulky_meta_compression`, `bulky_meta_compressed_bytes`
 (only present when key 45 is, since uncompressed `bulky_meta_item` keeps the
 free self-delimiting boundary — §3), `bulky_meta_sha256`,
 `content_compression`, `content_sha256`.
@@ -380,18 +381,26 @@ the paper and can point toward related papers at other locations. Its
 `core_meta_item`/`bulky_meta_item` shape is shown in §4.2 above; `content` is
 always empty.
 
-**`label` vs. `description` (issue #35):** `label` (key 3) is the paper's
-*name or location* — "Trail Stop 3 — Oak Tree" tells you where you are, not
-what's on it. `description` (key 40, optional) is a content teaser for the
-whole paper — the same role `hint` plays for a Content payload, but for a
-paper that's already been scanned and is showing its directory rather than
-a "should I look for this" decision. A per-file `description` (key 41,
-optional, in each `files[]` entry alongside `slug`/`mime_type`) plays the
-analogous role for an individual file, e.g. "A poem to read" or "A
-hand-drawn map" — letting a finder choose among files they can already see
-listed, before scanning each one's own code. Both fields are optional;
-omitting them just means the directory shows filenames/MIME types with no
-content teaser.
+**`label` vs. `description` vs. `title` (issue #35):** `label` (key 3) is
+the paper's *name or location* — "Trail Stop 3 — Oak Tree" tells you where
+you are, not what's on it (the same key is called `hint` for a Content
+payload instead — same field, different name by convention, §4.2).
+`description` (key 40, optional — originally Paper-only, now valid for
+Content too) is a content teaser or message body: for a Paper, the same
+role `hint` plays for a Content payload, but shown once the directory is
+already being browsed rather than as a "should I look for this" decision;
+for a Content payload, free text alongside the cache's own bytes, or —
+when the content slot is occupied by an attachment instead — standing in
+as the message itself (see Postcards below). A per-file `description`
+(key 41, optional, in each `files[]` entry alongside `slug`/`mime_type`)
+plays the analogous role for an individual file, e.g. "A poem to read" or
+"A hand-drawn map" — letting a finder choose among files they can already
+see listed, before scanning each one's own code. `title` (key 51,
+optional, valid for both payload kinds) is a short subject/caption,
+deliberately kept separate from `label`/`hint` so a caption never has to
+share a field with "where this is" or "should I look for this". All three
+fields are optional; omitting them just means the directory or preview
+shows filenames/MIME types with no caption or teaser.
 
 **Located related papers:** A `related` entry (key 16) may include `lat`/`lng`
 (keys 26/27) — the approximate coordinates of that related paper, if the
@@ -793,22 +802,30 @@ Verified Authorship (§10) if a thread needs to resist forged replies.
 
 A common shape combining the above: a short message, optionally with one
 or more attachments, optionally directed at an earlier drop as a reply —
-otherwise it's a new conversation. This needs no new wire structure; a
-"postcard" is just an ordinary Content or Paper payload, composed from
-fields that already exist:
+otherwise it's a new conversation. This needs no new wire structure beyond
+`title` (key 51) and widening `description` (key 40) from Paper-only to
+both payload kinds; a "postcard" is just an ordinary Content or Paper
+payload, composed from fields that already exist:
 
-- **Message, no attachment:** a Content payload whose `content` bytes are
-  the message itself (`mime_type` `text/plain` or `text/html`), with `hint`
-  as an optional short subject/preview line.
+- **Subject line:** `title` (key 51, optional) — a short caption, kept
+  separate from `hint`/`label`'s existing role (§4.2/§4.3) so a postcard's
+  subject doesn't have to share a field with that pre-existing meaning.
+- **Message, no attachment:** a Content payload whose `content` bytes
+  *are* the message (`mime_type` `text/plain` or `text/html`) — keeping the
+  message in `content` rather than `description` matters here, since
+  `cache_id` is content-addressed (§4.4, `sha256(content)`) and every
+  empty-`content` postcard would otherwise hash to the same `cache_id`
+  regardless of what its `title`/`description` said.
 - **Message with one attachment:** a Content payload where
   `content`/`filename`/`mime_type` carry the attachment (a photo, a voice
-  clip), and `hint` carries the message — necessarily short, since a
-  Content payload has only one content slot and it's spoken for by the
-  attachment.
+  clip) — `cache_id` is then content-addressed over the attachment, which
+  is the thing worth deduplicating by — and `description` (key 40, now
+  valid for Content, not just Paper) carries the message instead, since the
+  content slot is spoken for.
 - **Longer message with attachment(s):** a Paper payload, with `description`
-  (key 40) carrying the message and `files[]` listing the attachment(s) —
-  each attachment is its own small Content payload the author creates
-  alongside the Paper. `label` can title the postcard.
+  carrying the message and `files[]` listing the attachment(s) — each
+  attachment is its own small Content payload the author creates alongside
+  the Paper.
 - **A reply to any of the above:** the same shape, with `in_reply_to` set to
   the parent's `cache_id`/`root_hash`. Omit it for a new, unprompted
   postcard.
@@ -1381,7 +1398,7 @@ Version history:
   `sector_bytes` in order, is `core_meta_item || bulky_meta_item || content`
   — small/plain identity and declaration fields, then whatever's bulky or
   worth compressing, then raw content bytes with no declared length.
-- Payload map integer keys 2–19, 20–24, 26–28, 30–40, 42–49. Keys 1, 6, 9, 10
+- Payload map integer keys 2–19, 20–24, 26–28, 30–40, 42–51. Keys 1, 6, 9, 10
   retired (superseded by the envelope and by `part_meta`'s sector fields —
   §3). Key 25 reserved for a future binary image icon; key 29 reserved,
   unused (§9).
@@ -1407,7 +1424,7 @@ Version history:
   (`parity_scheme` 1) at `sector_index == sector_count` reconstructs exactly
   one lost data sector per payload (§5).
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
-- Paper content-teaser `description` (key 40, paper-level) and per-file `description` (key 41, in `files[]` entries) — distinct from the paper's `label`/file's `slug` (§4.3).
+- Content-teaser `description` (key 40, both payload kinds) and per-file `description` (key 41, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 

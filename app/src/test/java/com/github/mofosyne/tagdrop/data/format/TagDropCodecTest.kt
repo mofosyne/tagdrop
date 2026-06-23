@@ -73,6 +73,18 @@ class TagDropCodecTest {
         assertEquals("🌳", state.icon)
     }
 
+    @Test fun contentWithTitleDescriptionAndInReplyTo() {
+        val parentId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val sectors = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "postcard message".toByteArray(),
+            inReplyTo = parentId, title = "Greetings from the coast", description = "Wish you were here"
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals("Greetings from the coast", state.title)
+        assertEquals("Wish you were here", state.description)
+        assertArrayEquals(parentId, state.inReplyTo)
+    }
+
     @Test fun contentWithCompressionDecompressedOnAssembly() {
         val raw = "<html><body>test</body></html>".repeat(20).toByteArray()
         val sectors = TagDropCodec.createContentSectors(null, null, "text/html", raw, compress = true)
@@ -301,6 +313,18 @@ class TagDropCodecTest {
         assertEquals("trail start at town square", decoded.related[1].hint)
         assertNull(decoded.related[1].lat)
         assertNull(decoded.related[1].radiusM)
+    }
+
+    @Test fun paperWithTitleAndInReplyTo() {
+        val parentId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (_, sectors) = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            inReplyTo = parentId, title = "Reply to Stop 3"
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        assertEquals("Reply to Stop 3", state.paper.title)
+        assertArrayEquals(parentId, state.paper.inReplyTo)
     }
 
     @Test fun paperRootHashIsContentAddressed() {

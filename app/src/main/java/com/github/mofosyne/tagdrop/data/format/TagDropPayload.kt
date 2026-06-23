@@ -40,7 +40,9 @@ sealed class TagDropPayload {
         val lng: Double? = null,                // optional — author-declared longitude of this content's physical location
         val radiusM: Double? = null,            // optional — circle-of-uncertainty radius in meters around lat/lng
         val preferDeclaredLocation: Boolean = false, // if true, lat/lng wins over live GPS even when a fix is available
-        val inReplyTo: ByteArray? = null        // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
+        val inReplyTo: ByteArray? = null,       // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
+        val title: String? = null,              // optional — short subject/caption, distinct from hint (SPEC §4.3, issue #35)
+        val description: String? = null         // optional — content teaser / message body, e.g. when an attachment occupies content (SPEC §4.3, issue #35)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Content && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId?.contentHashCode() ?: 0
@@ -120,7 +122,8 @@ sealed class TagDropPayload {
         val lng: Double? = null,                // optional — author-declared longitude of this paper's physical location
         val radiusM: Double? = null,            // optional — circle-of-uncertainty radius in meters around lat/lng
         val preferDeclaredLocation: Boolean = false, // if true, lat/lng wins over live GPS even when a fix is available
-        val inReplyTo: ByteArray? = null        // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
+        val inReplyTo: ByteArray? = null,       // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
+        val title: String? = null               // optional — short subject/caption, distinct from label (SPEC §4.3, issue #35)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Paper && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()
