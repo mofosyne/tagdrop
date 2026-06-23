@@ -91,7 +91,8 @@ class ShareQrActivity : AppCompatActivity() {
 
         return TagDropCodec.createContentSectorsAutoSized(
             cache.hint, cache.filename, cache.mimeType, rawContent, compress,
-            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon
+            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon,
+            inReplyTo = cache.inReplyTo?.hexToBytes(), title = cache.title, description = cache.description
         )
     }
 

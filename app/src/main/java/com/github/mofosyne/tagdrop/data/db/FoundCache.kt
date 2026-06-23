@@ -23,7 +23,10 @@ data class FoundCache(
     val pendingCompression: Int = 0,             // compression to apply when decoding pendingOverrideBlob's plaintext (SPEC §9)
     val wasEncrypted: Boolean = false,           // true if this cache ever carried an encrypted override-map blob (SPEC §9); stays true even after unlock
     val kdfAlg: Int = 0,                         // KDF algorithm for passphrase-derived key (0 = none, 1 = PBKDF2-SHA256); non-zero only while pendingOverrideBlob is set
-    val kdfSalt: ByteArray? = null               // 16-byte random salt for PBKDF2; present whenever kdfAlg != 0
+    val kdfSalt: ByteArray? = null,              // 16-byte random salt for PBKDF2; present whenever kdfAlg != 0
+    val inReplyTo: String? = null,               // hex-encoded cache_id/root_hash of the single parent this is replying to (SPEC §7)
+    val title: String? = null,                   // optional short subject/caption, distinct from hint (SPEC §4.3, issue #35)
+    val description: String? = null              // optional content teaser / message body (SPEC §4.3, issue #35)
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()

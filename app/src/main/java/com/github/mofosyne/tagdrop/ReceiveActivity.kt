@@ -445,7 +445,8 @@ class ReceiveActivity : AppCompatActivity() {
         wasEncrypted: Boolean = false,
         kdfAlg: Int = 0, kdfSalt: ByteArray? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null, title: String? = null, description: String? = null
     ) {
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second)
@@ -472,7 +473,10 @@ class ReceiveActivity : AppCompatActivity() {
                     pendingCompression  = pendingCompression,
                     wasEncrypted        = wasEncrypted,
                     kdfAlg              = kdfAlg,
-                    kdfSalt             = kdfSalt
+                    kdfSalt             = kdfSalt,
+                    inReplyTo           = inReplyTo?.toHex(),
+                    title               = title,
+                    description         = description
                 )
             )
             if (paper != null) {
@@ -520,7 +524,8 @@ class ReceiveActivity : AppCompatActivity() {
                 state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
                 wasEncrypted = true,
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-                preferDeclaredLocation = state.preferDeclaredLocation
+                preferDeclaredLocation = state.preferDeclaredLocation,
+                inReplyTo = state.inReplyTo, title = state.title, description = state.description
             )
             return
         }
@@ -533,7 +538,8 @@ class ReceiveActivity : AppCompatActivity() {
                 collectionId = state.collectionId?.toHex(), collectionLabel = state.collectionLabel,
                 collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg,
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-                preferDeclaredLocation = state.preferDeclaredLocation
+                preferDeclaredLocation = state.preferDeclaredLocation,
+                inReplyTo = state.inReplyTo, title = state.title, description = state.description
             )
             return
         }
@@ -544,7 +550,8 @@ class ReceiveActivity : AppCompatActivity() {
             pendingOverrideBlob = blob, pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-            preferDeclaredLocation = state.preferDeclaredLocation
+            preferDeclaredLocation = state.preferDeclaredLocation,
+            inReplyTo = state.inReplyTo, title = state.title, description = state.description
         )
     }
 
@@ -582,7 +589,8 @@ class ReceiveActivity : AppCompatActivity() {
         kdfSalt: ByteArray, kdfIters: Int, fallbackContent: ByteArray?, filename: String?, mimeType: String,
         collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null, title: String? = null, description: String? = null
     ) {
         val result = askPassphrase(hint)
         if (result != null) {
@@ -600,7 +608,8 @@ class ReceiveActivity : AppCompatActivity() {
                     cacheIdHex, override.hint ?: hint, override.filename ?: filename,
                     override.mimeType ?: mimeType, override.content ?: ByteArray(0),
                     collectionId, collectionLabel, collectionTag, icon, wasEncrypted = true,
-                    lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation
+                    lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
+                    inReplyTo = inReplyTo, title = title, description = description
                 )
                 return
             }
@@ -612,7 +621,8 @@ class ReceiveActivity : AppCompatActivity() {
                 collectionId, collectionLabel, collectionTag, icon,
                 pendingOverrideBlob = blob, pendingCompression = compression,
                 wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt,
-                lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation
+                lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
+                inReplyTo = inReplyTo, title = title, description = description
             )
         } else {
             toast(getString(R.string.awaiting_key))
@@ -677,7 +687,8 @@ class ReceiveActivity : AppCompatActivity() {
             pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-            preferDeclaredLocation = state.preferDeclaredLocation
+            preferDeclaredLocation = state.preferDeclaredLocation,
+            inReplyTo = state.inReplyTo, title = state.title, description = state.description
         )
     }
 
