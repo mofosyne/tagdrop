@@ -2,5 +2,12 @@
 - Paper directories can now show a short description for the paper and for each file inside it, so you know what something is before opening it.
 - Paper layouts too big for one QR code now split automatically across several, just like oversized files already did.
 - Optional parity recovery code: when sharing or printing content split across multiple QR codes, you can add one extra code that lets a scanner reconstruct any single missing part.
+- Codes can now carry a title and longer description, shown in your collection and history instead of just a filename.
+- Content can reply to other content, like a comment thread: open a reply to see what it's responding to, or view all of a code's replies.
+- Scan any QR code — contact card, Wi-Fi network, calendar event, and more — even if it isn't a TagDrop code; these get a sensible title instead of "Untitled" and can be reopened later just like any other scan.
+- Search your collection by title, hint, or #hashtag, and tap a tag chip to quick-filter to just that tag.
+- Back up all your scans, papers, and keys to a single file, and restore them on this or another device.
+- Write any TagDrop code straight to an NFC tag, and read NFC tags the same way you scan a QR code.
+- New "View as" option on any opened item: switch between the normal rendered view, its decoded text, a hex dump, or its underlying CBOR structure.
 - Security: closed a hole that let other apps hijack TagDrop's page viewer with an arbitrary link, and fixed a flaw that could let a malicious code overwrite an unrelated paper you'd already saved.
 - Stronger integrity checks on codes split across multiple QR parts.

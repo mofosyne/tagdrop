@@ -40,20 +40,26 @@ network, or account needed to read or write a drop.
   links or `tagdrop://<root-hash>/<slug>` links, so a small static site
   survives being printed and scanned back in.
 - **Spread large content across multiple codes** — split a payload too big
-  for one QR into a manifest plus chunk codes placed along a trail. The app
-  collects chunks in any order and reassembles and verifies them.
-- **Build trails and collections** — link papers together with `related`
-  hints (optionally with coordinates), or tag a loose set of stickers with a
-  shared `collection_id` so they group into one card on the home screen and
-  map, even though each code is independently scannable.
+  for one QR into multiple sector codes placed along a trail. The app
+  collects sectors in any order and reassembles and verifies them, with an
+  optional parity code that can recover a single missing sector.
+- **Build trails, collections, and replies** — link papers together with
+  `related` hints (optionally with coordinates), tag a loose set of stickers
+  with a shared `collection_id` so they group into one card on the home
+  screen and map, or mark a code as a reply to another to thread a
+  conversation across drops — even though each code is independently
+  scannable.
 - **Hide content behind encryption** — AES-256-GCM encrypted override maps
   let you keep a "cover story" visible while the real content stays locked.
   Unlock with a **key-code QR** (a separate code carrying the AES key) or a
   **passphrase** (PBKDF2-SHA256 key derivation, no second QR needed). Derived
   keys are stored persistently so you only enter a passphrase once per device.
-- **Browse offline** — scanned pages render in an in-app WebView. The
+- **Browse offline** — scanned pages render in an in-app viewer, with
+  search/`#hashtag` filtering and a hex/CBOR inspector for the curious. The
   Collections, History, and Map tabs let you revisit, locate, and manage
-  everything you've found.
+  everything you've found, and a single file can back up or restore it all.
+- **Tap instead of scan** — write any TagDrop code to a blank or rewritable
+  NFC tag, then read it back with a tap instead of the camera.
 
 ## Screenshots
 
@@ -123,11 +129,15 @@ running from source.
 
 ## Status
 
-**TagDrop v2.1** — v1 wire format (draft). CBOR-sequence envelope encoding
-(`tagdrop:<base41>`), paper manifests with multi-file directories and
-relative-link navigation, geographic trails via `related` hints, ad-hoc
-collections, an in-app scanner with a live scan board, a Map tab for located
-finds, and AES-256-GCM encryption via key-code QR or passphrase (PBKDF2-SHA256).
+**TagDrop v2.1** — wire format version 1, still a draft (no real-world
+deployments yet, see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
+(`tagdrop:<base41>`) with content split into one or more sectors plus
+optional parity recovery, paper manifests with multi-file directories and
+relative-link navigation, geographic trails via `related` hints and located
+content, ad-hoc collections, reply threading, an in-app scanner with a live
+scan board, NFC tag read/write, search and `#hashtag` filtering, full
+backup/restore, and AES-256-GCM encryption via key-code QR or passphrase
+(PBKDF2-SHA256).
 
 ## Extra Readings
 
