@@ -772,16 +772,19 @@ class ReceiveActivity : AppCompatActivity() {
      * ...) as standalone content, the same way any other found item is cached -- content-
      * addressed by [TagDropCodec.contentId] so re-scanning the same code is recognised as
      * "already found" rather than duplicated. [QrContentClassifier] tags recognised content
-     * (vCard, calendar event, Wi-Fi config, URL, ...) with a hashtag-style collectionTag and
+     * (vCard, calendar event, Wi-Fi config, URL, ...) with a hashtag-style collectionTag, an
      * icon, and -- for vCard/calendar, which are real interchange file formats -- a specific
-     * mimeType instead of the generic `text/plain` default.
+     * mimeType instead of the generic `text/plain` default. Its derived title (contact name,
+     * SSID, event summary, ...) becomes this cache's `hint`, the same field every list/title
+     * display already falls back to "Untitled" without -- there's no author-declared hint for
+     * non-TagDrop content, so this is the only source of a human-readable title.
      */
     private fun completeRawScan(text: String, format: BarcodeFormat) {
         val bytes = text.toByteArray(Charsets.UTF_8)
         val classification = QrContentClassifier.classify(text, format)
         completeSingle(
             cacheId       = TagDropCodec.contentId(bytes).toHex(),
-            hint          = null,
+            hint          = classification?.title,
             filename      = null,
             mimeType      = classification?.mimeType ?: "text/plain",
             content       = bytes,

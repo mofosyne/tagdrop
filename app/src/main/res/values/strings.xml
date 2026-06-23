@@ -161,6 +161,8 @@
     <string name="action_open_external">Open with…</string>
     <string name="action_share">Share</string>
     <string name="action_save">Save to device</string>
+    <string name="action_view_source">View source</string>
+    <string name="action_view_rendered">View rendered</string>
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>

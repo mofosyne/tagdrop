@@ -47,6 +47,17 @@ class ViewDataUriActivity : AppCompatActivity() {
     private var previewMimeType: String? = null
     private var previewSizeBytes: Int = 0
 
+    /**
+     * The text/HTML/Markdown content currently on screen, tracked so the "View source" menu
+     * action ([toggleSourceView]) can re-render it raw without re-fetching. Null while showing
+     * non-text content (images, audio) or the "can't preview" panel -- there's no meaningful
+     * raw-text view for those, so the menu action hides itself when this is null.
+     */
+    private var currentTextContent: TextContent? = null
+    private var showingSource = false
+
+    private data class TextContent(val mimeType: String, val bytes: ByteArray, val context: TagDropLinkResolver.PaperContext?)
+
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
     }
@@ -135,6 +146,10 @@ class ViewDataUriActivity : AppCompatActivity() {
         menu.findItem(R.id.action_open_external)?.isEnabled = enabled
         menu.findItem(R.id.action_share)?.isEnabled = enabled
         menu.findItem(R.id.action_save)?.isEnabled = enabled
+        menu.findItem(R.id.action_view_source)?.let {
+            it.isVisible = currentTextContent != null
+            it.setTitle(if (showingSource) R.string.action_view_rendered else R.string.action_view_source)
+        }
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -142,7 +157,15 @@ class ViewDataUriActivity : AppCompatActivity() {
         R.id.action_open_external -> { openExternally(); true }
         R.id.action_share -> { shareContent(); true }
         R.id.action_save -> { saveToDevice(); true }
+        R.id.action_view_source -> { toggleSourceView(); true }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    /** Flips between the rendered view and a raw `<pre>` dump of [currentTextContent]'s original bytes. */
+    private fun toggleSourceView() {
+        val content = currentTextContent ?: return
+        showingSource = !showingSource
+        displayTextContent(content.mimeType, content.bytes, content.context)
     }
 
     /** Opens the cached content in another app via a chooser. */
@@ -203,27 +226,13 @@ class ViewDataUriActivity : AppCompatActivity() {
             return
         }
         showWebView()
-        if (mimeType.startsWith("text/html")) {
+        if (mimeType.startsWith("text/")) {
             lifecycleScope.launch {
                 val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
-                if (context != null) {
-                    loadHtml(String(bytes, Charsets.UTF_8), context.rootHashHex, context.slug)
-                } else {
-                    binding.htmldisp.loadUrl(dataUri)
-                }
-            }
-        } else if (mimeType.startsWith("text/markdown")) {
-            lifecycleScope.launch {
-                val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
-                val css = context?.let { resolver.findStylesheet(it.rootHashHex) }
-                val html = MarkdownRenderer.toHtmlDocument(String(bytes, Charsets.UTF_8), css)
-                if (context != null) {
-                    loadHtml(html, context.rootHashHex, context.slug)
-                } else {
-                    binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-                }
+                displayTextContent(mimeType, bytes, context)
             }
         } else {
+            currentTextContent = null
             binding.htmldisp.loadUrl(dataUri)
         }
     }
@@ -232,6 +241,51 @@ class ViewDataUriActivity : AppCompatActivity() {
     private fun loadHtml(html: String, rootHashHex: String, slug: String) {
         val baseUrl = TagDropLinkResolver.syntheticBaseUrl(rootHashHex, slug)
         binding.htmldisp.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null)
+    }
+
+    /**
+     * Renders text/HTML/Markdown content -- or, while [showingSource] is toggled on via the
+     * "View source" menu action, always shows the original raw bytes as preformatted text
+     * instead, regardless of mimeType. This is also how vCard/Wi-Fi/calendar/... raw QR scans
+     * (already plain text, no separate "rendered" form) end up visible instead of a blank page.
+     * Tracked in [currentTextContent] so the toggle can re-render the same content without
+     * re-fetching it.
+     */
+    private fun displayTextContent(mimeType: String, bytes: ByteArray, context: TagDropLinkResolver.PaperContext?) {
+        currentTextContent = TextContent(mimeType, bytes, context)
+        invalidateOptionsMenu()
+        if (showingSource) {
+            binding.htmldisp.loadDataWithBaseURL(null, plainTextHtml(String(bytes, Charsets.UTF_8)), "text/html", "UTF-8", null)
+            return
+        }
+        when {
+            mimeType.startsWith("text/html") -> {
+                val html = String(bytes, Charsets.UTF_8)
+                if (context != null) loadHtml(html, context.rootHashHex, context.slug)
+                else binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+            mimeType.startsWith("text/markdown") -> {
+                lifecycleScope.launch {
+                    val css = context?.let { resolver.findStylesheet(it.rootHashHex) }
+                    val html = MarkdownRenderer.toHtmlDocument(String(bytes, Charsets.UTF_8), css)
+                    if (context != null) loadHtml(html, context.rootHashHex, context.slug)
+                    else binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                }
+            }
+            else -> binding.htmldisp.loadDataWithBaseURL(null, plainTextHtml(String(bytes, Charsets.UTF_8)), "text/html", "UTF-8", null)
+        }
+    }
+
+    /**
+     * Wraps raw text in a minimal HTML document so the WebView always renders it visibly,
+     * matching the web reader's `<pre>`-based fallback (`tools/reader/index.html`'s
+     * `showContent()`). Needed because the WebView's native `data:` URI handling only knows how
+     * to display a handful of text MIME subtypes (`text/plain` works; `text/vcard` and
+     * `text/calendar` -- and any other non-web text format -- silently render a blank page instead).
+     */
+    private fun plainTextHtml(text: String): String {
+        val escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return "<html><body><pre style=\"white-space:pre-wrap;word-wrap:break-word;font-family:monospace;margin:16px;\">$escaped</pre></body></html>"
     }
 
     /**
@@ -250,6 +304,7 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /** Shows the "can't preview" panel for [mimeType] content instead of a blank WebView. */
     private fun showPreviewUnavailable(mimeType: String, sizeBytes: Int) {
+        currentTextContent = null
         previewMimeType = mimeType
         previewSizeBytes = sizeBytes
         binding.htmldisp.visibility = View.GONE
@@ -383,6 +438,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
                     exportCache = result.cache
+                    showingSource = false
                     invalidateOptionsMenu()
                     refreshReplyBar()
                     if (!isWebViewRenderable(result.cache.mimeType)) {
@@ -390,19 +446,14 @@ class ViewDataUriActivity : AppCompatActivity() {
                         return@launch
                     }
                     showWebView()
-                    when {
-                        result.cache.mimeType.startsWith("text/html") ->
-                            loadHtml(String(content, Charsets.UTF_8), result.paper.rootHash, result.slug)
-                        result.cache.mimeType.startsWith("text/markdown") -> {
-                            val css = resolver.findStylesheet(result.paper.rootHash)
-                            val html = MarkdownRenderer.toHtmlDocument(String(content, Charsets.UTF_8), css)
-                            loadHtml(html, result.paper.rootHash, result.slug)
-                        }
-                        else -> {
-                            val dataUri = "data:${result.cache.mimeType};base64," +
-                                android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
-                            binding.htmldisp.loadUrl(dataUri)
-                        }
+                    if (result.cache.mimeType.startsWith("text/")) {
+                        val context = TagDropLinkResolver.PaperContext(result.paper.rootHash, result.slug)
+                        displayTextContent(result.cache.mimeType, content, context)
+                    } else {
+                        currentTextContent = null
+                        val dataUri = "data:${result.cache.mimeType};base64," +
+                            android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
+                        binding.htmldisp.loadUrl(dataUri)
                     }
                 }
                 is TagDropLinkResolver.Resolution.FileNotCached ->
