@@ -44,7 +44,7 @@ import javax.crypto.spec.SecretKeySpec
  *                     12 content_compression, 13 set, 14 slug, 17/18/19 collection_*,
  *                     24 icon, 28 encryption, 30 key_material, 31 retain_key,
  *                     37/38/39 kdf_*, 40 description, 45 bulky_meta_compression,
- *                     46 bulky_meta_compressed_bytes, 47 bulky_meta_sha256
+ *                     46 bulky_meta_compressed_bytes, 47 bulky_meta_sha256, 50 in_reply_to
  *   bulky_meta_item:  15 files, 16 related (Paper); large fixed fields
  *   override map (§9, inside the content slot once decrypted): 3 hint, 4 mime_type,
  *                     5 content, 11 filename
@@ -139,6 +139,7 @@ object TagDropCodec {
     private const val K_BULKY_SHA              = 47
     private const val K_RADIUS_M               = 48  // circle-of-uncertainty radius in meters, wherever lat/lng appears
     private const val K_PREFER_DECLARED_LOCATION = 49  // core_meta_item only — lat/lng wins over live GPS when true
+    private const val K_IN_REPLY_TO = 50  // core_meta_item only — cache_id/root_hash of the single parent being replied to (SPEC §7)
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -267,6 +268,9 @@ object TagDropCodec {
      * meters. [preferDeclaredLocation] defaults to false (live GPS wins when available,
      * declared location is a fallback); set true to make the declared location win even over
      * an available live GPS fix.
+     *
+     * [inReplyTo] is the `cache_id`/`root_hash` of a single parent this content is replying to
+     * (SPEC §7, "Replies and threading") — omit for a new, unprompted message.
      */
     fun createContentSectors(
         hint: String?, filename: String?, mimeType: String,
@@ -278,6 +282,7 @@ object TagDropCodec {
         declareEncryption: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): List<Sector> {
         val (compressedContent, compression) =
@@ -313,7 +318,8 @@ object TagDropCodec {
             K_LAT     to lat,
             K_LNG     to lng,
             K_RADIUS_M to radiusM,
-            K_PREFER_DECLARED_LOCATION to true.takeIf { preferDeclaredLocation }
+            K_PREFER_DECLARED_LOCATION to true.takeIf { preferDeclaredLocation },
+            K_IN_REPLY_TO to inReplyTo
         )
 
         // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
@@ -339,13 +345,14 @@ object TagDropCodec {
         override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
         declareEncryption: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null
     ): List<Sector> {
         val first = createContentSectors(
             hint, filename, mimeType, rawContent, compress,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
-            lat, lng, radiusM, preferDeclaredLocation,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.first()).length <= MAX_URI_LENGTH) return first
@@ -353,7 +360,7 @@ object TagDropCodec {
             hint, filename, mimeType, rawContent, compress,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
-            lat, lng, radiusM, preferDeclaredLocation,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo,
             maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
         )
     }
@@ -391,6 +398,7 @@ object TagDropCodec {
         keyMaterial: ByteArray? = null, retainKey: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val draft = TagDropPayload.Paper(
@@ -399,7 +407,8 @@ object TagDropCodec {
             collectionId = collectionId, collectionLabel = collectionLabel,
             collectionTag = collectionTag, icon = icon,
             keyMaterial = keyMaterial, retainKey = retainKey,
-            lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation
+            lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
+            inReplyTo = inReplyTo
         )
         val stream = buildPaperStream(draft)
         val rootHash = sha256(stream).copyOf(8)
@@ -416,13 +425,14 @@ object TagDropCodec {
         collectionTag: String? = null, icon: String? = null,
         keyMaterial: ByteArray? = null, retainKey: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val first = createPaper(
             label, set, slug, files, related, description,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
-            lat, lng, radiusM, preferDeclaredLocation,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.second.first()).length <= MAX_URI_LENGTH) return first
@@ -430,7 +440,7 @@ object TagDropCodec {
             label, set, slug, files, related, description,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
-            lat, lng, radiusM, preferDeclaredLocation,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo,
             maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
         )
     }
@@ -488,6 +498,7 @@ object TagDropCodec {
             K_LNG      to paper.lng,
             K_RADIUS_M to paper.radiusM,
             K_PREFER_DECLARED_LOCATION to true.takeIf { paper.preferDeclaredLocation },
+            K_IN_REPLY_TO to paper.inReplyTo,
             K_BULKY_SHA to sha256(bulkyBytes)
         )
         val out = ByteArrayOutputStream()
@@ -726,7 +737,8 @@ object TagDropCodec {
                 lat             = core.doubleOrNull(K_LAT),
                 lng             = core.doubleOrNull(K_LNG),
                 radiusM         = core.doubleOrNull(K_RADIUS_M),
-                preferDeclaredLocation = core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false
+                preferDeclaredLocation = core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false,
+                inReplyTo       = core.bytesOrNull(K_IN_REPLY_TO)
             )
         )
     }
@@ -816,7 +828,8 @@ object TagDropCodec {
             lat             = parts.core.doubleOrNull(K_LAT),
             lng             = parts.core.doubleOrNull(K_LNG),
             radiusM         = parts.core.doubleOrNull(K_RADIUS_M),
-            preferDeclaredLocation = parts.core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false
+            preferDeclaredLocation = parts.core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false,
+            inReplyTo       = parts.core.bytesOrNull(K_IN_REPLY_TO)
         )
     }
 
@@ -863,7 +876,8 @@ object TagDropCodec {
         K_SECTOR_INDEX to "sector_index", K_SECTOR_COUNT to "sector_count", K_PARITY to "parity_scheme",
         K_BULKY_COMPRESSION to "bulky_meta_compression",
         K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
-        K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location"
+        K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
+        K_IN_REPLY_TO to "in_reply_to"
     )
 
     private val TYPE_NAMES = mapOf(TYPE_CONTENT to "Content", TYPE_PAPER to "Paper")

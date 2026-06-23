@@ -39,7 +39,8 @@ sealed class TagDropPayload {
         val lat: Double? = null,                // optional — author-declared latitude of this content's physical location
         val lng: Double? = null,                // optional — author-declared longitude of this content's physical location
         val radiusM: Double? = null,            // optional — circle-of-uncertainty radius in meters around lat/lng
-        val preferDeclaredLocation: Boolean = false  // if true, lat/lng wins over live GPS even when a fix is available
+        val preferDeclaredLocation: Boolean = false, // if true, lat/lng wins over live GPS even when a fix is available
+        val inReplyTo: ByteArray? = null        // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Content && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId?.contentHashCode() ?: 0
@@ -118,7 +119,8 @@ sealed class TagDropPayload {
         val lat: Double? = null,                // optional — author-declared latitude of this paper's physical location
         val lng: Double? = null,                // optional — author-declared longitude of this paper's physical location
         val radiusM: Double? = null,            // optional — circle-of-uncertainty radius in meters around lat/lng
-        val preferDeclaredLocation: Boolean = false  // if true, lat/lng wins over live GPS even when a fix is available
+        val preferDeclaredLocation: Boolean = false, // if true, lat/lng wins over live GPS even when a fix is available
+        val inReplyTo: ByteArray? = null        // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Paper && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()

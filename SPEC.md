@@ -144,6 +144,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 47 | `bulky_meta_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
 | 48 | `radius_m` | float64 (opt) | wherever `lat`/`lng` appears — `core_meta_item` or a `related` entry |
 | 49 | `prefer_declared_location` | bool (opt, default `false`) | `core_meta_item` only |
+| 50 | `in_reply_to` | bytes (8, opt) | `core_meta_item` — `cache_id`/`root_hash` of the single parent this is replying to (§7) |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -753,6 +754,72 @@ its random `collection_id`:
 Both fields are optional and purely cosmetic — omitting them just means the
 app falls back to a generated title (e.g. derived from the first scanned
 item's hint or filename).
+
+### Replies and threading
+
+`collection_id` is deliberately undirected — every code sharing the same ID
+is just "in the bag," with no parent/child structure. Some uses need the
+opposite: a code that responds to one specific earlier code, the way a
+forum post or an email replies to exactly one prior message, forming a
+thread as replies accumulate.
+
+The optional `in_reply_to` field (key 50, 8 bytes) carries the `cache_id`
+(if the parent is a Content payload) or `root_hash` (if the parent is a
+Paper) of the single code this one is replying to. Absent, this is a new,
+root message — not part of any thread. Present, it's a directed pointer to
+exactly one parent, resolved the same way any other content-addressed
+reference resolves: the app looks `in_reply_to` up against whatever it has
+already scanned and cached, locally, with no central server.
+
+A reply can itself be replied to — set the new code's own `in_reply_to` to
+the reply's `cache_id`/`root_hash` — chaining into an arbitrarily deep
+thread that the app reconstructs by walking `in_reply_to` pointers backward
+through its local cache. The parent doesn't need to have been scanned yet
+for a reply to be valid: a finder can scan a reply before its parent (or
+never find the parent at all), the same "discovered, not required"
+tolerance the rest of TagDrop's offline model already assumes elsewhere
+(e.g. a `related[]` hint to a not-yet-scanned paper, §4.3). Unlike
+`related[]`, though, `in_reply_to` is a single mandatory-shape pointer, not
+an array of navigation hints — it names the one thing this code is talking
+to, not a list of places to look.
+
+`in_reply_to` carries no authentication on its own — anyone who can read a
+parent's `cache_id`/`root_hash` (visible once that code is scanned, or
+printed alongside it) can author a reply that points to it, the same base
+assumption that already applies to every other TagDrop field. Pair with
+Verified Authorship (§10) if a thread needs to resist forged replies.
+
+### Postcards
+
+A common shape combining the above: a short message, optionally with one
+or more attachments, optionally directed at an earlier drop as a reply —
+otherwise it's a new conversation. This needs no new wire structure; a
+"postcard" is just an ordinary Content or Paper payload, composed from
+fields that already exist:
+
+- **Message, no attachment:** a Content payload whose `content` bytes are
+  the message itself (`mime_type` `text/plain` or `text/html`), with `hint`
+  as an optional short subject/preview line.
+- **Message with one attachment:** a Content payload where
+  `content`/`filename`/`mime_type` carry the attachment (a photo, a voice
+  clip), and `hint` carries the message — necessarily short, since a
+  Content payload has only one content slot and it's spoken for by the
+  attachment.
+- **Longer message with attachment(s):** a Paper payload, with `description`
+  (key 40) carrying the message and `files[]` listing the attachment(s) —
+  each attachment is its own small Content payload the author creates
+  alongside the Paper. `label` can title the postcard.
+- **A reply to any of the above:** the same shape, with `in_reply_to` set to
+  the parent's `cache_id`/`root_hash`. Omit it for a new, unprompted
+  postcard.
+
+There is no `postcard` type or flag in the CBOR — any Content or Paper
+payload is a postcard exactly when its author composes it this way, the
+same way `collection_id` turns ordinary payloads into a collection purely
+by convention (above) rather than by introducing a new payload kind.
+Threads of postcards are just chains of `in_reply_to` pointers, readable
+and extendable by anyone who finds them, with no server or account needed
+to keep the conversation going.
 
 ### Icons
 
