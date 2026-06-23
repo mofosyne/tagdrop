@@ -15,6 +15,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -22,6 +23,7 @@ import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
@@ -118,6 +120,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                 exportCache = AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(cacheId)
                 invalidateOptionsMenu()
                 refreshPreviewPanel()
+                refreshReplyBar()
             }
         }
     }
@@ -280,6 +283,81 @@ class ViewDataUriActivity : AppCompatActivity() {
         else -> "📦"
     }
 
+    /** Re-resolves and shows/hides the reply bar (parent link + replies link) for the current [exportCache]. */
+    private suspend fun refreshReplyBar() {
+        val cache = exportCache
+        if (cache == null) {
+            binding.textReplyTo.visibility = View.GONE
+            binding.textReplies.visibility = View.GONE
+            return
+        }
+        val db = AppDatabase.get(this)
+        val parent = cache.inReplyTo?.let { resolveReplyTarget(db, it) }
+        val replies = db.cacheDao().getRepliesTo(cache.cacheId)
+        bindReplyTo(parent)
+        bindReplies(replies)
+    }
+
+    /** Resolves [idHex] (a `cache_id` or `root_hash`, SPEC §7) against both DAOs since a reply's parent can be either type. */
+    private suspend fun resolveReplyTarget(db: AppDatabase, idHex: String): ReplyParent =
+        db.cacheDao().getById(idHex)?.let { ReplyParent.AsCache(it) }
+            ?: db.paperDao().getByRootHash(idHex)?.let { ReplyParent.AsPaper(it) }
+            ?: ReplyParent.Missing(idHex)
+
+    private fun bindReplyTo(target: ReplyParent?) {
+        if (target == null) {
+            binding.textReplyTo.visibility = View.GONE
+            return
+        }
+        binding.textReplyTo.visibility = View.VISIBLE
+        when (target) {
+            is ReplyParent.AsCache -> {
+                val label = target.cache.hint ?: target.cache.filename ?: target.cache.cacheId.take(12)
+                binding.textReplyTo.text = getString(R.string.reply_to_label, label)
+                binding.textReplyTo.setOnClickListener { openCollectionDetail(cacheId = target.cache.cacheId) }
+            }
+            is ReplyParent.AsPaper -> {
+                val label = target.paper.label ?: target.paper.rootHash.take(12)
+                binding.textReplyTo.text = getString(R.string.reply_to_label, label)
+                binding.textReplyTo.setOnClickListener { openCollectionDetail(rootHash = target.paper.rootHash) }
+            }
+            is ReplyParent.Missing -> {
+                binding.textReplyTo.text = getString(R.string.reply_to_not_found, target.idHex.take(12))
+                binding.textReplyTo.setOnClickListener(null)
+            }
+        }
+    }
+
+    private fun bindReplies(replies: List<FoundCache>) {
+        if (replies.isEmpty()) {
+            binding.textReplies.visibility = View.GONE
+            return
+        }
+        binding.textReplies.visibility = View.VISIBLE
+        binding.textReplies.text = getString(R.string.replies_label, replies.size)
+        binding.textReplies.setOnClickListener { showRepliesPicker(replies) }
+    }
+
+    /** Jumps straight to the only reply, or lets the user pick when there's more than one. */
+    private fun showRepliesPicker(replies: List<FoundCache>) {
+        if (replies.size == 1) {
+            openCollectionDetail(cacheId = replies[0].cacheId)
+            return
+        }
+        val labels = replies.map { it.hint ?: it.filename ?: it.cacheId.take(12) }.toTypedArray<CharSequence>()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.replies_dialog_title)
+            .setItems(labels) { _, which -> openCollectionDetail(cacheId = replies[which].cacheId) }
+            .show()
+    }
+
+    /** The resolved target of a `in_reply_to` pointer (SPEC §7) — either type of parent, or not-yet-scanned. */
+    private sealed class ReplyParent {
+        data class AsCache(val cache: FoundCache) : ReplyParent()
+        data class AsPaper(val paper: ScannedPaper) : ReplyParent()
+        data class Missing(val idHex: String) : ReplyParent()
+    }
+
     /** Parses a "data:<mime>;base64,<payload>" URI into (mimeType, bytes), or null if not one. */
     private fun parseDataUri(dataUri: String): Pair<String, ByteArray>? {
         if (!dataUri.startsWith("data:")) return null
@@ -306,6 +384,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
                     exportCache = result.cache
                     invalidateOptionsMenu()
+                    refreshReplyBar()
                     if (!isWebViewRenderable(result.cache.mimeType)) {
                         showPreviewUnavailable(result.cache.mimeType, content.size)
                         return@launch

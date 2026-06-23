@@ -151,6 +151,12 @@
     <string name="link_invalid">Invalid tagdrop:// link.</string>
     <string name="chunk_before_manifest">Chunk received — scan the manifest QR first.</string>
 
+    <!-- Replies (ViewDataUriActivity, SPEC §7) -->
+    <string name="reply_to_label">↩ Reply to: %1$s</string>
+    <string name="reply_to_not_found">↩ Reply to %1$s (not yet scanned)</string>
+    <string name="replies_label">↪ View replies (%1$d)</string>
+    <string name="replies_dialog_title">Replies</string>
+
     <!-- Content export (Open / Share / Save) -->
     <string name="action_open_external">Open with…</string>
     <string name="action_share">Share</string>

@@ -38,6 +38,8 @@ private class FakeCacheDao : CacheDao {
     override fun getByCollectionId(collectionId: String): LiveData<List<FoundCache>> = throw NotImplementedError()
     override suspend fun deleteByCollectionId(collectionId: String) {}
     override suspend fun getPendingOverrides(): List<FoundCache> = emptyList()
+    override suspend fun getRepliesTo(parentId: String): List<FoundCache> =
+        caches.values.filter { it.inReplyTo == parentId }
 }
 
 private class FakeKeyDao : KeyDao {
