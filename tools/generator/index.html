@@ -95,6 +95,7 @@
   .qr-badge.key       { background: #fff3e0; color: #e65100; }
   .qr-badge.home      { background: #e8f5e9; color: #2e7d32; }
   .qr-badge.binary    { background: #ede7f6; color: #512da8; }
+  .qr-badge.parity    { background: #e0f7fa; color: #00838f; }
   .qr-item.key-item   { border: 2px dashed #e65100; }
 
   .warn { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px;
@@ -222,6 +223,29 @@
     </div>
     <div class="row">
       <div>
+        <label>Latitude <small>(optional — this code's own declared location, see §4.2)</small></label>
+        <input type="text" id="s-lat" placeholder="e.g. -33.8688">
+      </div>
+      <div>
+        <label>Longitude <small>(optional)</small></label>
+        <input type="text" id="s-lng" placeholder="e.g. 151.2093">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Location uncertainty radius <small>(optional, meters)</small></label>
+        <input type="text" id="s-radius" placeholder="e.g. 25">
+      </div>
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-prefer-declared-location">
+          Prefer declared location over live GPS
+          <small style="display:block;color:#888;margin-top:2px">For placements where the author's coordinates are more reliable than the scanning device's GPS fix (e.g. indoors)</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>MIME type</label>
         <select id="s-mime">
           <option value="text/plain">text/plain</option>
@@ -241,9 +265,18 @@
     <div class="row">
       <div style="display:flex;align-items:flex-end;padding-bottom:6px">
         <label style="margin:0">
-          <input type="checkbox" id="s-binary-chunks" checked>
-          🔢 Use binary QR for chunks
+          <input type="checkbox" id="s-binary-sectors" checked>
+          🔢 Use binary QR for sectors
           <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only if content needs multiple QR codes</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-add-parity">
+          🛟 Add a parity recovery code
+          <small style="display:block;color:#888;margin-top:2px">One extra code that can reconstruct any single lost sector — applies only if content needs multiple QR codes</small>
         </label>
       </div>
     </div>
@@ -309,6 +342,10 @@
       <label>Slug <small>(optional — this paper's address within the set)</small></label>
       <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
     </div>
+    <div>
+      <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "Day 2 of the sunset trail: a poem and a hand-drawn map")</small></label>
+      <input type="text" id="p-description" placeholder="e.g. Day 2 of the sunset trail: a poem and a hand-drawn map">
+    </div>
     <div class="row">
       <div>
         <label>Icon <small>(optional — emoji shown as a visual badge)</small></label>
@@ -321,7 +358,7 @@
     </div>
     <div class="row">
       <div>
-        <label>Collection ID <small>(optional, hex — stamped onto the manifest and every file code, see §7 Collections)</small></label>
+        <label>Collection ID <small>(optional, hex — stamped onto the paper and every file code, see §7 Collections)</small></label>
         <div style="display:flex;gap:8px">
           <input type="text" id="p-collection-id" placeholder="e.g. a1b2c3d4e5f60718" style="font-family:monospace">
           <button type="button" class="secondary" style="margin-top:12px;white-space:nowrap" onclick="document.getElementById('p-collection-id').value=toHex(crypto.getRandomValues(new Uint8Array(8)))">🎲 Generate random</button>
@@ -330,6 +367,29 @@
       <div>
         <label>Collection tag <small>(optional — short hashtag-style cross-reference)</small></label>
         <input type="text" id="p-collection-tag" placeholder="e.g. springtrail2026">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Latitude <small>(optional — this paper's own declared location, see §4.2)</small></label>
+        <input type="text" id="p-lat" placeholder="e.g. -33.8688">
+      </div>
+      <div>
+        <label>Longitude <small>(optional)</small></label>
+        <input type="text" id="p-lng" placeholder="e.g. 151.2093">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Location uncertainty radius <small>(optional, meters)</small></label>
+        <input type="text" id="p-radius" placeholder="e.g. 25">
+      </div>
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="p-prefer-declared-location">
+          Prefer declared location over live GPS
+          <small style="display:block;color:#888;margin-top:2px">For placements where the author's coordinates are more reliable than the scanning device's GPS fix (e.g. indoors)</small>
+        </label>
       </div>
     </div>
   </div>
@@ -345,13 +405,18 @@
       <code style="font-size:0.8rem">&lt;audio controls src="tagdrop://ROOTHASH/song.mid"&gt;</code><br>
       Slugs can contain <code>/</code> to mimic folder paths
       (e.g. <code>images/photo.jpg</code>) — they are matched as plain strings.
-      A file too large for one QR code is automatically split into a manifest
-      + chunk codes, same as the Single File tab.
+      A file too large for one QR code is automatically split into multiple
+      sector codes, same as the Single File tab.
     </p>
     <label style="margin:0 0 10px;display:block">
-      <input type="checkbox" id="p-binary-chunks" checked>
-      🔢 Use binary QR for chunks
-      <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only to files that need multiple QR codes</small>
+      <input type="checkbox" id="p-binary-sectors" checked>
+      🔢 Use binary QR for sectors
+      <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only to files/papers that need multiple QR codes</small>
+    </label>
+    <label style="margin:0 0 10px;display:block">
+      <input type="checkbox" id="p-add-parity">
+      🛟 Add a parity recovery code
+      <small style="display:block;color:#888;margin-top:2px">One extra code per multi-sector file or paper manifest that can reconstruct any single lost sector</small>
     </label>
     <div id="p-files"></div>
     <div class="dropzone" id="p-dropzone">
@@ -458,13 +523,24 @@ function cborMap(pairs) {
 function subMap(pairs) { return { __map: true, pairs }; }
 
 // ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
-// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(payload) )>
-const ENVELOPE_VERSION = 1;
-const TYPE_SINGLE = 0, TYPE_MANIFEST = 1, TYPE_CHUNK = 2, TYPE_PAPER_MANIFEST = 3;
+// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
+// Every code — standalone or one of several pieces — is a "sector" (SPEC §4.1): a
+// four-item CBOR Sequence carrying its slice of a payload's reassembled stream
+// (concatenated sector_bytes, SPEC §4.2): CBOR(core_meta_item) || CBOR(bulky_meta_item) || content.
+const VERSION = 1;
+const TYPE_CONTENT = 0, TYPE_PAPER = 1;
 
 function cborUInt(n) {
   const out = [];
   writeHead(out, 0, n);
+  return new Uint8Array(out);
+}
+
+// A raw top-level CBOR byte-string item (major type 2) — e.g. a sector's sector_bytes.
+function cborBytesItem(bytes) {
+  const out = [];
+  writeHead(out, 2, bytes.length);
+  bytes.forEach(b => out.push(b));
   return new Uint8Array(out);
 }
 
@@ -476,8 +552,86 @@ function concatBytes(...arrays) {
   return out;
 }
 
-function cborSequence(type, payload) {
-  return concatBytes(cborUInt(ENVELOPE_VERSION), cborUInt(type), payload);
+// part_meta (SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
+// 0-based sector_index, sector_count, parity_scheme (only on a parity sector, at index
+// >= sector_count — see paritySector below).
+function partMetaMap(pm) {
+  return cborMap([
+    [K.CACHE_ID,     pm.cacheId || null],
+    [K.TOTAL_BYTES,  pm.totalBytes],
+    [K.SECTOR_INDEX, pm.sectorIndex],
+    [K.SECTOR_COUNT, pm.sectorCount],
+    [K.PARITY,       pm.paritySchemeRaw ?? null],
+  ]);
+}
+
+// A sector's four-item CBOR sequence (SPEC §2) — Base41-encoded for `tagdrop:`, or
+// carried raw on byte carriers (§13, e.g. a binary/byte-mode QR).
+function sectorCbor(sector) {
+  return concatBytes(
+    cborUInt(VERSION), cborUInt(sector.type),
+    partMetaMap(sector.partMeta), cborBytesItem(sector.sectorBytes)
+  );
+}
+
+// A sector's `tagdrop:` encoding URI, plus its raw CBOR bytes for binary/byte-mode QR rendering.
+function encodeSector(sector) {
+  const raw = sectorCbor(sector);
+  return { uri: 'tagdrop:' + base41Encode(raw), raw, sector };
+}
+
+/**
+ * Slices a reassembled `stream` into data sectors of at most `maxSectorDataBytes` bytes
+ * each, stamped with `cacheId` (null for a key-only code) and its sector_index/
+ * sector_count/total_bytes in part_meta (SPEC §4.1). Every sector but the last is the
+ * same length. Mirrors Kotlin TagDropCodec.sectorize verbatim.
+ */
+function sectorize(type, cacheId, stream, maxSectorDataBytes) {
+  const total = stream.length;
+  const count = (maxSectorDataBytes <= 0 || total <= maxSectorDataBytes)
+    ? 1 : Math.ceil(total / maxSectorDataBytes);
+  const sectorSize = Math.ceil(total / count);
+  const sectors = [];
+  for (let i = 0; i < count; i++) {
+    const start = Math.min(i * sectorSize, total);
+    const end = Math.min(start + sectorSize, total);
+    sectors.push({
+      type,
+      partMeta: { cacheId, sectorIndex: i, sectorCount: count, totalBytes: total, paritySchemeRaw: null },
+      sectorBytes: stream.slice(start, end),
+    });
+  }
+  return sectors;
+}
+
+/**
+ * Builds the single full-XOR parity sector (parity_scheme 1, SPEC §5) for dataSectors — the
+ * byte-wise XOR of every data sector's sectorBytes, each implicitly zero-padded to the longest
+ * before XOR-ing. Placed at sector_index == sector_count, it recovers any one lost data sector.
+ * dataSectors must be a complete 0..sector_count-1 run of one payload. Mirrors Kotlin
+ * TagDropCodec.paritySector verbatim.
+ */
+function paritySector(dataSectors) {
+  const first = dataSectors[0].partMeta;
+  const width = Math.max(...dataSectors.map(s => s.sectorBytes.length));
+  const parity = new Uint8Array(width);
+  for (const sector of dataSectors) {
+    const b = sector.sectorBytes;
+    for (let j = 0; j < b.length; j++) parity[j] ^= b[j];
+  }
+  return {
+    type: dataSectors[0].type,
+    partMeta: {
+      cacheId: first.cacheId, sectorIndex: first.sectorCount, sectorCount: first.sectorCount,
+      totalBytes: first.totalBytes, paritySchemeRaw: PARITY_XOR,
+    },
+    sectorBytes: parity,
+  };
+}
+
+// Concatenates CBOR(core_meta_item) || CBOR(bulky_meta_item) || content (SPEC §4.2).
+function buildStream(corePairs, bulkyPairs, content) {
+  return concatBytes(cborMap(corePairs), cborMap(bulkyPairs), content);
 }
 
 // ── CBOR debug (dev tool: 🔍 Inspect CBOR button) ──────────────────────────
@@ -550,39 +704,97 @@ function cborDecodeSequencePrefix(bytes, n) {
   return { items, trailing: bytes.slice(pos) };
 }
 
-const OVERRIDE_BLOB_MIN_BYTES = 28;
-const TYPE_NAMES = { 0: 'Single', 1: 'Manifest', 2: 'Chunk', 3: 'PaperManifest' };
+const TYPE_NAMES = { 0: 'Content', 1: 'Paper' };
 const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
-  6: 'chunk_count', 7: 'total_bytes', 8: 'sha256', 9: 'chunk_index', 10: 'chunk_data',
-  11: 'filename', 12: 'compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
+  7: 'total_bytes', 8: 'content_sha256',
+  11: 'filename', 12: 'content_compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
   20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
-  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters'
+  37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
+  40: 'description', 41: 'description',
+  42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
+  45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
+  48: 'radius_m', 49: 'prefer_declared_location',
 };
 
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }
 
-/** Pretty-prints a raw TagDrop CBOR sequence: hex dump, version/type envelope, and a
- *  key-by-key breakdown of the payload map annotated with KEY_NAMES. */
-function describeCbor(bytes) {
+// True if a value decoded by cborDecodeSequencePrefix's readVal() is a CBOR map
+// (plain object) rather than a uint/string/bytes/array/null/bool/float64.
+function isCborMap(v) {
+  return v !== null && typeof v === 'object' && !(v instanceof Uint8Array) && !Array.isArray(v);
+}
+
+/**
+ * Splits a reassembled `stream` into core_meta_item, bulky_meta_item, and content
+ * (SPEC §4.2). bulky_meta_item is read per core's bulky_meta_compression declaration:
+ * if absent, CBOR's self-delimiting structure marks its end; if present, exactly
+ * bulky_meta_compressed_bytes are read and decompressed. Mirrors Kotlin
+ * TagDropCodec.splitReassembledStream — debug-view use only (no current encoder emits
+ * a compressed bulky_meta_item, but the reader/decoder must tolerate one).
+ */
+async function splitReassembledStream(stream) {
+  try {
+    const { items: coreItems, trailing: afterCore } = cborDecodeSequencePrefix(stream, 1);
+    const core = coreItems[0];
+    if (!isCborMap(core)) return null;
+    const bulkyCompression = core[K.BULKY_COMPRESSION] ?? 0;
+    if (bulkyCompression !== 0) {
+      const n = core[K.BULKY_COMPRESSED_BYTES];
+      if (n == null || n > afterCore.length) return null;
+      const bulky = cborDecodeSequencePrefix(await zlibDecompress(afterCore.slice(0, n)), 1).items[0];
+      if (!isCborMap(bulky)) return null;
+      return { core, bulky, content: afterCore.slice(n) };
+    } else {
+      const { items: bulkyItems, trailing: afterBulky } = cborDecodeSequencePrefix(afterCore, 1);
+      const bulky = bulkyItems[0];
+      if (!isCborMap(bulky)) return null;
+      return { core, bulky, content: afterBulky };
+    }
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Pretty-prints a raw TagDrop sector CBOR sequence for the 🔍 Inspect CBOR debug view: a
+ * hex dump, the four-item envelope (SPEC §2) with part_meta broken out by field name, and
+ * — for a complete single-sector payload — the core_meta_item/bulky_meta_item/content
+ * split of its reassembled stream (§4.2). Mirrors Kotlin TagDropCodec.describeCbor.
+ */
+async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
   try {
-    const { items, trailing } = cborDecodeSequencePrefix(bytes, 3);
-    if (items.length < 3) throw new Error('Expected version, type, payload — got ' + items.length + ' item(s)');
-    const [version, type, payload] = items;
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
+    if (items.length < 4) throw new Error('Expected version, type, part_meta, sector_bytes — got ' + items.length + ' item(s)');
+    const [version, type, partMeta, sectorBytes] = items;
     out += 'version: ' + version + '\n';
     out += 'type: ' + type + ' (' + (TYPE_NAMES[type] || 'unknown') + ')\n\n';
-    out += describeMap(payload, 0);
+    out += 'part_meta:\n' + describeMap(partMeta, 1);
+    out += '\nsector_bytes: ' + sectorBytes.length + ' bytes\n';
+    const count = partMeta[K.SECTOR_COUNT] ?? 1;
+    const index = partMeta[K.SECTOR_INDEX] ?? 0;
+    if (count === 1 && index === 0) {
+      const parts = await splitReassembledStream(sectorBytes);
+      if (parts) {
+        out += '  core_meta_item:\n' + describeMap(parts.core, 2);
+        out += '  bulky_meta_item:\n' + describeMap(parts.bulky, 2);
+        out += '  content: ' + parts.content.length + ' bytes\n';
+        if (parts.content.length > 0) out += '    ' + toHexDump(parts.content) + '\n';
+      } else {
+        out += '  ' + toHexDump(sectorBytes) + '\n';
+      }
+    } else {
+      out += '  (sector ' + index + ' of ' + count + ' — reassemble before parsing)\n';
+      out += '  ' + toHexDump(sectorBytes) + '\n';
+    }
     if (trailing.length > 0) {
-      const note = trailing.length >= OVERRIDE_BLOB_MIN_BYTES
-        ? 'candidate encrypted override map, SPEC §9'
-        : 'too short to be an override map, SPEC §9';
-      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes, ' + note + ')\n';
+      out += '\ntrailing bytes: ' + toHexDump(trailing) + ' (' + trailing.length + ' bytes — stacked envelope or padding, SPEC §9)\n';
     }
   } catch (e) {
     out += 'Failed to decode as CBOR sequence: ' + e.message;
@@ -618,11 +830,11 @@ function describeMap(map, indent) {
 }
 
 // Decodes a tagdrop:<base41> URI and shows its CBOR breakdown in the #cborOverlay dialog.
-function inspectCborFromUri(uri, title) {
+async function inspectCborFromUri(uri, title) {
   try {
     const bytes = base41Decode(uri.replace(/^tagdrop:/, ''));
     document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + title;
-    document.getElementById('cborDump').textContent = describeCbor(bytes);
+    document.getElementById('cborDump').textContent = await describeCbor(bytes);
     document.getElementById('cborOverlay').classList.remove('hidden');
   } catch (e) {
     alert('Failed to decode CBOR: ' + e.message);
@@ -634,9 +846,15 @@ document.getElementById('btnCloseCbor').onclick = () => {
 };
 
 // ── SHA-256 ───────────────────────────────────────────────────────────────
+// Full 32-byte digest — content_sha256 (key 8, SPEC §3) is untruncated, unlike
+// cache_id/root_hash below.
+async function sha256(bytes) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+}
+
+// cache_id / root_hash (SPEC §4.4): SHA-256 truncated to the first 8 bytes.
 async function sha256first8(bytes) {
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return new Uint8Array(hash).slice(0, 8);
+  return (await sha256(bytes)).slice(0, 8);
 }
 
 // ── DEFLATE (zlib-wrapped, matching Android's DeflaterOutputStream) ───────
@@ -656,24 +874,44 @@ async function zlibCompress(bytes) {
   return out;
 }
 
+// Mirror-image of zlibCompress, used by the debug splitReassembledStream's
+// compressed-bulky_meta_item branch (no current encoder produces one).
+async function zlibDecompress(bytes) {
+  const ds = new DecompressionStream('deflate');
+  const w = ds.writable.getWriter();
+  w.write(bytes); w.close();
+  const chunks = [];
+  const r = ds.readable.getReader();
+  for (;;) { const { done, value } = await r.read(); if (done) break; chunks.push(value); }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0; for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
 // ── TagDrop encoding ──────────────────────────────────────────────────────
-// CBOR payload-map keys (key 1 "version" is retired — it lives in the envelope)
+// CBOR map integer keys — see SPEC §3 for the full table and where each lives
+// (part_meta / core_meta_item / bulky_meta_item / override map / file entry / related paper).
 const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
-             CHUNK_COUNT:6, TOTAL_BYTES:7, SHA256:8, CHUNK_INDEX:9, CHUNK_DATA:10,
+             TOTAL_BYTES:7, CONTENT_SHA:8,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
              COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
              FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24, LAT:26, LNG:27,
              ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
-             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39 };
+             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
+             PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
+             SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
+             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
+             RADIUS_M:48, PREFER_DECLARED_LOCATION:49 };
 
-// Chunk sizing (mirrors Kotlin TagDropCodec.MAX_CHUNK_DATA_BYTES /
-// chunkCountForBytes): keeps each chunk's Base41-encoded tagdrop: URI under
-// MAX_URI_LENGTH (~20 bytes CBOR/envelope overhead, Base41 expands 2 bytes->3 chars).
+// Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
+// keeps each sector's Base41-encoded tagdrop: URI under MAX_URI_LENGTH (~20 bytes
+// CBOR/envelope overhead, Base41 expands 2 bytes->3 chars).
 const MAX_URI_LENGTH = 2000;
-const MAX_CHUNK_DATA_BYTES = 1300;
-function chunkCountForBytes(totalBytes) {
-  return Math.max(1, Math.ceil(totalBytes / MAX_CHUNK_DATA_BYTES));
-}
+const MAX_SECTOR_DATA_BYTES = 1300;
+
+// parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5).
+const PARITY_XOR = 1;
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -721,20 +959,37 @@ async function encryptOverrideMap(override, key, compression) {
 }
 
 /**
+ * Builds the sector(s) of a Content payload (`type` 0) — mirrors Kotlin
+ * TagDropCodec.createContentSectors, plus a web-generator-only `kdfPassphrase` mode (the
+ * Kotlin app has no encode-side passphrase support — see CLAUDE.md). The reassembled
+ * stream is CBOR(core_meta_item) || CBOR(bulky_meta_item) || content, split into sectors
+ * of at most `maxSectorDataBytes` each — one sector for content that fits, more for
+ * larger payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added whenever more than
+ * one sector is needed (required for sector_count > 1, SPEC §3) — without it, a decoder
+ * has no way to detect a substituted/forged sector during reassembly.
+ *
  * `hint`/`filename`/`mimeType`/`rawBytes` are the clear map's own fields — shown until a
  * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
  * or genuine unremarkable content with no relation to `override`.
  *
- * If `override` is given, it's AES-256-GCM-encrypted into a self-contained blob (SPEC §9)
- * carried as raw trailing bytes. Supply exactly one of:
+ * If `override` is given, it's AES-256-GCM-encrypted into the content slot (SPEC §9);
+ * `cacheId` becomes random rather than content-addressed. Supply exactly one of:
  *   - `encryptionKey` (32-byte Uint8Array) — key-code mode, generates a separate key QR
- *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_params
- *     in the clear map so the reader knows to prompt for a passphrase
+ *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_alg/
+ *     kdf_salt in the clear map so the reader knows to prompt for a passphrase
  */
-async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, override, encryptionKey, kdfPassphrase, declareEncryption = true, collectionId, collectionLabel, collectionTag, icon }) {
-  let content = rawBytes, compression = null;
-  if (compress) { content = await zlibCompress(rawBytes); compression = 1; }
-  let cacheId, overrideBlob = null, encryption = null;
+async function createContentSectors({
+  hint, filename, mimeType, rawBytes, compress,
+  collectionId, collectionLabel, collectionTag, icon,
+  keyMaterial, retainKey = true,
+  override, encryptionKey, kdfPassphrase, declareEncryption = true,
+  lat, lng, radiusM, preferDeclaredLocation = false,
+  maxSectorDataBytes = Infinity,
+}) {
+  let compression = null, compressedContent = rawBytes;
+  if (compress) { compressedContent = await zlibCompress(rawBytes); compression = 1; }
+
+  let cacheId, contentSlot, encryption = null;
   let kdfAlg = null, kdfSalt = null, kdfIters = null;
   if (override) {
     let key = encryptionKey;
@@ -744,153 +999,144 @@ async function encodeSingle({ hint, filename, mimeType, rawBytes, compress, over
       kdfAlg   = 1;
       key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, kdfIters);
     }
-    overrideBlob = await encryptOverrideMap(override, key, compression || 0);
+    contentSlot = await encryptOverrideMap(override, key, compression || 0);
     cacheId = randomCacheId();
     encryption = declareEncryption ? 1 : null;
   } else {
+    contentSlot = compressedContent;
     cacheId = await sha256first8(rawBytes);
   }
-  const seq = cborSequence(TYPE_SINGLE, cborMap([
-    [K.CACHE_ID,    cacheId],
-    [K.HINT,        hint || null],
-    [K.FILENAME,    filename || null],
-    [K.MIME,        mimeType],
-    [K.COMPRESSION, compression],
-    [K.CONTENT,     content],
-    [K.ENCRYPTION,  encryption],
-    [K.KDF_ALG,     kdfAlg],
-    [K.KDF_SALT,    kdfSalt],
-    // kdf_iters is the default (100000) — omit to save bytes
-    [K.COLLECTION_ID,    collectionId || null],
-    [K.COLLECTION_LABEL, collectionLabel || null],
-    [K.COLLECTION_TAG,   collectionTag || null],
-    [K.ICON,             icon || null],
-  ]));
-  const full = overrideBlob ? concatBytes(seq, overrideBlob) : seq;
-  const assembledLength = overrideBlob ? overrideBlob.length : content.length;
-  return { uri: 'tagdrop:' + base41Encode(full), cacheId, overrideBlob, encryption, kdfPassphrase, assembledLength };
+
+  async function core(withSha) {
+    return [
+      [K.HINT,        hint || null],
+      [K.FILENAME,    filename || null],
+      [K.MIME,        mimeType],
+      [K.COMPRESSION, compression],
+      [K.CONTENT_SHA, withSha ? await sha256(contentSlot) : null],
+      [K.ENCRYPTION,  encryption],
+      [K.COLLECTION_ID,    collectionId || null],
+      [K.COLLECTION_LABEL, collectionLabel || null],
+      [K.COLLECTION_TAG,   collectionTag || null],
+      [K.ICON,             icon || null],
+      [K.KEY_MATERIAL, keyMaterial || null],
+      [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
+      [K.KDF_ALG,  kdfAlg],
+      [K.KDF_SALT, kdfSalt],
+      // kdf_iters is the default (100000) — omit to save bytes
+      [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
+      [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
+      [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
+    ];
+  }
+
+  // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
+  const single = buildStream(await core(false), [], contentSlot);
+  const stream = single.length <= maxSectorDataBytes ? single : buildStream(await core(true), [], contentSlot);
+  return sectorize(TYPE_CONTENT, cacheId, stream, maxSectorDataBytes);
 }
 
 /**
- * Splits content too large for one QR into a Manifest (type=1) plus [chunkCount]
- * Chunks (type=2) — mirrors Kotlin's TagDropCodec.createManifestAndChunks. cache_id
- * is content-addressed from `rawBytes`, so a Single and a Manifest+Chunks encoding
- * of the same content share an ID.
- *
- * If `override` is given (with `encryptionKey` — passphrase mode isn't supported here,
- * matching the Kotlin reference), the assembled/chunked bytes ARE the self-contained
- * encrypted override-map blob (SPEC §9) rather than `rawBytes` — there's no separate
- * cover-content field in a Manifest, only `hint`/`filename`/`mimeType` carry cover
- * metadata in the clear map. `cacheId` becomes random rather than content-addressed.
- *
- * Each chunk's `raw` field is the full CBOR-sequence envelope bytes (for binary/byte-mode
- * QR rendering); `uri` is the same bytes Base41-encoded as a tagdrop: URI (text fallback).
+ * Two-pass auto-sizing wrapper around createContentSectors (mirrors Android's
+ * ShareQrActivity.buildFrames pattern): build with an unbounded sector size first; if the
+ * single resulting sector's tagdrop: URI fits under MAX_URI_LENGTH, use it as-is;
+ * otherwise rebuild the whole payload with MAX_SECTOR_DATA_BYTES forced, producing several
+ * uniform sectors.
  */
-async function encodeManifestAndChunks({ hint, filename, mimeType, rawBytes, compress, chunkCount, override, encryptionKey, declareEncryption = true, collectionId, collectionLabel, collectionTag, icon }) {
-  let compression = null, compressed = rawBytes;
-  if (compress) { compressed = await zlibCompress(rawBytes); compression = 1; }
-
-  let cacheId, assembled, encryption = null;
-  if (override) {
-    assembled = await encryptOverrideMap(override, encryptionKey, compression || 0);
-    cacheId = randomCacheId();
-    encryption = declareEncryption ? 1 : null;
-  } else {
-    assembled = compressed;
-    cacheId = await sha256first8(rawBytes);
-  }
-  const totalBytes = assembled.length;
-  const sha256 = new Uint8Array(await crypto.subtle.digest('SHA-256', assembled));
-
-  const manifestSeq = cborSequence(TYPE_MANIFEST, cborMap([
-    [K.CACHE_ID,    cacheId],
-    [K.HINT,        hint || null],
-    [K.FILENAME,    filename || null],
-    [K.MIME,        mimeType],
-    [K.COMPRESSION, compression],
-    [K.CHUNK_COUNT, chunkCount],
-    [K.TOTAL_BYTES, totalBytes],
-    [K.SHA256,      sha256],
-    [K.ENCRYPTION,  encryption],
-    [K.COLLECTION_ID,    collectionId || null],
-    [K.COLLECTION_LABEL, collectionLabel || null],
-    [K.COLLECTION_TAG,   collectionTag || null],
-    [K.ICON,             icon || null],
-  ]));
-  const manifestUri = 'tagdrop:' + base41Encode(manifestSeq);
-
-  const chunkSize = Math.ceil(totalBytes / chunkCount);
-  const chunks = [];
-  for (let i = 0; i < chunkCount; i++) {
-    const start = Math.min(i * chunkSize, totalBytes);
-    const data  = assembled.slice(start, Math.min(start + chunkSize, totalBytes));
-    const chunkSeq = cborSequence(TYPE_CHUNK, cborMap([
-      [K.CACHE_ID,    cacheId],
-      [K.CHUNK_INDEX, i],
-      [K.CHUNK_DATA,  data],
-    ]));
-    chunks.push({ index: i, size: data.length, raw: chunkSeq, uri: 'tagdrop:' + base41Encode(chunkSeq) });
-  }
-
-  return { manifestUri, chunks, cacheId, totalBytes, sha256, chunkCount, compression, encryption };
+async function createContentSectorsAutoSized(args) {
+  const first = await createContentSectors({ ...args, maxSectorDataBytes: Infinity });
+  if (encodeSector(first[0]).uri.length <= MAX_URI_LENGTH) return first;
+  return createContentSectors({ ...args, maxSectorDataBytes: MAX_SECTOR_DATA_BYTES });
 }
 
 /**
- * Builds a "key-only" Single payload (SPEC §9): carries keyMaterial for other
- * content, with no content/mime_type of its own. cache_id is random — there's
- * no content to address. Per SPEC §9's "discovery, not declaration", no field
- * says which content this key unlocks — a reader tries it against any encrypted
- * content it has cached.
+ * Builds a single "key-only" Content sector (SPEC §9): carries `keyMaterial` for other
+ * content, with no content/mime_type of its own and — referencing no content to address —
+ * no `cache_id` in its part_meta either. Per SPEC §9's "discovery, not declaration", no
+ * field says which content this key unlocks — a reader tries it against any encrypted
+ * content it has cached. Mirrors Kotlin TagDropCodec.createKeyCodeSector.
  */
-function encodeKeyCode({ keyMaterial, hint }) {
-  const cacheId = randomCacheId();
-  const payload = cborMap([
-    [K.CACHE_ID,     cacheId],
+function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
+  const core = [
     [K.HINT,         hint || null],
     [K.KEY_MATERIAL, keyMaterial],
-  ]);
-  return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_SINGLE, payload)), cacheId };
+    [K.RETAIN_KEY,   retainKey ? null : false],
+  ];
+  const stream = buildStream(core, [], new Uint8Array(0));
+  return sectorize(TYPE_CONTENT, null, stream, Infinity)[0];
 }
 
-async function encodePaperManifest({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
-  // files = [{slug, mimeType, fileId:Uint8Array}]
-  // related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
-  //             keyMaterial:Uint8Array|null, retainKey:boolean}]
-  // root_hash = SHA-256(envelope+payload CBOR sequence without root_hash)[0:8]
-  const filesField = files.map(f => subMap([
-    [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId]
-  ]));
-  const relatedField = related.map(r => subMap([
-    [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-    [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
-    [K.KEY_MATERIAL, r.keyMaterial || null],
-    [K.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null]
-  ]));
-  const payloadNoHash = cborMap([
+/**
+ * The reassembled-stream bytes for a Paper (pre-hash) — what the root hash covers
+ * (SPEC §4.4). `content` is always empty for a Paper. Mirrors Kotlin
+ * TagDropCodec.buildPaperStream.
+ *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
+ *   related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
+ *               radiusM:number|null, keyMaterial:Uint8Array|null, retainKey:boolean}]
+ *
+ * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
+ * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
+ * than one sector, since that's the only integrity check over `files`/`related` (the
+ * slug -> file_id directory) once a multi-sector paper is reassembled from independently
+ * scanned codes. Always including it (rather than only above the sector-count threshold,
+ * as createContentSectors does for `content_sha256`) keeps this byte-reproducible from the
+ * function's arguments alone, with no hidden state to replay — Paper payloads are directory
+ * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
+ * directory.
+ */
+async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false }) {
+  const bulky = [
+    [K.FILES, files.map(f => subMap([
+      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
+      [K.FILE_DESCRIPTION, f.description || null],
+    ]))],
+    [K.RELATED, related.map(r => subMap([
+      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
+      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
+      [K.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
+      [K.KEY_MATERIAL, r.keyMaterial || null],
+      [K.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
+    ]))],
+  ];
+  const bulkyBytes = cborMap(bulky);
+  const core = [
     [K.HINT,     label || null],
+    [K.PAPER_DESCRIPTION, description || null],
     [K.SET,      set || null],
     [K.SLUG,     slug || null],
-    [K.FILES,    filesField],
-    [K.RELATED,  relatedField],
     [K.COLLECTION_ID,    collectionId || null],
     [K.COLLECTION_LABEL, collectionLabel || null],
     [K.COLLECTION_TAG,   collectionTag || null],
     [K.ICON,             icon || null],
-  ]);
-  const rootHash = await sha256first8(cborSequence(TYPE_PAPER_MANIFEST, payloadNoHash));
-  const payload = cborMap([
-    [K.CACHE_ID, rootHash],
-    [K.HINT,     label || null],
-    [K.SET,      set || null],
-    [K.SLUG,     slug || null],
-    [K.FILES,    filesField],
-    [K.RELATED,  relatedField],
-    [K.COLLECTION_ID,    collectionId || null],
-    [K.COLLECTION_LABEL, collectionLabel || null],
-    [K.COLLECTION_TAG,   collectionTag || null],
-    [K.ICON,             icon || null],
-  ]);
-  return { uri: 'tagdrop:' + base41Encode(cborSequence(TYPE_PAPER_MANIFEST, payload)), rootHash };
+    [K.KEY_MATERIAL, keyMaterial || null],
+    [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
+    [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
+    [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
+    [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
+    [K.BULKY_SHA, await sha256(bulkyBytes)],
+  ];
+  return concatBytes(cborMap(core), bulkyBytes);
+}
+
+/**
+ * Builds a Paper payload (`type` 1) and its sector(s) — mirrors Kotlin
+ * TagDropCodec.createPaper. `root_hash` is content-addressed over the reassembled stream
+ * (SPEC §4.4), and because it lives in part_meta, *outside* the bytes it's computed over,
+ * there's no placeholder/re-encode pass: build the stream once, hash it, copy the hash
+ * into every sector.
+ */
+async function createPaper(args) {
+  const stream = await buildPaperStream(args);
+  const rootHash = await sha256first8(stream);
+  const maxSectorDataBytes = args.maxSectorDataBytes ?? Infinity;
+  return { rootHash, sectors: sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes) };
+}
+
+/** Two-pass auto-sizing wrapper around createPaper — see createContentSectorsAutoSized. */
+async function createPaperAutoSized(args) {
+  const first = await createPaper({ ...args, maxSectorDataBytes: Infinity });
+  if (encodeSector(first.sectors[0]).uri.length <= MAX_URI_LENGTH) return first;
+  return createPaper({ ...args, maxSectorDataBytes: MAX_SECTOR_DATA_BYTES });
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
@@ -1398,19 +1644,20 @@ async function parseZip(buf) {
 
 // ── Single-file generator ─────────────────────────────────────────────────
 // Renders the key-code QR (key-code mode) and the screen-only "hidden content"
-// reference card shared by both the single-QR and chunked (Manifest+Chunks) flows
+// reference card shared by both the single-sector and multi-sector flows
 // when "Encrypt" is checked (SPEC §9). Appends to `grid`/`result`; errors append to `msgs`.
 async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType }) {
   if (encryptionKey) {
     const keyHint = 'TagDrop key';
-    const keyEncoded = encodeKeyCode({ keyMaterial: encryptionKey, hint: keyHint });
+    const keySector = createKeyCodeSector({ keyMaterial: encryptionKey, hint: keyHint });
+    const keyEncoded = encodeSector(keySector);
     try {
       await addGeneratorQrCard(grid, {
         label: escHtml(keyHint),
         sub: 'key_material (AES-256-GCM)',
         badge: 'key',
         badgeClass: 'key',
-        id: toHex(keyEncoded.cacheId),
+        id: toHex(randomCacheId()),
         uri: keyEncoded.uri,
         itemClass: 'key-item',
         slugBase: 'key',
@@ -1437,56 +1684,72 @@ async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPa
     </div>`);
 }
 
-// Renders a Manifest + Chunks result: the manifest as a text-only tagdrop: QR
-// (always — readers must scan it first regardless of how chunks are carried),
-// each chunk as binary (byte-mode) or text QR per the "Use binary QR for chunks"
-// checkbox, and (if encrypted) the same key-code/reference extras as the single-QR flow.
-async function renderChunkedResult(chunked, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result }) {
-  const useBinary = document.getElementById('s-binary-chunks').checked;
+// Renders a multi-sector result: every sector has equal status — no separate
+// manifest/chunk distinction — so each is its own "tagdrop:" QR, rendered as binary
+// (byte-mode) or text QR per the "Use binary QR for sectors" checkbox; a reader can
+// scan them in any order and reassembles via part_meta.sector_index/sector_count
+// (SPEC §4.2/§5). Also renders (if encrypted) the same key-code/reference extras as
+// the single-sector flow.
+async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result }) {
+  const useBinary = document.getElementById('s-binary-sectors').checked;
+  const addParity = document.getElementById('s-add-parity').checked;
+  const count = sectors.length;
+  const idHex = toHex(sectors[0].partMeta.cacheId);
 
-  msgs.innerHTML += `<div class="warn">Content is ${chunked.totalBytes} bytes — split into 1 manifest QR
-    + ${chunked.chunkCount} chunk QR code${chunked.chunkCount === 1 ? '' : 's'}.</div>`;
+  msgs.innerHTML += `<div class="warn">Content is ${sectors[0].partMeta.totalBytes} bytes — split into
+    ${count} sector QR codes.</div>`;
+  if (addParity) {
+    msgs.innerHTML += `<div class="warn">🛟 An extra parity code is included below — scanning it together with
+      any ${count - 1} of the ${count} sectors above reconstructs the one you're missing.</div>`;
+  }
   if (encrypt) {
     msgs.innerHTML += `<div class="warn">🔒 The real hint/filename/content are hidden inside these codes as an
-      encrypted override map (SPEC §9) — the manifest and chunk codes show only the generic cover below.
+      encrypted override map (SPEC §9) — every sector shows only the generic cover below.
       A separate <strong>key</strong> code is also generated; keep it apart from the cover — print or share
       on different paper — since anyone with both can unlock the hidden content.</div>`;
   }
 
   result.innerHTML = '<div class="qr-grid"></div>';
   const grid = result.querySelector('.qr-grid');
-
   const nameBase = encodeArgs.hint || encodeArgs.filename || 'tagdrop';
-  const coverLabel = encodeArgs.hint ? escHtml(encodeArgs.hint) : (encodeArgs.filename ? escHtml(encodeArgs.filename) : 'TagDrop');
-  try {
-    await addGeneratorQrCard(grid, {
-      label: coverLabel,
-      sub: `${encodeArgs.mimeType}${compress ? ' · deflate' : ''} · manifest`,
-      badge: encrypt ? 'hidden content' : null,
-      badgeClass: 'encrypted',
-      id: toHex(chunked.cacheId),
-      uri: chunked.manifestUri,
-      slugBase: `${nameBase}-manifest`,
-    });
-  } catch (e) {
-    msgs.innerHTML += `<div class="err">QR rendering failed for the manifest. Is the qrcode library loaded? (requires internet on first use)</div>`;
-    return;
-  }
 
-  for (const c of chunked.chunks) {
+  for (const sector of sectors) {
+    const enc = encodeSector(sector);
+    const qrData = useBinary ? enc.raw : enc.uri;
     try {
       await addGeneratorQrCard(grid, {
-        label: `Chunk ${c.index + 1} / ${chunked.chunkCount}`,
-        sub: useBinary ? `${c.raw.length} raw bytes · binary QR` : `${c.uri.length} chars · text QR`,
+        label: `Sector ${sector.partMeta.sectorIndex + 1} / ${count}`,
+        sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
         badge: useBinary ? 'binary' : null,
         badgeClass: 'binary',
-        id: `${toHex(chunked.cacheId)}-chunk${c.index}`,
-        uri: c.uri,
-        qrData: useBinary ? c.raw : c.uri,
-        slugBase: `${nameBase}-chunk${c.index + 1}`,
+        id: `${idHex}-sector${sector.partMeta.sectorIndex}`,
+        uri: enc.uri,
+        qrData,
+        slugBase: `${nameBase}-sector${sector.partMeta.sectorIndex + 1}`,
       });
     } catch (e) {
-      msgs.innerHTML += `<div class="err">QR rendering failed for chunk ${c.index + 1}.</div>`;
+      msgs.innerHTML += `<div class="err">QR rendering failed for sector ${sector.partMeta.sectorIndex + 1}.</div>`;
+      return;
+    }
+  }
+
+  if (addParity) {
+    const parity = paritySector(sectors);
+    const enc = encodeSector(parity);
+    const qrData = useBinary ? enc.raw : enc.uri;
+    try {
+      await addGeneratorQrCard(grid, {
+        label: 'Parity (recovery)',
+        sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
+        badge: 'parity',
+        badgeClass: 'parity',
+        id: `${idHex}-parity`,
+        uri: enc.uri,
+        qrData,
+        slugBase: `${nameBase}-parity`,
+      });
+    } catch (e) {
+      msgs.innerHTML += `<div class="err">QR rendering failed for parity sector.</div>`;
       return;
     }
   }
@@ -1520,6 +1783,16 @@ async function generateSingle() {
   try { collectionId = hexToBytes(document.getElementById('s-collection-id').value); }
   catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
 
+  // Declared location (SPEC §4.2) — also never secret, carried through encryption the
+  // same way as collection/icon above.
+  const declaredLat   = parseFloat(document.getElementById('s-lat').value.trim());
+  const declaredLng   = parseFloat(document.getElementById('s-lng').value.trim());
+  const declaredRadius = parseFloat(document.getElementById('s-radius').value.trim());
+  const lat    = Number.isFinite(declaredLat) ? declaredLat : null;
+  const lng    = Number.isFinite(declaredLng) ? declaredLng : null;
+  const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
+  const preferDeclaredLocation = document.getElementById('s-prefer-declared-location').checked;
+
   if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
 
   let rawBytes;
@@ -1544,6 +1817,7 @@ async function generateSingle() {
         override: { hint, mimeType, content: rawBytes, filename },
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
+        lat, lng, radiusM, preferDeclaredLocation,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -1556,31 +1830,26 @@ async function generateSingle() {
         override: { hint, mimeType, content: rawBytes, filename },
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
+        lat, lng, radiusM, preferDeclaredLocation,
       };
     }
   } else {
-    encodeArgs = { hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon };
+    encodeArgs = {
+      hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
+      lat, lng, radiusM, preferDeclaredLocation,
+    };
   }
 
-  let encoded;
-  try { encoded = await encodeSingle(encodeArgs); }
+  let sectors;
+  try { sectors = await createContentSectorsAutoSized(encodeArgs); }
   catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
 
-  const chunkCount = chunkCountForBytes(encoded.assembledLength);
-  if (chunkCount > 1) {
-    if (kdfPassphrase) {
-      msgs.innerHTML = `<div class="err">This content is too large for one QR code (would need ${chunkCount} chunks),
-        but passphrase-mode encryption doesn't support chunking. Switch to "Key code QR" mode, enable compression,
-        or reduce the content size.</div>`;
-      return;
-    }
-    let chunked;
-    try { chunked = await encodeManifestAndChunks({ ...encodeArgs, chunkCount }); }
-    catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
-    await renderChunkedResult(chunked, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result });
+  if (sectors.length > 1) {
+    await renderSectorsResult(sectors, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result });
     return;
   }
 
+  const encoded = encodeSector(sectors[0]);
   if (encoded.uri.length > MAX_URI_LENGTH)
     msgs.innerHTML += `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
       Enable compression or reduce content size.</div>`;
@@ -1606,7 +1875,7 @@ async function generateSingle() {
       sub: `${encodeArgs.mimeType}${compress ? ' · deflate' : ''}`,
       badge: encrypt ? 'hidden content' : null,
       badgeClass: 'encrypted',
-      id: toHex(encoded.cacheId),
+      id: toHex(sectors[0].partMeta.cacheId),
       uri: encoded.uri,
       slugBase: encodeArgs.hint || encodeArgs.filename || 'tagdrop',
     });
@@ -1662,6 +1931,8 @@ function addFileEntry() {
         </select>
       </div>
     </div>
+    <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "A poem to read")</small></label>
+    <input type="text" id="fdesc-${id}" placeholder="e.g. A poem to read">
     <label><input type="checkbox" id="fcompress-${id}"> Compress with DEFLATE</label>
     <label>Content</label>
     <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
@@ -1699,6 +1970,8 @@ function addRelatedEntry() {
       <div><label>Latitude <small>(optional — for a placeholder map pin)</small></label><input type="text" id="rlat-${id}" placeholder="e.g. -33.8688"></div>
       <div><label>Longitude <small>(optional)</small></label><input type="text" id="rlng-${id}" placeholder="e.g. 151.2093"></div>
     </div>
+    <label>Location uncertainty radius <small>(optional, meters — circle drawn around the pin above)</small></label>
+    <input type="text" id="rradius-${id}" placeholder="e.g. 50">
     <label>Paper ID <small>(optional, hex — that paper's root hash, for stable cross-referencing even after a re-scan changes set/slug)</small></label>
     <input type="text" id="rpaperid-${id}" placeholder="e.g. a1b2c3d4e5f60718">
     <label>Key material <small>(optional, hex — a decryption key this code reveals for the related paper's content, see SPEC §9)</small></label>
@@ -1717,12 +1990,13 @@ async function generatePaper() {
   const result = document.getElementById('p-result');
   msgs.innerHTML = ''; result.innerHTML = ''; paperBulkItems = [];
 
-  const label = document.getElementById('p-label').value.trim() || null;
-  const set   = document.getElementById('p-set').value.trim() || null;
-  const slug  = document.getElementById('p-slug').value.trim() || null;
+  const label       = document.getElementById('p-label').value.trim() || null;
+  const set         = document.getElementById('p-set').value.trim() || null;
+  const slug        = document.getElementById('p-slug').value.trim() || null;
+  const description = document.getElementById('p-description').value.trim() || null;
 
   // Collection/icon fields (SPEC §7) — optional. The same values are stamped onto the
-  // PaperManifest AND every file's Single QR below, so the finder's home screen can
+  // Paper AND every file's Content QR below, so the finder's home screen can
   // group all of this paper's codes into one ad-hoc collection regardless of which
   // code they scan first (mirrors the Kotlin app's MainActivity demo-collection pattern).
   const icon            = document.getElementById('p-icon').value.trim() || null;
@@ -1731,6 +2005,16 @@ async function generatePaper() {
   let collectionId;
   try { collectionId = hexToBytes(document.getElementById('p-collection-id').value); }
   catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+
+  // Declared location (SPEC §4.2) — this paper's own placement, distinct from a related
+  // entry's hint-location use of the same lat/lng/radius_m fields.
+  const declaredLat   = parseFloat(document.getElementById('p-lat').value.trim());
+  const declaredLng   = parseFloat(document.getElementById('p-lng').value.trim());
+  const declaredRadius = parseFloat(document.getElementById('p-radius').value.trim());
+  const lat    = Number.isFinite(declaredLat) ? declaredLat : null;
+  const lng    = Number.isFinite(declaredLng) ? declaredLng : null;
+  const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
+  const preferDeclaredLocation = document.getElementById('p-prefer-declared-location').checked;
 
   // Slugs identify files within the paper's directory (SPEC §7) — catch empty
   // or duplicate slugs before encoding anything.
@@ -1749,6 +2033,7 @@ async function generatePaper() {
     const fmime    = document.getElementById('fmime-' + id)?.value;
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
+    const fdesc    = document.getElementById('fdesc-' + id)?.value.trim() || null;
     if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" has no content.</div>`; return; }
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
@@ -1758,14 +2043,8 @@ async function generatePaper() {
       collectionId, collectionLabel, collectionTag, icon,
     };
     try {
-      const enc = await encodeSingle(fileArgs);
-      const chunkCount = chunkCountForBytes(enc.assembledLength);
-      if (chunkCount > 1) {
-        const chunked = await encodeManifestAndChunks({ ...fileArgs, chunkCount });
-        encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: chunked.cacheId, chunked });
-      } else {
-        encodedFiles.push({ slug: fslug, mimeType: fmime, uri: enc.uri, fileId: enc.cacheId });
-      }
+      const sectors = await createContentSectorsAutoSized(fileArgs);
+      encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: sectors[0].partMeta.cacheId, sectors, description: fdesc });
     } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${escHtml(fslug)}" failed: ${e.message}</div>`; return; }
   }
 
@@ -1775,6 +2054,7 @@ async function generatePaper() {
     related = relatedEntries.map(id => {
       const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
       const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
+      const radiusM = parseFloat(document.getElementById('rradius-' + id)?.value.trim());
       const hint = document.getElementById('rhint-' + id)?.value.trim() || '(hint)';
       let paperId, keyMaterial;
       try { paperId = hexToBytes(document.getElementById('rpaperid-' + id)?.value); }
@@ -1788,20 +2068,22 @@ async function generatePaper() {
         retainKey: document.getElementById('rretainkey-' + id)?.checked ?? true,
         lat: Number.isFinite(lat) ? lat : null,
         lng: Number.isFinite(lng) ? lng : null,
+        radiusM: Number.isFinite(radiusM) ? radiusM : null,
       };
     });
   } catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
 
-  // Encode paper manifest
-  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
-  let manifestEnc;
+  // Encode the paper itself
+  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description }));
+  let paper;
   try {
-    manifestEnc = await encodePaperManifest({
-      label, set, slug, files: manifestFiles, related,
+    paper = await createPaperAutoSized({
+      label, set, slug, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
+      lat, lng, radiusM, preferDeclaredLocation,
     });
   }
-  catch(e) { msgs.innerHTML = `<div class="err">Manifest encoding failed: ${e.message}</div>`; return; }
+  catch(e) { msgs.innerHTML = `<div class="err">Paper encoding failed: ${e.message}</div>`; return; }
 
   // Render all QR codes
   result.innerHTML = `
@@ -1811,73 +2093,121 @@ async function generatePaper() {
     </div>
     <div class="qr-grid" id="p-qr-grid"></div>`;
   const grid = document.getElementById('p-qr-grid');
+  const useBinarySectors = document.getElementById('p-binary-sectors')?.checked;
+  const addParity = document.getElementById('p-add-parity')?.checked;
+  const rootHashHex = toHex(paper.rootHash);
 
-  // Manifest QR first
-  const mItem = makeQrItem(`📋 ${label || 'Manifest'}`, 'paper manifest', toHex(manifestEnc.rootHash), manifestEnc.uri);
-  grid.appendChild(mItem.div);
-  try {
-    await renderQr(mItem.qrDiv, manifestEnc.uri);
-    paperBulkItems.push({
-      filename: `tagdrop-${slugifyForFilename((label || 'paper') + '-manifest')}-${toHex(manifestEnc.rootHash)}.png`,
-      qrData: manifestEnc.uri,
-      caption: `${label || 'Manifest'} (manifest)`,
-    });
-  } catch(e) {
-    mItem.div.querySelector('.action-row')?.remove();
-    msgs.innerHTML = '<div class="err">QR rendering failed — is the qrcode library loaded?</div>';
-    return;
+  // Paper QR(s) first — readers need these to resolve every file_id below. A Paper that
+  // doesn't fit one QR is now split into several uniform sector codes too (SPEC §4.2/§5),
+  // the same mechanism as an oversized file, rather than a fixed manifest format.
+  const mCount = paper.sectors.length;
+  if (mCount > 1) {
+    msgs.innerHTML += `<div class="warn">Paper layout is ${paper.sectors[0].partMeta.totalBytes} bytes
+      — split into ${mCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
+  }
+  for (const sector of paper.sectors) {
+    const enc = encodeSector(sector);
+    const qrData = (mCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
+    const mLabel = mCount > 1 ? `📋 ${label || 'Manifest'} — sector ${sector.partMeta.sectorIndex + 1}/${mCount}` : `📋 ${label || 'Manifest'}`;
+    const mSub = mCount > 1
+      ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
+      : 'paper manifest';
+    const mId = mCount > 1 ? `${rootHashHex}-sector${sector.partMeta.sectorIndex}` : rootHashHex;
+    const mItem = makeQrItem(mLabel, mSub, mId, enc.uri, null, qrData);
+    grid.appendChild(mItem.div);
+    try {
+      await renderQr(mItem.qrDiv, qrData);
+      paperBulkItems.push({
+        filename: `tagdrop-${slugifyForFilename((label || 'paper') + (mCount > 1 ? `-sector${sector.partMeta.sectorIndex + 1}` : '-manifest'))}-${rootHashHex}.png`,
+        qrData,
+        caption: mCount > 1 ? `${label || 'Manifest'} (sector ${sector.partMeta.sectorIndex + 1}/${mCount})` : `${label || 'Manifest'} (manifest)`,
+      });
+    } catch(e) {
+      mItem.div.querySelector('.action-row')?.remove();
+      msgs.innerHTML += `<div class="err">QR rendering failed for ${mCount > 1 ? `paper sector ${sector.partMeta.sectorIndex + 1}` : 'the manifest'} — is the qrcode library loaded?</div>`;
+      return;
+    }
+  }
+  if (mCount > 1 && addParity) {
+    const parity = paritySector(paper.sectors);
+    const enc = encodeSector(parity);
+    const qrData = useBinarySectors ? enc.raw : enc.uri;
+    const pSub = useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`;
+    const pId = `${rootHashHex}-parity`;
+    const pItem = makeQrItem(`📋 ${label || 'Manifest'} — parity`, pSub, pId, enc.uri, 'parity', qrData, 'parity');
+    grid.appendChild(pItem.div);
+    try {
+      await renderQr(pItem.qrDiv, qrData);
+      paperBulkItems.push({
+        filename: `tagdrop-${slugifyForFilename((label || 'paper') + '-parity')}-${rootHashHex}.png`,
+        qrData,
+        caption: `${label || 'Manifest'} (parity)`,
+      });
+    } catch(e) {
+      pItem.div.querySelector('.action-row')?.remove();
+      msgs.innerHTML += `<div class="err">QR rendering failed for the paper's parity sector — is the qrcode library loaded?</div>`;
+      return;
+    }
   }
 
-  // File QRs — a file too large for one QR was split into a Manifest + Chunks
-  // above (cache_id is shared between the two forms, so the paper's file_id
-  // resolves correctly either way once the reader has scanned/assembled it).
-  const useBinaryChunks = document.getElementById('p-binary-chunks')?.checked;
+  // File QRs — file_id (above) is the cache_id shared by every sector of a file
+  // regardless of how many QR codes it took, so it resolves correctly either way
+  // once the reader has scanned/assembled them.
   for (const f of encodedFiles) {
     const homeBadge = HOME_SLUGS.includes(f.slug) ? '🏠 homepage' : null;
-    if (f.chunked) {
-      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.chunked.totalBytes} bytes — split into 1 manifest QR
-        + ${f.chunked.chunkCount} chunk QR code${f.chunked.chunkCount === 1 ? '' : 's'}.</div>`;
-      const mfItem = makeQrItem(f.slug, `${f.mimeType} · manifest`, toHex(f.chunked.cacheId), f.chunked.manifestUri, homeBadge);
-      grid.appendChild(mfItem.div);
-      try {
-        await renderQr(mfItem.qrDiv, f.chunked.manifestUri);
-        paperBulkItems.push({ filename: `tagdrop-${slugifyForFilename(f.slug + '-manifest')}-${toHex(f.chunked.cacheId)}.png`, qrData: f.chunked.manifestUri, caption: `${f.slug} (manifest)` });
-      } catch(e) {
-        mfItem.div.querySelector('.action-row')?.remove();
-        mfItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed for manifest.</div>');
-        continue;
-      }
-      for (const c of f.chunked.chunks) {
-        const qrData = useBinaryChunks ? c.raw : c.uri;
-        const cItem = makeQrItem(`${f.slug} — chunk ${c.index + 1}/${f.chunked.chunkCount}`,
-          useBinaryChunks ? `${c.raw.length} raw bytes · binary QR` : `${c.uri.length} chars · text QR`,
-          `${toHex(f.chunked.cacheId)}-chunk${c.index}`, c.uri, null, qrData);
-        grid.appendChild(cItem.div);
-        try {
-          await renderQr(cItem.qrDiv, qrData);
-          paperBulkItems.push({ filename: `tagdrop-${slugifyForFilename(f.slug + '-chunk' + (c.index + 1))}-${toHex(f.chunked.cacheId)}.png`, qrData, caption: `${f.slug} chunk ${c.index + 1}/${f.chunked.chunkCount}` });
-        } catch(e) {
-          cItem.div.querySelector('.action-row')?.remove();
-          cItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed for chunk ${c.index + 1}.</div>`);
-        }
-      }
-      continue;
+    const fCount = f.sectors.length;
+    const fIdHex = toHex(f.fileId);
+    if (fCount > 1) {
+      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.sectors[0].partMeta.totalBytes} bytes
+        — split into ${fCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
     }
-    const fItem = makeQrItem(f.slug, f.mimeType, toHex(f.fileId), f.uri, homeBadge);
-    grid.appendChild(fItem.div);
-    if (f.uri.length > MAX_URI_LENGTH)
-      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${f.uri.length} chars — try enabling compression.</div>`;
-    try {
-      await renderQr(fItem.qrDiv, f.uri);
-      paperBulkItems.push({ filename: `tagdrop-${slugifyForFilename(f.slug)}-${toHex(f.fileId)}.png`, qrData: f.uri, caption: `${f.slug} (${f.mimeType})` });
-    } catch(e) {
-      fItem.div.querySelector('.action-row')?.remove();
-      fItem.div.insertAdjacentHTML('beforeend', '<div class="err">Render failed — content too large for a single QR code</div>');
+    for (const sector of f.sectors) {
+      const enc = encodeSector(sector);
+      const qrData = (fCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
+      const fLabel = fCount > 1 ? `${f.slug} — sector ${sector.partMeta.sectorIndex + 1}/${fCount}` : f.slug;
+      const fSub = fCount > 1
+        ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
+        : f.mimeType;
+      const fId = fCount > 1 ? `${fIdHex}-sector${sector.partMeta.sectorIndex}` : fIdHex;
+      const fItem = makeQrItem(fLabel, fSub, fId, enc.uri, sector.partMeta.sectorIndex === 0 ? homeBadge : null, qrData);
+      grid.appendChild(fItem.div);
+      if (fCount === 1 && enc.uri.length > MAX_URI_LENGTH)
+        msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${enc.uri.length} chars — try enabling compression.</div>`;
+      try {
+        await renderQr(fItem.qrDiv, qrData);
+        paperBulkItems.push({
+          filename: `tagdrop-${slugifyForFilename(f.slug + (fCount > 1 ? `-sector${sector.partMeta.sectorIndex + 1}` : ''))}-${fIdHex}.png`,
+          qrData,
+          caption: fCount > 1 ? `${f.slug} sector ${sector.partMeta.sectorIndex + 1}/${fCount}` : `${f.slug} (${f.mimeType})`,
+        });
+      } catch(e) {
+        fItem.div.querySelector('.action-row')?.remove();
+        fItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed${fCount > 1 ? ` for sector ${sector.partMeta.sectorIndex + 1}` : ' — content too large for a single QR code'}.</div>`);
+      }
+    }
+    if (fCount > 1 && addParity) {
+      const parity = paritySector(f.sectors);
+      const enc = encodeSector(parity);
+      const qrData = useBinarySectors ? enc.raw : enc.uri;
+      const pSub = useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`;
+      const pId = `${fIdHex}-parity`;
+      const pItem = makeQrItem(`${f.slug} — parity`, pSub, pId, enc.uri, 'parity', qrData, 'parity');
+      grid.appendChild(pItem.div);
+      try {
+        await renderQr(pItem.qrDiv, qrData);
+        paperBulkItems.push({
+          filename: `tagdrop-${slugifyForFilename(f.slug + '-parity')}-${fIdHex}.png`,
+          qrData,
+          caption: `${f.slug} (parity)`,
+        });
+      } catch(e) {
+        pItem.div.querySelector('.action-row')?.remove();
+        pItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed for parity sector.</div>`);
+      }
     }
   }
 
   // Navigation link info
-  const rootHashHex = toHex(manifestEnc.rootHash);
   result.insertAdjacentHTML('beforeend', `
     <div class="card" id="no-print" style="margin-top:16px">
       <strong>Root hash:</strong>
@@ -1898,7 +2228,7 @@ async function generatePaper() {
 // raw Uint8Array bytes here for a binary/byte-mode chunk QR while `uri` still carries
 // the text tagdrop: form for "Inspect CBOR" (always text-decodable regardless of how
 // the QR itself was rendered).
-function makeQrItem(label, sub, id, uri, badge, qrData = uri) {
+function makeQrItem(label, sub, id, uri, badge, qrData = uri, badgeClass = 'home') {
   const div = document.createElement('div');
   div.className = 'qr-item';
   const visual = document.createElement('div');
@@ -1906,7 +2236,7 @@ function makeQrItem(label, sub, id, uri, badge, qrData = uri) {
   const qrDiv = document.createElement('div');
   visual.appendChild(qrDiv);
   div.appendChild(visual);
-  const badgeHtml = badge ? ` <span class="qr-badge home">${escHtml(badge)}</span>` : '';
+  const badgeHtml = badge ? ` <span class="qr-badge ${badgeClass}">${escHtml(badge)}</span>` : '';
   visual.insertAdjacentHTML('beforeend',
     `<div class="qr-footer">
        <div class="qr-stamp">${QR_STAMP_SVG}</div>

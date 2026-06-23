@@ -18,4 +18,26 @@
         android:title="@string/action_save"
         app:showAsAction="never" />
 
+    <item
+        android:id="@+id/action_view_as"
+        android:title="@string/action_view_as"
+        app:showAsAction="never">
+        <menu>
+            <group android:checkableBehavior="single">
+                <item
+                    android:id="@+id/action_view_rendered"
+                    android:title="@string/view_mode_rendered" />
+                <item
+                    android:id="@+id/action_view_text"
+                    android:title="@string/view_mode_text" />
+                <item
+                    android:id="@+id/action_view_hex"
+                    android:title="@string/view_mode_hex" />
+                <item
+                    android:id="@+id/action_view_cbor"
+                    android:title="@string/view_mode_cbor" />
+            </group>
+        </menu>
+    </item>
+
 </menu>

@@ -8,14 +8,31 @@ sealed class HistoryItem {
     abstract val key: String
     abstract val timestamp: Long
 
+    /** Text this row should be matched against for the search box, hashtags included as "#tag". */
+    abstract val searchHaystack: String
+
+    /** Distinct tags on this row, for the quick-filter chip row (without the "#" prefix). */
+    abstract val tags: List<String>
+
+    /** True if [query] is blank, or found case-insensitively in [searchHaystack] (so typing "#trail" filters by tag). */
+    fun matches(query: String): Boolean = query.isBlank() || searchHaystack.contains(query.trim(), ignoreCase = true)
+
     data class CacheScan(val cache: FoundCache) : HistoryItem() {
         override val key get() = "cache:${cache.cacheId}"
         override val timestamp get() = cache.discoveredAt
+        override val searchHaystack get() = listOfNotNull(
+            cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
+        ).joinToString(" ")
+        override val tags get() = listOfNotNull(cache.collectionTag)
     }
 
     data class PaperScan(val paper: ScannedPaper) : HistoryItem() {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
+        override val searchHaystack get() = listOfNotNull(
+            paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
+        ).joinToString(" ")
+        override val tags get() = listOfNotNull(paper.collectionTag)
     }
 
     companion object {

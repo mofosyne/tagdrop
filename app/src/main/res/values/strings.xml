@@ -11,6 +11,8 @@
     <!-- Main screen -->
     <string name="empty_collection">No collections yet.\nTap the camera button to scan your first TagDrop.</string>
     <string name="empty_history">No scans yet.\nTap the camera button to scan your first TagDrop.</string>
+    <string name="search_hint">Search, or #tag</string>
+    <string name="search_no_results">No matches for \"%1$s\".</string>
     <string name="map_no_locations">No located scans yet.\nGrant location access and scan a TagDrop to see it here.</string>
     <string name="button_enable_location">Enable location</string>
     <string name="button_open_settings">Open Settings</string>
@@ -86,6 +88,14 @@
     <string name="demo_collection_label">Demo Trail</string>
     <string name="demo_collection_added">Demo collection added — check Collections, History, and Map.</string>
 
+    <!-- Backup / restore -->
+    <string name="action_backup">Backup data</string>
+    <string name="action_restore">Restore data</string>
+    <string name="backup_ready_message">Backup created — save it somewhere safe, or share it to another device.</string>
+    <string name="restore_confirm_message">This replaces all scans, papers, and keys currently on this device with the contents of the backup file. This cannot be undone.</string>
+    <string name="restore_incompatible">This backup was made with a newer version of TagDrop and can\'t be restored here. Update the app first.</string>
+    <string name="restore_invalid">That file isn\'t a valid TagDrop backup.</string>
+
     <!-- Create screen -->
     <string name="hint_hint">Placement hint (optional)</string>
     <string name="hint_filename">Filename, e.g. readme.html (optional)</string>
@@ -120,6 +130,10 @@
     <string name="paper_file_content_error">File \"%1$s\" has no content.</string>
     <string name="paper_root_hash">Root hash: %1$s</string>
     <string name="paper_manifest_sub">paper manifest</string>
+    <string name="paper_split_warning">\"%1$s\" is %2$d bytes — split into %3$d sector QR codes.</string>
+    <string name="paper_sector_label">%1$s — sector %2$d/%3$d</string>
+    <string name="paper_parity_label">%1$s — parity</string>
+    <string name="paper_parity_sub">Parity recovery code</string>
 
     <!-- Paper manifest -->
     <string name="paper_manifest_label">Paper Manifest</string>
@@ -137,10 +151,21 @@
     <string name="link_invalid">Invalid tagdrop:// link.</string>
     <string name="chunk_before_manifest">Chunk received — scan the manifest QR first.</string>
 
+    <!-- Replies (ViewDataUriActivity, SPEC §7) -->
+    <string name="reply_to_label">↩ Reply to: %1$s</string>
+    <string name="reply_to_not_found">↩ Reply to %1$s (not yet scanned)</string>
+    <string name="replies_label">↪ View replies (%1$d)</string>
+    <string name="replies_dialog_title">Replies</string>
+
     <!-- Content export (Open / Share / Save) -->
     <string name="action_open_external">Open with…</string>
     <string name="action_share">Share</string>
     <string name="action_save">Save to device</string>
+    <string name="action_view_as">View as</string>
+    <string name="view_mode_rendered">Rendered</string>
+    <string name="view_mode_text">Text</string>
+    <string name="view_mode_hex">Hex</string>
+    <string name="view_mode_cbor">CBOR</string>
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>
@@ -162,6 +187,21 @@
     <string name="share_qr_progress">%1$d / %2$d</string>
     <string name="button_pause">Pause</string>
     <string name="button_resume">Resume</string>
+    <string name="share_qr_add_parity">🛟 Add a parity recovery code</string>
+
+    <!-- Write NFC tag screen -->
+    <string name="action_write_nfc">Write to NFC tag</string>
+    <string name="title_write_nfc">Write to NFC tag</string>
+    <string name="nfc_not_supported">This device doesn\'t support NFC.</string>
+    <string name="write_nfc_waiting">Hold a blank or rewritable NFC tag near the back of your device.</string>
+    <string name="write_nfc_tap_next">Written. Tap the next tag to continue.</string>
+    <string name="write_nfc_done">Done — content written to %1$d tag(s).</string>
+    <string name="write_nfc_failed">Write failed. Try again.</string>
+    <string name="write_nfc_too_large">Content is too large to fit on NFC tags, even split across multiple.</string>
+    <string name="write_nfc_read_only">This tag is read-only and can\'t be written.</string>
+    <string name="write_nfc_tag_too_small">This tag\'s storage is too small for this content.</string>
+    <string name="write_nfc_unsupported_tag">This tag type isn\'t supported for writing.</string>
+    <string name="write_nfc_include_app_record">Launch TagDrop automatically on tap</string>
 
     <!-- Passphrase unlock dialog -->
     <string name="passphrase_dialog_title">🔒 Passphrase required</string>

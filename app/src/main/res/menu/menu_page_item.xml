@@ -13,6 +13,10 @@
         android:title="@string/action_share_qr"
         app:showAsAction="never" />
     <item
+        android:id="@+id/action_write_nfc"
+        android:title="@string/action_write_nfc"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_save"
         android:title="@string/action_save"
         app:showAsAction="never" />

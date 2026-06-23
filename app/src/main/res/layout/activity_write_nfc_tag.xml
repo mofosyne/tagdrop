@@ -30,14 +30,14 @@
             android:textSize="16sp"
             android:textStyle="bold" />
 
-        <ImageView
-            android:id="@+id/imageQr"
+        <TextView
+            android:id="@+id/textStatus"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
             android:layout_marginTop="16dp"
-            android:adjustViewBounds="true"
-            android:contentDescription="@string/title_share_qr" />
+            android:gravity="center"
+            android:textSize="16sp" />
 
         <TextView
             android:id="@+id/textProgress"
@@ -49,20 +49,12 @@
             android:textColor="#888888" />
 
         <CheckBox
-            android:id="@+id/checkAddParity"
+            android:id="@+id/checkIncludeAppRecord"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:visibility="gone"
-            android:text="@string/share_qr_add_parity" />
-
-        <Button
-            android:id="@+id/buttonPause"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/button_pause" />
+            android:checked="true"
+            android:text="@string/write_nfc_include_app_record" />
 
     </LinearLayout>
 </LinearLayout>

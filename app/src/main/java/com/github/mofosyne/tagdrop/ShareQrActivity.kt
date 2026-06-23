@@ -8,6 +8,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.format.Sector
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.databinding.ActivityShareQrBinding
 import com.github.mofosyne.tagdrop.util.QrUtils
@@ -18,15 +19,18 @@ import kotlinx.coroutines.launch
  * scan — an offline alternative to the Share sheet when the receiver only has a camera.
  *
  * Content that fits in one QR is shown as a single static code. Larger content is split
- * into a Manifest + Chunks ([TagDropCodec.createManifestAndChunks]) and cycled through on
- * a timer; the receiver's continuous scan loop (ReceiveActivity / web reader) assembles
- * them in any order via SHA-256-verified [com.github.mofosyne.tagdrop.data.format.ChunkAssembler].
+ * into multiple sectors ([TagDropCodec.createContentSectors]) and cycled through on a timer;
+ * the receiver's continuous scan loop (ReceiveActivity / web reader) reassembles them in any
+ * order via [com.github.mofosyne.tagdrop.data.format.SectorAssembler] (SPEC §5). When split,
+ * an optional parity sector ([TagDropCodec.paritySector]) can be cycled in too, letting the
+ * receiver recover from missing any one sector.
  */
 class ShareQrActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityShareQrBinding
     private val handler = Handler(Looper.getMainLooper())
 
+    private var dataSectors: List<Sector> = emptyList()
     private var frames: List<String> = emptyList()
     private var frameIndex = 0
     private var cycling = true
@@ -58,14 +62,26 @@ class ShareQrActivity : AppCompatActivity() {
 
     private fun setUp(cache: FoundCache) {
         binding.textLabel.text = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
-        frames = buildFrames(cache)
+        dataSectors = buildDataSectors(cache)
+        binding.checkAddParity.visibility = if (dataSectors.size > 1) View.VISIBLE else View.GONE
+        binding.checkAddParity.setOnCheckedChangeListener { _, _ -> rebuildFrames() }
+        rebuildFrames()
+    }
+
+    /** Re-encodes [dataSectors] into [frames], appending a parity frame (SPEC §5) when checked and possible. */
+    private fun rebuildFrames() {
+        frameIndex = 0
+        frames = dataSectors.map { TagDropCodec.encode(it) } +
+            if (dataSectors.size > 1 && binding.checkAddParity.isChecked)
+                listOf(TagDropCodec.encode(TagDropCodec.paritySector(dataSectors)))
+            else emptyList()
         binding.buttonPause.visibility = if (frames.size > 1) View.VISIBLE else View.GONE
         showFrame()
         scheduleNext()
     }
 
-    /** One URI if [cache]'s content fits in a single QR, otherwise a Manifest + Chunk URIs. */
-    private fun buildFrames(cache: FoundCache): List<String> {
+    /** One sector if [cache]'s content fits in a single QR, otherwise one per uniform sector (SPEC §4.1, §5). */
+    private fun buildDataSectors(cache: FoundCache): List<Sector> {
         val rawContent = cache.contentBytes!!
         val collectionId = cache.collectionId?.hexToBytes()
 
@@ -73,19 +89,11 @@ class ShareQrActivity : AppCompatActivity() {
         // or binary content), mirroring the manual checkbox in CreateActivity/CreatePaperActivity.
         val compress = TagDropCodec.compress(rawContent).size < rawContent.size
 
-        val single = TagDropCodec.createSingle(
+        return TagDropCodec.createContentSectorsAutoSized(
             cache.hint, cache.filename, cache.mimeType, rawContent, compress,
-            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon
+            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon,
+            inReplyTo = cache.inReplyTo?.hexToBytes(), title = cache.title, description = cache.description
         )
-        val singleUri = TagDropCodec.encode(single)
-        if (singleUri.length <= TagDropCodec.MAX_URI_LENGTH) return listOf(singleUri)
-
-        val chunkCount = TagDropCodec.chunkCountForBytes(single.content.size)
-        val (manifest, chunks) = TagDropCodec.createManifestAndChunks(
-            cache.hint, cache.filename, cache.mimeType, rawContent, compress, chunkCount,
-            collectionId, cache.collectionLabel, cache.collectionTag, cache.icon
-        )
-        return listOf(TagDropCodec.encode(manifest)) + chunks.map { TagDropCodec.encode(it) }
     }
 
     private fun showFrame() {

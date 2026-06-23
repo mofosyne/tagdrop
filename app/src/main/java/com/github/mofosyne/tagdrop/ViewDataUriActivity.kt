@@ -15,6 +15,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -22,7 +23,9 @@ import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
+import com.github.mofosyne.tagdrop.data.format.MiniCbor
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
@@ -44,6 +47,19 @@ class ViewDataUriActivity : AppCompatActivity() {
     /** Set by [showPreviewUnavailable]; re-read by [refreshPreviewPanel] once [exportCache] resolves asynchronously. */
     private var previewMimeType: String? = null
     private var previewSizeBytes: Int = 0
+
+    /**
+     * The content bytes currently on screen, tracked so the view-mode menu ([ViewMode]) can
+     * re-render them without re-fetching. Null only for the "can't preview" panel and genuinely
+     * non-data: URIs -- there's nothing to dump in either case, so the menu hides itself.
+     */
+    private var currentContent: ContentInfo? = null
+    private var viewMode = ViewMode.RENDERED
+
+    private data class ContentInfo(val mimeType: String, val bytes: ByteArray, val context: TagDropLinkResolver.PaperContext?)
+
+    /** The ways [currentContent]'s bytes can be shown -- one normal render, three raw dumps of the same bytes. */
+    private enum class ViewMode { RENDERED, TEXT, HEX, CBOR }
 
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
@@ -118,6 +134,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                 exportCache = AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(cacheId)
                 invalidateOptionsMenu()
                 refreshPreviewPanel()
+                refreshReplyBar()
             }
         }
     }
@@ -132,6 +149,14 @@ class ViewDataUriActivity : AppCompatActivity() {
         menu.findItem(R.id.action_open_external)?.isEnabled = enabled
         menu.findItem(R.id.action_share)?.isEnabled = enabled
         menu.findItem(R.id.action_save)?.isEnabled = enabled
+        menu.findItem(R.id.action_view_as)?.isVisible = currentContent != null
+        val checkedId = when (viewMode) {
+            ViewMode.RENDERED -> R.id.action_view_rendered
+            ViewMode.TEXT -> R.id.action_view_text
+            ViewMode.HEX -> R.id.action_view_hex
+            ViewMode.CBOR -> R.id.action_view_cbor
+        }
+        menu.findItem(checkedId)?.isChecked = true
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -139,7 +164,18 @@ class ViewDataUriActivity : AppCompatActivity() {
         R.id.action_open_external -> { openExternally(); true }
         R.id.action_share -> { shareContent(); true }
         R.id.action_save -> { saveToDevice(); true }
+        R.id.action_view_rendered -> { setViewMode(ViewMode.RENDERED); true }
+        R.id.action_view_text -> { setViewMode(ViewMode.TEXT); true }
+        R.id.action_view_hex -> { setViewMode(ViewMode.HEX); true }
+        R.id.action_view_cbor -> { setViewMode(ViewMode.CBOR); true }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    /** Switches [viewMode] and re-renders [currentContent]'s bytes the new way, without re-fetching them. */
+    private fun setViewMode(mode: ViewMode) {
+        val content = currentContent ?: return
+        viewMode = mode
+        renderContent(content)
     }
 
     /** Opens the cached content in another app via a chooser. */
@@ -200,28 +236,13 @@ class ViewDataUriActivity : AppCompatActivity() {
             return
         }
         showWebView()
-        if (mimeType.startsWith("text/html")) {
+        if (mimeType.startsWith("text/")) {
             lifecycleScope.launch {
                 val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
-                if (context != null) {
-                    loadHtml(String(bytes, Charsets.UTF_8), context.rootHashHex, context.slug)
-                } else {
-                    binding.htmldisp.loadUrl(dataUri)
-                }
-            }
-        } else if (mimeType.startsWith("text/markdown")) {
-            lifecycleScope.launch {
-                val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
-                val css = context?.let { resolver.findStylesheet(it.rootHashHex) }
-                val html = MarkdownRenderer.toHtmlDocument(String(bytes, Charsets.UTF_8), css)
-                if (context != null) {
-                    loadHtml(html, context.rootHashHex, context.slug)
-                } else {
-                    binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-                }
+                renderContent(ContentInfo(mimeType, bytes, context))
             }
         } else {
-            binding.htmldisp.loadUrl(dataUri)
+            renderContent(ContentInfo(mimeType, bytes, null))
         }
     }
 
@@ -229,6 +250,85 @@ class ViewDataUriActivity : AppCompatActivity() {
     private fun loadHtml(html: String, rootHashHex: String, slug: String) {
         val baseUrl = TagDropLinkResolver.syntheticBaseUrl(rootHashHex, slug)
         binding.htmldisp.loadDataWithBaseURL(baseUrl, html, "text/html", "UTF-8", null)
+    }
+
+    /**
+     * Renders [content] according to [viewMode]: the normal per-mimeType render for RENDERED,
+     * or one of three raw views of the exact same bytes -- decoded text, a hex dump, or an
+     * attempt to decode them as CBOR. Tracked in [currentContent] so the view-mode menu can
+     * switch between them without re-fetching anything.
+     */
+    private fun renderContent(content: ContentInfo) {
+        currentContent = content
+        invalidateOptionsMenu()
+        when (viewMode) {
+            ViewMode.RENDERED -> renderRendered(content)
+            ViewMode.TEXT -> showMonospace(String(content.bytes, Charsets.UTF_8), wrap = true)
+            ViewMode.HEX -> showMonospace(hexDump(content.bytes), wrap = false)
+            ViewMode.CBOR -> showMonospace(MiniCbor.describeSequence(content.bytes), wrap = false)
+        }
+    }
+
+    /**
+     * The RENDERED view: HTML/Markdown rendered as a page, other text (vCard/Wi-Fi/calendar/...
+     * raw QR scans included) as preformatted text since the WebView can't otherwise display most
+     * non-web text subtypes, and anything else (images, audio) as its original data: URI.
+     */
+    private fun renderRendered(content: ContentInfo) {
+        when {
+            content.mimeType.startsWith("text/html") -> {
+                val html = String(content.bytes, Charsets.UTF_8)
+                if (content.context != null) loadHtml(html, content.context.rootHashHex, content.context.slug)
+                else binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+            content.mimeType.startsWith("text/markdown") -> {
+                lifecycleScope.launch {
+                    val css = content.context?.let { resolver.findStylesheet(it.rootHashHex) }
+                    val html = MarkdownRenderer.toHtmlDocument(String(content.bytes, Charsets.UTF_8), css)
+                    if (content.context != null) loadHtml(html, content.context.rootHashHex, content.context.slug)
+                    else binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                }
+            }
+            content.mimeType.startsWith("text/") -> showMonospace(String(content.bytes, Charsets.UTF_8), wrap = true)
+            else -> {
+                val dataUri = "data:${content.mimeType};base64," +
+                    android.util.Base64.encodeToString(content.bytes, android.util.Base64.NO_WRAP)
+                binding.htmldisp.loadUrl(dataUri)
+            }
+        }
+    }
+
+    /**
+     * Wraps [text] in a minimal HTML document so the WebView always renders it visibly, matching
+     * the web reader's `<pre>`-based fallback (`tools/reader/index.html`'s `showContent()`).
+     * [wrap] is on for prose (vCard, plain text, decoded TEXT view) and off for HEX/CBOR dumps,
+     * where wrapping would break column alignment -- those rely on the WebView's existing
+     * pinch-zoom/pan (like the CBOR debug dialog's HorizontalScrollView) instead.
+     */
+    private fun showMonospace(text: String, wrap: Boolean) {
+        val escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        val whiteSpace = if (wrap) "pre-wrap" else "pre"
+        val html = "<html><body><pre style=\"white-space:$whiteSpace;word-wrap:break-word;font-family:monospace;margin:16px;font-size:13px;\">$escaped</pre></body></html>"
+        binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+    }
+
+    /** Classic 16-bytes-per-line hex dump with offset and ASCII sidebar, for the HEX view. */
+    private fun hexDump(bytes: ByteArray): String = buildString {
+        val width = 16
+        for (offset in bytes.indices step width) {
+            val end = minOf(offset + width, bytes.size)
+            append("%08x  ".format(offset))
+            for (i in offset until offset + width) {
+                append(if (i < end) "%02x ".format(bytes[i]) else "   ")
+                if (i - offset == 7) append(' ')
+            }
+            append(' ')
+            for (i in offset until end) {
+                val c = bytes[i].toInt() and 0xFF
+                append(if (c in 0x20..0x7e) c.toChar() else '.')
+            }
+            appendLine()
+        }
     }
 
     /**
@@ -247,6 +347,7 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /** Shows the "can't preview" panel for [mimeType] content instead of a blank WebView. */
     private fun showPreviewUnavailable(mimeType: String, sizeBytes: Int) {
+        currentContent = null
         previewMimeType = mimeType
         previewSizeBytes = sizeBytes
         binding.htmldisp.visibility = View.GONE
@@ -274,8 +375,85 @@ class ViewDataUriActivity : AppCompatActivity() {
         mime.startsWith("audio/") -> "🎵"
         mime.startsWith("video/") -> "🎬"
         mime == "application/pdf" -> "📕"
+        mime == "text/calendar" -> "📅"
+        mime == "text/vcard" -> "👤"
         mime.startsWith("text/") -> "📄"
         else -> "📦"
+    }
+
+    /** Re-resolves and shows/hides the reply bar (parent link + replies link) for the current [exportCache]. */
+    private suspend fun refreshReplyBar() {
+        val cache = exportCache
+        if (cache == null) {
+            binding.textReplyTo.visibility = View.GONE
+            binding.textReplies.visibility = View.GONE
+            return
+        }
+        val db = AppDatabase.get(this)
+        val parent = cache.inReplyTo?.let { resolveReplyTarget(db, it) }
+        val replies = db.cacheDao().getRepliesTo(cache.cacheId)
+        bindReplyTo(parent)
+        bindReplies(replies)
+    }
+
+    /** Resolves [idHex] (a `cache_id` or `root_hash`, SPEC §7) against both DAOs since a reply's parent can be either type. */
+    private suspend fun resolveReplyTarget(db: AppDatabase, idHex: String): ReplyParent =
+        db.cacheDao().getById(idHex)?.let { ReplyParent.AsCache(it) }
+            ?: db.paperDao().getByRootHash(idHex)?.let { ReplyParent.AsPaper(it) }
+            ?: ReplyParent.Missing(idHex)
+
+    private fun bindReplyTo(target: ReplyParent?) {
+        if (target == null) {
+            binding.textReplyTo.visibility = View.GONE
+            return
+        }
+        binding.textReplyTo.visibility = View.VISIBLE
+        when (target) {
+            is ReplyParent.AsCache -> {
+                val label = target.cache.hint ?: target.cache.filename ?: target.cache.cacheId.take(12)
+                binding.textReplyTo.text = getString(R.string.reply_to_label, label)
+                binding.textReplyTo.setOnClickListener { openCollectionDetail(cacheId = target.cache.cacheId) }
+            }
+            is ReplyParent.AsPaper -> {
+                val label = target.paper.label ?: target.paper.rootHash.take(12)
+                binding.textReplyTo.text = getString(R.string.reply_to_label, label)
+                binding.textReplyTo.setOnClickListener { openCollectionDetail(rootHash = target.paper.rootHash) }
+            }
+            is ReplyParent.Missing -> {
+                binding.textReplyTo.text = getString(R.string.reply_to_not_found, target.idHex.take(12))
+                binding.textReplyTo.setOnClickListener(null)
+            }
+        }
+    }
+
+    private fun bindReplies(replies: List<FoundCache>) {
+        if (replies.isEmpty()) {
+            binding.textReplies.visibility = View.GONE
+            return
+        }
+        binding.textReplies.visibility = View.VISIBLE
+        binding.textReplies.text = getString(R.string.replies_label, replies.size)
+        binding.textReplies.setOnClickListener { showRepliesPicker(replies) }
+    }
+
+    /** Jumps straight to the only reply, or lets the user pick when there's more than one. */
+    private fun showRepliesPicker(replies: List<FoundCache>) {
+        if (replies.size == 1) {
+            openCollectionDetail(cacheId = replies[0].cacheId)
+            return
+        }
+        val labels = replies.map { it.hint ?: it.filename ?: it.cacheId.take(12) }.toTypedArray<CharSequence>()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.replies_dialog_title)
+            .setItems(labels) { _, which -> openCollectionDetail(cacheId = replies[which].cacheId) }
+            .show()
+    }
+
+    /** The resolved target of a `in_reply_to` pointer (SPEC §7) — either type of parent, or not-yet-scanned. */
+    private sealed class ReplyParent {
+        data class AsCache(val cache: FoundCache) : ReplyParent()
+        data class AsPaper(val paper: ScannedPaper) : ReplyParent()
+        data class Missing(val idHex: String) : ReplyParent()
     }
 
     /** Parses a "data:<mime>;base64,<payload>" URI into (mimeType, bytes), or null if not one. */
@@ -303,26 +481,18 @@ class ViewDataUriActivity : AppCompatActivity() {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
                     exportCache = result.cache
+                    viewMode = ViewMode.RENDERED
                     invalidateOptionsMenu()
+                    refreshReplyBar()
                     if (!isWebViewRenderable(result.cache.mimeType)) {
                         showPreviewUnavailable(result.cache.mimeType, content.size)
                         return@launch
                     }
                     showWebView()
-                    when {
-                        result.cache.mimeType.startsWith("text/html") ->
-                            loadHtml(String(content, Charsets.UTF_8), result.paper.rootHash, result.slug)
-                        result.cache.mimeType.startsWith("text/markdown") -> {
-                            val css = resolver.findStylesheet(result.paper.rootHash)
-                            val html = MarkdownRenderer.toHtmlDocument(String(content, Charsets.UTF_8), css)
-                            loadHtml(html, result.paper.rootHash, result.slug)
-                        }
-                        else -> {
-                            val dataUri = "data:${result.cache.mimeType};base64," +
-                                android.util.Base64.encodeToString(content, android.util.Base64.NO_WRAP)
-                            binding.htmldisp.loadUrl(dataUri)
-                        }
-                    }
+                    val context = if (result.cache.mimeType.startsWith("text/"))
+                        TagDropLinkResolver.PaperContext(result.paper.rootHash, result.slug)
+                    else null
+                    renderContent(ContentInfo(result.cache.mimeType, content, context))
                 }
                 is TagDropLinkResolver.Resolution.FileNotCached ->
                     toast(getString(R.string.file_not_scanned, result.file.slug))

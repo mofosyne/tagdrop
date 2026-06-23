@@ -13,66 +13,49 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Encodes and decodes TagDrop QR payloads.
+ * Encodes and decodes TagDrop codes — the wire-format codec (SPEC §2–§5, §9).
  *
  * Encoding URI scheme:  tagdrop:<base41-cbor-sequence>
- *   <base41-cbor-sequence> = Base41( CBOR(version) || CBOR(type) || CBOR(payload) )
+ *   <base41-cbor-sequence> = Base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )
  *   version = uint, currently 1
- *   type    = uint: 0 = Single, 1 = Manifest, 2 = Chunk, 3 = PaperManifest
+ *   type    = uint: 0 = Content, 1 = Paper
+ *
+ * Every code — standalone or one of several pieces — is a [Sector]: a four-item CBOR
+ * Sequence (RFC 8742) carrying its slice of a payload's **reassembled stream** in
+ * `sector_bytes`, addressed by `part_meta` (§4.1). [decode]/[decodeRaw] return a
+ * [TagDropScan]; feed each [Sector] to [SectorAssembler] to reassemble and parse the
+ * payload it belongs to (§5).
+ *
+ * Reassembled stream (concatenated `sector_bytes` of sectors 0..sector_count-1, §4.2):
+ *   CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
+ *   - core_meta_item: always plain/small — identity/preview fields + declarations
+ *   - bulky_meta_item: directories / large fields; may be compressed (key 45/46)
+ *   - content: raw cache bytes (Content), empty (Paper), or a hidden override map (§9)
  *
  * Navigation links (NOT encoding URIs, NOT put in QR codes):
  *   tagdrop://<rootHash-hex>/<slug>
  *   Disambiguated by "//": Base41's alphabet has no '/' at all, so an encoding
  *   URI can never have "//" right after the scheme.
  *
- * CBOR payload map integer keys (key 1 "version" is retired — it now lives in
- * the envelope above):
- *   2  cache_id      bytes(8)  also root_hash for PaperManifest
- *   3  hint          text, optional  also label for PaperManifest
- *   4  mime_type     text
- *   5  content       bytes    (Single only)
- *   6  chunk_count   uint     (Manifest only)
- *   7  total_bytes   uint     (Manifest only)
- *   8  sha256        bytes(32)(Manifest only)
- *   9  chunk_index   uint     (Chunk only)
- *   10 chunk_data    bytes    (Chunk only)
- *   11 filename      text, optional
- *   12 compression   uint 0=none 1=deflate
- *   13 set           text, optional  (PaperManifest)
- *   14 slug          text, optional  (PaperManifest)
- *   15 files         array    (PaperManifest)
- *   16 related       array    (PaperManifest)
- *   17 collection_id    bytes(8), optional  (Single, Manifest, PaperManifest)
- *   18 collection_label text, optional      (Single, Manifest, PaperManifest)
- *   19 collection_tag   text, optional      (Single, Manifest, PaperManifest)
- *   24 icon              text, optional      (Single, Manifest, PaperManifest) — emoji icon
- *   25 reserved for future image icon (bytes — small embedded icon image)
- *   28 encryption    uint, optional   0=none 1=AES-256-GCM (Single, Manifest) — optional cosmetic
- *                    hint only, NOT a precondition — SPEC §9
- *   29 reserved and unused — see SPEC §9 (an override map's nonce travels embedded in its blob)
- *   30 key_material  bytes(32), optional — a decryption key for OTHER content (Single, Manifest, PaperManifest) — SPEC §9
- *   31 retain_key    bool, optional, default true — wherever key_material appears — SPEC §9
- *
- * A Single's raw trailing bytes (after its 3-item CBOR sequence), if >= 28 bytes, or a
- * Manifest's assembled chunk bytes (§5), if >= 28 bytes, are a candidate self-contained
- * `nonce(12) || ciphertext || tag(16)` blob — an encrypted "override map" using key numbers
- * 3 (hint), 4 (mime_type), 5 (content, Single only), 11 (filename) that overlays this map
- * once decrypted by a matching key_material. See SPEC §9.
- *
- * File entry sub-keys (within key 15 elements):
- *   20 slug        text
- *   21 mime_type   text
- *   22 file_id     bytes(8)
- *
- * Related paper sub-keys (within key 16 elements):
- *   3  hint        text
- *   13 set         text, optional
- *   14 slug        text, optional
- *   23 paper_id    bytes(8), optional
- *   26 lat         float64, optional — latitude of the related paper
- *   27 lng         float64, optional — longitude of the related paper
- *   30 key_material bytes(32), optional — decryption key for the related paper — SPEC §9
- *   31 retain_key   bool, optional, default true — SPEC §9
+ * CBOR map integer keys — see SPEC §3 for the full table and where each lives:
+ *   part_meta:        2 cache_id/root_hash, 7 total_bytes, 42 sector_index,
+ *                     43 sector_count, 44 parity_scheme
+ *   core_meta_item:   3 hint/label, 4 mime_type, 8 content_sha256, 11 filename,
+ *                     12 content_compression, 13 set, 14 slug, 17/18/19 collection_*,
+ *                     24 icon, 28 encryption, 30 key_material, 31 retain_key,
+ *                     37/38/39 kdf_*, 40 description, 45 bulky_meta_compression,
+ *                     46 bulky_meta_compressed_bytes, 47 bulky_meta_sha256, 50 in_reply_to,
+ *                     51 title
+ *   bulky_meta_item:  15 files, 16 related (Paper); large fixed fields
+ *   override map (§9, inside the content slot once decrypted): 3 hint, 4 mime_type,
+ *                     5 content, 11 filename
+ *   file entry (within key 15):   20 slug, 21 mime_type, 22 file_id, 41 description
+ *   related paper (within key 16): 3 hint, 13 set, 14 slug, 23 paper_id, 26 lat,
+ *                     27 lng, 30 key_material, 31 retain_key, 48 radius_m
+ *   core_meta_item also carries 26 lat / 27 lng (author-declared location of THIS
+ *                     Content/Paper, distinct from a related paper's hint location),
+ *                     48 radius_m (circle of uncertainty, shared wherever lat/lng
+ *                     appears), 49 prefer_declared_location
  */
 object TagDropCodec {
 
@@ -81,6 +64,9 @@ object TagDropCodec {
 
     const val ENCRYPTION_NONE      = 0
     const val ENCRYPTION_AES256GCM = 1
+
+    /** parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5). */
+    const val PARITY_XOR = 1
 
     private const val AES_KEY_BYTES   = 32
     private const val GCM_NONCE_BYTES = 12
@@ -94,33 +80,37 @@ object TagDropCodec {
     const val MAX_URI_LENGTH = 2000
 
     /**
-     * Max payload bytes (post-compression) per Chunk so its encoded `tagdrop:` URI stays
-     * under [MAX_URI_LENGTH]: ~20 bytes of CBOR/envelope overhead per chunk, and Base41
-     * expands 2 bytes to 3 chars.
+     * Max `sector_bytes` per sector so its encoded `tagdrop:` URI stays under [MAX_URI_LENGTH]:
+     * ~20 bytes of CBOR/envelope overhead per sector, and Base41 expands 2 bytes to 3 chars.
+     * [createContentSectors] splits a larger reassembled stream into this many bytes per sector.
      */
-    private const val MAX_CHUNK_DATA_BYTES = 1300
+    const val MAX_SECTOR_DATA_BYTES = 1300
 
-    private const val SCHEME         = "tagdrop:"
+    /** NDEF MIME type for a sector's raw CBOR sequence on an NFC tag (SPEC §12/§13) — see [sectorCbor]/[decodeRaw]. */
+    const val NFC_MIME_TYPE = "application/vnd.tagdrop"
+
+    private const val SCHEME          = "tagdrop:"
     private const val NAV_LINK_PREFIX = "tagdrop://"
 
     private const val VERSION = 1L
 
-    private const val TYPE_SINGLE         = 0
-    private const val TYPE_MANIFEST       = 1
-    private const val TYPE_CHUNK          = 2
-    private const val TYPE_PAPER_MANIFEST = 3
+    const val TYPE_CONTENT = 0
+    const val TYPE_PAPER   = 1
 
-    private const val K_CACHE_ID    = 2
-    private const val K_HINT        = 3
+    // part_meta (§4.1)
+    private const val K_CACHE_ID     = 2   // cache_id / root_hash
+    private const val K_TOTAL_BYTES  = 7
+    private const val K_SECTOR_INDEX = 42
+    private const val K_SECTOR_COUNT = 43
+    private const val K_PARITY       = 44
+
+    // core_meta_item / bulky_meta_item / override map
+    private const val K_HINT        = 3   // hint / label
     private const val K_MIME        = 4
-    private const val K_CONTENT     = 5
-    private const val K_CHUNK_COUNT = 6
-    private const val K_TOTAL_BYTES = 7
-    private const val K_SHA256      = 8
-    private const val K_CHUNK_IDX   = 9
-    private const val K_CHUNK_DATA  = 10
+    private const val K_CONTENT     = 5   // override map only (§9)
+    private const val K_CONTENT_SHA = 8   // content_sha256
     private const val K_FILENAME    = 11
-    private const val K_COMPRESSION = 12
+    private const val K_COMPRESSION = 12  // content_compression
     private const val K_SET         = 13
     private const val K_SLUG        = 14
     private const val K_FILES       = 15
@@ -136,37 +126,40 @@ object TagDropCodec {
     // K_ICON_IMAGE = 25 — reserved for a future small embedded image icon (bytes)
     private const val K_LAT         = 26
     private const val K_LNG         = 27
-    private const val K_ENCRYPTION    = 28
+    private const val K_ENCRYPTION  = 28
     // 29 reserved and unused — see SPEC §9
-    private const val K_KEY_MATERIAL  = 30
-    private const val K_RETAIN_KEY    = 31
-    private const val K_KDF_ALG       = 37
-    private const val K_KDF_SALT      = 38
-    private const val K_KDF_ITERS     = 39
+    private const val K_KEY_MATERIAL = 30
+    private const val K_RETAIN_KEY   = 31
+    private const val K_KDF_ALG      = 37
+    private const val K_KDF_SALT     = 38
+    private const val K_KDF_ITERS    = 39
+    private const val K_DESCRIPTION       = 40  // content teaser / message body — valid for both Content and Paper
+    private const val K_FILE_DESCRIPTION  = 41
+    private const val K_BULKY_COMPRESSION      = 45
+    private const val K_BULKY_COMPRESSED_BYTES = 46
+    private const val K_BULKY_SHA              = 47
+    private const val K_RADIUS_M               = 48  // circle-of-uncertainty radius in meters, wherever lat/lng appears
+    private const val K_PREFER_DECLARED_LOCATION = 49  // core_meta_item only — lat/lng wins over live GPS when true
+    private const val K_IN_REPLY_TO = 50  // core_meta_item only — cache_id/root_hash of the single parent being replied to (SPEC §7)
+    private const val K_TITLE       = 51  // short subject/caption, distinct from hint/label — valid for both Content and Paper
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
 
-    // ── Content addressing (IPFS-inspired) ───────────────────────────────────
+    private const val DEFAULT_KDF_ITERS = 100000
 
-    /** SHA-256(uncompressed content)[0:8] — same bytes, same ID, everywhere. */
-    fun contentId(content: ByteArray): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest(content).copyOf(8)
+    // ── Content addressing (IPFS-inspired, SPEC §4.4) ─────────────────────────
 
-    /**
-     * SHA-256(paperManifestCbor)[0:8] — the paper's permanent root hash.
-     * Compute this AFTER finalizing the manifest; store it as root_hash inside the CBOR,
-     * then re-encode. (Same chicken-and-egg resolution as IPFS CIDs.)
-     */
-    fun rootHashOf(paperManifestCbor: ByteArray): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest(paperManifestCbor).copyOf(8)
+    /** `cache_id` = SHA-256(uncompressed content)[0:8] — same bytes, same ID, everywhere. */
+    fun contentId(content: ByteArray): ByteArray = sha256(content).copyOf(8)
 
     /**
-     * 8 random bytes — `cache_id` for encrypted content (SPEC §9). Encrypted content
-     * uses a random ID rather than [contentId] so the ID itself can't be used as a
-     * content-equality oracle against a known plaintext.
+     * 8 random bytes — `cache_id` for a Content code carrying a hidden override map (SPEC §9),
+     * so the ID itself can't be used as a content-equality oracle against a known plaintext.
      */
     fun randomCacheId(): ByteArray = ByteArray(8).also { SecureRandom().nextBytes(it) }
+
+    private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
     // ── Encryption (SPEC §9) ──────────────────────────────────────────────────
 
@@ -201,8 +194,8 @@ object TagDropCodec {
     /**
      * Encrypts [override] as a self-contained `nonce(12) || ciphertext || tag(16)` blob
      * (SPEC §9): the override map's CBOR bytes are compressed per [compression] (the same
-     * value the clear map declares for its own `content`/assembled bytes), then
-     * AES-256-GCM-encrypted under a fresh nonce.
+     * value the clear map declares for its own content slot), then AES-256-GCM-encrypted
+     * under a fresh nonce.
      */
     fun encryptOverrideMap(override: TagDropPayload.OverrideMap, key: ByteArray, compression: Int): ByteArray {
         val cbor = MiniCbor.encodeMap(listOf(
@@ -243,323 +236,251 @@ object TagDropCodec {
 
     /**
      * Derives a 32-byte AES-256 key from [passphrase] using PBKDF2-SHA256 with the given
-     * [salt] (16 bytes) and [iterations] count (SPEC §10). The resulting key can be used
+     * [salt] (16 bytes) and [iterations] count (SPEC §9). The resulting key can be used
      * with [tryDecryptOverrideMap] just like a [generateKeyMaterial]-produced random key.
      */
     fun deriveKeyFromPassphrase(passphrase: String, salt: ByteArray, iterations: Int): ByteArray {
         val spec = PBEKeySpec(passphrase.toCharArray(), salt, iterations, 256)
-        val key = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec)
-        return key.encoded
-    }
-
-    /** [resolveSingle]'s result: a Single's final hint/mime_type/filename/content after any override merge (SPEC §9). */
-    data class ResolvedSingle(val hint: String?, val mimeType: String, val filename: String?, val content: ByteArray) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-            other as ResolvedSingle
-            if (hint != other.hint) return false
-            if (mimeType != other.mimeType) return false
-            if (filename != other.filename) return false
-            if (!content.contentEquals(other.content)) return false
-            return true
-        }
-
-        override fun hashCode(): Int {
-            var result = hint?.hashCode() ?: 0
-            result = 31 * result + mimeType.hashCode()
-            result = 31 * result + (filename?.hashCode() ?: 0)
-            result = 31 * result + content.contentHashCode()
-            return result
-        }
-    }
-
-    /**
-     * Resolves a Single's final view (SPEC §9). If [payload] carries an [TagDropPayload.Single.overrideBlob]
-     * and [key] decrypts it, the override map's present fields replace the clear map's —
-     * hint/mime_type/content/filename "self-correct" to their real values. Otherwise (no
-     * blob, no key, or [key] doesn't authenticate), returns the clear map's own
-     * (decompressed) content and fields.
-     */
-    fun resolveSingle(payload: TagDropPayload.Single, key: ByteArray? = null): ResolvedSingle {
-        val blob = payload.overrideBlob
-        val override = if ((blob != null) && (key != null)) tryDecryptOverrideMap(blob, key, payload.compression) else null
-        return if (override != null) {
-            ResolvedSingle(
-                hint     = override.hint ?: payload.hint,
-                mimeType = override.mimeType ?: payload.mimeType,
-                filename = override.filename ?: payload.filename,
-                content  = override.content ?: ByteArray(0)
-            )
-        } else {
-            ResolvedSingle(
-                hint     = payload.hint,
-                mimeType = payload.mimeType,
-                filename = payload.filename,
-                content  = decompressPayload(payload.content, payload.compression)
-            )
-        }
+        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
     }
 
     // ── Factory helpers ───────────────────────────────────────────────────────
 
     /**
-     * Build a Single payload with an auto-computed content-addressed ID.
+     * Builds the sector(s) of a Content payload (`type` 0). The reassembled stream is
+     * `CBOR(core_meta_item) || CBOR(bulky_meta_item) || content`, split into sectors of at
+     * most [maxSectorDataBytes] each — one sector for content that fits, more for larger
+     * payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added whenever more than one
+     * sector is needed (required for `sector_count > 1`, SPEC §3) — without it, a decoder
+     * has no way to detect a substituted/forged sector during reassembly.
      *
-     * [hint]/[filename]/[mimeType]/[rawContent] become the **clear map**'s own fields —
-     * shown (and used) until a hidden override map, if any, is unlocked (SPEC §9). They
-     * may be a cover story, a decoy, or genuine unremarkable content with no relation to
-     * [override].
+     * [hint]/[filename]/[mimeType]/[rawContent] become the **clear** view — shown until a
+     * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a
+     * decoy, or genuine unremarkable content.
      *
      * If [override] is given (with [encryptionKey], 32 bytes — see [generateKeyMaterial]),
-     * it's AES-256-GCM-encrypted into a self-contained blob (SPEC §9) carried as raw
-     * trailing bytes after this payload's CBOR sequence — see [TagDropPayload.Single.overrideBlob].
-     * `cacheId` becomes random rather than content-addressed (see [randomCacheId]), and
-     * `encryption` is set to the AES-256-GCM hint unless [declareEncryption] is false
-     * (the hint is cosmetic only — SPEC §9).
-     */
-    fun createSingle(
-        hint: String?, filename: String?, mimeType: String,
-        rawContent: ByteArray, compress: Boolean = false, collectionId: ByteArray? = null,
-        collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
-        override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
-        declareEncryption: Boolean = true
-    ): TagDropPayload.Single {
-        val (compressed, compression) = if (compress) {
-            compress(rawContent) to COMPRESSION_DEFLATE
-        } else {
-            rawContent to COMPRESSION_NONE
-        }
-        val cacheId: ByteArray
-        val overrideBlob: ByteArray?
-        val encryption: Int
-        if (override != null) {
-            requireNotNull(encryptionKey) { "encryptionKey is required when override is provided" }
-            overrideBlob = encryptOverrideMap(override, encryptionKey, compression)
-            cacheId = randomCacheId()
-            encryption = if (declareEncryption) ENCRYPTION_AES256GCM else ENCRYPTION_NONE
-        } else {
-            overrideBlob = null
-            cacheId = contentId(rawContent)
-            encryption = ENCRYPTION_NONE
-        }
-        return TagDropPayload.Single(
-            cacheId         = cacheId,
-            hint            = hint,
-            filename        = filename,
-            mimeType        = mimeType,
-            compression     = compression,
-            content         = compressed,
-            overrideBlob    = overrideBlob,
-            encryption      = encryption,
-            collectionId    = collectionId,
-            collectionLabel = collectionLabel,
-            collectionTag   = collectionTag,
-            icon            = icon
-        )
-    }
-
-    /**
-     * Build a "key-only" Single payload (SPEC §9): carries [keyMaterial] for other
-     * content, with no `content`/`mime_type` of its own. `cacheId` is random — there's
-     * no content to address.
-     */
-    fun createKeyCode(keyMaterial: ByteArray, retainKey: Boolean = true, hint: String? = null): TagDropPayload.Single {
-        require(keyMaterial.size == AES_KEY_BYTES) { "key_material must be $AES_KEY_BYTES bytes" }
-        return TagDropPayload.Single(
-            cacheId     = randomCacheId(),
-            hint        = hint,
-            filename    = null,
-            mimeType    = "",
-            compression = COMPRESSION_NONE,
-            content     = ByteArray(0),
-            keyMaterial = keyMaterial,
-            retainKey   = retainKey
-        )
-    }
-
-    /** Number of Chunks needed to keep each chunk's encoded URI under [MAX_URI_LENGTH]. */
-    fun chunkCountForBytes(totalBytes: Int): Int =
-        maxOf(1, (totalBytes + MAX_CHUNK_DATA_BYTES - 1) / MAX_CHUNK_DATA_BYTES)
-
-    /**
-     * Build a Manifest + [chunkCount] Chunks for content too large for a single QR —
-     * mirrors the web generator's encodeMultiChunk (tools/examples/index.html). cache_id
-     * is content-addressed from [rawContent], so a Single and a Manifest+Chunks encoding
-     * of the same content share an ID. The manifest's sha256 covers the assembled
-     * (possibly compressed) bytes; chunks split those bytes into equal-sized pieces
-     * (the last one may be shorter).
+     * the content slot IS the AES-256-GCM-encrypted override blob (SPEC §9) rather than
+     * [rawContent]; `cacheId` becomes random (see [randomCacheId]), and `encryption` is set
+     * to the AES-256-GCM hint unless [declareEncryption] is false (the hint is cosmetic).
      *
-     * If [override] is given (with [encryptionKey] — see [generateKeyMaterial]), the
-     * assembled chunk bytes ARE the self-contained encrypted override-map blob (SPEC
-     * §9, §4.2) rather than [rawContent] — [hint]/[filename]/[mimeType] still describe
-     * the manifest's own clear map (a cover story or genuine unremarkable metadata).
-     * `cacheId` becomes random rather than content-addressed (see [randomCacheId]), and
-     * `encryption` is set to the AES-256-GCM hint unless [declareEncryption] is false.
+     * [lat]/[lng] are the author's own declared coordinates for this content's physical
+     * location (distinct from a [TagDropPayload.RelatedPaper]'s hint about a *different*
+     * paper) — useful when the author knows where they're placing this code but the finder's
+     * device may lack a GPS lock. [radiusM] is an optional circle-of-uncertainty radius in
+     * meters. [preferDeclaredLocation] defaults to false (live GPS wins when available,
+     * declared location is a fallback); set true to make the declared location win even over
+     * an available live GPS fix.
+     *
+     * [inReplyTo] is the `cache_id`/`root_hash` of a single parent this content is replying to
+     * (SPEC §7, "Replies and threading") — omit for a new, unprompted message.
+     *
+     * [title] is an optional short subject/caption, kept separate from [hint]'s existing role.
+     * [description] is an optional content teaser or message body — e.g. a postcard's message
+     * when [rawContent] is spoken for by an attachment instead (SPEC §7, "Postcards").
      */
-    fun createManifestAndChunks(
+    fun createContentSectors(
         hint: String?, filename: String?, mimeType: String,
-        rawContent: ByteArray, compress: Boolean = false, chunkCount: Int,
+        rawContent: ByteArray, compress: Boolean = false,
         collectionId: ByteArray? = null, collectionLabel: String? = null,
         collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true,
         override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
-        declareEncryption: Boolean = true
-    ): Pair<TagDropPayload.Manifest, List<TagDropPayload.Chunk>> {
-        require(chunkCount >= 1) { "chunkCount must be >= 1" }
-        val (compressed, compression) = if (compress) {
-            compress(rawContent) to COMPRESSION_DEFLATE
-        } else {
-            rawContent to COMPRESSION_NONE
-        }
-        val cacheId: ByteArray
-        val assembled: ByteArray
+        declareEncryption: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null,
+        title: String? = null, description: String? = null,
+        maxSectorDataBytes: Int = Int.MAX_VALUE
+    ): List<Sector> {
+        val (compressedContent, compression) =
+            if (compress) compress(rawContent) to COMPRESSION_DEFLATE else rawContent to COMPRESSION_NONE
+
+        val cacheId: ByteArray?
+        val contentSlot: ByteArray
         val encryption: Int
         if (override != null) {
             requireNotNull(encryptionKey) { "encryptionKey is required when override is provided" }
-            assembled = encryptOverrideMap(override, encryptionKey, compression)
+            contentSlot = encryptOverrideMap(override, encryptionKey, compression)
             cacheId = randomCacheId()
             encryption = if (declareEncryption) ENCRYPTION_AES256GCM else ENCRYPTION_NONE
         } else {
-            assembled = compressed
-            encryption = ENCRYPTION_NONE
+            contentSlot = compressedContent
             cacheId = contentId(rawContent)
+            encryption = ENCRYPTION_NONE
         }
-        val totalBytes = assembled.size
-        val sha256 = MessageDigest.getInstance("SHA-256").digest(assembled)
 
-        val manifest = TagDropPayload.Manifest(
-            cacheId         = cacheId,
-            hint            = hint,
-            filename        = filename,
-            mimeType        = mimeType,
-            compression     = compression,
-            chunkCount      = chunkCount,
-            totalBytes      = totalBytes,
-            sha256          = sha256,
-            encryption      = encryption,
-            collectionId    = collectionId,
-            collectionLabel = collectionLabel,
-            collectionTag   = collectionTag,
-            icon            = icon
+        fun core(withSha: Boolean) = listOf(
+            K_HINT         to hint,
+            K_TITLE        to title,
+            K_DESCRIPTION  to description,
+            K_FILENAME     to filename,
+            K_MIME         to mimeType,
+            K_COMPRESSION  to compression.takeIf { it != COMPRESSION_NONE },
+            K_CONTENT_SHA  to (sha256(contentSlot).takeIf { withSha }),
+            K_ENCRYPTION   to encryption.takeIf { it != ENCRYPTION_NONE },
+            K_COLLECTION_ID    to collectionId,
+            K_COLLECTION_LABEL to collectionLabel,
+            K_COLLECTION_TAG   to collectionTag,
+            K_ICON             to icon,
+            K_KEY_MATERIAL to keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { keyMaterial != null && !retainKey },
+            K_LAT     to lat,
+            K_LNG     to lng,
+            K_RADIUS_M to radiusM,
+            K_PREFER_DECLARED_LOCATION to true.takeIf { preferDeclaredLocation },
+            K_IN_REPLY_TO to inReplyTo
         )
 
-        val chunkSize = (totalBytes + chunkCount - 1) / chunkCount
-        val chunks = (0 until chunkCount).map { i ->
-            val start = minOf(i * chunkSize, totalBytes)
-            val end = minOf(start + chunkSize, totalBytes)
-            TagDropPayload.Chunk(cacheId = cacheId, index = i, data = assembled.copyOfRange(start, end))
-        }
-        return manifest to chunks
-    }
-
-    // ── Encoding ──────────────────────────────────────────────────────────────
-
-    fun encode(payload: TagDropPayload): String = when (payload) {
-        is TagDropPayload.Single -> SCHEME + Base41.encode(singleCbor(payload))
-        is TagDropPayload.Manifest -> SCHEME + Base41.encode(manifestCbor(payload))
-        is TagDropPayload.Chunk -> SCHEME + Base41.encode(chunkCbor(payload))
-        is TagDropPayload.PaperManifest -> SCHEME + Base41.encode(paperManifestCbor(payload))
-        is TagDropPayload.Legacy -> payload.dataUri
-    }
-
-    /** Prefixes a payload map with the version/type CBOR-sequence envelope (SPEC §2). */
-    private fun envelope(type: Int, pairs: List<Pair<Int, Any?>>): ByteArray {
-        val out = ByteArrayOutputStream()
-        out.write(MiniCbor.encodeUInt(VERSION))
-        out.write(MiniCbor.encodeUInt(type.toLong()))
-        out.write(MiniCbor.encodeMap(pairs))
-        return out.toByteArray()
+        // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
+        val single = buildStream(core(withSha = false), emptyList(), contentSlot)
+        val stream = if (single.size <= maxSectorDataBytes) single
+                     else buildStream(core(withSha = true), emptyList(), contentSlot)
+        return sectorize(TYPE_CONTENT, cacheId, stream, maxSectorDataBytes)
     }
 
     /**
-     * Raw CBOR sequence (envelope + payload) for a Single payload — useful for on-device
-     * inspection. If [payload] carries an [TagDropPayload.Single.overrideBlob], it's
-     * appended as raw trailing bytes after the 3-item sequence, not as a 4th CBOR item
-     * (SPEC §9).
+     * Two-pass auto-sizing wrapper around [createContentSectors] (mirrors the web generator's
+     * createContentSectorsAutoSized): builds with an unbounded sector size first; if the single
+     * resulting sector's `tagdrop:` URI fits under [MAX_URI_LENGTH], uses it as-is; otherwise
+     * rebuilds the whole payload with [MAX_SECTOR_DATA_BYTES] forced, producing several uniform
+     * sectors.
      */
-    fun singleCbor(payload: TagDropPayload.Single): ByteArray {
-        // A key-only code (SPEC §9) omits content/mime_type entirely rather than encoding them empty.
-        val keyOnly = payload.keyMaterial != null && payload.content.isEmpty() && payload.mimeType.isEmpty()
-        val seq = envelope(TYPE_SINGLE, listOf(
-            K_CACHE_ID    to payload.cacheId,
-            K_HINT        to payload.hint,
-            K_FILENAME    to payload.filename,
-            K_MIME        to payload.mimeType.takeIf { !keyOnly },
-            K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
-            K_CONTENT     to payload.content.takeIf { !keyOnly },
-            K_ENCRYPTION  to payload.encryption.takeIf { it != ENCRYPTION_NONE },
-            K_COLLECTION_ID    to payload.collectionId,
-            K_COLLECTION_LABEL to payload.collectionLabel,
-            K_COLLECTION_TAG   to payload.collectionTag,
-            K_ICON             to payload.icon,
-            K_KEY_MATERIAL to payload.keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey },
-            K_KDF_ALG      to payload.kdfAlg.takeIf { it != KDF_NONE },
-            K_KDF_SALT     to payload.kdfSalt,
-            K_KDF_ITERS    to payload.kdfIters.takeIf { it != 100000 }
-        ))
-        return payload.overrideBlob?.let { seq + it } ?: seq
+    fun createContentSectorsAutoSized(
+        hint: String?, filename: String?, mimeType: String,
+        rawContent: ByteArray, compress: Boolean = false,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true,
+        override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
+        declareEncryption: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null,
+        title: String? = null, description: String? = null
+    ): List<Sector> {
+        val first = createContentSectors(
+            hint, filename, mimeType, rawContent, compress,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey, override, encryptionKey, declareEncryption,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title, description,
+            maxSectorDataBytes = Int.MAX_VALUE
+        )
+        if (encode(first.first()).length <= MAX_URI_LENGTH) return first
+        return createContentSectors(
+            hint, filename, mimeType, rawContent, compress,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey, override, encryptionKey, declareEncryption,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title, description,
+            maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
+        )
     }
 
-    /** Raw CBOR sequence (envelope + payload) for a Manifest payload — useful for on-device inspection. */
-    fun manifestCbor(payload: TagDropPayload.Manifest): ByteArray =
-        envelope(TYPE_MANIFEST, listOf(
-            K_CACHE_ID    to payload.cacheId,
-            K_HINT        to payload.hint,
-            K_FILENAME    to payload.filename,
-            K_MIME        to payload.mimeType,
-            K_COMPRESSION to payload.compression.takeIf { it != COMPRESSION_NONE },
-            K_CHUNK_COUNT to payload.chunkCount,
-            K_TOTAL_BYTES to payload.totalBytes,
-            K_SHA256      to payload.sha256,
-            K_ENCRYPTION  to payload.encryption.takeIf { it != ENCRYPTION_NONE },
-            K_COLLECTION_ID    to payload.collectionId,
-            K_COLLECTION_LABEL to payload.collectionLabel,
-            K_COLLECTION_TAG   to payload.collectionTag,
-            K_ICON             to payload.icon,
-            K_KEY_MATERIAL to payload.keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey },
-            K_KDF_ALG      to payload.kdfAlg.takeIf { it != KDF_NONE },
-            K_KDF_SALT     to payload.kdfSalt,
-            K_KDF_ITERS    to payload.kdfIters.takeIf { it != 100000 }
-        ))
-
-    /** Raw CBOR sequence (envelope + payload) for a Chunk payload — useful for on-device inspection. */
-    fun chunkCbor(payload: TagDropPayload.Chunk): ByteArray =
-        envelope(TYPE_CHUNK, listOf(
-            K_CACHE_ID   to payload.cacheId,
-            K_CHUNK_IDX  to payload.index,
-            K_CHUNK_DATA to payload.data
-        ))
-
-    /** Raw CBOR sequence for any payload, or null for [TagDropPayload.Legacy] which has no CBOR form. */
-    fun rawCbor(payload: TagDropPayload): ByteArray? = when (payload) {
-        is TagDropPayload.Single -> singleCbor(payload)
-        is TagDropPayload.Manifest -> manifestCbor(payload)
-        is TagDropPayload.Chunk -> chunkCbor(payload)
-        is TagDropPayload.PaperManifest -> paperManifestCbor(payload)
-        is TagDropPayload.Legacy -> null
+    /**
+     * Builds a single "key-only" Content sector (SPEC §9): carries [keyMaterial] for other
+     * content, with no content/mime_type of its own and — referencing no content to address —
+     * no `cache_id` in its `part_meta` either.
+     */
+    fun createKeyCodeSector(keyMaterial: ByteArray, retainKey: Boolean = true, hint: String? = null): Sector {
+        require(keyMaterial.size == AES_KEY_BYTES) { "key_material must be $AES_KEY_BYTES bytes" }
+        val core = listOf(
+            K_HINT         to hint,
+            K_KEY_MATERIAL to keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { !retainKey }
+        )
+        val stream = buildStream(core, emptyList(), ByteArray(0))
+        return sectorize(TYPE_CONTENT, cacheId = null, stream, Int.MAX_VALUE).single()
     }
 
-    /** Raw CBOR sequence (envelope + payload) for a PaperManifest — use this to compute rootHashOf() and for DB storage. */
-    fun paperManifestCbor(payload: TagDropPayload.PaperManifest): ByteArray =
-        envelope(TYPE_PAPER_MANIFEST, paperManifestPairs(payload, payload.rootHash))
+    /**
+     * Builds a Paper payload (`type` 1) and its sector(s). `root_hash` is content-addressed
+     * over the reassembled stream (SPEC §4.4) — `content` is always empty for a Paper, and
+     * because `root_hash` lives in `part_meta`, *outside* the bytes it's computed over, there's
+     * no placeholder/re-encode pass: build the stream once, hash it, copy the hash into every
+     * sector. The app keeps `bulky_meta_item` (files/related) uncompressed, so the stream is
+     * exactly the bytes the root hash covers.
+     */
+    fun createPaper(
+        label: String?, set: String?, slug: String?,
+        files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
+        description: String? = null,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null,
+        title: String? = null,
+        maxSectorDataBytes: Int = Int.MAX_VALUE
+    ): Pair<TagDropPayload.Paper, List<Sector>> {
+        val draft = TagDropPayload.Paper(
+            rootHash = ByteArray(8), label = label, set = set, slug = slug,
+            files = files, related = related, description = description,
+            collectionId = collectionId, collectionLabel = collectionLabel,
+            collectionTag = collectionTag, icon = icon,
+            keyMaterial = keyMaterial, retainKey = retainKey,
+            lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
+            inReplyTo = inReplyTo, title = title
+        )
+        val stream = buildPaperStream(draft)
+        val rootHash = sha256(stream).copyOf(8)
+        val paper = draft.copy(rootHash = rootHash)
+        return paper to sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes)
+    }
 
-    /** Builds the PaperManifest payload-map pairs, with [rootHash] standing in for key 2 (null to omit it). */
-    private fun paperManifestPairs(payload: TagDropPayload.PaperManifest, rootHash: ByteArray?): List<Pair<Int, Any?>> =
-        listOf(
-            K_CACHE_ID to rootHash,
-            K_HINT     to payload.label,
-            K_SET      to payload.set,
-            K_SLUG     to payload.slug,
-            K_FILES    to payload.files.map { f ->
+    /** Two-pass auto-sizing wrapper around [createPaper] — see [createContentSectorsAutoSized]. */
+    fun createPaperAutoSized(
+        label: String?, set: String?, slug: String?,
+        files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
+        description: String? = null,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null,
+        keyMaterial: ByteArray? = null, retainKey: Boolean = true,
+        lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
+        preferDeclaredLocation: Boolean = false,
+        inReplyTo: ByteArray? = null,
+        title: String? = null
+    ): Pair<TagDropPayload.Paper, List<Sector>> {
+        val first = createPaper(
+            label, set, slug, files, related, description,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title,
+            maxSectorDataBytes = Int.MAX_VALUE
+        )
+        if (encode(first.second.first()).length <= MAX_URI_LENGTH) return first
+        return createPaper(
+            label, set, slug, files, related, description,
+            collectionId, collectionLabel, collectionTag, icon,
+            keyMaterial, retainKey,
+            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title,
+            maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
+        )
+    }
+
+    /** The reassembled-stream bytes for [paper] — what the root hash covers, and what gets stored as `ScannedPaper.cborBytes`. */
+    fun paperStreamBytes(paper: TagDropPayload.Paper): ByteArray = buildPaperStream(paper)
+
+    /**
+     * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
+     * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
+     * than one sector, since that's the only integrity check over `files`/`related` (the
+     * slug → file_id directory) once a multi-sector paper is reassembled from independently
+     * scanned codes. Always including it (rather than only above the sector-count threshold,
+     * as [createContentSectors] does for `content_sha256`) keeps this byte-reproducible from
+     * [paper] alone, with no hidden state to replay — Paper payloads are directory structures
+     * where a constant ~36-byte cost is negligible next to the cost of an unverified directory.
+     */
+    private fun buildPaperStream(paper: TagDropPayload.Paper): ByteArray {
+        val bulky = listOf<Pair<Int, Any?>>(
+            K_FILES   to paper.files.map { f ->
                 MiniCbor.CborMap(listOf(
                     K_FILE_SLUG to f.slug,
                     K_FILE_MIME to f.mimeType,
-                    K_FILE_ID   to f.fileId
+                    K_FILE_ID   to f.fileId,
+                    K_FILE_DESCRIPTION to f.description
                 ))
             },
-            K_RELATED  to payload.related.map { r ->
+            K_RELATED to paper.related.map { r ->
                 MiniCbor.CborMap(listOf(
                     K_HINT     to r.hint,
                     K_SET      to r.set,
@@ -567,182 +488,364 @@ object TagDropCodec {
                     K_PAPER_ID to r.paperId,
                     K_LAT      to r.lat,
                     K_LNG      to r.lng,
+                    K_RADIUS_M to r.radiusM,
                     K_KEY_MATERIAL to r.keyMaterial,
                     K_RETAIN_KEY   to false.takeIf { r.keyMaterial != null && !r.retainKey }
                 ))
-            },
-            K_COLLECTION_ID    to payload.collectionId,
-            K_COLLECTION_LABEL to payload.collectionLabel,
-            K_COLLECTION_TAG   to payload.collectionTag,
-            K_ICON             to payload.icon,
-            K_KEY_MATERIAL to payload.keyMaterial,
-            K_RETAIN_KEY   to false.takeIf { payload.keyMaterial != null && !payload.retainKey }
+            }
         )
+        val bulkyBytes = MiniCbor.encodeMap(bulky)
+        val core = listOf(
+            K_HINT     to paper.label,
+            K_TITLE    to paper.title,
+            K_DESCRIPTION to paper.description,
+            K_SET      to paper.set,
+            K_SLUG     to paper.slug,
+            K_COLLECTION_ID    to paper.collectionId,
+            K_COLLECTION_LABEL to paper.collectionLabel,
+            K_COLLECTION_TAG   to paper.collectionTag,
+            K_ICON             to paper.icon,
+            K_KEY_MATERIAL to paper.keyMaterial,
+            K_RETAIN_KEY   to false.takeIf { paper.keyMaterial != null && !paper.retainKey },
+            K_LAT      to paper.lat,
+            K_LNG      to paper.lng,
+            K_RADIUS_M to paper.radiusM,
+            K_PREFER_DECLARED_LOCATION to true.takeIf { paper.preferDeclaredLocation },
+            K_IN_REPLY_TO to paper.inReplyTo,
+            K_BULKY_SHA to sha256(bulkyBytes)
+        )
+        val out = ByteArrayOutputStream()
+        out.write(MiniCbor.encodeMap(core))
+        out.write(bulkyBytes)
+        return out.toByteArray()
+    }
+
+    /** Concatenates `CBOR(core_meta_item) || CBOR(bulky_meta_item) || content` (SPEC §4.2). */
+    private fun buildStream(
+        corePairs: List<Pair<Int, Any?>>, bulkyPairs: List<Pair<Int, Any?>>, content: ByteArray
+    ): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(MiniCbor.encodeMap(corePairs))
+        out.write(MiniCbor.encodeMap(bulkyPairs))
+        out.write(content)
+        return out.toByteArray()
+    }
 
     /**
-     * Build a PaperManifest with an auto-computed content-addressed root hash.
-     *
-     * Two-pass "chicken-and-egg" resolution (SPEC §4.5, same as IPFS CIDs): encode the
-     * manifest without the root-hash field (key 2), hash that CBOR sequence, then return
-     * the manifest with the computed hash as its rootHash.
+     * Slices a reassembled [stream] into data sectors of at most [maxSectorDataBytes] bytes,
+     * each stamped with [cacheId] (null for a key-only code) and its `sector_index` /
+     * `sector_count` / `total_bytes` in `part_meta` (SPEC §4.1). Every sector but the last
+     * is the same length.
      */
-    fun createPaperManifest(
-        label: String?, set: String?, slug: String?,
-        files: List<TagDropPayload.FileEntry>, related: List<TagDropPayload.RelatedPaper> = emptyList(),
-        collectionId: ByteArray? = null, collectionLabel: String? = null,
-        collectionTag: String? = null, icon: String? = null,
-        keyMaterial: ByteArray? = null, retainKey: Boolean = true
-    ): TagDropPayload.PaperManifest {
-        val draft = TagDropPayload.PaperManifest(
-            rootHash = ByteArray(8), label = label, set = set, slug = slug,
-            files = files, related = related,
-            collectionId = collectionId, collectionLabel = collectionLabel,
-            collectionTag = collectionTag, icon = icon,
-            keyMaterial = keyMaterial, retainKey = retainKey
-        )
-        val cborNoHash = envelope(TYPE_PAPER_MANIFEST, paperManifestPairs(draft, rootHash = null))
-        return draft.copy(rootHash = rootHashOf(cborNoHash))
+    private fun sectorize(type: Int, cacheId: ByteArray?, stream: ByteArray, maxSectorDataBytes: Int): List<Sector> {
+        val total = stream.size
+        val count =
+            if (maxSectorDataBytes <= 0 || total <= maxSectorDataBytes) 1
+            else (total + maxSectorDataBytes - 1) / maxSectorDataBytes
+        val sectorSize = (total + count - 1) / count
+        return (0 until count).map { i ->
+            val start = minOf(i * sectorSize, total)
+            val end = minOf(start + sectorSize, total)
+            Sector(type, PartMeta(cacheId, i, count, total), stream.copyOfRange(start, end))
+        }
     }
+
+    /**
+     * Builds the single full-XOR parity sector (`parity_scheme` 1, SPEC §5) for [dataSectors] —
+     * the byte-wise XOR of every data sector's `sector_bytes`, each zero-padded to the longest
+     * before XOR-ing. Placed at `sector_index == sector_count`, it recovers any one lost data
+     * sector. [dataSectors] must be a complete `0..sector_count-1` run of one payload.
+     */
+    fun paritySector(dataSectors: List<Sector>): Sector {
+        require(dataSectors.isNotEmpty()) { "need at least one data sector for parity" }
+        val first = dataSectors.first().partMeta
+        val width = dataSectors.maxOf { it.sectorBytes.size }
+        val parity = ByteArray(width)
+        for (sector in dataSectors) {
+            val b = sector.sectorBytes
+            for (j in b.indices) parity[j] = (parity[j].toInt() xor b[j].toInt()).toByte()
+        }
+        return Sector(
+            dataSectors.first().type,
+            PartMeta(first.cacheId, first.sectorCount, first.sectorCount, first.totalBytes, PARITY_XOR),
+            parity
+        )
+    }
+
+    // ── Encoding ──────────────────────────────────────────────────────────────
+
+    /** A [Sector]'s `tagdrop:` encoding URI: `tagdrop:` + Base41 of its four-item CBOR sequence. */
+    fun encode(sector: Sector): String = SCHEME + Base41.encode(sectorCbor(sector))
+
+    /** A [Sector]'s raw four-item CBOR sequence (SPEC §2) — Base41-encoded for `tagdrop:`, or stored raw on byte carriers (§13). */
+    fun sectorCbor(sector: Sector): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(MiniCbor.encodeUInt(VERSION))
+        out.write(MiniCbor.encodeUInt(sector.type.toLong()))
+        out.write(MiniCbor.encodeMap(partMetaPairs(sector.partMeta)))
+        out.write(MiniCbor.encodeBytes(sector.sectorBytes))
+        return out.toByteArray()
+    }
+
+    private fun partMetaPairs(pm: PartMeta): List<Pair<Int, Any?>> = listOf(
+        K_CACHE_ID     to pm.cacheId,
+        K_TOTAL_BYTES  to pm.totalBytes,
+        K_SECTOR_INDEX to pm.sectorIndex,
+        K_SECTOR_COUNT to pm.sectorCount,
+        K_PARITY       to pm.paritySchemeRaw
+    )
+
+    /**
+     * The four-item CBOR sequence for a single-sector Content payload reconstructed from a
+     * cached page's resolved fields — used by the on-device "Inspect CBOR" diagnostic only.
+     */
+    fun inspectableContentCbor(
+        hint: String?, filename: String?, mimeType: String, content: ByteArray,
+        collectionId: ByteArray? = null, collectionLabel: String? = null,
+        collectionTag: String? = null, icon: String? = null
+    ): ByteArray = sectorCbor(
+        createContentSectors(
+            hint, filename, mimeType, content, compress = false,
+            collectionId, collectionLabel, collectionTag, icon
+        ).first()
+    )
 
     // ── Decoding ──────────────────────────────────────────────────────────────
 
-    fun decode(scanned: String): TagDropPayload? {
-        if (scanned.startsWith("data:")) return TagDropPayload.Legacy(scanned)
-        // Navigation links (tagdrop://<rootHash>/<slug>) are not encoding URIs (SPEC §2).
+    /**
+     * Decodes one scanned string into a [TagDropScan]: a `tagdrop:` encoding URI becomes a
+     * [TagDropScan.SectorScan]; a raw `data:` URI becomes a [TagDropScan.LegacyScan] (§11).
+     * Navigation links (`tagdrop://`, §2) and anything else return null.
+     */
+    fun decode(scanned: String): TagDropScan? {
+        if (scanned.startsWith("data:")) return TagDropScan.LegacyScan(TagDropPayload.Legacy(scanned))
         if (!scanned.startsWith(SCHEME) || scanned.startsWith(NAV_LINK_PREFIX)) return null
-        val rest = scanned.removePrefix(SCHEME)
-        val bytes = runCatching { Base41.decode(rest) }.getOrNull() ?: return null
+        val bytes = runCatching { Base41.decode(scanned.removePrefix(SCHEME)) }.getOrNull() ?: return null
         return decodeRaw(bytes)
     }
 
     /**
-     * Decode a TagDrop payload straight from its raw CBOR sequence (envelope + payload map),
-     * with no `tagdrop:`/Base41 text wrapper — the carrier already supports raw bytes (SPEC
-     * §13: NFC NDEF, a byte-mode 2D barcode segment, etc.). [decode] delegates here after
-     * stripping the URI scheme and Base41-decoding; carriers that skip the text form entirely
-     * call this directly.
+     * Decodes a [Sector] straight from its raw CBOR sequence, with no `tagdrop:`/Base41 text
+     * wrapper — the carrier already supports raw bytes (SPEC §13: NFC NDEF, a byte-mode 2D
+     * barcode segment, etc.). Returns null for an unsupported version or malformed envelope.
      */
-    fun decodeRaw(bytes: ByteArray): TagDropPayload? = runCatching {
-        val (type, payload, trailing) = decodeEnvelope(bytes) ?: return@runCatching null
-        when (type) {
-            TYPE_SINGLE         -> decodeSingle(payload, trailing)
-            TYPE_MANIFEST       -> decodeManifest(payload)
-            TYPE_CHUNK          -> decodeChunk(payload)
-            TYPE_PAPER_MANIFEST -> decodePaperManifest(payload)
-            else -> null
+    fun decodeRaw(bytes: ByteArray): TagDropScan? =
+        decodeSector(bytes)?.let { TagDropScan.SectorScan(it) }
+
+    /**
+     * Parses the four-item envelope (`version`/`type`/`part_meta`/`sector_bytes`, SPEC §2)
+     * into a [Sector]. Trailing bytes after the four items are tolerated, never an error — a
+     * stacked independent envelope for a separate hidden layer (SPEC §9) — and ignored here.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun decodeSector(bytes: ByteArray): Sector? = runCatching {
+        val (items, _) = MiniCbor.decodeSequencePrefix(bytes, 4)
+        val version = items[0] as? Long ?: return@runCatching null
+        if (version != VERSION) return@runCatching null
+        val type = (items[1] as? Long ?: return@runCatching null).toInt()
+        val pm = items[2] as? Map<Int, Any> ?: return@runCatching null
+        val sectorBytes = items[3] as? ByteArray ?: return@runCatching null
+        Sector(
+            type = type,
+            partMeta = PartMeta(
+                cacheId      = pm.bytesOrNull(K_CACHE_ID),
+                sectorIndex  = pm.uint(K_SECTOR_INDEX)?.toInt() ?: 0,
+                sectorCount  = pm.uint(K_SECTOR_COUNT)?.toInt() ?: 1,
+                totalBytes   = pm.uint(K_TOTAL_BYTES)?.toInt() ?: sectorBytes.size,
+                paritySchemeRaw = pm.uint(K_PARITY)?.toInt()
+            ),
+            sectorBytes = sectorBytes
+        )
+    }.getOrNull()
+
+    // ── Reassembled-stream parsing (SPEC §4.2, §5) ─────────────────────────────
+
+    /**
+     * Structural split of a reassembled stream into its three items (SPEC §4.2).
+     * [bulkyRawBytes] is `bulky_meta_item` exactly as transmitted (compressed bytes if
+     * `bulky_meta_compression` was set, else its raw CBOR encoding) — what
+     * `bulky_meta_sha256` (key 47) is computed over (SPEC §3, §5 step 4).
+     */
+    data class StreamParts(
+        val core: Map<Int, Any>,
+        val bulky: Map<Int, Any>,
+        val bulkyRawBytes: ByteArray,
+        val content: ByteArray
+    )
+
+    /**
+     * Splits a reassembled [stream] into `core_meta_item`, `bulky_meta_item`, and `content`
+     * (SPEC §4.2). `bulky_meta_item` is read per `core`'s `bulky_meta_compression` declaration:
+     * if absent, CBOR's self-delimiting structure marks its end; if present, exactly
+     * `bulky_meta_compressed_bytes` are read and decompressed (SPEC §3, §5 step 4). Returns
+     * null if the stream isn't two CBOR maps followed by content.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun splitReassembledStream(stream: ByteArray): StreamParts? = runCatching {
+        val (coreItems, afterCore) = MiniCbor.decodeSequencePrefix(stream, 1)
+        val core = coreItems[0] as? Map<Int, Any> ?: return@runCatching null
+        val bulkyCompression = core.uint(K_BULKY_COMPRESSION)?.toInt() ?: COMPRESSION_NONE
+        if (bulkyCompression != COMPRESSION_NONE) {
+            val n = core.uint(K_BULKY_COMPRESSED_BYTES)?.toInt() ?: return@runCatching null
+            if (n > afterCore.size) return@runCatching null
+            val bulkyRaw = afterCore.copyOfRange(0, n)
+            val bulky = MiniCbor.decodeMap(decompress(bulkyRaw))
+            StreamParts(core, bulky, bulkyRaw, afterCore.copyOfRange(n, afterCore.size))
+        } else {
+            val (bulkyItems, afterBulky) = MiniCbor.decodeSequencePrefix(afterCore, 1)
+            val bulky = bulkyItems[0] as? Map<Int, Any> ?: return@runCatching null
+            val bulkyRaw = afterCore.copyOfRange(0, afterCore.size - afterBulky.size)
+            StreamParts(core, bulky, bulkyRaw, afterBulky)
         }
     }.getOrNull()
 
-    /**
-     * Splits a CBOR sequence (RFC 8742) into (type, payload map, trailing bytes), per the
-     * version/type envelope in SPEC §2. Trailing bytes after the 3-item sequence are a
-     * candidate hidden override-map blob for a Single (SPEC §9) — decoders MUST NOT treat
-     * them as an error. Returns null for an unsupported version or malformed envelope.
-     */
-    @Suppress("UNCHECKED_CAST")
-    private fun decodeEnvelope(bytes: ByteArray): Triple<Int, Map<Int, Any>, ByteArray>? {
-        val (items, trailing) = MiniCbor.decodeSequencePrefix(bytes, 3)
-        val version = items[0] as? Long ?: return null
-        if (version != VERSION) return null
-        val type = items[1] as? Long ?: return null
-        val payload = items[2] as? Map<Int, Any> ?: return null
-        return Triple(type.toInt(), payload, trailing)
+    /** Outcome of parsing a Content payload's reassembled stream (SPEC §5 steps 3–5). */
+    sealed class ContentParse {
+        /** Parsed and (if `content_sha256` was present) integrity-verified. */
+        data class Ok(val content: TagDropPayload.Content) : ContentParse()
+        /** `content_sha256` was present and did not match — incomplete or corrupt assembly. */
+        object HashMismatch : ContentParse()
+        /** The stream isn't a well-formed Content reassembled stream. */
+        object Malformed : ContentParse()
     }
 
-    /** Decode a PaperManifest from its raw CBOR sequence bytes (e.g. stored in ScannedPaper.cborBytes). */
-    fun decodePaperManifestCbor(cbor: ByteArray): TagDropPayload.PaperManifest? =
-        runCatching {
-            val (type, payload, _) = decodeEnvelope(cbor) ?: return@runCatching null
-            if (type != TYPE_PAPER_MANIFEST) return@runCatching null
-            decodePaperManifest(payload)
-        }.getOrNull()
+    /**
+     * Parses a reassembled Content stream into a [TagDropPayload.Content] (SPEC §4.2, §5).
+     * Verifies `content_sha256` over the content slot **as transmitted** (key 8, SPEC §3) —
+     * that's the transmission-integrity check, independent of any later override decryption
+     * (§9). Required whenever [partMeta] reports more than one sector — without it a decoder
+     * can't detect a substituted/forged sector during reassembly — and otherwise checked only
+     * if present. [partMeta]'s `cache_id` becomes the Content's id (null for a key-only code).
+     * Cover/override resolution is the caller's job (see [SectorAssembler]).
+     */
+    fun parseContentStream(stream: ByteArray, partMeta: PartMeta): ContentParse {
+        val parts = splitReassembledStream(stream) ?: return ContentParse.Malformed
+        val declaredSha = parts.core.bytesOrNull(K_CONTENT_SHA)
+        if (declaredSha == null) {
+            if (partMeta.sectorCount > 1) return ContentParse.Malformed
+        } else if (!sha256(parts.content).contentEquals(declaredSha)) {
+            return ContentParse.HashMismatch
+        }
+        val core = parts.core
+        val slot = parts.content
+        return ContentParse.Ok(
+            TagDropPayload.Content(
+                cacheId         = partMeta.cacheId,
+                hint            = core.text(K_HINT),
+                filename        = core.text(K_FILENAME),
+                mimeType        = core.text(K_MIME) ?: "",
+                compression     = core.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
+                content         = slot,
+                overrideBlob    = slot.takeIf { it.size >= OVERRIDE_BLOB_MIN_BYTES },
+                encryption      = core.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
+                keyMaterial     = core.bytesOrNull(K_KEY_MATERIAL),
+                retainKey       = core.boolOrNull(K_RETAIN_KEY) ?: true,
+                collectionId    = core.bytesOrNull(K_COLLECTION_ID),
+                collectionLabel = core.text(K_COLLECTION_LABEL),
+                collectionTag   = core.text(K_COLLECTION_TAG),
+                icon            = core.text(K_ICON),
+                kdfAlg          = core.uint(K_KDF_ALG)?.toInt() ?: KDF_NONE,
+                kdfSalt         = core.bytesOrNull(K_KDF_SALT),
+                kdfIters        = core.uint(K_KDF_ITERS)?.toInt() ?: DEFAULT_KDF_ITERS,
+                lat             = core.doubleOrNull(K_LAT),
+                lng             = core.doubleOrNull(K_LNG),
+                radiusM         = core.doubleOrNull(K_RADIUS_M),
+                preferDeclaredLocation = core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false,
+                inReplyTo       = core.bytesOrNull(K_IN_REPLY_TO),
+                title           = core.text(K_TITLE),
+                description     = core.text(K_DESCRIPTION)
+            )
+        )
+    }
 
-    /** [trailing] is this Single's raw bytes after its 3-item CBOR sequence — see [TagDropPayload.Single.overrideBlob]. */
-    private fun decodeSingle(m: Map<Int, Any>, trailing: ByteArray) = TagDropPayload.Single(
-        cacheId         = m.bytes(K_CACHE_ID),
-        hint            = m.text(K_HINT),
-        filename        = m.text(K_FILENAME),
-        mimeType        = m.text(K_MIME) ?: "",
-        compression     = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
-        content         = m.bytesOrNull(K_CONTENT) ?: ByteArray(0),
-        overrideBlob    = trailing.takeIf { it.size >= OVERRIDE_BLOB_MIN_BYTES },
-        encryption      = m.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
-        keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
-        retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true,
-        collectionId    = m.bytesOrNull(K_COLLECTION_ID),
-        collectionLabel = m.text(K_COLLECTION_LABEL),
-        collectionTag   = m.text(K_COLLECTION_TAG),
-        icon            = m.text(K_ICON),
-        kdfAlg          = m.uint(K_KDF_ALG)?.toInt() ?: KDF_NONE,
-        kdfSalt         = m.bytesOrNull(K_KDF_SALT),
-        kdfIters        = m.uint(K_KDF_ITERS)?.toInt() ?: 100000
-    )
+    /**
+     * Parses a reassembled Paper stream into a [TagDropPayload.Paper] (SPEC §4.2, §4.3), using
+     * [partMeta]'s `root_hash` as the paper's address. Verifies `bulky_meta_sha256` (key 47,
+     * SPEC §3, §5 step 4) — required whenever [partMeta] reports more than one sector, since
+     * that's the only integrity check over the `files`/`related` directory once a multi-sector
+     * paper is reassembled from independently scanned codes. Also verifies a declared
+     * `partMeta.cacheId` against the recomputed root hash (SPEC §4.4) — `root_hash` is this
+     * paper's permanent, content-addressed storage key (`ScannedPaper.rootHash`, replace-on-
+     * conflict), so trusting an attacker-declared value verbatim would let a forged sector
+     * silently overwrite an unrelated, previously-scanned paper's stored directory. Returns null
+     * if malformed, or if a required/declared hash doesn't verify.
+     */
+    fun parsePaperStream(stream: ByteArray, partMeta: PartMeta): TagDropPayload.Paper? {
+        val parts = splitReassembledStream(stream) ?: return null
+        if (!verifyBulkyMetaSha(parts, partMeta.sectorCount)) return null
+        val computedHash = sha256(stream).copyOf(8)
+        val declaredHash = partMeta.cacheId
+        if (declaredHash != null && !declaredHash.contentEquals(computedHash)) return null
+        return paperFromParts(parts, computedHash)
+    }
 
-    private fun decodeManifest(m: Map<Int, Any>) = TagDropPayload.Manifest(
-        cacheId         = m.bytes(K_CACHE_ID),
-        hint            = m.text(K_HINT),
-        filename        = m.text(K_FILENAME),
-        mimeType        = m.text(K_MIME)!!,
-        compression     = m.uint(K_COMPRESSION)?.toInt() ?: COMPRESSION_NONE,
-        chunkCount      = m.uint(K_CHUNK_COUNT)!!.toInt(),
-        totalBytes      = m.uint(K_TOTAL_BYTES)!!.toInt(),
-        sha256          = m.bytes(K_SHA256),
-        encryption      = m.uint(K_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
-        keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
-        retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true,
-        collectionId    = m.bytesOrNull(K_COLLECTION_ID),
-        collectionLabel = m.text(K_COLLECTION_LABEL),
-        collectionTag   = m.text(K_COLLECTION_TAG),
-        icon            = m.text(K_ICON),
-        kdfAlg          = m.uint(K_KDF_ALG)?.toInt() ?: KDF_NONE,
-        kdfSalt         = m.bytesOrNull(K_KDF_SALT),
-        kdfIters        = m.uint(K_KDF_ITERS)?.toInt() ?: 100000
-    )
+    /**
+     * Verifies [parts]' `bulky_meta_sha256` (key 47, SPEC §3, §5 step 4) against its transmitted
+     * `bulky_meta_item` bytes. Required when [sectorCount] > 1 (absence fails verification);
+     * checked only if present otherwise.
+     */
+    private fun verifyBulkyMetaSha(parts: StreamParts, sectorCount: Int): Boolean {
+        val declared = parts.core.bytesOrNull(K_BULKY_SHA) ?: return sectorCount <= 1
+        return sha256(parts.bulkyRawBytes).contentEquals(declared)
+    }
 
-    private fun decodeChunk(m: Map<Int, Any>) = TagDropPayload.Chunk(
-        cacheId = m.bytes(K_CACHE_ID),
-        index   = m.uint(K_CHUNK_IDX)!!.toInt(),
-        data    = m.bytes(K_CHUNK_DATA)
-    )
+    /**
+     * Decodes a stored Paper reassembled stream (e.g. `ScannedPaper.cborBytes`) back into a
+     * [TagDropPayload.Paper], recomputing `root_hash` from the bytes (SPEC §4.4). Used to
+     * re-read a scanned paper's directory for navigation/display.
+     */
+    fun decodePaperStream(stream: ByteArray): TagDropPayload.Paper? {
+        val parts = splitReassembledStream(stream) ?: return null
+        return paperFromParts(parts, sha256(stream).copyOf(8))
+    }
 
     @Suppress("UNCHECKED_CAST")
-    private fun decodePaperManifest(m: Map<Int, Any>): TagDropPayload.PaperManifest {
-        val files = (m[K_FILES] as? List<*>)?.mapNotNull { entry ->
+    private fun paperFromParts(parts: StreamParts, rootHash: ByteArray): TagDropPayload.Paper {
+        val files = (parts.bulky[K_FILES] as? List<*>)?.mapNotNull { entry ->
             val em = entry as? Map<Int, Any> ?: return@mapNotNull null
             TagDropPayload.FileEntry(
-                slug     = em.text(K_FILE_SLUG) ?: return@mapNotNull null,
-                mimeType = em.text(K_FILE_MIME) ?: return@mapNotNull null,
-                fileId   = (em[K_FILE_ID] as? ByteArray) ?: return@mapNotNull null
+                slug        = em.text(K_FILE_SLUG) ?: return@mapNotNull null,
+                mimeType    = em.text(K_FILE_MIME) ?: return@mapNotNull null,
+                fileId      = em.bytesOrNull(K_FILE_ID) ?: return@mapNotNull null,
+                description = em.text(K_FILE_DESCRIPTION)
             )
         } ?: emptyList()
 
-        val related = (m[K_RELATED] as? List<*>)?.mapNotNull { entry ->
+        val related = (parts.bulky[K_RELATED] as? List<*>)?.mapNotNull { entry ->
             val em = entry as? Map<Int, Any> ?: return@mapNotNull null
             TagDropPayload.RelatedPaper(
                 hint        = em.text(K_HINT) ?: return@mapNotNull null,
                 set         = em.text(K_SET),
                 slug        = em.text(K_SLUG),
-                paperId     = em[K_PAPER_ID] as? ByteArray,
+                paperId     = em.bytesOrNull(K_PAPER_ID),
                 lat         = em.doubleOrNull(K_LAT),
                 lng         = em.doubleOrNull(K_LNG),
+                radiusM     = em.doubleOrNull(K_RADIUS_M),
                 keyMaterial = em.bytesOrNull(K_KEY_MATERIAL),
                 retainKey   = em.boolOrNull(K_RETAIN_KEY) ?: true
             )
         } ?: emptyList()
 
-        return TagDropPayload.PaperManifest(
-            rootHash        = m.bytes(K_CACHE_ID),
-            label           = m.text(K_HINT),
-            set             = m.text(K_SET),
-            slug            = m.text(K_SLUG),
+        return TagDropPayload.Paper(
+            rootHash        = rootHash,
+            label           = parts.core.text(K_HINT),
+            set             = parts.core.text(K_SET),
+            slug            = parts.core.text(K_SLUG),
             files           = files,
             related         = related,
-            collectionId    = m.bytesOrNull(K_COLLECTION_ID),
-            collectionLabel = m.text(K_COLLECTION_LABEL),
-            collectionTag   = m.text(K_COLLECTION_TAG),
-            icon            = m.text(K_ICON),
-            keyMaterial     = m.bytesOrNull(K_KEY_MATERIAL),
-            retainKey       = m.boolOrNull(K_RETAIN_KEY) ?: true
+            description     = parts.core.text(K_DESCRIPTION),
+            collectionId    = parts.core.bytesOrNull(K_COLLECTION_ID),
+            collectionLabel = parts.core.text(K_COLLECTION_LABEL),
+            collectionTag   = parts.core.text(K_COLLECTION_TAG),
+            icon            = parts.core.text(K_ICON),
+            keyMaterial     = parts.core.bytesOrNull(K_KEY_MATERIAL),
+            retainKey       = parts.core.boolOrNull(K_RETAIN_KEY) ?: true,
+            lat             = parts.core.doubleOrNull(K_LAT),
+            lng             = parts.core.doubleOrNull(K_LNG),
+            radiusM         = parts.core.doubleOrNull(K_RADIUS_M),
+            preferDeclaredLocation = parts.core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false,
+            inReplyTo       = parts.core.bytesOrNull(K_IN_REPLY_TO),
+            title           = parts.core.text(K_TITLE)
         )
     }
 
@@ -765,74 +868,78 @@ object TagDropCodec {
 
     // ── Map helpers ───────────────────────────────────────────────────────────
 
-    @Suppress("UNCHECKED_CAST")
-    private fun Map<Int, Any>.bytes(key: Int): ByteArray =
-        get(key) as? ByteArray ?: throw IllegalArgumentException("Missing required byte-string key $key")
-
     private fun Map<Int, Any>.bytesOrNull(key: Int): ByteArray? = get(key) as? ByteArray
-
     private fun Map<Int, Any>.text(key: Int): String? = get(key) as? String
-
     private fun Map<Int, Any>.uint(key: Int): Long? = get(key) as? Long
-
     private fun Map<Int, Any>.doubleOrNull(key: Int): Double? = get(key) as? Double
-
     private fun Map<Int, Any>.boolOrNull(key: Int): Boolean? = get(key) as? Boolean
 
     // ── Debug ─────────────────────────────────────────────────────────────────
 
-    /** Human-readable names for TagDrop's CBOR payload-map integer keys, used by [describeCbor]. */
+    /** Human-readable names for TagDrop's CBOR integer keys, used by [describeCbor]. */
     private val KEY_NAMES = mapOf(
-        K_CACHE_ID to "cache_id/root_hash", K_HINT to "hint/label",
-        K_MIME to "mime_type", K_CONTENT to "content", K_CHUNK_COUNT to "chunk_count",
-        K_TOTAL_BYTES to "total_bytes", K_SHA256 to "sha256", K_CHUNK_IDX to "chunk_index",
-        K_CHUNK_DATA to "chunk_data", K_FILENAME to "filename", K_COMPRESSION to "compression",
-        K_SET to "set", K_SLUG to "slug", K_FILES to "files", K_RELATED to "related",
+        K_CACHE_ID to "cache_id/root_hash", K_HINT to "hint/label", K_MIME to "mime_type",
+        K_CONTENT to "content", K_TOTAL_BYTES to "total_bytes", K_CONTENT_SHA to "content_sha256",
+        K_FILENAME to "filename", K_COMPRESSION to "content_compression", K_SET to "set",
+        K_SLUG to "slug", K_FILES to "files", K_RELATED to "related",
         K_COLLECTION_ID to "collection_id", K_COLLECTION_LABEL to "collection_label",
         K_COLLECTION_TAG to "collection_tag", K_FILE_SLUG to "slug", K_FILE_MIME to "mime_type",
         K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon",
-        K_LAT to "lat", K_LNG to "lng",
-        K_ENCRYPTION to "encryption",
+        K_LAT to "lat", K_LNG to "lng", K_ENCRYPTION to "encryption",
         K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key",
-        K_KDF_ALG to "kdf_alg", K_KDF_SALT to "kdf_salt", K_KDF_ITERS to "kdf_iters"
+        K_KDF_ALG to "kdf_alg", K_KDF_SALT to "kdf_salt", K_KDF_ITERS to "kdf_iters",
+        K_DESCRIPTION to "description", K_FILE_DESCRIPTION to "description",
+        K_SECTOR_INDEX to "sector_index", K_SECTOR_COUNT to "sector_count", K_PARITY to "parity_scheme",
+        K_BULKY_COMPRESSION to "bulky_meta_compression",
+        K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
+        K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
+        K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title"
     )
 
-    /** Human-readable names for the envelope's `type` values, used by [describeCbor]. */
-    private val TYPE_NAMES = mapOf(
-        TYPE_SINGLE to "Single", TYPE_MANIFEST to "Manifest",
-        TYPE_CHUNK to "Chunk", TYPE_PAPER_MANIFEST to "PaperManifest"
-    )
+    private val TYPE_NAMES = mapOf(TYPE_CONTENT to "Content", TYPE_PAPER to "Paper")
 
     /**
-     * Pretty-prints a raw TagDrop CBOR sequence for the on-device debug view: a hex dump,
-     * the version/type envelope (SPEC §2), and a key-by-key breakdown of the payload map
-     * annotated with the field names from the key table above this object.
+     * Pretty-prints a raw TagDrop sector CBOR sequence for the on-device debug view: a hex
+     * dump, the four-item envelope (SPEC §2) with `part_meta` broken out by field name, and —
+     * for a complete single-sector payload — the `core_meta_item`/`bulky_meta_item`/content
+     * split of its reassembled stream (§4.2).
      */
+    @Suppress("UNCHECKED_CAST")
     fun describeCbor(cbor: ByteArray): String = buildString {
         appendLine("${cbor.size} bytes")
         appendLine(cbor.toHexDump())
         appendLine()
         runCatching {
-            val (items, trailing) = MiniCbor.decodeSequencePrefix(cbor, 3)
+            val (items, trailing) = MiniCbor.decodeSequencePrefix(cbor, 4)
             val version = items[0] as Long
             val type = items[1] as Long
-            @Suppress("UNCHECKED_CAST")
-            val payload = items[2] as Map<Int, Any>
-            Triple(version, type, payload) to trailing
-        }.onSuccess { (envelope, trailing) ->
-            val (version, type, payload) = envelope
+            val partMeta = items[2] as Map<Int, Any>
+            val sectorBytes = items[3] as ByteArray
             appendLine("version: $version")
             appendLine("type: $type (${TYPE_NAMES[type.toInt()] ?: "unknown"})")
             appendLine()
-            describeMap(payload, 0, this)
+            appendLine("part_meta:")
+            describeMap(partMeta, 1, this)
+            appendLine()
+            appendLine("sector_bytes: ${sectorBytes.size} bytes")
+            val count = (partMeta[K_SECTOR_COUNT] as? Long)?.toInt() ?: 1
+            val index = (partMeta[K_SECTOR_INDEX] as? Long)?.toInt() ?: 0
+            if (count == 1 && index == 0) {
+                splitReassembledStream(sectorBytes)?.let { parts ->
+                    appendLine("  core_meta_item:")
+                    describeMap(parts.core, 2, this)
+                    appendLine("  bulky_meta_item:")
+                    describeMap(parts.bulky, 2, this)
+                    appendLine("  content: ${parts.content.size} bytes")
+                    if (parts.content.isNotEmpty()) appendLine("    ${parts.content.toHexDump()}")
+                } ?: appendLine("  ${sectorBytes.toHexDump()}")
+            } else {
+                appendLine("  (sector $index of $count — reassemble before parsing)")
+                appendLine("  ${sectorBytes.toHexDump()}")
+            }
             if (trailing.isNotEmpty()) {
                 appendLine()
-                val note = if (trailing.size >= OVERRIDE_BLOB_MIN_BYTES) {
-                    "candidate encrypted override map, SPEC §9"
-                } else {
-                    "too short to be an override map, SPEC §9"
-                }
-                appendLine("trailing bytes: ${trailing.toHexDump()} (${trailing.size} bytes, $note)")
+                appendLine("trailing bytes: ${trailing.toHexDump()} (${trailing.size} bytes — stacked envelope or padding, SPEC §9)")
             }
         }.onFailure { append("Failed to decode as CBOR sequence: ${it.message}") }
     }

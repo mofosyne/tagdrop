@@ -37,6 +37,7 @@ import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polygon
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.io.File
@@ -149,6 +150,7 @@ class MapFragment : Fragment() {
             if (lat == null || lng == null) continue
             val point = GeoPoint(lat, lng)
             points += point
+            addUncertaintyCircle(point, cache.locationRadiusM)
             val label = cache.hint ?: cache.filename ?: getString(R.string.collection_untitled)
             val marker = Marker(binding.map).apply {
                 position = point
@@ -170,6 +172,7 @@ class MapFragment : Fragment() {
             if (lat == null || lng == null) continue
             val point = GeoPoint(lat, lng)
             points += point
+            addUncertaintyCircle(point, paper.locationRadiusM)
             val label = paper.label ?: getString(R.string.paper_manifest_label)
             val marker = Marker(binding.map).apply {
                 position = point
@@ -186,7 +189,7 @@ class MapFragment : Fragment() {
         // Placeholder pins for related papers with a known location that haven't been scanned yet.
         val seenRelatedKeys = mutableSetOf<String>()
         for (paper in latestPapers) {
-            val related = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)?.related.orEmpty()
+            val related = TagDropCodec.decodePaperStream(paper.cborBytes)?.related.orEmpty()
             for (r in related) {
                 val lat = r.lat
                 val lng = r.lng
@@ -195,6 +198,7 @@ class MapFragment : Fragment() {
                 if (!seenRelatedKeys.add(r.paperId?.toHex() ?: "$lat,$lng,${r.hint}")) continue
                 val point = GeoPoint(lat, lng)
                 points += point
+                addUncertaintyCircle(point, r.radiusM)
                 val marker = Marker(binding.map).apply {
                     position = point
                     title = r.hint
@@ -240,6 +244,18 @@ class MapFragment : Fragment() {
             }
         }
         binding.map.invalidate()
+    }
+
+    /** Draws a translucent circle around [point] showing its declared circle-of-uncertainty radius, if any. */
+    private fun addUncertaintyCircle(point: GeoPoint, radiusM: Double?) {
+        if (radiusM == null || radiusM <= 0.0) return
+        val circle = Polygon(binding.map).apply {
+            setPoints(Polygon.pointsAsCircle(point, radiusM))
+            fillColor = Color.argb(40, 33, 150, 243)
+            strokeColor = Color.argb(160, 33, 150, 243)
+            strokeWidth = 2f
+        }
+        markerFolder.add(circle)
     }
 
     /**

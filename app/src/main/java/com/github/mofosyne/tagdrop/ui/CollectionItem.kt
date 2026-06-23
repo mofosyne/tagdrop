@@ -15,19 +15,39 @@ sealed class CollectionItem {
     abstract val key: String
     abstract val timestamp: Long
 
+    /** Text this card should be matched against for the search box, hashtags included as "#tag". */
+    abstract val searchHaystack: String
+
+    /** Distinct tags on this card, for the quick-filter chip row (without the "#" prefix). */
+    abstract val tags: List<String>
+
+    /** True if [query] is blank, or found case-insensitively in [searchHaystack] (so typing "#trail" filters by tag). */
+    fun matches(query: String): Boolean = query.isBlank() || searchHaystack.contains(query.trim(), ignoreCase = true)
+
     data class Paper(val paper: ScannedPaper, val totalFiles: Int, val cachedFiles: Int) : CollectionItem() {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
+        override val searchHaystack get() = listOfNotNull(
+            paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
+        ).joinToString(" ")
+        override val tags get() = listOfNotNull(paper.collectionTag)
     }
 
-    data class AdHoc(val collectionId: String, val label: String?, val tags: List<String>, val icon: String?, val items: List<FoundCache>) : CollectionItem() {
+    data class AdHoc(val collectionId: String, val label: String?, override val tags: List<String>, val icon: String?, val items: List<FoundCache>) : CollectionItem() {
         override val key get() = "adhoc:$collectionId"
         override val timestamp get() = items.maxOf { it.discoveredAt }
+        override val searchHaystack get() = (
+            listOfNotNull(label) + tags.map { "#$it" } + items.mapNotNull { it.hint } + items.mapNotNull { it.filename }
+        ).joinToString(" ")
     }
 
     data class Loose(val cache: FoundCache) : CollectionItem() {
         override val key get() = "loose:${cache.cacheId}"
         override val timestamp get() = cache.discoveredAt
+        override val searchHaystack get() = listOfNotNull(
+            cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
+        ).joinToString(" ")
+        override val tags get() = listOfNotNull(cache.collectionTag)
     }
 
     /** True if this collection was authored in-app (Create Cache/Paper) rather than scanned from someone else's drop. */
@@ -48,7 +68,7 @@ sealed class CollectionItem {
             val claimedIds = mutableSetOf<String>()
 
             val paperItems = papers.map { paper ->
-                val files = TagDropCodec.decodePaperManifestCbor(paper.cborBytes)?.files.orEmpty()
+                val files = TagDropCodec.decodePaperStream(paper.cborBytes)?.files.orEmpty()
                 var cachedCount = 0
                 for (file in files) {
                     val fileId = file.fileId.toHex()

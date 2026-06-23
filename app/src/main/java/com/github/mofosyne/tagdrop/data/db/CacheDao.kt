@@ -29,4 +29,8 @@ interface CacheDao {
     /** Items carrying a hidden override-map blob not yet unlocked by any retained `key_material` (SPEC §9). */
     @Query("SELECT * FROM found_caches WHERE pendingOverrideBlob IS NOT NULL")
     suspend fun getPendingOverrides(): List<FoundCache>
+
+    /** Other cached items whose `in_reply_to` points at [parentId] (SPEC §7) — the reverse of [FoundCache.inReplyTo]. */
+    @Query("SELECT * FROM found_caches WHERE inReplyTo = :parentId ORDER BY discoveredAt DESC")
+    suspend fun getRepliesTo(parentId: String): List<FoundCache>
 }

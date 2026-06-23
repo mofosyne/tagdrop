@@ -26,18 +26,24 @@ verification has so far been manual (decode every URI in
 
 ### Known duplication (not yet deduped)
 
-`tools/generator/index.html`'s encode-side helpers (`base41Encode`,
-`writeHead`/`cborValue`/`cborMap`/`cborSequence`/etc., `encodeSingle`,
-`encodeManifestAndChunks`, `encodePaperManifest`) are near-byte-identical to
-the ones inlined in `tools/examples/index.html` (which also adds an
-`encodePaperManifest` with collection/icon fields, for its multi-chunk and
-trail examples — its `encodeMultiChunk` predates and doesn't share code with
-the generator's `encodeManifestAndChunks`, which also supports the
-encrypted-override-map path). `tools/reader/index.html` has the decode-side
-mirror (`base41Decode`, `cborDecodeSequence`, etc.).
+`tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
+`base41Decode`), CBOR (`writeHead`/`cborValue`/`cborMap`/`cborUInt`/
+`cborBytesItem`/`cborDecodeSequencePrefix`/etc.), sector framing
+(`sectorCbor`/`encodeSector`/`sectorize`/`buildStream`/
+`splitReassembledStream`), crypto (`encryptAesGcm`/`encryptOverrideMap`/
+`deriveKeyFromPassphrase`/`generateKeyMaterial`), and the sector builders
+(`createContentSectors`/`createContentSectorsAutoSized`/
+`createKeyCodeSector`/`buildPaperStream`/`createPaper`/
+`createPaperAutoSized`) are byte-identical (same names, same bodies) to the
+copies inlined in `tools/examples/index.html`, which adds only its own
+example-data constants and rendering (`addCard`/`addContentSectorCards`/
+`addPaperSectorCards`) on top. `tools/reader/index.html` has the decode-side
+mirror (`base41Decode`, `cborDecodeSequencePrefix`, `parseContentStream`,
+`parsePaperStream`, `SectorAssembler`, etc.) plus its own UI/IndexedDB
+persistence layer.
 
-This is now **browser-vs-browser** duplication (same APIs, same runtime),
-which is lower-risk than the old Node-vs-browser split (`generate.mjs` was
+This is **browser-vs-browser** duplication (same APIs, same runtime), which
+is lower-risk than the old Node-vs-browser split (`generate.mjs` was
 removed — see below). A shared module would reduce drift further, **but**
 note: `tools/generator/index.html`, `tools/reader/index.html`, and
 `tools/examples/index.html` are deliberately **self-contained single HTML
@@ -48,11 +54,12 @@ would break that "download one file, it just works offline" property unless
 paired with a build step that inlines it back into the HTML (extra tooling)
 — not worth it for three files of this size. Instead there's a separate,
 independent Node port for verification: `tools/test-qr-roundtrip.mjs`
-(`tools/package.json`) builds Single and Manifest+Chunk payloads, renders
-them as real QR images (`qrcode`), decodes them back via zxing-wasm, and
-asserts round-trip correctness — run locally with `cd tools && npm install
-&& npm test`, and gated in CI as its own job (`.github/workflows/ci.yml`,
-`web-tools-roundtrip`) alongside the Gradle unit tests.
+(`tools/package.json`) builds Content sector payloads (single- and
+multi-sector) and renders them as real QR images (`qrcode`), decodes them
+back via zxing-wasm, and asserts round-trip correctness — run locally with
+`cd tools && npm install && npm test`, and gated in CI as its own job
+(`.github/workflows/ci.yml`, `web-tools-roundtrip`) alongside the Gradle
+unit tests.
 
 ### Why the reader uses zxing-wasm, not jsQR, to scan QR codes
 
@@ -79,6 +86,24 @@ now hand-written and self-contained like the generator/reader: example
 payloads are inlined as JS data and encoded/rendered as QR codes in-browser on
 page load. Edit the example data directly in `index.html` and reload — no
 build step.
+
+## Wire-format version policy
+
+SPEC.md's `version` field (currently `1`) is independent of the Android
+app's `versionName` (currently `2.1.0`, already accepted by F-Droid as of
+June 2026) — bumping one never requires bumping the other.
+
+Version 1 is currently a **draft, not frozen** (see SPEC.md's `Status`
+line): no real TagDrop code has been printed or distributed yet, so no
+deployed content depends on its exact byte layout. F-Droid accepting the
+app only means a binary *could* eventually reach a stranger — it doesn't
+mean any version-1 *content* exists yet for that binary to misread.
+Breaking changes (key reuse, envelope changes, semantics changes) are fine
+without a version bump **until the first real code is deployed** — printed,
+shared, or otherwise placed somewhere a third party might scan it. At that
+point treat version 1 as frozen: breaking changes from then on require a
+version bump (SPEC.md §14), and SPEC.md's `Status` line should flip back to
+`Stable`.
 
 ## Authoring tools: web generator is primary
 
@@ -139,7 +164,7 @@ again or a concrete need emerges.
   long-term, not started*). A middle ground between a normal `tagdrop:`
   code and the free-form graffiti idea above: a printed frame around an
   analog photo/drawing, where a small standard `tagdrop:` QR in one corner
-  carries identity/metadata (Single, `cache_id` random — same exception
+  carries identity/metadata (Content, `cache_id` random — same exception
   §9 already makes for encrypted override maps, since captured bytes
   aren't reproducible either — plus `hint`/`collection_id`/`icon`, with
   `content` deliberately omitted), and the frame's printed border is
@@ -147,7 +172,7 @@ again or a concrete need emerges.
   contour-detection problem as Adobe Scan/CamScanner — no custom fiducial
   markers like ArUco/AprilTag should be needed) to crop the interior into
   a bitmap stored against that `cache_id`. Needs zero SPEC.md changes — the
-  QR/CBOR/Base41 half is just an existing Single payload — but is a
+  QR/CBOR/Base41 half is just an existing Content payload — but is a
   substantial net-new Android subsystem: today `ReceiveActivity.kt`'s
   ZXing integration (`decodeContinuous`) only ever returns decoded barcode
   text, never raw camera frames/bitmaps, so this would need a parallel

@@ -62,9 +62,9 @@ class CreateActivity : AppCompatActivity() {
         val compress = binding.checkCompress.isChecked
 
         val rawContent = content.toByteArray(Charsets.UTF_8)
-        val payload = TagDropCodec.createSingle(hint, filename, mimeType,
-                          rawContent, compress, icon = icon)
-        val uri = TagDropCodec.encode(payload)
+        val sector = TagDropCodec.createContentSectors(hint, filename, mimeType,
+                          rawContent, compress, icon = icon).first()
+        val uri = TagDropCodec.encode(sector)
         lastUri = uri
         lastPayloadHint = hint ?: filename
 
@@ -72,7 +72,7 @@ class CreateActivity : AppCompatActivity() {
 
         try {
             binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
-            val idHex = payload.cacheId.joinToString("") { "%02x".format(it) }
+            val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
             binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
             binding.textUri.text = uri
             setResultsVisible(true)

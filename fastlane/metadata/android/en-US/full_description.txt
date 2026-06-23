@@ -7,15 +7,16 @@ Think of it as a digital geocache: instead of a logbook in a box, the "cache" is
 <ul>
 <li>Drop a single page — encode text, an HTML page, an SVG image, or JSON into one QR code, either in-app (Create Cache) or with the web generator.</li>
 <li>Drop a whole "paper" — a printable sheet with a directory QR code (a paper manifest) plus one QR per file, built in-app (Create Paper) or with the web generator. Pages can link to each other with ordinary relative links, so a small static site survives being printed and scanned back in.</li>
-<li>Spread large content across multiple codes — split a payload too big for one QR into a manifest plus chunk codes placed along a trail. The app collects chunks in any order and reassembles and verifies them.</li>
-<li>Build trails and collections — link papers together with location hints, or tag a loose set of stickers with a shared collection so they group into one card on the home screen and map, even though each code is independently scannable.</li>
-<li>Browse offline — scanned pages render in an in-app viewer. The Collections, History, and Map tabs let you revisit, locate, and manage everything you've found.</li>
+<li>Spread large content across multiple codes — split a payload too big for one QR into multiple sector codes placed along a trail. The app collects sectors in any order, reassembles and verifies them, and can recover a single missing sector from an optional parity code.</li>
+<li>Build trails, collections, and replies — link papers together with location hints, tag a loose set of stickers with a shared collection so they group into one card on the home screen and map, or mark a code as a reply to another to thread a conversation across drops.</li>
+<li>Browse offline — scanned pages render in an in-app viewer, with search and #hashtag filtering, and a hex/CBOR inspector for the curious. The Collections, History, and Map tabs let you revisit, locate, and manage everything you've found, and a single file can back up or restore it all.</li>
+<li>Tap instead of scan — write any TagDrop code to a blank or rewritable NFC tag, then read it back with a tap instead of the camera.</li>
 </ul>
 
 <b>How it works</b>
 
-Every code carries a tagdrop: URI — a CBOR sequence (version, type, and payload map), Base45-encoded so it packs efficiently into a QR code's alphanumeric mode. Content can optionally be DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical content always gets the same ID regardless of who created it.
+Every code carries a tagdrop: URI — a CBOR sequence (version, type, and payload map), Base41-encoded so it packs efficiently into a QR code's alphanumeric mode. Content can optionally be DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical content always gets the same ID regardless of who created it.
 
 <b>Status</b>
 
-V2.0 — CBOR-sequence envelope encoding, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, an in-app scanner with a live scan board, and a Map tab for located finds.
+V2.1 — CBOR-sequence envelope encoding with content split into sectors plus optional parity recovery, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, reply threading, an in-app scanner with a live scan board, NFC tag read/write, search and #hashtag filtering, full backup/restore, and a Map tab for located finds.
