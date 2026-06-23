@@ -274,6 +274,7 @@ class ViewDataUriActivity : AppCompatActivity() {
         mime.startsWith("audio/") -> "🎵"
         mime.startsWith("video/") -> "🎬"
         mime == "application/pdf" -> "📕"
+        mime == "text/calendar" -> "📅"
         mime.startsWith("text/") -> "📄"
         else -> "📦"
     }

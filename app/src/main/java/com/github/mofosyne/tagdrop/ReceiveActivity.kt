@@ -769,15 +769,21 @@ class ReceiveActivity : AppCompatActivity() {
      * Caches a complete non-TagDrop, non-legacy scan (a URL, plain text, vCard, Wi-Fi config,
      * ...) as standalone content, the same way any other found item is cached -- content-
      * addressed by [TagDropCodec.contentId] so re-scanning the same code is recognised as
-     * "already found" rather than duplicated.
+     * "already found" rather than duplicated. iCal content (RFC 5545) is tagged `text/calendar`
+     * instead of the generic `text/plain` so it gets a calendar icon and correct labeling.
      */
     private fun completeRawScan(text: String) {
         val bytes = text.toByteArray(Charsets.UTF_8)
+        val mimeType = if (text.startsWith("BEGIN:VCALENDAR") || text.startsWith("BEGIN:VEVENT")) {
+            "text/calendar"
+        } else {
+            "text/plain"
+        }
         completeSingle(
             cacheId  = TagDropCodec.contentId(bytes).toHex(),
             hint     = null,
             filename = null,
-            mimeType = "text/plain",
+            mimeType = mimeType,
             content  = bytes
         )
     }
