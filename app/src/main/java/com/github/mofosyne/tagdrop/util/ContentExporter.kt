@@ -29,6 +29,8 @@ object ContentExporter {
         "audio/midi" to "mid",
         "audio/x-midi" to "mid",
         "application/epub+zip" to "epub",
+        "text/vcard" to "vcf",
+        "text/calendar" to "ics",
     )
 
     /** Writes [cache]'s content into the app's cache dir and returns a shareable content:// URI. */

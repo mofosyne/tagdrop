@@ -43,6 +43,7 @@ import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
 import com.github.mofosyne.tagdrop.util.LocationUtils
+import com.github.mofosyne.tagdrop.util.QrContentClassifier
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.ResultMetadataType
@@ -126,7 +127,7 @@ class ReceiveActivity : AppCompatActivity() {
             if (text == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
             lastDecodedText = text
             lastDecodedAt = now
-            processScanned(text)
+            processScanned(text, result.result.barcodeFormat)
         }
         override fun possibleResultPoints(resultPoints: MutableList<ResultPoint>) {}
     }
@@ -341,7 +342,7 @@ class ReceiveActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun processScanned(scanned: String) {
+    private fun processScanned(scanned: String, format: BarcodeFormat = BarcodeFormat.QR_CODE) {
         val scan = TagDropCodec.decode(scanned)
         if (scan != null) { processScan(scan); return }
         when {
@@ -363,7 +364,7 @@ class ReceiveActivity : AppCompatActivity() {
             // -- SPEC.md defines no multi-fragment scheme for these (§11 is data: URIs only), so
             // there's no "more fragments" to wait for. Cache it immediately as content-addressed
             // raw content instead of stranding it in legacyChunks with no way to complete.
-            else -> completeRawScan(scanned)
+            else -> completeRawScan(scanned, format)
         }
     }
 
@@ -769,22 +770,22 @@ class ReceiveActivity : AppCompatActivity() {
      * Caches a complete non-TagDrop, non-legacy scan (a URL, plain text, vCard, Wi-Fi config,
      * ...) as standalone content, the same way any other found item is cached -- content-
      * addressed by [TagDropCodec.contentId] so re-scanning the same code is recognised as
-     * "already found" rather than duplicated. iCal content (RFC 5545) is tagged `text/calendar`
-     * instead of the generic `text/plain` so it gets a calendar icon and correct labeling.
+     * "already found" rather than duplicated. [QrContentClassifier] tags recognised content
+     * (vCard, calendar event, Wi-Fi config, URL, ...) with a hashtag-style collectionTag and
+     * icon, and -- for vCard/calendar, which are real interchange file formats -- a specific
+     * mimeType instead of the generic `text/plain` default.
      */
-    private fun completeRawScan(text: String) {
+    private fun completeRawScan(text: String, format: BarcodeFormat) {
         val bytes = text.toByteArray(Charsets.UTF_8)
-        val mimeType = if (text.startsWith("BEGIN:VCALENDAR") || text.startsWith("BEGIN:VEVENT")) {
-            "text/calendar"
-        } else {
-            "text/plain"
-        }
+        val classification = QrContentClassifier.classify(text, format)
         completeSingle(
-            cacheId  = TagDropCodec.contentId(bytes).toHex(),
-            hint     = null,
-            filename = null,
-            mimeType = mimeType,
-            content  = bytes
+            cacheId       = TagDropCodec.contentId(bytes).toHex(),
+            hint          = null,
+            filename      = null,
+            mimeType      = classification?.mimeType ?: "text/plain",
+            content       = bytes,
+            collectionTag = classification?.tag,
+            icon          = classification?.icon
         )
     }
 

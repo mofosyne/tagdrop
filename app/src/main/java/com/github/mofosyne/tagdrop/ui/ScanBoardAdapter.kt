@@ -61,6 +61,7 @@ class ScanBoardAdapter(private val onOpen: (FoundCache) -> Unit) :
             mime.startsWith("video/") -> "🎬"
             mime == "application/pdf" -> "📕"
             mime == "text/calendar" -> "📅"
+            mime == "text/vcard" -> "👤"
             mime.startsWith("text/") -> "📄"
             else -> "📦"
         }
