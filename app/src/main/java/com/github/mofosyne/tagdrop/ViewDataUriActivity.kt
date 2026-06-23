@@ -25,6 +25,7 @@ import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
+import com.github.mofosyne.tagdrop.data.format.MiniCbor
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
@@ -253,8 +254,8 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /**
      * Renders [content] according to [viewMode]: the normal per-mimeType render for RENDERED,
-     * or one of three raw views of the exact same bytes -- decoded text, a hex dump, or a
-     * reconstructed TagDrop CBOR envelope. Tracked in [currentContent] so the view-mode menu can
+     * or one of three raw views of the exact same bytes -- decoded text, a hex dump, or an
+     * attempt to decode them as CBOR. Tracked in [currentContent] so the view-mode menu can
      * switch between them without re-fetching anything.
      */
     private fun renderContent(content: ContentInfo) {
@@ -264,7 +265,7 @@ class ViewDataUriActivity : AppCompatActivity() {
             ViewMode.RENDERED -> renderRendered(content)
             ViewMode.TEXT -> showMonospace(String(content.bytes, Charsets.UTF_8), wrap = true)
             ViewMode.HEX -> showMonospace(hexDump(content.bytes), wrap = false)
-            ViewMode.CBOR -> showMonospace(TagDropCodec.describeCbor(cborForContent(content)), wrap = false)
+            ViewMode.CBOR -> showMonospace(MiniCbor.describeSequence(content.bytes), wrap = false)
         }
     }
 
@@ -329,31 +330,6 @@ class ViewDataUriActivity : AppCompatActivity() {
             appendLine()
         }
     }
-
-    /**
-     * Reconstructs a representative Content CBOR envelope from [content] and the current cache's
-     * other decoded fields, for the CBOR view -- the original wire bytes are never persisted
-     * (only the resolved clear-map content, SPEC §9), so this mirrors how
-     * `CollectionDetailActivity.inspectCacheCbor` already shows "View raw CBOR" for collection
-     * items. Falls back to nulls for the cache-derived fields if [exportCache] hasn't resolved yet.
-     */
-    private fun cborForContent(content: ContentInfo): ByteArray {
-        val cache = exportCache
-        return TagDropCodec.inspectableContentCbor(
-            hint = cache?.hint,
-            filename = cache?.filename,
-            mimeType = content.mimeType,
-            content = content.bytes,
-            collectionId = cache?.collectionId?.hexToBytes(),
-            collectionLabel = cache?.collectionLabel,
-            collectionTag = cache?.collectionTag,
-            icon = cache?.icon
-        )
-    }
-
-    private fun String.hexToBytes(): ByteArray = runCatching {
-        ByteArray(length / 2) { i -> ((this[i * 2].digitToInt(16) shl 4) or this[i * 2 + 1].digitToInt(16)).toByte() }
-    }.getOrElse { this.encodeToByteArray() }
 
     /**
      * Types the WebView can meaningfully render — matches the web reader's `showContent()`

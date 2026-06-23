@@ -203,4 +203,46 @@ object MiniCbor {
         require(totalRead == n) { "Truncated CBOR byte string: expected $n bytes, got $totalRead" }
         return buf
     }
+
+    // ── Debug ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Pretty-prints arbitrary bytes as a generic CBOR Sequence, for inspecting content whose
+     * structure isn't known ahead of time. Unlike [TagDropCodec.describeCbor] (which expects
+     * TagDrop's own fixed version/type/part_meta/sector_bytes envelope and names its specific
+     * keys), this has no notion of TagDrop semantics -- it just walks whatever [decodeSequence]
+     * returns.
+     */
+    fun describeSequence(bytes: ByteArray): String {
+        val items = runCatching { decodeSequence(bytes) }
+            .getOrElse { return "Not valid CBOR: ${it.message}" }
+        if (items.isEmpty()) return "(empty)"
+        return buildString {
+            items.forEachIndexed { i, item ->
+                if (items.size > 1) appendLine("— item $i —")
+                describeValue(null, item, 0, this)
+            }
+        }
+    }
+
+    private fun describeValue(key: Any?, value: Any?, indent: Int, out: StringBuilder) {
+        val pad = "  ".repeat(indent)
+        val prefix = if (key != null) "$pad$key: " else pad
+        when (value) {
+            null, Unit -> out.appendLine("${prefix}null")
+            is ByteArray -> out.appendLine("$prefix${value.joinToString(" ") { "%02x".format(it) }} (${value.size} bytes)")
+            is String -> out.appendLine("$prefix\"$value\"")
+            is Map<*, *> -> {
+                out.appendLine("$prefix{")
+                for ((k, v) in value) describeValue(k, v, indent + 1, out)
+                out.appendLine("$pad}")
+            }
+            is List<*> -> {
+                out.appendLine("$prefix[")
+                for (item in value) describeValue(null, item, indent + 1, out)
+                out.appendLine("$pad]")
+            }
+            else -> out.appendLine("$prefix$value")
+        }
+    }
 }

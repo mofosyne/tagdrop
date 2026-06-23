@@ -240,4 +240,56 @@ class MiniCborTest {
         val map = items[2] as Map<Int, Any>
         assertEquals("hint", map[3])
     }
+
+    // ── describeSequence (generic debug pretty-printer) ───────────────────────
+
+    @Test fun describeSequenceEmptyBytes() {
+        assertEquals("(empty)", MiniCbor.describeSequence(ByteArray(0)))
+    }
+
+    @Test fun describeSequenceInvalidCbor() {
+        val description = MiniCbor.describeSequence(byteArrayOf(0xFF.toByte()))
+        assertTrue(description.startsWith("Not valid CBOR"))
+    }
+
+    @Test fun describeSequencePlainText() {
+        // Plain text misparses as a truncated CBOR byte/text-string pair rather than
+        // decoding cleanly, so non-CBOR content fails closed instead of showing garbage.
+        val description = MiniCbor.describeSequence("Hello from TagDrop!".toByteArray(Charsets.UTF_8))
+        assertTrue(description.startsWith("Not valid CBOR"))
+    }
+
+    @Test fun describeSequenceSingleMap() {
+        val cbor = MiniCbor.encodeMap(listOf(3 to "hint text", 4 to "text/html"))
+        val description = MiniCbor.describeSequence(cbor)
+        assertTrue(description.contains("3: \"hint text\""))
+        assertTrue(description.contains("4: \"text/html\""))
+        assertFalse(description.contains("— item"))   // single item: no "item N" headers
+    }
+
+    @Test fun describeSequenceMultipleItemsLabelled() {
+        val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0)
+        val description = MiniCbor.describeSequence(seq)
+        assertTrue(description.contains("— item 0 —"))
+        assertTrue(description.contains("— item 1 —"))
+    }
+
+    @Test fun describeSequenceByteStringShowsHexAndLength() {
+        val cbor = MiniCbor.encodeMap(listOf(2 to byteArrayOf(0xDE.toByte(), 0xAD.toByte())))
+        val description = MiniCbor.describeSequence(cbor)
+        assertTrue(description.contains("de ad (2 bytes)"))
+    }
+
+    @Test fun describeSequenceNestedArrayAndMap() {
+        val pairs = listOf(
+            15 to listOf(
+                MiniCbor.CborMap(listOf(20 to "slug-a", 21 to "text/html"))
+            )
+        )
+        val cbor = MiniCbor.encodeMap(pairs)
+        val description = MiniCbor.describeSequence(cbor)
+        assertTrue(description.contains("15: ["))
+        assertTrue(description.contains("20: \"slug-a\""))
+        assertTrue(description.contains("21: \"text/html\""))
+    }
 }
