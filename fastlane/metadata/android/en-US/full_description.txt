@@ -18,4 +18,4 @@ Every code carries a tagdrop: URI — a CBOR sequence (version, type, and payloa
 
 <b>Status</b>
 
-V2.0 — CBOR-sequence envelope encoding, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, an in-app scanner with a live scan board, and a Map tab for located finds.
+V2.1 — CBOR-sequence envelope encoding, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, an in-app scanner with a live scan board, and a Map tab for located finds.

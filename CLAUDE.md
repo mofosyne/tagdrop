@@ -90,7 +90,7 @@ build step.
 ## Wire-format version policy
 
 SPEC.md's `version` field (currently `1`) is independent of the Android
-app's `versionName` (currently `2.0.0`, already accepted by F-Droid as of
+app's `versionName` (currently `2.1.0`, already accepted by F-Droid as of
 June 2026) — bumping one never requires bumping the other.
 
 Version 1 is currently a **draft, not frozen** (see SPEC.md's `Status`

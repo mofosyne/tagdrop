@@ -123,7 +123,7 @@ running from source.
 
 ## Status
 
-**TagDrop v2.0** — v1 wire format, stable. CBOR-sequence envelope encoding
+**TagDrop v2.1** — v1 wire format (draft). CBOR-sequence envelope encoding
 (`tagdrop:<base41>`), paper manifests with multi-file directories and
 relative-link navigation, geographic trails via `related` hints, ad-hoc
 collections, an in-app scanner with a live scan board, a Map tab for located
