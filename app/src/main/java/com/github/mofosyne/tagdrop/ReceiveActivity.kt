@@ -1,10 +1,15 @@
 package com.github.mofosyne.tagdrop
 
 import android.Manifest
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.Uri
+import android.nfc.NdefMessage
+import android.nfc.NfcAdapter
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -81,6 +86,23 @@ class ReceiveActivity : AppCompatActivity() {
     private var lastDecodedText: String? = null
     private var lastDecodedAt: Long = 0L
 
+    /** Null on devices with no NFC hardware — every NFC call below is then a no-op via `?.`. */
+    private var nfcAdapter: NfcAdapter? = null
+
+    /** Reused (must be the same instance) across enable/disableForegroundDispatch calls. */
+    private val nfcPendingIntent: PendingIntent by lazy {
+        PendingIntent.getActivity(
+            this, 0,
+            Intent(this, javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
+    }
+
+    /** Restricts foreground dispatch to TagDrop's own NDEF MIME type (SPEC §12). */
+    private val nfcIntentFilters: Array<IntentFilter> by lazy {
+        arrayOf(IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED).apply { addDataType(TagDropCodec.NFC_MIME_TYPE) })
+    }
+
     private val barcodeCallback = object : BarcodeCallback {
         override fun barcodeResult(result: BarcodeResult) {
             val now = System.currentTimeMillis()
@@ -116,6 +138,40 @@ class ReceiveActivity : AppCompatActivity() {
             ?.takeIf { it.isNotEmpty() }
             ?.flatMap { it.toList() }
             ?.toByteArray()
+
+    /**
+     * A tapped NFC tag delivers its NDEF message(s) via [intent] -- either [onNewIntent] (app
+     * already foregrounded, via [nfcPendingIntent]/[nfcIntentFilters]) or a cold start through
+     * the manifest's NDEF intent-filter. Each TagDrop MIME record's payload is the raw CBOR
+     * sequence with no Base41 wrapper (SPEC §12), the same bytes [TagDropCodec.decodeRaw] already
+     * parses for fully-binary QR codes -- so a tag decodes through the identical [processScan]
+     * pipeline a camera scan does.
+     */
+    private fun handleNfcIntent(intent: Intent?) {
+        if (intent?.action != NfcAdapter.ACTION_NDEF_DISCOVERED) return
+        val messages = intent.ndefMessages()
+        for (message in messages) {
+            for (record in message.records) {
+                if (record.toMimeType() != TagDropCodec.NFC_MIME_TYPE) continue
+                val scan = TagDropCodec.decodeRaw(record.payload) ?: continue
+                val now = System.currentTimeMillis()
+                val key = "nfc:" + record.payload.toHex()
+                if (key == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
+                lastDecodedText = key
+                lastDecodedAt = now
+                processScan(scan)
+                return
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun Intent.ndefMessages(): List<NdefMessage> =
+        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES, NdefMessage::class.java)
+        } else {
+            getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)
+        })?.filterIsInstance<NdefMessage>() ?: emptyList()
 
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -180,7 +236,17 @@ class ReceiveActivity : AppCompatActivity() {
             if (uri.startsWith("tagdrop:") && !uri.startsWith("tagdrop://")) processScanned(uri)
         }
 
+        nfcAdapter = NfcAdapter.getDefaultAdapter(this)
+        handleNfcIntent(intent)
+
         updateDisplay()
+    }
+
+    /** Cold start via the manifest's NDEF intent-filter is just another launch [Intent] (SPEC §12). */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNfcIntent(intent)
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
@@ -213,6 +279,7 @@ class ReceiveActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        nfcAdapter?.enableForegroundDispatch(this, nfcPendingIntent, nfcIntentFilters, null)
         if (hasCameraPermission()) {
             restoreScannerUi()
             binding.barcodeScanner.resume()
@@ -223,6 +290,7 @@ class ReceiveActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        nfcAdapter?.disableForegroundDispatch(this)
         binding.barcodeScanner.pause()
     }
 

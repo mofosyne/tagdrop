@@ -78,7 +78,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             onInspectCbor = { cache -> inspectCacheCbor(cache) },
             onShare = { cache -> shareCache(cache) },
             onSave = { cache -> saveCache(cache) },
-            onShareQr = { cache -> shareCacheViaQr(cache) }
+            onShareQr = { cache -> shareCacheViaQr(cache) },
+            onWriteNfc = { cache -> writeNfcTag(cache) }
         )
         binding.recyclerPages.layoutManager = LinearLayoutManager(this)
         binding.recyclerPages.adapter = adapter
@@ -294,6 +295,10 @@ class CollectionDetailActivity : AppCompatActivity() {
 
     private fun shareCacheViaQr(cache: FoundCache) {
         startActivity(Intent(this, ShareQrActivity::class.java).putExtra(ShareQrActivity.EXTRA_CACHE_ID, cache.cacheId))
+    }
+
+    private fun writeNfcTag(cache: FoundCache) {
+        startActivity(Intent(this, WriteNfcTagActivity::class.java).putExtra(WriteNfcTagActivity.EXTRA_CACHE_ID, cache.cacheId))
     }
 
     /** Lets the user pick a destination and saves a copy of the cached content there. */

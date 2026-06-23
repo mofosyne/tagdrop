@@ -85,6 +85,9 @@ object TagDropCodec {
      */
     const val MAX_SECTOR_DATA_BYTES = 1300
 
+    /** NDEF MIME type for a sector's raw CBOR sequence on an NFC tag (SPEC §12/§13) — see [sectorCbor]/[decodeRaw]. */
+    const val NFC_MIME_TYPE = "application/vnd.tagdrop"
+
     private const val SCHEME          = "tagdrop:"
     private const val NAV_LINK_PREFIX = "tagdrop://"
 

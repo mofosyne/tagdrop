@@ -7,8 +7,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
-    <!-- NFC support (optional — for future NDEF tag reading) -->
-    <!-- <uses-permission android:name="android.permission.NFC" /> -->
+    <!-- NFC support (optional — tap-to-read/write TagDrop NDEF tags, SPEC §12) -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
 
     <application
         android:name=".TagDropApplication"
@@ -40,6 +41,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="tagdrop" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.tagdrop" />
             </intent-filter>
         </activity>
 
@@ -78,6 +84,13 @@
         <activity
             android:name=".ShareQrActivity"
             android:label="@string/title_share_qr"
+            android:exported="false"
+            android:parentActivityName=".CollectionDetailActivity" />
+
+        <!-- Writes a cached item's content onto a physical NFC NDEF tag (SPEC §12) -->
+        <activity
+            android:name=".WriteNfcTagActivity"
+            android:label="@string/title_write_nfc"
             android:exported="false"
             android:parentActivityName=".CollectionDetailActivity" />
 

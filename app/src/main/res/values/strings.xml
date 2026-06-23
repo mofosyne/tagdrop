@@ -178,6 +178,20 @@
     <string name="button_resume">Resume</string>
     <string name="share_qr_add_parity">🛟 Add a parity recovery code</string>
 
+    <!-- Write NFC tag screen -->
+    <string name="action_write_nfc">Write to NFC tag</string>
+    <string name="title_write_nfc">Write to NFC tag</string>
+    <string name="nfc_not_supported">This device doesn\'t support NFC.</string>
+    <string name="write_nfc_waiting">Hold a blank or rewritable NFC tag near the back of your device.</string>
+    <string name="write_nfc_tap_next">Written. Tap the next tag to continue.</string>
+    <string name="write_nfc_done">Done — content written to %1$d tag(s).</string>
+    <string name="write_nfc_failed">Write failed. Try again.</string>
+    <string name="write_nfc_too_large">Content is too large to fit on NFC tags, even split across multiple.</string>
+    <string name="write_nfc_read_only">This tag is read-only and can\'t be written.</string>
+    <string name="write_nfc_tag_too_small">This tag\'s storage is too small for this content.</string>
+    <string name="write_nfc_unsupported_tag">This tag type isn\'t supported for writing.</string>
+    <string name="write_nfc_include_app_record">Launch TagDrop automatically on tap</string>
+
     <!-- Passphrase unlock dialog -->
     <string name="passphrase_dialog_title">🔒 Passphrase required</string>
     <string name="passphrase_hint_text">Enter the passphrase to unlock this content</string>
