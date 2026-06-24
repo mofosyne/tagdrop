@@ -118,6 +118,13 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
                      margin: -6px 0 12px; }
 #paperDescription.hidden { display: none; }
 
+/* Replies and threading (SPEC §7) — shared by paper header and content viewer */
+.reply-info { font-size: 0.85rem; margin: -6px 0 12px; display: flex;
+              align-items: center; gap: 6px; flex-wrap: wrap; }
+.reply-info.hidden { display: none; }
+.reply-info strong { font-size: 0.95rem; }
+#contentReplyInfo { padding: 10px 16px; margin: 0; border-bottom: 1px solid #eee; }
+
 #fileList { list-style: none; margin: 0; padding: 0; }
 .file-item { display: flex; align-items: center; gap: 8px; padding: 8px 0;
              border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; }
@@ -271,6 +278,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 
   <section id="paperSection" class="hidden">
     <div id="paperHeader"></div>
+    <div id="paperReplyInfo" class="reply-info hidden"></div>
     <div id="paperDescription" class="hidden"></div>
     <ul id="fileList"></ul>
     <div class="paper-actions">
@@ -283,6 +291,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
       <span id="contentTitle"></span>
       <button id="btnBack" class="secondary">← Back</button>
     </div>
+    <div id="contentReplyInfo" class="reply-info hidden"></div>
     <div id="contentArea"></div>
   </section>
 </main>
@@ -530,7 +539,8 @@ const K = {
   PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
-  RADIUS_M:48, PREFER_DECLARED_LOCATION:49
+  RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
+  IN_REPLY_TO:50, TITLE:51
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -597,6 +607,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
+  50: 'in_reply_to', 51: 'title',
 };
 
 function toHexDump(bytes) {
@@ -799,6 +810,8 @@ async function parseContentStream(stream, partMeta) {
       lng:             core[K.LNG] ?? null,
       radiusM:         core[K.RADIUS_M] ?? null,
       preferDeclaredLocation: core[K.PREFER_DECLARED_LOCATION] === true,
+      inReplyTo:       core[K.IN_REPLY_TO] ? toHex(core[K.IN_REPLY_TO]) : null,
+      title:           core[K.TITLE] ?? null,
     },
   };
 }
@@ -872,6 +885,8 @@ function paperFromParts(parts, rootHash) {
     lng:             parts.core[K.LNG] ?? null,
     radiusM:         parts.core[K.RADIUS_M] ?? null,
     preferDeclaredLocation: parts.core[K.PREFER_DECLARED_LOCATION] === true,
+    inReplyTo:       parts.core[K.IN_REPLY_TO] ? toHex(parts.core[K.IN_REPLY_TO]) : null,
+    title:           parts.core[K.TITLE] ?? null,
   };
 }
 
@@ -1063,6 +1078,7 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     wasEncrypted,
     lat: content.lat, lng: content.lng, radiusM: content.radiusM,
     preferDeclaredLocation: content.preferDeclaredLocation,
+    inReplyTo: content.inReplyTo, title: content.title,
   };
 }
 
@@ -1190,17 +1206,21 @@ async function candidateKeys(kdfSalt) {
  * previous behaviour: scanning a paper's file lands back on the directory, not the viewer,
  * so continuous scanning isn't interrupted). `collectionId`/`collectionLabel`/`collectionTag`/
  * `icon` are passed through to the content view only — not persisted to the `caches` store
- * (see showContent's doc comment: ephemeral, scan-time-only metadata).
+ * (see showContent's doc comment: ephemeral, scan-time-only metadata). `inReplyTo`/`title`
+ * (SPEC §7) are different: threading/postcard UI needs them on reopen too, so — unlike
+ * collection/icon — they ARE persisted (mirrors Android's FoundCache.inReplyTo column).
  */
 async function completeSingle(cacheId, hint, filename, mimeType, content, opts = {}) {
   const {
     collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
     pendingOverrideBlob = null, pendingCompression = 0, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
+    inReplyTo = null, title = null,
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
     pendingOverrideBlob, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
+    inReplyTo, title,
   });
   const label = filename || hint || mimeType;
   await showContent(mimeType, content, label, cacheId, { icon, collectionLabel, collectionTag, collectionId });
@@ -1247,7 +1267,8 @@ async function handleContentReady(state) {
       cacheId, override.hint ?? state.hint, override.filename ?? state.filename,
       override.mimeType ?? state.mimeType, override.content ?? new Uint8Array(0),
       { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
-        collectionTag: state.collectionTag, icon: state.icon, wasEncrypted: true }
+        collectionTag: state.collectionTag, icon: state.icon, wasEncrypted: true,
+        inReplyTo: state.inReplyTo, title: state.title }
     );
     showMsg('🔓 Decrypted: ' + label, 'ok');
     return;
@@ -1260,6 +1281,7 @@ async function handleContentReady(state) {
       filename: state.filename, mimeType: state.mimeType,
       collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
+      inReplyTo: state.inReplyTo, title: state.title,
     });
     return;
   }
@@ -1269,7 +1291,8 @@ async function handleContentReady(state) {
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: blob, pendingCompression: state.pendingOverrideCompression,
-      wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters }
+      wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
+      inReplyTo: state.inReplyTo, title: state.title }
   );
   showMsg(blob ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
 }
@@ -1294,6 +1317,7 @@ async function handleAwaitingKey(state) {
       compression: state.compression, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
       fallbackContent: null, filename: null, mimeType: '',
       collectionId: null, collectionLabel: null, collectionTag: null, icon: null,
+      inReplyTo: null, title: null,
     });
     return;
   }
@@ -1311,7 +1335,7 @@ async function handleAwaitingKey(state) {
  */
 async function unlockWithPassphrase({
   hint, cacheId, blob, compression, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
-  collectionId, collectionLabel, collectionTag, icon
+  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title
 }) {
   const saltHex = toHex(kdfSalt);
   const info = hint
@@ -1333,7 +1357,7 @@ async function unlockWithPassphrase({
       const label = await completeSingle(
         cacheId, override.hint ?? hint, override.filename ?? filename, override.mimeType ?? mimeType,
         override.content ?? new Uint8Array(0),
-        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true }
+        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title }
       );
       await unlockPending(derived);
       for (const r of await assembler.tryKey(derived)) await completeContentReady(r);
@@ -1347,7 +1371,7 @@ async function unlockWithPassphrase({
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
         pendingOverrideBlob: blob, pendingCompression: compression, wasEncrypted: true,
-        kdfAlg: 1, kdfSalt, kdfIters }
+        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title }
     );
     showMsg(wrongPassphrase
       ? 'Wrong passphrase. Loaded: ' + label + ' (🔒 still locked)'
@@ -1384,7 +1408,7 @@ async function completeContentReady(state) {
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: state.pendingOverrideBlob, pendingCompression: state.pendingOverrideCompression,
-      wasEncrypted: state.wasEncrypted }
+      wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title }
   );
   showMsg('🔓 Unlocked: ' + label, 'ok');
 }
@@ -1616,6 +1640,71 @@ async function resolveNavLink(rootHashHex, slug) {
   await showContent(cached.mimeType, cached.content, slug, fileEntry.fileId);
 }
 
+// ── Replies and threading (SPEC §7) ───────────────────────────────────────
+/** Resolves an in_reply_to pointer against both stores — a parent can be either kind
+ *  (mirrors Android's ReplyParent: AsCache / AsPaper / Missing). Returns null if the
+ *  parent hasn't been scanned yet — "discovered, not required", same as related[]. */
+async function resolveReplyParent(id) {
+  const cache = await dbGet('caches', id);
+  if (cache) return { kind: 'cache', label: cache.title || cache.filename || cache.hint || cache.mimeType };
+  const paper = await dbGet('papers', id);
+  if (paper) return { kind: 'paper', label: paper.title || paper.label || 'Untitled Paper' };
+  return null;
+}
+
+/** Items already cached/stored whose in_reply_to points at [parentId] — the reverse
+ *  direction (mirrors Android CacheDao/PaperDao getRepliesTo). Linear scan over both
+ *  stores, same style as findPaperContext above; fine at reader-app scale. */
+async function findRepliesTo(parentId) {
+  const caches = (await dbGetAll('caches')).filter(c => c.inReplyTo === parentId);
+  const papers = (await dbGetAll('papers')).filter(p => p.inReplyTo === parentId);
+  return [
+    ...caches.map(c => ({ kind: 'cache', id: c.cacheId, label: c.title || c.filename || c.hint || c.mimeType })),
+    ...papers.map(p => ({ kind: 'paper', id: p.rootHash, label: p.title || p.label || 'Untitled Paper' })),
+  ];
+}
+
+/** Renders a postcard's short subject (title, SPEC §7), an "↩ Replying to" link (resolved
+ *  if the parent is already cached, an inert chip otherwise), and a "💬" button per reply
+ *  found pointing back at [selfId] — into [el]. Shared by renderPaper and showContent;
+ *  hides [el] entirely when there's nothing to show. */
+async function renderReplyInfo(el, { title, inReplyTo, selfId } = {}) {
+  const parts = [];
+  if (title) parts.push('<strong>' + escHtml(title) + '</strong>');
+  if (inReplyTo) {
+    const parent = await resolveReplyParent(inReplyTo);
+    parts.push(parent
+      ? '<button class="secondary reply-nav" data-id="' + escHtml(inReplyTo) + '" data-kind="' + parent.kind +
+        '">↩ Replying to: ' + escHtml(parent.label) + '</button>'
+      : '<span class="chip">↩ replying to ' + escHtml(inReplyTo.slice(0, 8)) + '… (not yet scanned)</span>');
+  }
+  if (selfId) {
+    for (const r of await findRepliesTo(selfId)) {
+      parts.push('<button class="secondary reply-nav" data-id="' + escHtml(r.id) + '" data-kind="' + r.kind +
+        '">💬 ' + escHtml(r.label) + '</button>');
+    }
+  }
+  el.innerHTML = parts.join(' ');
+  el.classList.toggle('hidden', parts.length === 0);
+}
+
+/** Opens a reply-nav target by kind/id (mirrors the .open-home/.open-file navigation
+ *  pattern). 'paper' targets become the active paper, same as resolveNavLink; 'cache'
+ *  targets go through showContent, or report not-yet-scanned if missing. */
+async function openReplyTarget(kind, id) {
+  if (kind === 'paper') {
+    activePaperHash = id;
+    await renderPaper(id);
+    return;
+  }
+  const cached = await dbGet('caches', id);
+  if (cached) {
+    await showContent(cached.mimeType, cached.content, cached.filename || cached.hint || cached.mimeType, cached.cacheId);
+  } else {
+    showMsg('Not cached yet — scan its QR code.', 'warn');
+  }
+}
+
 // ── Paper directory ───────────────────────────────────────────────────────
 // Slugs treated as a paper's homepage/landing page (see renderPaper below).
 const HOME_SLUGS = ['index', 'index.html', 'index.md'];
@@ -1648,6 +1737,9 @@ async function renderPaper(rootHash) {
       '" data-slug="' + escHtml(homeFile.slug) + '">🏠 Open homepage</button>';
   }
   document.getElementById('paperHeader').innerHTML = hdr;
+
+  await renderReplyInfo(document.getElementById('paperReplyInfo'),
+    { title: paper.title, inReplyTo: paper.inReplyTo, selfId: paper.rootHash });
 
   const descEl = document.getElementById('paperDescription');
   if (paper.description) {
@@ -1757,6 +1849,13 @@ async function showContent(mimeType, content, title, cacheId, meta) {
     titleEl.textContent = title;
     titleEl.style.whiteSpace = '';
   }
+
+  // SPEC §7: title/in_reply_to are persisted to the caches store (unlike meta's
+  // collection/icon fields above), so fetch them fresh rather than threading through meta —
+  // keeps this independent of which caller/path reached showContent.
+  const cached = cacheId ? await dbGet('caches', cacheId) : null;
+  await renderReplyInfo(document.getElementById('contentReplyInfo'),
+    { title: cached && cached.title, inReplyTo: cached && cached.inReplyTo, selfId: cacheId });
 
   if (mimeType.startsWith('text/html')) {
     renderHtmlInIframe(area, new TextDecoder().decode(content));
@@ -1930,6 +2029,18 @@ document.getElementById('paperHeader').addEventListener('click', async e => {
   if (!btn) return;
   const cached = await dbGet('caches', btn.dataset.id);
   if (cached) await showContent(cached.mimeType, cached.content, btn.dataset.slug, btn.dataset.id);
+});
+
+document.getElementById('paperReplyInfo').addEventListener('click', async e => {
+  const btn = e.target.closest('.reply-nav');
+  if (!btn) return;
+  await openReplyTarget(btn.dataset.kind, btn.dataset.id);
+});
+
+document.getElementById('contentReplyInfo').addEventListener('click', async e => {
+  const btn = e.target.closest('.reply-nav');
+  if (!btn) return;
+  await openReplyTarget(btn.dataset.kind, btn.dataset.id);
 });
 
 document.getElementById('btnCbor').onclick = async () => {

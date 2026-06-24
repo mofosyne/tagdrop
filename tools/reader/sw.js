@@ -1,9 +1,13 @@
 // Service worker for TagDrop Reader: caches this page and its CDN dependencies
 // (zxing-wasm, marked) so scanning and viewing already-found content keeps working
 // fully offline after one normal online visit. Kept in sync by hand with index.html
-// — bump CACHE_NAME whenever a pinned CDN URL below changes (e.g. a zxing-wasm or
-// marked version bump), so clients drop the old cache instead of serving stale files.
-const CACHE_NAME = 'tagdrop-reader-v1';
+// — bump CACHE_NAME whenever index.html itself changes or a pinned CDN URL below
+// changes (e.g. a zxing-wasm or marked version bump). The fetch handler below is
+// cache-first with no revalidation, and a browser only re-runs the install step
+// (which repopulates the cache) when sw.js's own bytes change — so without a bump
+// here, a returning offline-installed client would keep serving the old index.html
+// forever, never picking up the new one.
+const CACHE_NAME = 'tagdrop-reader-v2';
 
 const PRECACHE_URLS = [
   './',
