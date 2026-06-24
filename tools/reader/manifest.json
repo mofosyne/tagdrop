@@ -1,0 +1,14 @@
+{
+  "name": "TagDrop Reader",
+  "short_name": "TagDrop",
+  "description": "Scan and read TagDrop QR codes — works offline after first load.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f5f5",
+  "theme_color": "#F3EDE1",
+  "icons": [
+    { "src": "icon.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
