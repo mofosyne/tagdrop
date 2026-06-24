@@ -61,6 +61,15 @@ back via zxing-wasm, and asserts round-trip correctness — run locally with
 (`.github/workflows/ci.yml`, `web-tools-roundtrip`) alongside the Gradle
 unit tests.
 
+`tools/reader/` is the one exception to "single file": it ships
+`manifest.json`, `sw.js`, and `icon.png` alongside `index.html` (all copied
+by `.github/workflows/pages.yml` into the deployed `reader/` directory) so
+it works fully offline via a service worker — see the header comment in
+`tools/reader/index.html` for why. Generator and Examples don't need this:
+they're normally used at a desk with a network connection, unlike Reader,
+which is the tool someone relies on out in the field (and, since there's no
+iOS app, the *only* offline option for iPhone users).
+
 ### Why the reader uses zxing-wasm, not jsQR, to scan QR codes
 
 `tools/reader/index.html` decodes camera/image QR scans with **zxing-wasm**

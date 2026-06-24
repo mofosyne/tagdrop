@@ -96,14 +96,17 @@
         <h3>📷 Reader</h3>
         <p>Scan TagDrop QR codes with your device camera, assemble multi-code
         payloads, browse paper directories, and follow tagdrop:// links
-        between pages. Unlocks encrypted content via key-code or passphrase.</p>
+        between pages. Unlocks encrypted content via key-code or passphrase.
+        Works fully offline after the first visit — handy on phones without
+        a native TagDrop app, like iPhone.</p>
         <p><img src="qr-jump-to-reader.png" height="80"></p>
       </a>
       <a class="tool-card" href="examples/">
         <h3>🧪 Examples</h3>
-        <p>A gallery of pre-generated sample codes: standalone payloads, a
-        multi-code story, a paper directory, a multi-location trail, and
-        encrypted examples (key-code and passphrase).</p>
+        <p>A gallery of pre-generated sample codes: standalone payloads,
+        multi-sector content, a paper set, a mini e-book of Markdown pages,
+        a multi-location trail, and encrypted examples (key-code and
+        passphrase).</p>
         <p><img src="qr-jump-to-example.png" height="80"></p>
       </a>
     </div>
@@ -115,13 +118,22 @@
       <li><strong>URI scheme:</strong> every code carries a
         <code>tagdrop:&lt;base41-cbor-sequence&gt;</code> URI — a CBOR sequence
         (version, type, payload map), Base41-encoded so it fits QR alphanumeric
-        mode with minimal overhead. Content can optionally be DEFLATE-compressed.</li>
-      <li><strong>Single codes</strong> hold a complete payload; larger payloads
-        split into a manifest plus chunks that can be scattered across multiple
-        physical locations and reassembled in any order.</li>
-      <li><strong>Paper manifests</strong> describe a directory of files on one
-        physical sheet, plus hints pointing to related papers elsewhere — letting
-        a "trail" of drops link together into a collection.</li>
+        mode with minimal overhead. Content can optionally be DEFLATE-compressed,
+        and IDs are content-addressed (SHA-256-based), so identical content
+        always gets the same ID regardless of who created it.</li>
+      <li><strong>Sectors</strong> carry a payload too big for one QR code:
+        content splits into multiple self-describing sector codes that can be
+        scattered across multiple physical locations and reassembled in any
+        order, with an optional parity code that can recover a single missing
+        sector.</li>
+      <li><strong>Paper manifests</strong> describe a directory of files — each
+        with its own short description — on one physical sheet, linked by
+        ordinary relative links or <code>tagdrop://&lt;root-hash&gt;/&lt;slug&gt;</code>
+        links, so a small static site survives being printed and scanned back in.</li>
+      <li><strong>Trails, collections, and replies:</strong> link papers
+        together with <code>related</code> hints, tag a loose set of stickers
+        with a shared collection so they group into one card and map, or mark
+        a code as a reply to another to thread a conversation across drops.</li>
       <li><strong>Encryption:</strong> content can be AES-256-GCM encrypted with
         a separate key-code QR, or locked behind a passphrase (PBKDF2-SHA256 —
         no second QR needed). Keys are retained so you only unlock once per device.</li>
@@ -138,11 +150,28 @@
     <h2>Android App</h2>
     <p>
       The TagDrop Android app scans codes with the camera, caches found
-      content, tracks scanned papers and collections on a map, and renders
-      HTML/image/audio content offline — including navigation between pages
-      of the same paper via <code>tagdrop://</code> links. Encrypted content
-      can be unlocked with a key-code QR or a passphrase; retained keys are
-      managed in a dedicated Key Management screen. Build from source using
+      content, and renders HTML/image/audio content offline — including
+      navigation between pages of the same paper via <code>tagdrop://</code>
+      links. Encrypted content can be unlocked with a key-code QR or a
+      passphrase; retained keys are managed in a dedicated Key Management
+      screen.
+    </p>
+    <ul>
+      <li><strong>Collections, History, and Map tabs</strong> let you revisit,
+        locate, and manage everything you've found, with search and
+        <code>#hashtag</code> filtering.</li>
+      <li><strong>View as Rendered, Text, Hex, or CBOR</strong> — inspect any
+        opened item's raw bytes alongside its normal rendering.</li>
+      <li><strong>NFC tag read/write</strong> — write any TagDrop code to a
+        blank or rewritable tag, then read it back with a tap instead of the
+        camera.</li>
+      <li><strong>Backup and restore</strong> all your scans, papers, and keys
+        to a single file, on this device or another.</li>
+      <li><strong>Replies</strong> thread a conversation across drops, even
+        though each code stays independently scannable.</li>
+    </ul>
+    <p>
+      Build from source using
       <a href="https://github.com/mofosyne/tagdrop/blob/master/DEVELOPING.md">DEVELOPING.md</a>.
     </p>
   </section>

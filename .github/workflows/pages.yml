@@ -34,7 +34,7 @@ jobs:
           cp -r docs/. _site/
           mkdir -p _site/generator _site/reader _site/examples
           cp tools/generator/index.html _site/generator/index.html
-          cp tools/reader/index.html _site/reader/index.html
+          cp tools/reader/index.html tools/reader/manifest.json tools/reader/sw.js tools/reader/icon.png _site/reader/
           cp tools/examples/index.html _site/examples/index.html
 
       - name: Setup Pages

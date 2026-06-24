@@ -37,6 +37,15 @@ tagdrop:<base41-cbor-sequence>
 CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes)
 ```
 
+Laid out as a sequence of four concatenated items:
+
+```
+┌──────────┬──────────┬────────────┬───────────────┐
+│ version  │ type     │ part_meta  │ sector_bytes  │
+│ (1 byte) │ (1 byte) │ (CBOR map) │ (byte string) │
+└──────────┴──────────┴────────────┴───────────────┘
+```
+
 | Item | Type | Meaning |
 |---|---|---|
 | `version` | uint | Format version. Currently `1`. |
@@ -263,6 +272,16 @@ bytes:
 
 ```
 CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
+```
+
+Laid out as a sequence of three concatenated parts:
+
+```
+┌────────────────┬─────────────────────┬─────────────────────────┐
+│ core_meta_item │ bulky_meta_item     │ content                 │
+│ plain CBOR map │ CBOR map            │ raw or compressed bytes │
+│ (always small) │ (may be compressed) │ (empty for Paper)       │
+└────────────────┴─────────────────────┴─────────────────────────┘
 ```
 
 **`core_meta_item`** is always plain CBOR (never compressed) and always
@@ -564,10 +583,10 @@ One sticker, one code. Scan and done.
 
 **Multi-code cache (trail):**
 ```
-Location A: [ Sector 0: tagdrop:<base41> ]
-Location B: [ Sector 1: tagdrop:<base41> ]
-Location C: [ Sector 2: tagdrop:<base41> ]
-Location D: [ Sector 3: tagdrop:<base41> ]
+Location A: [ Sector 0: tagdrop:<base41> ]  ┐
+Location B: [ Sector 1: tagdrop:<base41> ]  │   same cache_id/root_hash in every sector's part_meta (§4.1)
+Location C: [ Sector 2: tagdrop:<base41> ]  │   sector_bytes concatenated in sector_index order (§5)
+Location D: [ Sector 3: tagdrop:<base41> ]  ┘   → the reassembled stream (§4.2)
 ```
 
 Sectors can be scanned in any order, any session (§5) — there's no

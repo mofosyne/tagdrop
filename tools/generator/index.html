@@ -223,6 +223,16 @@
     </div>
     <div class="row">
       <div>
+        <label>Title <small>(optional — short subject/caption, see §7 Postcards)</small></label>
+        <input type="text" id="s-title" placeholder="e.g. Found a quiet bench here">
+      </div>
+      <div>
+        <label>Replying to <small>(optional, hex — cache_id/root_hash of the code this replies to, see §7)</small></label>
+        <input type="text" id="s-in-reply-to" placeholder="e.g. a1b2c3d4e5f60718" style="font-family:monospace">
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>Latitude <small>(optional — this code's own declared location, see §4.2)</small></label>
         <input type="text" id="s-lat" placeholder="e.g. -33.8688">
       </div>
@@ -367,6 +377,16 @@
       <div>
         <label>Collection tag <small>(optional — short hashtag-style cross-reference)</small></label>
         <input type="text" id="p-collection-tag" placeholder="e.g. springtrail2026">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Title <small>(optional — short subject/caption, see §7 Postcards)</small></label>
+        <input type="text" id="p-title" placeholder="e.g. Found a quiet bench here">
+      </div>
+      <div>
+        <label>Replying to <small>(optional, hex — cache_id/root_hash of the code this replies to, see §7)</small></label>
+        <input type="text" id="p-in-reply-to" placeholder="e.g. a1b2c3d4e5f60718" style="font-family:monospace">
       </div>
     </div>
     <div class="row">
@@ -718,6 +738,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
+  50: 'in_reply_to', 51: 'title',
 };
 
 function toHexDump(bytes) {
@@ -902,7 +923,8 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
-             RADIUS_M:48, PREFER_DECLARED_LOCATION:49 };
+             RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
+             IN_REPLY_TO:50, TITLE:51 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // keeps each sector's Base41-encoded tagdrop: URI under MAX_URI_LENGTH (~20 bytes
@@ -984,6 +1006,7 @@ async function createContentSectors({
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
   lat, lng, radiusM, preferDeclaredLocation = false,
+  inReplyTo, title,
   maxSectorDataBytes = Infinity,
 }) {
   let compression = null, compressedContent = rawBytes;
@@ -1027,6 +1050,8 @@ async function createContentSectors({
       [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
       [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
       [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
+      [K.IN_REPLY_TO, inReplyTo || null],
+      [K.TITLE, title || null],
     ];
   }
 
@@ -1084,7 +1109,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false }) {
+async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, inReplyTo, title }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
@@ -1113,6 +1138,8 @@ async function buildPaperStream({ label, set, slug, files, related, description,
     [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
     [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
     [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
+    [K.IN_REPLY_TO, inReplyTo || null],
+    [K.TITLE, title || null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
@@ -1783,6 +1810,13 @@ async function generateSingle() {
   try { collectionId = hexToBytes(document.getElementById('s-collection-id').value); }
   catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
 
+  // Replies and threading (SPEC §7) — title is never secret; in_reply_to points at the
+  // parent's own cache_id/root_hash (shown as "ID: …" under a previously generated code).
+  const title = document.getElementById('s-title').value.trim() || null;
+  let inReplyTo;
+  try { inReplyTo = hexToBytes(document.getElementById('s-in-reply-to').value); }
+  catch (e) { msgs.innerHTML = '<div class="err">Replying to must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+
   // Declared location (SPEC §4.2) — also never secret, carried through encryption the
   // same way as collection/icon above.
   const declaredLat   = parseFloat(document.getElementById('s-lat').value.trim());
@@ -1818,6 +1852,7 @@ async function generateSingle() {
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation,
+        inReplyTo, title,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -1831,12 +1866,14 @@ async function generateSingle() {
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation,
+        inReplyTo, title,
       };
     }
   } else {
     encodeArgs = {
       hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation,
+      inReplyTo, title,
     };
   }
 
@@ -2006,6 +2043,12 @@ async function generatePaper() {
   try { collectionId = hexToBytes(document.getElementById('p-collection-id').value); }
   catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
 
+  // Replies and threading (SPEC §7) — see generateSingle() for the matching Content-side fields.
+  const title = document.getElementById('p-title').value.trim() || null;
+  let inReplyTo;
+  try { inReplyTo = hexToBytes(document.getElementById('p-in-reply-to').value); }
+  catch (e) { msgs.innerHTML = '<div class="err">Replying to must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+
   // Declared location (SPEC §4.2) — this paper's own placement, distinct from a related
   // entry's hint-location use of the same lat/lng/radius_m fields.
   const declaredLat   = parseFloat(document.getElementById('p-lat').value.trim());
@@ -2081,6 +2124,7 @@ async function generatePaper() {
       label, set, slug, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation,
+      inReplyTo, title,
     });
   }
   catch(e) { msgs.innerHTML = `<div class="err">Paper encoding failed: ${e.message}</div>`; return; }
