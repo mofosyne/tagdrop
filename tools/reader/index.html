@@ -64,6 +64,7 @@ button.secondary:hover { background: #f0f0f0; }
 button.ghost { background: none; border: 1px solid rgba(42,57,65,0.35); color: #2A3941;
                padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
 button.ghost:disabled { opacity: 0.35; cursor: default; }
+#btnInstall.hidden { display: none; }
 
 /* Scanner overlay */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85);
@@ -166,6 +167,16 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 #passphraseError { font-size: 0.82rem; color: #f88; min-height: 1.2em; }
 .passphrase-box label { font-size: 0.85rem; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .passphrase-box .btn-row { display: flex; gap: 8px; margin-top: 6px; }
+
+/* Install dialog (manual instructions for browsers with no install prompt API, e.g. iOS Safari) */
+.install-box {
+  background: #2a2a3e; border-radius: 12px; padding: 24px;
+  width: min(400px, 96vw); display: flex; flex-direction: column; gap: 10px; color: #fff;
+}
+.install-box h2 { margin: 0; font-size: 1.05rem; }
+.install-box p { margin: 0; font-size: 0.88rem; color: #aaa; }
+.install-box ol { margin: 0; padding-left: 20px; font-size: 0.88rem; color: #ddd; }
+.install-box li { margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -188,6 +199,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
     </div>
   </div>
   <div style="display:flex; gap:8px;">
+    <button id="btnInstall" class="ghost hidden">📲 Install</button>
     <button id="btnCbor" class="ghost" disabled>🔍 CBOR</button>
     <button id="btnClear" class="ghost">Clear cache</button>
   </div>
@@ -222,6 +234,19 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
     <canvas id="canvas" hidden></canvas>
     <p id="scanStatus">Point camera at a TagDrop QR code.</p>
     <button id="btnStopScan" class="secondary">Cancel</button>
+  </div>
+</div>
+
+<div id="installOverlay" class="overlay hidden">
+  <div class="install-box">
+    <h2>📲 Install TagDrop Reader</h2>
+    <p>Add this page to your home screen so it opens like an app, with offline access kept safer from cleanup.</p>
+    <ol>
+      <li>Tap the <strong>Share</strong> button in Safari's toolbar.</li>
+      <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+      <li>Tap <strong>Add</strong>.</li>
+    </ol>
+    <button id="btnCloseInstall" class="secondary">Close</button>
   </div>
 </div>
 
@@ -1928,6 +1953,46 @@ document.getElementById('btnClear').onclick = async () => {
   document.getElementById('contentSection').classList.add('hidden');
   showMsg('Cache cleared.', 'ok');
 };
+
+// ── Install prompt (Add to Home Screen) ───────────────────────────────────
+// iOS Safari never fires beforeinstallprompt — there's no programmatic install API,
+// so on iOS the button just opens manual Share-sheet instructions instead.
+(() => {
+  const btnInstall = document.getElementById('btnInstall');
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (isStandalone) return;
+
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let deferredPrompt = null;
+  if (isIOS) btnInstall.classList.remove('hidden');
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    btnInstall.classList.remove('hidden');
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredPrompt = null;
+    btnInstall.classList.add('hidden');
+  });
+
+  btnInstall.onclick = async () => {
+    if (!deferredPrompt) {
+      document.getElementById('installOverlay').classList.remove('hidden');
+      return;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    if (outcome === 'accepted') btnInstall.classList.add('hidden');
+  };
+
+  document.getElementById('btnCloseInstall').onclick = () => {
+    document.getElementById('installOverlay').classList.add('hidden');
+  };
+})();
 
 // ── Restore on load ───────────────────────────────────────────────────────
 (async () => {
