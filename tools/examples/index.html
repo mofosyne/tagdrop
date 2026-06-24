@@ -678,10 +678,14 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES,
-// ../generator/index.html): keeps each sector's Base41-encoded tagdrop: URI under
-// MAX_URI_LENGTH.
+// ../generator/index.html): MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling;
+// createContentSectorsAutoSized/createPaperAutoSized default to the tighter
+// DEFAULT_SECTOR_DATA_BYTES (SPEC §6: ~400 bytes/sector ≈ QR Version 15, scans without
+// zooming on most phones) so these examples render the way the generator's defaults would.
 const MAX_URI_LENGTH = 2000;
 const MAX_SECTOR_DATA_BYTES = 1300;
+const DEFAULT_SECTOR_DATA_BYTES = 400;
+const DEFAULT_URI_LENGTH = 700;
 
 // parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5).
 const PARITY_XOR = 1;
@@ -804,14 +808,15 @@ async function createContentSectors({
 
 /**
  * Two-pass auto-sizing wrapper around createContentSectors: build with an unbounded
- * sector size first; if the single resulting sector's tagdrop: URI fits under
- * MAX_URI_LENGTH, use it as-is; otherwise rebuild the whole payload with
- * MAX_SECTOR_DATA_BYTES forced, producing several uniform sectors.
+ * sector size first; if the single resulting sector's tagdrop: URI fits under the
+ * target's don't-bother-splitting threshold, use it as-is; otherwise rebuild the whole
+ * payload with targetSectorBytes forced, producing several uniform sectors.
  */
-async function createContentSectorsAutoSized(args) {
+async function createContentSectorsAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
+  const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createContentSectors({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first[0]).uri.length <= MAX_URI_LENGTH) return first;
-  return createContentSectors({ ...args, maxSectorDataBytes: MAX_SECTOR_DATA_BYTES });
+  if (encodeSector(first[0]).uri.length <= targetUriLength) return first;
+  return createContentSectors({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
 /**
@@ -884,10 +889,11 @@ async function createPaper(args) {
 }
 
 /** Two-pass auto-sizing wrapper around createPaper — see createContentSectorsAutoSized. */
-async function createPaperAutoSized(args) {
+async function createPaperAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
+  const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createPaper({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first.sectors[0]).uri.length <= MAX_URI_LENGTH) return first;
-  return createPaper({ ...args, maxSectorDataBytes: MAX_SECTOR_DATA_BYTES });
+  if (encodeSector(first.sectors[0]).uri.length <= targetUriLength) return first;
+  return createPaper({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }

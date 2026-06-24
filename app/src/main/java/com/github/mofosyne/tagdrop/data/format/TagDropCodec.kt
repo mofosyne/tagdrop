@@ -83,8 +83,20 @@ object TagDropCodec {
      * Max `sector_bytes` per sector so its encoded `tagdrop:` URI stays under [MAX_URI_LENGTH]:
      * ~20 bytes of CBOR/envelope overhead per sector, and Base41 expands 2 bytes to 3 chars.
      * [createContentSectors] splits a larger reassembled stream into this many bytes per sector.
+     * This is the hard ceiling, not the default target — see [DEFAULT_SECTOR_DATA_BYTES].
      */
     const val MAX_SECTOR_DATA_BYTES = 1300
+
+    /**
+     * Default `sector_bytes` target used by [createContentSectorsAutoSized]/[createPaperAutoSized]
+     * (SPEC §6: ~400 bytes/sector ≈ QR Version 15, scans without zooming on most phones) — tighter
+     * than the [MAX_SECTOR_DATA_BYTES] hard ceiling, which a denser manual override (web generator
+     * only, so far) can still use.
+     */
+    const val DEFAULT_SECTOR_DATA_BYTES = 400
+
+    /** Paired don't-bother-splitting threshold for [DEFAULT_SECTOR_DATA_BYTES] — see [MAX_URI_LENGTH]. */
+    const val DEFAULT_URI_LENGTH = 700
 
     /** NDEF MIME type for a sector's raw CBOR sequence on an NFC tag (SPEC §12/§13) — see [sectorCbor]/[decodeRaw]. */
     const val NFC_MIME_TYPE = "application/vnd.tagdrop"
@@ -341,9 +353,9 @@ object TagDropCodec {
     /**
      * Two-pass auto-sizing wrapper around [createContentSectors] (mirrors the web generator's
      * createContentSectorsAutoSized): builds with an unbounded sector size first; if the single
-     * resulting sector's `tagdrop:` URI fits under [MAX_URI_LENGTH], uses it as-is; otherwise
-     * rebuilds the whole payload with [MAX_SECTOR_DATA_BYTES] forced, producing several uniform
-     * sectors.
+     * resulting sector's `tagdrop:` URI fits under [DEFAULT_URI_LENGTH], uses it as-is; otherwise
+     * rebuilds the whole payload with [DEFAULT_SECTOR_DATA_BYTES] forced, producing several
+     * uniform sectors.
      */
     fun createContentSectorsAutoSized(
         hint: String?, filename: String?, mimeType: String,
@@ -365,13 +377,13 @@ object TagDropCodec {
             lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title, description,
             maxSectorDataBytes = Int.MAX_VALUE
         )
-        if (encode(first.first()).length <= MAX_URI_LENGTH) return first
+        if (encode(first.first()).length <= DEFAULT_URI_LENGTH) return first
         return createContentSectors(
             hint, filename, mimeType, rawContent, compress,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
             lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title, description,
-            maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
+            maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
 
@@ -447,13 +459,13 @@ object TagDropCodec {
             lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title,
             maxSectorDataBytes = Int.MAX_VALUE
         )
-        if (encode(first.second.first()).length <= MAX_URI_LENGTH) return first
+        if (encode(first.second.first()).length <= DEFAULT_URI_LENGTH) return first
         return createPaper(
             label, set, slug, files, related, description,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
             lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title,
-            maxSectorDataBytes = MAX_SECTOR_DATA_BYTES
+            maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
 
