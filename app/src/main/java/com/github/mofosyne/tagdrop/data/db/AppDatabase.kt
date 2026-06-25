@@ -20,8 +20,8 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile private var INSTANCE: AppDatabase? = null
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL(
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
                     """CREATE TABLE IF NOT EXISTS scanned_papers (
                         rootHash TEXT NOT NULL PRIMARY KEY,
                         scannedAt INTEGER NOT NULL,
@@ -35,50 +35,50 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private val MIGRATION_2_3 = object : Migration(2, 3) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN collectionId TEXT")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionId TEXT")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN collectionId TEXT")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionId TEXT")
             }
         }
 
         private val MIGRATION_3_4 = object : Migration(3, 4) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN collectionLabel TEXT")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN collectionTag TEXT")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionLabel TEXT")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionTag TEXT")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN collectionLabel TEXT")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN collectionTag TEXT")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionLabel TEXT")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN collectionTag TEXT")
             }
         }
 
         private val MIGRATION_4_5 = object : Migration(4, 5) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN lat REAL")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN lng REAL")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN lat REAL")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN lng REAL")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN lat REAL")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN lng REAL")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN lat REAL")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN lng REAL")
             }
         }
 
         private val MIGRATION_5_6 = object : Migration(5, 6) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN icon TEXT")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN icon TEXT")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN icon TEXT")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN icon TEXT")
             }
         }
 
         private val MIGRATION_6_7 = object : Migration(6, 7) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN createdByMe INTEGER NOT NULL DEFAULT 0")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN createdByMe INTEGER NOT NULL DEFAULT 0")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN createdByMe INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN createdByMe INTEGER NOT NULL DEFAULT 0")
             }
         }
 
         private val MIGRATION_7_8 = object : Migration(7, 8) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN pendingNonce BLOB")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN pendingCompression INTEGER NOT NULL DEFAULT 0")
-                database.execSQL(
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN pendingNonce BLOB")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN pendingCompression INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
                     """CREATE TABLE IF NOT EXISTS retained_keys (
                         keyHex TEXT NOT NULL PRIMARY KEY,
                         discoveredAt INTEGER NOT NULL,
@@ -89,11 +89,11 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private val MIGRATION_8_9 = object : Migration(8, 9) {
-            override fun migrate(database: SupportSQLiteDatabase) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 // SPEC §9 v4: `encrypted`/`pendingNonce` are retired (an override map's nonce now
                 // travels embedded in its blob) in favor of `pendingOverrideBlob`. SQLite can't
                 // drop columns on all supported versions, so recreate the table.
-                database.execSQL(
+                db.execSQL(
                     """CREATE TABLE `found_caches_new` (
                         `cacheId` TEXT NOT NULL,
                         `discoveredAt` INTEGER NOT NULL,
@@ -113,7 +113,7 @@ abstract class AppDatabase : RoomDatabase() {
                         PRIMARY KEY(`cacheId`)
                     )"""
                 )
-                database.execSQL(
+                db.execSQL(
                     """INSERT INTO `found_caches_new`
                         (`cacheId`, `discoveredAt`, `hint`, `filename`, `mimeType`, `contentBytes`,
                          `collectionId`, `collectionLabel`, `collectionTag`, `lat`, `lng`, `icon`,
@@ -123,42 +123,42 @@ abstract class AppDatabase : RoomDatabase() {
                               `createdByMe`, NULL, `pendingCompression`
                        FROM `found_caches`"""
                 )
-                database.execSQL("DROP TABLE `found_caches`")
-                database.execSQL("ALTER TABLE `found_caches_new` RENAME TO `found_caches`")
+                db.execSQL("DROP TABLE `found_caches`")
+                db.execSQL("ALTER TABLE `found_caches_new` RENAME TO `found_caches`")
             }
         }
 
         private val MIGRATION_9_10 = object : Migration(9, 10) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN wasEncrypted INTEGER NOT NULL DEFAULT 0")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN wasEncrypted INTEGER NOT NULL DEFAULT 0")
             }
         }
 
         private val MIGRATION_10_11 = object : Migration(10, 11) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN kdfAlg INTEGER NOT NULL DEFAULT 0")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN kdfSalt BLOB")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN kdfAlg INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN kdfSalt BLOB")
             }
         }
 
         private val MIGRATION_11_12 = object : Migration(11, 12) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN locationRadiusM REAL")
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN locationRadiusM REAL")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN locationRadiusM REAL")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN locationRadiusM REAL")
             }
         }
 
         private val MIGRATION_12_13 = object : Migration(12, 13) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN inReplyTo TEXT")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN title TEXT")
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN description TEXT")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN inReplyTo TEXT")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN title TEXT")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN description TEXT")
             }
         }
 
         private val MIGRATION_13_14 = object : Migration(13, 14) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE scanned_papers ADD COLUMN inReplyTo TEXT")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN inReplyTo TEXT")
             }
         }
 
