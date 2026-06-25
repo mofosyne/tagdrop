@@ -251,9 +251,9 @@ class MapFragment : Fragment() {
         if (radiusM == null || radiusM <= 0.0) return
         val circle = Polygon(binding.map).apply {
             setPoints(Polygon.pointsAsCircle(point, radiusM))
-            fillColor = Color.argb(40, 33, 150, 243)
-            strokeColor = Color.argb(160, 33, 150, 243)
-            strokeWidth = 2f
+            fillPaint.color = Color.argb(40, 33, 150, 243)
+            outlinePaint.color = Color.argb(160, 33, 150, 243)
+            outlinePaint.strokeWidth = 2f
         }
         markerFolder.add(circle)
     }
