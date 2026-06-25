@@ -10,6 +10,7 @@ import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.isEmpty
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
@@ -140,7 +141,7 @@ class CreatePaperActivity : AppCompatActivity() {
         val slug  = binding.editPaperSlug.text?.toString()?.ifBlank { null }
         val addParity = binding.checkAddParity.isChecked
 
-        if (binding.containerFiles.childCount == 0) {
+        if (binding.containerFiles.isEmpty()) {
             toast(getString(R.string.paper_no_files_error)); return
         }
 

@@ -20,6 +20,8 @@ import android.view.ViewGroup
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.getSystemService
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.drawable.toDrawable
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
@@ -355,7 +357,7 @@ class MapFragment : Fragment() {
         val width = maxOf(iconWidth, labelWidth, 20f * density)
         val height = maxOf(iconHeight + labelHeight, 20f * density)
 
-        val bitmap = Bitmap.createBitmap(width.toInt(), height.toInt(), Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(width.toInt(), height.toInt(), Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
         if (hasIcon) {
@@ -367,7 +369,7 @@ class MapFragment : Fragment() {
         }
 
         val anchorV = if (hasIcon && label != null) (iconHeight / 2f) / height else 0.5f
-        return BitmapDrawable(resources, bitmap) to anchorV
+        return bitmap.toDrawable(resources) to anchorV
     }
 
     override fun onResume() {

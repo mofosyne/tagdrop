@@ -38,7 +38,7 @@ class HistoryAdapter(
                     binding.textSubtitle.text = cache.mimeType
                     binding.textMeta.text = buildString {
                         if (cache.collectionTag != null) append("#${cache.collectionTag}  ·  ")
-                        append(DATE_FMT.format(Date(cache.discoveredAt)))
+                        append(dateFormat().format(Date(cache.discoveredAt)))
                     }
                     if (cache.lat != null && cache.lng != null) {
                         binding.buttonMap.visibility = View.VISIBLE
@@ -59,7 +59,7 @@ class HistoryAdapter(
                     }
                     binding.textMeta.text = buildString {
                         if (paper.collectionTag != null) append("#${paper.collectionTag}  ·  ")
-                        append(DATE_FMT.format(Date(paper.scannedAt)))
+                        append(dateFormat().format(Date(paper.scannedAt)))
                     }
                     if (paper.lat != null && paper.lng != null) {
                         binding.buttonMap.visibility = View.VISIBLE
@@ -85,6 +85,6 @@ class HistoryAdapter(
     }
 
     companion object {
-        private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
 }
