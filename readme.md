@@ -29,13 +29,13 @@ network, or account needed to read or write a drop.
 <img src="docs/example-qr.png" alt="Example TagDrop QR code encoding a short text message" width="200">
 
 *A real TagDrop code — scan it with the app or the
-[web reader](tools/reader/) to read a short "Hello from TagDrop!" message.*
+[web reader](https://mofosyne.github.io/tagdrop/tools/reader/) to read a short "Hello from TagDrop!" message.*
 
 ## What you can do with it
 
 - **Drop a single page** — encode text, an HTML page, an SVG image, or JSON
   into one QR code, either in-app (Create Cache) or with the
-  [web generator](tools/generator/).
+  [web generator](https://mofosyne.github.io/tagdrop/tools/generator/).
 - **Drop a whole "paper"** — a printable sheet with a directory QR code (a
   *paper manifest*) plus one QR per file, built in-app (Create Paper) or with
   the web generator. Pages can link to each other with ordinary relative
