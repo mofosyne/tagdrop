@@ -6,6 +6,8 @@
     height="80">
 </a>
 
+**[Main Website For Examples and Generator](https://mofosyne.github.io/tagdrop/)**
+
 TagDrop turns small files — text, HTML pages, images, audio, SVGs — into
 self-contained QR codes that work completely offline. Print one on a sticker
 or sheet of paper and leave it somewhere; anyone with the TagDrop app (or any
@@ -27,13 +29,13 @@ network, or account needed to read or write a drop.
 <img src="docs/example-qr.png" alt="Example TagDrop QR code encoding a short text message" width="200">
 
 *A real TagDrop code — scan it with the app or the
-[web reader](tools/reader/) to read a short "Hello from TagDrop!" message.*
+[web reader](https://mofosyne.github.io/tagdrop/tools/reader/) to read a short "Hello from TagDrop!" message.*
 
 ## What you can do with it
 
 - **Drop a single page** — encode text, an HTML page, an SVG image, or JSON
   into one QR code, either in-app (Create Cache) or with the
-  [web generator](tools/generator/).
+  [web generator](https://mofosyne.github.io/tagdrop/tools/generator/).
 - **Drop a whole "paper"** — a printable sheet with a directory QR code (a
   *paper manifest*) plus one QR per file, built in-app (Create Paper) or with
   the web generator. Pages can link to each other with ordinary relative
@@ -111,14 +113,14 @@ See [SPEC.md](SPEC.md) for the full wire format and design rationale.
   create single-code drops and multi-file paper layouts (with printable QR
   sheets / PDF export), and explore collections, history, and a map of
   located finds. Includes a Key Management screen for retained AES keys.
-- **[Web generator](tools/generator/)** — build single codes or full
+- **[Web generator](https://mofosyne.github.io/tagdrop/tools/generator/)** — build single codes or full
   multi-file "paper" layouts with a printable QR sheet, entirely in the
   browser. Supports both key-code QR and passphrase encryption modes, and
   bulk export of generated codes as a ZIP of PNGs or a printable PDF sheet.
-- **[Web reader](tools/reader/)** — decode and preview `tagdrop:` codes in
+- **[Web reader](https://mofosyne.github.io/tagdrop/tools/reader/)** — decode and preview `tagdrop:` codes in
   any browser, with camera scanning, passphrase prompts, and persistent key
   retention.
-- **[Examples](tools/examples/)** — pre-rendered sample QR codes for testing
+- **[Examples](https://mofosyne.github.io/tagdrop/tools/examples/)** — pre-rendered sample QR codes for testing
   the app and the web reader, including passphrase-encrypted and key-code
   encrypted examples.
 

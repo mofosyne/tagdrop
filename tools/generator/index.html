@@ -233,6 +233,12 @@
     </div>
     <div class="row">
       <div>
+        <label>Created at <small>(optional — self-declared authoring time, taken from this device's clock; not verified)</small></label>
+        <input type="datetime-local" id="s-created-at">
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>Latitude <small>(optional — this code's own declared location, see §4.2)</small></label>
         <input type="text" id="s-lat" placeholder="e.g. -33.8688">
       </div>
@@ -277,6 +283,7 @@
         <label>Target sector size <small>(bytes per QR code, decoded)</small></label>
         <input type="number" id="s-sector-size" value="400" min="100" max="1300" step="50" style="width:8em">
         <small style="display:block;color:#888;margin-top:2px">Smaller = easier to scan, more codes if it doesn't fit in one. Larger = denser QR, fewer codes. Default 400 ≈ QR Version 15 (SPEC §6); the old default was 1300 (zoom required on many phones).</small>
+        <small id="s-sector-estimate" style="display:block;color:#555;margin-top:2px;font-weight:600"></small>
       </div>
     </div>
     <div class="row">
@@ -398,6 +405,12 @@
     </div>
     <div class="row">
       <div>
+        <label>Created at <small>(optional — self-declared authoring time, taken from this device's clock; not verified)</small></label>
+        <input type="datetime-local" id="p-created-at">
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>Latitude <small>(optional — this paper's own declared location, see §4.2)</small></label>
         <input type="text" id="p-lat" placeholder="e.g. -33.8688">
       </div>
@@ -439,6 +452,7 @@
       Target sector size <small>(bytes per QR code, decoded)</small><br>
       <input type="number" id="p-sector-size" value="400" min="100" max="1300" step="50" style="width:8em">
       <small style="display:block;color:#888;margin-top:2px">Applies to every file and to the paper manifest. Smaller = easier to scan, more codes. Larger = denser QR, fewer codes. Default 400 ≈ QR Version 15 (SPEC §6).</small>
+      <small id="p-sector-estimate" style="display:block;color:#555;margin-top:2px;font-weight:600"></small>
     </label>
     <label style="margin:0 0 10px;display:block">
       <input type="checkbox" id="p-binary-sectors" checked>
@@ -750,7 +764,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at',
 };
 
 function toHexDump(bytes) {
@@ -936,7 +950,7 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-             IN_REPLY_TO:50, TITLE:51 };
+             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling beyond which a sector's
@@ -1026,7 +1040,7 @@ async function createContentSectors({
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
   lat, lng, radiusM, preferDeclaredLocation = false,
-  inReplyTo, title,
+  inReplyTo, title, createdAt,
   maxSectorDataBytes = Infinity,
 }) {
   let compression = null, compressedContent = rawBytes;
@@ -1072,6 +1086,7 @@ async function createContentSectors({
       [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
       [K.IN_REPLY_TO, inReplyTo || null],
       [K.TITLE, title || null],
+      [K.CREATED_AT, createdAt || null],
     ];
   }
 
@@ -1132,7 +1147,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, inReplyTo, title }) {
+async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, inReplyTo, title, createdAt }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
@@ -1163,6 +1178,7 @@ async function buildPaperStream({ label, set, slug, files, related, description,
     [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
     [K.IN_REPLY_TO, inReplyTo || null],
     [K.TITLE, title || null],
+    [K.CREATED_AT, createdAt || null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
@@ -1191,6 +1207,21 @@ async function createPaperAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DAT
 }
 
 function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join(''); }
+
+// `created_at` (SPEC §3, key 52) round-trips through an <input type="datetime-local">,
+// which reads/writes local time with no timezone suffix — Date treats that string as
+// local time on the way in, and these helpers mirror that on the way out so the field
+// always reflects the browser's local clock, matching the Kotlin app's auto-stamp.
+function nowAsDatetimeLocal() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function datetimeLocalToEpochSeconds(value) {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
 
 // Turns a human-readable label (a file slug, hint, or caption fragment) into a
 // safe filename component — keeps ZIP entries self-describing instead of
@@ -1809,11 +1840,12 @@ async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, enc
   appendBulkActions(result, singleBulkItems);
 }
 
-async function generateSingle() {
-  const msgs   = document.getElementById('s-messages');
-  const result = document.getElementById('s-result');
-  msgs.innerHTML = ''; result.innerHTML = ''; singleBulkItems = [];
-
+// Builds the args for createContentSectorsAutoSized() from the Single File tab's
+// current form state. Shared by generateSingle() (the real "Generate" button) and
+// updateSingleEstimate() (the live QR-count preview) so the preview can never drift
+// from what clicking Generate actually produces. Throws Error on invalid input —
+// callers are responsible for displaying/escaping e.message.
+function buildSingleEncodeArgs() {
   const hint     = document.getElementById('s-hint').value.trim() || null;
   const filename = document.getElementById('s-filename').value.trim() || null;
   const mimeType = document.getElementById('s-mime').value;
@@ -1832,14 +1864,15 @@ async function generateSingle() {
   const collectionTag   = document.getElementById('s-collection-tag').value.trim() || null;
   let collectionId;
   try { collectionId = hexToBytes(document.getElementById('s-collection-id').value); }
-  catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+  catch (e) { throw new Error('Collection ID must be hex (e.g. a1b2c3d4e5f60718).'); }
 
   // Replies and threading (SPEC §7) — title is never secret; in_reply_to points at the
   // parent's own cache_id/root_hash (shown as "ID: …" under a previously generated code).
   const title = document.getElementById('s-title').value.trim() || null;
   let inReplyTo;
   try { inReplyTo = hexToBytes(document.getElementById('s-in-reply-to').value); }
-  catch (e) { msgs.innerHTML = '<div class="err">Replying to must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+  catch (e) { throw new Error('Replying to must be hex (e.g. a1b2c3d4e5f60718).'); }
+  const createdAt = datetimeLocalToEpochSeconds(document.getElementById('s-created-at').value);
 
   // Declared location (SPEC §4.2) — also never secret, carried through encryption the
   // same way as collection/icon above.
@@ -1855,11 +1888,11 @@ async function generateSingle() {
   const targetSectorBytes = Number.isFinite(sectorSizeRaw)
     ? Math.min(MAX_SECTOR_DATA_BYTES, Math.max(100, sectorSizeRaw)) : DEFAULT_SECTOR_DATA_BYTES;
 
-  if (!text.trim()) { msgs.innerHTML = '<div class="err">Content cannot be empty.</div>'; return; }
+  if (!text.trim()) throw new Error('Content cannot be empty.');
 
   let rawBytes;
   try { rawBytes = bytesFromContent(text, mimeType); }
-  catch (e) { msgs.innerHTML = `<div class="err">Content isn't valid base64 for MIME type "${escHtml(mimeType)}".</div>`; return; }
+  catch (e) { throw new Error(`Content isn't valid base64 for MIME type "${mimeType}".`); }
 
   // When "Encrypt" is checked, the user's real hint/filename/mimeType/content become a
   // hidden override map (SPEC §9), and a generic placeholder cover is shown/printed
@@ -1869,7 +1902,7 @@ async function generateSingle() {
     const keyMode = document.querySelector('input[name="s-key-mode"]:checked')?.value || 'keyqr';
     if (keyMode === 'passphrase') {
       kdfPassphrase = document.getElementById('s-passphrase').value;
-      if (!kdfPassphrase) { msgs.innerHTML = '<div class="err">Enter a passphrase for recipients to type.</div>'; return; }
+      if (!kdfPassphrase) throw new Error('Enter a passphrase for recipients to type.');
       encodeArgs = {
         hint: '🔒 Locked content',
         filename: null,
@@ -1880,7 +1913,7 @@ async function generateSingle() {
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation,
-        inReplyTo, title,
+        inReplyTo, title, createdAt,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -1894,16 +1927,49 @@ async function generateSingle() {
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation,
-        inReplyTo, title,
+        inReplyTo, title, createdAt,
       };
     }
   } else {
     encodeArgs = {
       hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation,
-      inReplyTo, title,
+      inReplyTo, title, createdAt,
     };
   }
+
+  return { encodeArgs, targetSectorBytes, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType };
+}
+
+// Live "how many QR codes will this be" preview, kept in sync with the Single File
+// tab's fields via a delegated listener plus explicit calls after async uploads (see
+// bottom of file). Debounced and sequence-guarded since building/compressing the
+// content is async and can overlap with fast typing.
+let singleEstimateSeq = 0;
+const updateSingleEstimate = debounce(async () => {
+  const seq = ++singleEstimateSeq;
+  const el = document.getElementById('s-sector-estimate');
+  if (!el) return;
+  let built;
+  try { built = buildSingleEncodeArgs(); }
+  catch (e) { if (seq === singleEstimateSeq) showEstimate(el, e.message, true); return; }
+  try {
+    const sectors = await createContentSectorsAutoSized(built.encodeArgs, built.targetSectorBytes);
+    if (seq === singleEstimateSeq) showEstimate(el, describeQrCountEstimate(sectors.length), false);
+  } catch (e) {
+    if (seq === singleEstimateSeq) showEstimate(el, e.message, true);
+  }
+}, 300);
+
+async function generateSingle() {
+  const msgs   = document.getElementById('s-messages');
+  const result = document.getElementById('s-result');
+  msgs.innerHTML = ''; result.innerHTML = ''; singleBulkItems = [];
+
+  let built;
+  try { built = buildSingleEncodeArgs(); }
+  catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
+  const { encodeArgs, targetSectorBytes, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType } = built;
 
   let sectors;
   try { sectors = await createContentSectorsAutoSized(encodeArgs, targetSectorBytes); }
@@ -2002,6 +2068,7 @@ function addFileEntry() {
     <label>Content</label>
     <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
   document.getElementById('p-files').appendChild(div);
+  updatePaperEstimate();
   return id;
 }
 
@@ -2013,6 +2080,7 @@ function addFileEntryFromBytes(name, bytes, mimeType) {
   document.getElementById('fcontent-' + id).value = isTextMime(mimeType)
     ? new TextDecoder().decode(bytes)
     : bytesToBase64(bytes);
+  updatePaperEstimate();
 }
 
 function addRelatedEntry() {
@@ -2043,18 +2111,22 @@ function addRelatedEntry() {
     <input type="text" id="rkeymaterial-${id}" placeholder="64 hex chars (32 bytes)">
     <label><input type="checkbox" id="rretainkey-${id}" checked> Retain this key after use <small>(uncheck for one-time/deniable use — see SPEC §9)</small></label>`;
   document.getElementById('p-related').appendChild(div);
+  updatePaperEstimate();
 }
 
 function removeEntry(divId, arr, id) {
   document.getElementById(divId)?.remove();
   const idx = arr.indexOf(id); if (idx >= 0) arr.splice(idx, 1);
+  updatePaperEstimate();
 }
 
-async function generatePaper() {
-  const msgs   = document.getElementById('p-messages');
-  const result = document.getElementById('p-result');
-  msgs.innerHTML = ''; result.innerHTML = ''; paperBulkItems = [];
-
+// Builds the full paper sector plan (every file's sectors plus the paper manifest's
+// own sectors) from the Paper Layout tab's current form state. Shared by
+// generatePaper() (the real "Generate" button) and updatePaperEstimate() (the live
+// QR-count preview) so the preview can never drift from what clicking Generate
+// actually produces. Throws Error on invalid input — callers are responsible for
+// displaying/escaping e.message.
+async function computePaperSectorPlan() {
   const label       = document.getElementById('p-label').value.trim() || null;
   const set         = document.getElementById('p-set').value.trim() || null;
   const slug        = document.getElementById('p-slug').value.trim() || null;
@@ -2069,13 +2141,14 @@ async function generatePaper() {
   const collectionTag   = document.getElementById('p-collection-tag').value.trim() || null;
   let collectionId;
   try { collectionId = hexToBytes(document.getElementById('p-collection-id').value); }
-  catch (e) { msgs.innerHTML = '<div class="err">Collection ID must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+  catch (e) { throw new Error('Collection ID must be hex (e.g. a1b2c3d4e5f60718).'); }
 
   // Replies and threading (SPEC §7) — see generateSingle() for the matching Content-side fields.
   const title = document.getElementById('p-title').value.trim() || null;
   let inReplyTo;
   try { inReplyTo = hexToBytes(document.getElementById('p-in-reply-to').value); }
-  catch (e) { msgs.innerHTML = '<div class="err">Replying to must be hex (e.g. a1b2c3d4e5f60718).</div>'; return; }
+  catch (e) { throw new Error('Replying to must be hex (e.g. a1b2c3d4e5f60718).'); }
+  const createdAt = datetimeLocalToEpochSeconds(document.getElementById('p-created-at').value);
 
   // Declared location (SPEC §4.2) — this paper's own placement, distinct from a related
   // entry's hint-location use of the same lat/lng/radius_m fields.
@@ -2094,12 +2167,9 @@ async function generatePaper() {
   // Slugs identify files within the paper's directory (SPEC §7) — catch empty
   // or duplicate slugs before encoding anything.
   const slugs = fileEntries.map(id => document.getElementById('fslug-' + id)?.value.trim());
-  if (slugs.some(s => !s)) { msgs.innerHTML = '<div class="err">Each file needs a slug.</div>'; return; }
+  if (slugs.some(s => !s)) throw new Error('Each file needs a slug.');
   const dupSlugs = [...new Set(slugs.filter((s, i) => slugs.indexOf(s) !== i))];
-  if (dupSlugs.length) {
-    msgs.innerHTML = `<div class="err">Duplicate file slug(s): ${dupSlugs.map(escHtml).join(', ')}. Each file needs a unique slug.</div>`;
-    return;
-  }
+  if (dupSlugs.length) throw new Error(`Duplicate file slug(s): ${dupSlugs.join(', ')}. Each file needs a unique slug.`);
 
   // Encode all files first
   const encodedFiles = [];
@@ -2109,44 +2179,41 @@ async function generatePaper() {
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
     const fdesc    = document.getElementById('fdesc-' + id)?.value.trim() || null;
-    if (!fcontent?.trim()) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" has no content.</div>`; return; }
+    if (!fcontent?.trim()) throw new Error(`File "${fslug}" has no content.`);
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
-    catch (e) { msgs.innerHTML = `<div class="err">File "${escHtml(fslug)}" content isn't valid base64 for MIME type "${escHtml(fmime)}".</div>`; return; }
+    catch (e) { throw new Error(`File "${fslug}" content isn't valid base64 for MIME type "${fmime}".`); }
     const fileArgs = {
       hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr,
       collectionId, collectionLabel, collectionTag, icon,
     };
-    try {
-      const sectors = await createContentSectorsAutoSized(fileArgs, targetSectorBytes);
-      encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: sectors[0].partMeta.cacheId, sectors, description: fdesc });
-    } catch(e) { msgs.innerHTML = `<div class="err">Encoding file "${escHtml(fslug)}" failed: ${e.message}</div>`; return; }
+    let sectors;
+    try { sectors = await createContentSectorsAutoSized(fileArgs, targetSectorBytes); }
+    catch (e) { throw new Error(`Encoding file "${fslug}" failed: ${e.message}`); }
+    encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: sectors[0].partMeta.cacheId, sectors, description: fdesc });
   }
 
   // Build related list
-  let related;
-  try {
-    related = relatedEntries.map(id => {
-      const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
-      const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
-      const radiusM = parseFloat(document.getElementById('rradius-' + id)?.value.trim());
-      const hint = document.getElementById('rhint-' + id)?.value.trim() || '(hint)';
-      let paperId, keyMaterial;
-      try { paperId = hexToBytes(document.getElementById('rpaperid-' + id)?.value); }
-      catch (e) { throw new Error(`Related paper "${hint}": Paper ID must be hex (e.g. a1b2c3d4e5f60718).`); }
-      try { keyMaterial = hexToBytes(document.getElementById('rkeymaterial-' + id)?.value); }
-      catch (e) { throw new Error(`Related paper "${hint}": Key material must be hex (64 hex chars / 32 bytes).`); }
-      return {
-        hint, paperId, keyMaterial,
-        set:    document.getElementById('rset-' + id)?.value.trim() || null,
-        slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
-        retainKey: document.getElementById('rretainkey-' + id)?.checked ?? true,
-        lat: Number.isFinite(lat) ? lat : null,
-        lng: Number.isFinite(lng) ? lng : null,
-        radiusM: Number.isFinite(radiusM) ? radiusM : null,
-      };
-    });
-  } catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
+  const related = relatedEntries.map(id => {
+    const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
+    const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
+    const radiusM = parseFloat(document.getElementById('rradius-' + id)?.value.trim());
+    const hint = document.getElementById('rhint-' + id)?.value.trim() || '(hint)';
+    let paperId, keyMaterial;
+    try { paperId = hexToBytes(document.getElementById('rpaperid-' + id)?.value); }
+    catch (e) { throw new Error(`Related paper "${hint}": Paper ID must be hex (e.g. a1b2c3d4e5f60718).`); }
+    try { keyMaterial = hexToBytes(document.getElementById('rkeymaterial-' + id)?.value); }
+    catch (e) { throw new Error(`Related paper "${hint}": Key material must be hex (64 hex chars / 32 bytes).`); }
+    return {
+      hint, paperId, keyMaterial,
+      set:    document.getElementById('rset-' + id)?.value.trim() || null,
+      slug:   document.getElementById('rslug-' + id)?.value.trim() || null,
+      retainKey: document.getElementById('rretainkey-' + id)?.checked ?? true,
+      lat: Number.isFinite(lat) ? lat : null,
+      lng: Number.isFinite(lng) ? lng : null,
+      radiusM: Number.isFinite(radiusM) ? radiusM : null,
+    };
+  });
 
   // Encode the paper itself
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description }));
@@ -2156,10 +2223,41 @@ async function generatePaper() {
       label, set, slug, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation,
-      inReplyTo, title,
+      inReplyTo, title, createdAt,
     }, targetSectorBytes);
   }
-  catch(e) { msgs.innerHTML = `<div class="err">Paper encoding failed: ${e.message}</div>`; return; }
+  catch(e) { throw new Error(`Paper encoding failed: ${e.message}`); }
+
+  return { label, set, slug, encodedFiles, paper };
+}
+
+// Live "how many QR codes will this be" preview for the Paper Layout tab — total
+// across every file's sectors plus the manifest's own sectors. Kept in sync via a
+// delegated listener plus explicit calls after async uploads/removals (see bottom of
+// file). Debounced and sequence-guarded for the same reason as updateSingleEstimate().
+let paperEstimateSeq = 0;
+const updatePaperEstimate = debounce(async () => {
+  const seq = ++paperEstimateSeq;
+  const el = document.getElementById('p-sector-estimate');
+  if (!el) return;
+  try {
+    const plan = await computePaperSectorPlan();
+    const total = plan.encodedFiles.reduce((sum, f) => sum + f.sectors.length, 0) + plan.paper.sectors.length;
+    if (seq === paperEstimateSeq) showEstimate(el, describeQrCountEstimate(total), false);
+  } catch (e) {
+    if (seq === paperEstimateSeq) showEstimate(el, e.message, true);
+  }
+}, 300);
+
+async function generatePaper() {
+  const msgs   = document.getElementById('p-messages');
+  const result = document.getElementById('p-result');
+  msgs.innerHTML = ''; result.innerHTML = ''; paperBulkItems = [];
+
+  let plan;
+  try { plan = await computePaperSectorPlan(); }
+  catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
+  const { label, set, slug, encodedFiles, paper } = plan;
 
   // Render all QR codes
   result.innerHTML = `
@@ -2338,6 +2436,29 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function describeQrCountEstimate(count) {
+  if (!Number.isFinite(count) || count < 1) return '';
+  return count === 1 ? '✓ Fits in 1 QR code' : `→ ${count} QR codes needed`;
+}
+
+// Renders the live estimate <small>, in either its normal "N QR codes" state or an
+// error state showing the same Error#message the real Generate button would display
+// (e.g. invalid base64 for the chosen MIME type). Used instead of blanking the field on
+// error, which otherwise looks identical to "haven't typed anything yet" — no signal
+// that something needs fixing before Generate will work.
+function showEstimate(el, text, isError) {
+  el.textContent = text;
+  el.style.color = isError ? '#c62828' : '#555';
+}
+
 function copyToClipboard(text) {
   navigator.clipboard.writeText(text).then(() => alert('URI copied to clipboard.'));
 }
@@ -2383,6 +2504,10 @@ async function addFilesToPaper(files) {
     document.getElementById('fslug-' + id).value = file.name;
     await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id);
   }
+  // loadFileIntoFields() sets values programmatically (no input/change event), and a
+  // slow read could outlast updatePaperEstimate()'s debounce window started by
+  // addFileEntry() above — re-trigger now that every file's content is actually loaded.
+  updatePaperEstimate();
 }
 
 // Unpacks `file` (a .zip) and adds each entry as a new file entry, preserving
@@ -2393,6 +2518,7 @@ async function addZipToPaper(file) {
   for (const entry of entries) {
     addFileEntryFromBytes(entry.name, entry.bytes, guessMimeType(entry.name, ''));
   }
+  updatePaperEstimate();
   return entries.length;
 }
 
@@ -2401,6 +2527,9 @@ document.getElementById('s-upload').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (file) await loadFileIntoFields(file, 's-filename', 's-mime', 's-content');
+  // loadFileIntoFields() sets .value programmatically — no input/change event fires,
+  // so the delegated listener on #tab-single never sees this; trigger explicitly.
+  updateSingleEstimate();
 });
 
 document.getElementById('p-upload-files').addEventListener('change', async (e) => {
@@ -2445,8 +2574,9 @@ function setupDropzone(el, onFiles) {
   });
 }
 
-setupDropzone(document.getElementById('s-dropzone'), files => {
-  loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content');
+setupDropzone(document.getElementById('s-dropzone'), async files => {
+  await loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content');
+  updateSingleEstimate();
 });
 
 setupDropzone(document.getElementById('p-dropzone'), async files => {
@@ -2467,6 +2597,22 @@ setupDropzone(document.getElementById('p-dropzone'), async files => {
   if (zipCount)  parts.push(`${zipCount} file(s) from ZIP archive(s)`);
   if (parts.length) msgs.innerHTML += `<div class="ok">Added ${parts.join(' and ')}.</div>`;
 });
+
+// `created_at` defaults to "now" on load, mirroring the Kotlin app's silent auto-stamp,
+// but stays an editable field here since the web generator is the primary authoring tool
+// (CLAUDE.md) and already exposes every other optional field — clear it to omit created_at.
+document.getElementById('s-created-at').value = nowAsDatetimeLocal();
+document.getElementById('p-created-at').value = nowAsDatetimeLocal();
+
+// ── Live QR-count estimates ─────────────────────────────────────────────────
+// Delegated listeners catch direct user edits anywhere in each tab (including
+// dynamically-added Paper file/related rows); programmatic content changes (file
+// uploads, ZIP unpacking, row add/remove) call the updaters explicitly at their own
+// call sites above since they don't dispatch input/change events.
+document.getElementById('tab-single').addEventListener('input', updateSingleEstimate);
+document.getElementById('tab-single').addEventListener('change', updateSingleEstimate);
+document.getElementById('tab-paper').addEventListener('input', updatePaperEstimate);
+document.getElementById('tab-paper').addEventListener('change', updatePaperEstimate);
 </script>
 </body>
 </html>

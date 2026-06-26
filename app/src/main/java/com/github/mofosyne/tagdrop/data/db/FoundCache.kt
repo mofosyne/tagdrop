@@ -26,7 +26,8 @@ data class FoundCache(
     val kdfSalt: ByteArray? = null,              // 16-byte random salt for PBKDF2; present whenever kdfAlg != 0
     val inReplyTo: String? = null,               // hex-encoded cache_id/root_hash of the single parent this is replying to (SPEC §7)
     val title: String? = null,                   // optional short subject/caption, distinct from hint (SPEC §4.3, issue #35)
-    val description: String? = null              // optional content teaser / message body (SPEC §4.3, issue #35)
+    val description: String? = null,             // optional content teaser / message body (SPEC §4.3, issue #35)
+    val createdAt: Long? = null                  // author-declared Unix timestamp (seconds) this payload was authored, unverified (SPEC §3); distinct from discoveredAt
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()
