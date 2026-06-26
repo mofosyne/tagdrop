@@ -6,7 +6,7 @@
     height="80">
 </a>
 
-**[Main Website For Examples and Generator](mofosyne.github.io/tagdrop/)**
+**[Main Website For Examples and Generator](https://mofosyne.github.io/tagdrop/)**
 
 TagDrop turns small files — text, HTML pages, images, audio, SVGs — into
 self-contained QR codes that work completely offline. Print one on a sticker
@@ -113,14 +113,14 @@ See [SPEC.md](SPEC.md) for the full wire format and design rationale.
   create single-code drops and multi-file paper layouts (with printable QR
   sheets / PDF export), and explore collections, history, and a map of
   located finds. Includes a Key Management screen for retained AES keys.
-- **[Web generator](tools/generator/)** — build single codes or full
+- **[Web generator](https://mofosyne.github.io/tagdrop/tools/generator/)** — build single codes or full
   multi-file "paper" layouts with a printable QR sheet, entirely in the
   browser. Supports both key-code QR and passphrase encryption modes, and
   bulk export of generated codes as a ZIP of PNGs or a printable PDF sheet.
-- **[Web reader](tools/reader/)** — decode and preview `tagdrop:` codes in
+- **[Web reader](https://mofosyne.github.io/tagdrop/tools/reader/)** — decode and preview `tagdrop:` codes in
   any browser, with camera scanning, passphrase prompts, and persistent key
   retention.
-- **[Examples](tools/examples/)** — pre-rendered sample QR codes for testing
+- **[Examples](https://mofosyne.github.io/tagdrop/tools/examples/)** — pre-rendered sample QR codes for testing
   the app and the web reader, including passphrase-encrypted and key-code
   encrypted examples.
 
