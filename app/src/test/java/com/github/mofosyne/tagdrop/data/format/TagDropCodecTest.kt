@@ -57,6 +57,7 @@ class TagDropCodecTest {
         assertNull(state.collectionLabel)
         assertNull(state.collectionTag)
         assertNull(state.icon)
+        assertNull(state.createdAt)
     }
 
     @Test fun contentWithCollectionAndIcon() {
@@ -83,6 +84,15 @@ class TagDropCodecTest {
         assertEquals("Greetings from the coast", state.title)
         assertEquals("Wish you were here", state.description)
         assertArrayEquals(parentId, state.inReplyTo)
+    }
+
+    @Test fun contentWithCreatedAt() {
+        val sectors = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "postcard message".toByteArray(),
+            createdAt = 1_750_000_000L
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals(1_750_000_000L, state.createdAt)
     }
 
     @Test fun contentWithCompressionDecompressedOnAssembly() {
@@ -325,6 +335,16 @@ class TagDropCodecTest {
         val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
         assertEquals("Reply to Stop 3", state.paper.title)
         assertArrayEquals(parentId, state.paper.inReplyTo)
+    }
+
+    @Test fun paperWithCreatedAt() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (_, sectors) = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            createdAt = 1_750_000_000L
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        assertEquals(1_750_000_000L, state.paper.createdAt)
     }
 
     @Test fun paperRootHashIsContentAddressed() {

@@ -156,6 +156,7 @@ class WriteNfcTagActivity : AppCompatActivity() {
             cache.hint, cache.filename, cache.mimeType, rawContent, compress,
             collectionId, cache.collectionLabel, cache.collectionTag, cache.icon,
             inReplyTo = cache.inReplyTo?.hexToBytes(), title = cache.title, description = cache.description,
+            createdAt = cache.createdAt,
             maxSectorDataBytes = maxSectorDataBytes
         )
 

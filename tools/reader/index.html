@@ -540,7 +540,7 @@ const K = {
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-  IN_REPLY_TO:50, TITLE:51
+  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -607,7 +607,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at',
 };
 
 function toHexDump(bytes) {
@@ -812,6 +812,7 @@ async function parseContentStream(stream, partMeta) {
       preferDeclaredLocation: core[K.PREFER_DECLARED_LOCATION] === true,
       inReplyTo:       core[K.IN_REPLY_TO] ? toHex(core[K.IN_REPLY_TO]) : null,
       title:           core[K.TITLE] ?? null,
+      createdAt:       core[K.CREATED_AT] ?? null,
     },
   };
 }
@@ -887,6 +888,7 @@ function paperFromParts(parts, rootHash) {
     preferDeclaredLocation: parts.core[K.PREFER_DECLARED_LOCATION] === true,
     inReplyTo:       parts.core[K.IN_REPLY_TO] ? toHex(parts.core[K.IN_REPLY_TO]) : null,
     title:           parts.core[K.TITLE] ?? null,
+    createdAt:       parts.core[K.CREATED_AT] ?? null,
   };
 }
 
@@ -1078,7 +1080,7 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     wasEncrypted,
     lat: content.lat, lng: content.lng, radiusM: content.radiusM,
     preferDeclaredLocation: content.preferDeclaredLocation,
-    inReplyTo: content.inReplyTo, title: content.title,
+    inReplyTo: content.inReplyTo, title: content.title, createdAt: content.createdAt,
   };
 }
 
@@ -1215,12 +1217,12 @@ async function completeSingle(cacheId, hint, filename, mimeType, content, opts =
     collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
     pendingOverrideBlob = null, pendingCompression = 0, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
-    inReplyTo = null, title = null,
+    inReplyTo = null, title = null, createdAt = null,
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
     pendingOverrideBlob, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
-    inReplyTo, title,
+    inReplyTo, title, createdAt,
   });
   const label = filename || hint || mimeType;
   await showContent(mimeType, content, label, cacheId, { icon, collectionLabel, collectionTag, collectionId });
@@ -1268,7 +1270,7 @@ async function handleContentReady(state) {
       override.mimeType ?? state.mimeType, override.content ?? new Uint8Array(0),
       { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
         collectionTag: state.collectionTag, icon: state.icon, wasEncrypted: true,
-        inReplyTo: state.inReplyTo, title: state.title }
+        inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
     );
     showMsg('🔓 Decrypted: ' + label, 'ok');
     return;
@@ -1281,7 +1283,7 @@ async function handleContentReady(state) {
       filename: state.filename, mimeType: state.mimeType,
       collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
-      inReplyTo: state.inReplyTo, title: state.title,
+      inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
     });
     return;
   }
@@ -1292,7 +1294,7 @@ async function handleContentReady(state) {
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: blob, pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
-      inReplyTo: state.inReplyTo, title: state.title }
+      inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
   );
   showMsg(blob ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
 }
@@ -1317,7 +1319,7 @@ async function handleAwaitingKey(state) {
       compression: state.compression, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
       fallbackContent: null, filename: null, mimeType: '',
       collectionId: null, collectionLabel: null, collectionTag: null, icon: null,
-      inReplyTo: null, title: null,
+      inReplyTo: null, title: null, createdAt: null,
     });
     return;
   }
@@ -1335,7 +1337,7 @@ async function handleAwaitingKey(state) {
  */
 async function unlockWithPassphrase({
   hint, cacheId, blob, compression, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
-  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title
+  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title, createdAt
 }) {
   const saltHex = toHex(kdfSalt);
   const info = hint
@@ -1357,7 +1359,7 @@ async function unlockWithPassphrase({
       const label = await completeSingle(
         cacheId, override.hint ?? hint, override.filename ?? filename, override.mimeType ?? mimeType,
         override.content ?? new Uint8Array(0),
-        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title }
+        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title, createdAt }
       );
       await unlockPending(derived);
       for (const r of await assembler.tryKey(derived)) await completeContentReady(r);
@@ -1371,7 +1373,7 @@ async function unlockWithPassphrase({
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
         pendingOverrideBlob: blob, pendingCompression: compression, wasEncrypted: true,
-        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title }
+        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt }
     );
     showMsg(wrongPassphrase
       ? 'Wrong passphrase. Loaded: ' + label + ' (🔒 still locked)'
@@ -1408,7 +1410,7 @@ async function completeContentReady(state) {
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: state.pendingOverrideBlob, pendingCompression: state.pendingOverrideCompression,
-      wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title }
+      wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
   );
   showMsg('🔓 Unlocked: ' + label, 'ok');
 }
@@ -1664,13 +1666,18 @@ async function findRepliesTo(parentId) {
   ];
 }
 
-/** Renders a postcard's short subject (title, SPEC §7), an "↩ Replying to" link (resolved
- *  if the parent is already cached, an inert chip otherwise), and a "💬" button per reply
- *  found pointing back at [selfId] — into [el]. Shared by renderPaper and showContent;
- *  hides [el] entirely when there's nothing to show. */
-async function renderReplyInfo(el, { title, inReplyTo, selfId } = {}) {
+/** Renders a postcard's short subject (title, SPEC §7), an author-declared timestamp
+ *  (created_at, SPEC §3 key 52 — self-declared, not verified), an "↩ Replying to" link
+ *  (resolved if the parent is already cached, an inert chip otherwise), and a "💬" button
+ *  per reply found pointing back at [selfId] — into [el]. Shared by renderPaper and
+ *  showContent; hides [el] entirely when there's nothing to show. */
+async function renderReplyInfo(el, { title, inReplyTo, selfId, createdAt } = {}) {
   const parts = [];
   if (title) parts.push('<strong>' + escHtml(title) + '</strong>');
+  if (createdAt) {
+    parts.push('<span class="chip" title="Self-declared by the author\'s device clock; not verified">🕐 ' +
+      escHtml(new Date(createdAt * 1000).toLocaleString()) + '</span>');
+  }
   if (inReplyTo) {
     const parent = await resolveReplyParent(inReplyTo);
     parts.push(parent
@@ -1739,7 +1746,7 @@ async function renderPaper(rootHash) {
   document.getElementById('paperHeader').innerHTML = hdr;
 
   await renderReplyInfo(document.getElementById('paperReplyInfo'),
-    { title: paper.title, inReplyTo: paper.inReplyTo, selfId: paper.rootHash });
+    { title: paper.title, inReplyTo: paper.inReplyTo, selfId: paper.rootHash, createdAt: paper.createdAt });
 
   const descEl = document.getElementById('paperDescription');
   if (paper.description) {
@@ -1855,7 +1862,8 @@ async function showContent(mimeType, content, title, cacheId, meta) {
   // keeps this independent of which caller/path reached showContent.
   const cached = cacheId ? await dbGet('caches', cacheId) : null;
   await renderReplyInfo(document.getElementById('contentReplyInfo'),
-    { title: cached && cached.title, inReplyTo: cached && cached.inReplyTo, selfId: cacheId });
+    { title: cached && cached.title, inReplyTo: cached && cached.inReplyTo, selfId: cacheId,
+      createdAt: cached && cached.createdAt });
 
   if (mimeType.startsWith('text/html')) {
     renderHtmlInIframe(area, new TextDecoder().decode(content));

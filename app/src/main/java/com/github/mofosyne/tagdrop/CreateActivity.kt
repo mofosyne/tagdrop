@@ -63,7 +63,8 @@ class CreateActivity : AppCompatActivity() {
 
         val rawContent = content.toByteArray(Charsets.UTF_8)
         val sector = TagDropCodec.createContentSectors(hint, filename, mimeType,
-                          rawContent, compress, icon = icon).first()
+                          rawContent, compress, icon = icon,
+                          createdAt = System.currentTimeMillis() / 1000).first()
         val uri = TagDropCodec.encode(sector)
         lastUri = uri
         lastPayloadHint = hint ?: filename

@@ -147,6 +147,7 @@ class CreatePaperActivity : AppCompatActivity() {
         val files = mutableListOf<TagDropPayload.FileEntry>()
         val fileEntries = mutableListOf<QrEntry>()
         val fileContents = mutableListOf<FileContent>()
+        val createdAt = System.currentTimeMillis() / 1000
 
         for (i in 0 until binding.containerFiles.childCount) {
             val entry = ItemPaperFileEntryBinding.bind(binding.containerFiles.getChildAt(i))
@@ -158,7 +159,7 @@ class CreatePaperActivity : AppCompatActivity() {
             val mimeType = mimeTypes[entry.spinnerFileMime.selectedItemPosition]
             val compress = entry.checkFileCompress.isChecked
             val rawContent = content.toByteArray(Charsets.UTF_8)
-            val sectors = TagDropCodec.createContentSectorsAutoSized(null, fileSlug, mimeType, rawContent, compress)
+            val sectors = TagDropCodec.createContentSectorsAutoSized(null, fileSlug, mimeType, rawContent, compress, createdAt = createdAt)
             val fileId = sectors.first().partMeta.cacheId ?: ByteArray(0)
             val fileIdHex = hex(fileId)
             files.add(TagDropPayload.FileEntry(fileSlug, mimeType, fileId))
@@ -166,7 +167,7 @@ class CreatePaperActivity : AppCompatActivity() {
             fileEntries.addAll(sectorQrEntries(sectors, fileSlug, mimeType, fileIdHex, addParity))
         }
 
-        val (paper, paperSectors) = TagDropCodec.createPaperAutoSized(label, set, slug, files)
+        val (paper, paperSectors) = TagDropCodec.createPaperAutoSized(label, set, slug, files, createdAt = createdAt)
         val rootHashHex = hex(paper.rootHash)
         val manifestLabel = label ?: getString(R.string.paper_manifest_label)
 
