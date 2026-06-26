@@ -163,8 +163,8 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private val MIGRATION_14_15 = object : Migration(14, 15) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE found_caches ADD COLUMN createdAt INTEGER")
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN createdAt INTEGER")
             }
         }
 
