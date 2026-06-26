@@ -6,6 +6,8 @@
     height="80">
 </a>
 
+**[Main Website For Examples and Generator](mofosyne.github.io/tagdrop/)**
+
 TagDrop turns small files — text, HTML pages, images, audio, SVGs — into
 self-contained QR codes that work completely offline. Print one on a sticker
 or sheet of paper and leave it somewhere; anyone with the TagDrop app (or any
