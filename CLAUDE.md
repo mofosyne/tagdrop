@@ -187,3 +187,36 @@ again or a concrete need emerges.
   text, never raw camera frames/bitmaps, so this would need a parallel
   capture pipeline (frame access, contour detection, homography warp,
   crop) built from scratch.
+- **NFC dual-record layout: plain "openable" record on top, TagDrop
+  manifest record on bottom** (assessed: *plausible, not started*). NDEF
+  already supports multiple records per message, and the reader already
+  scans *all* records for the `application/vnd.tagdrop` MIME type
+  regardless of position (see `ReceiveActivity.kt`), so a tag could carry a
+  plain Well-Known Text/URI record first — openable by any stock NFC
+  reader, no TagDrop app needed — followed by the existing CBOR sector
+  record (the structured "manifest") second. Tradeoff: roughly doubles the
+  bytes needed on already capacity-constrained tags (NTAG213 ≈144 bytes
+  usable per `WriteNfcTagActivity.kt`'s `BLANK_TAG_CAPACITY_BYTES`), and
+  would need a SPEC.md addition since §12 currently documents only a
+  single CBOR-sector record per tag.
+- **QR plain-text mode with hash-matched "orphan" raw scans** (assessed:
+  *plausible, not started*). For text-only Content payloads, skip
+  Base41/CBOR/DEFLATE and put the raw text directly into the QR (no
+  `tagdrop:` scheme) so any stock QR scanner can read it as-is. TagDrop's
+  reader would hash any non-`tagdrop:` scan and check it against the
+  `cache_id`/sha256 values already present in any scanned Paper's
+  `bulky_meta_item` — no new SPEC field needed, since those hashes are
+  already computed over plain content bytes. A raw QR scanned before its
+  manifest would sit in an "unidentified" pool keyed by hash and get
+  auto-promoted into the drop once a matching manifest is later scanned
+  (looks like autodelete from the user's perspective, but it's a merge,
+  not a destroy — nothing scanned is ever thrown away). Open problems:
+  requires persistently caching all unidentified raw scans indefinitely
+  (unbounded storage growth, plus the privacy question of holding onto
+  scanned text that may never resolve to anything), needs a "recheck
+  orphan pool against every newly scanned manifest" pass that doesn't
+  exist today (current `SectorAssembler` only matches sectors by an
+  explicit `cache_id`/`root_hash` already embedded in a TagDrop sector,
+  never by inferring identity from arbitrary scanned bytes), and
+  multi-chunk raw text has no ordering information without the manifest
+  having been scanned at least once.
