@@ -1922,12 +1922,12 @@ const updateSingleEstimate = debounce(async () => {
   if (!el) return;
   let built;
   try { built = buildSingleEncodeArgs(); }
-  catch (e) { if (seq === singleEstimateSeq) el.textContent = ''; return; }
+  catch (e) { if (seq === singleEstimateSeq) showEstimate(el, e.message, true); return; }
   try {
     const sectors = await createContentSectorsAutoSized(built.encodeArgs, built.targetSectorBytes);
-    if (seq === singleEstimateSeq) el.textContent = describeQrCountEstimate(sectors.length);
+    if (seq === singleEstimateSeq) showEstimate(el, describeQrCountEstimate(sectors.length), false);
   } catch (e) {
-    if (seq === singleEstimateSeq) el.textContent = '';
+    if (seq === singleEstimateSeq) showEstimate(el, e.message, true);
   }
 }, 300);
 
@@ -2212,9 +2212,9 @@ const updatePaperEstimate = debounce(async () => {
   try {
     const plan = await computePaperSectorPlan();
     const total = plan.encodedFiles.reduce((sum, f) => sum + f.sectors.length, 0) + plan.paper.sectors.length;
-    if (seq === paperEstimateSeq) el.textContent = describeQrCountEstimate(total);
+    if (seq === paperEstimateSeq) showEstimate(el, describeQrCountEstimate(total), false);
   } catch (e) {
-    if (seq === paperEstimateSeq) el.textContent = '';
+    if (seq === paperEstimateSeq) showEstimate(el, e.message, true);
   }
 }, 300);
 
@@ -2416,6 +2416,16 @@ function debounce(fn, ms) {
 function describeQrCountEstimate(count) {
   if (!Number.isFinite(count) || count < 1) return '';
   return count === 1 ? '✓ Fits in 1 QR code' : `→ ${count} QR codes needed`;
+}
+
+// Renders the live estimate <small>, in either its normal "N QR codes" state or an
+// error state showing the same Error#message the real Generate button would display
+// (e.g. invalid base64 for the chosen MIME type). Used instead of blanking the field on
+// error, which otherwise looks identical to "haven't typed anything yet" — no signal
+// that something needs fixing before Generate will work.
+function showEstimate(el, text, isError) {
+  el.textContent = text;
+  el.style.color = isError ? '#c62828' : '#555';
 }
 
 function copyToClipboard(text) {
