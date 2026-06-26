@@ -155,6 +155,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 49 | `prefer_declared_location` | bool (opt, default `false`) | `core_meta_item` only |
 | 50 | `in_reply_to` | bytes (8, opt) | `core_meta_item` — `cache_id`/`root_hash` of the single parent this is replying to (§7) |
 | 51 | `title` | text (opt) | `core_meta_item` |
+| 52 | `created_at` | uint (opt) | `core_meta_item` — author-declared Unix timestamp (seconds since epoch) this payload was authored; reflects the authoring device's clock, not independently verified |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -1417,7 +1418,7 @@ Version history:
   `sector_bytes` in order, is `core_meta_item || bulky_meta_item || content`
   — small/plain identity and declaration fields, then whatever's bulky or
   worth compressing, then raw content bytes with no declared length.
-- Payload map integer keys 2–19, 20–24, 26–28, 30–40, 42–51. Keys 1, 6, 9, 10
+- Payload map integer keys 2–19, 20–24, 26–28, 30–40, 42–52. Keys 1, 6, 9, 10
   retired (superseded by the envelope and by `part_meta`'s sector fields —
   §3). Key 25 reserved for a future binary image icon; key 29 reserved,
   unused (§9).
@@ -1446,6 +1447,7 @@ Version history:
 - Content-teaser `description` (key 40, both payload kinds) and per-file `description` (key 41, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
+- Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 
 ---
 

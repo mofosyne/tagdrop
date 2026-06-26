@@ -456,7 +456,8 @@ class ReceiveActivity : AppCompatActivity() {
         kdfAlg: Int = 0, kdfSalt: ByteArray? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false,
-        inReplyTo: ByteArray? = null, title: String? = null, description: String? = null
+        inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
+        createdAt: Long? = null
     ) {
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second)
@@ -486,7 +487,8 @@ class ReceiveActivity : AppCompatActivity() {
                     kdfSalt             = kdfSalt,
                     inReplyTo           = inReplyTo?.toHex(),
                     title               = title,
-                    description         = description
+                    description         = description,
+                    createdAt           = createdAt
                 )
             )
             if (paper != null) {
@@ -535,7 +537,8 @@ class ReceiveActivity : AppCompatActivity() {
                 wasEncrypted = true,
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
                 preferDeclaredLocation = state.preferDeclaredLocation,
-                inReplyTo = state.inReplyTo, title = state.title, description = state.description
+                inReplyTo = state.inReplyTo, title = state.title, description = state.description,
+                createdAt = state.createdAt
             )
             return
         }
@@ -549,7 +552,8 @@ class ReceiveActivity : AppCompatActivity() {
                 collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg,
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
                 preferDeclaredLocation = state.preferDeclaredLocation,
-                inReplyTo = state.inReplyTo, title = state.title, description = state.description
+                inReplyTo = state.inReplyTo, title = state.title, description = state.description,
+                createdAt = state.createdAt
             )
             return
         }
@@ -561,7 +565,8 @@ class ReceiveActivity : AppCompatActivity() {
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation,
-            inReplyTo = state.inReplyTo, title = state.title, description = state.description
+            inReplyTo = state.inReplyTo, title = state.title, description = state.description,
+            createdAt = state.createdAt
         )
     }
 
@@ -600,7 +605,8 @@ class ReceiveActivity : AppCompatActivity() {
         collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false,
-        inReplyTo: ByteArray? = null, title: String? = null, description: String? = null
+        inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
+        createdAt: Long? = null
     ) {
         val result = askPassphrase(hint)
         if (result != null) {
@@ -619,7 +625,8 @@ class ReceiveActivity : AppCompatActivity() {
                     override.mimeType ?: mimeType, override.content ?: ByteArray(0),
                     collectionId, collectionLabel, collectionTag, icon, wasEncrypted = true,
                     lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
-                    inReplyTo = inReplyTo, title = title, description = description
+                    inReplyTo = inReplyTo, title = title, description = description,
+                    createdAt = createdAt
                 )
                 return
             }
@@ -632,7 +639,8 @@ class ReceiveActivity : AppCompatActivity() {
                 pendingOverrideBlob = blob, pendingCompression = compression,
                 wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt,
                 lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
-                inReplyTo = inReplyTo, title = title, description = description
+                inReplyTo = inReplyTo, title = title, description = description,
+                createdAt = createdAt
             )
         } else {
             toast(getString(R.string.awaiting_key))
@@ -698,7 +706,8 @@ class ReceiveActivity : AppCompatActivity() {
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation,
-            inReplyTo = state.inReplyTo, title = state.title, description = state.description
+            inReplyTo = state.inReplyTo, title = state.title, description = state.description,
+            createdAt = state.createdAt
         )
     }
 
