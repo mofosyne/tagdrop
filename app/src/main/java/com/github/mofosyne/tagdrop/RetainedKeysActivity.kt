@@ -149,15 +149,17 @@ class RetainedKeysActivity : AppCompatActivity() {
             fun bind(key: RetainedKey) {
                 binding.textKeyHint.text = key.hint
                     ?: binding.root.context.getString(R.string.retained_keys_hint)
-                binding.textKeyDate.text = DATE_FMT.format(Date(key.discoveredAt))
-                binding.textKeyPrefix.text = key.keyHex.take(16)
-                    .chunked(4).joinToString(" ") + "…"
+                binding.textKeyDate.text = dateFormat().format(Date(key.discoveredAt))
+                binding.textKeyPrefix.text = binding.root.context.getString(
+                    R.string.retained_key_prefix_format,
+                    key.keyHex.take(16).chunked(4).joinToString(" ")
+                )
                 binding.buttonDeleteKey.setOnClickListener { onDelete(key) }
             }
         }
 
         companion object {
-            private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+            private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
         }
     }
 }

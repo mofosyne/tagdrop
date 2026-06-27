@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isEmpty
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
@@ -157,7 +158,7 @@ class CreatePaperActivity : AppCompatActivity() {
         val slug  = binding.editPaperSlug.text?.toString()?.ifBlank { null }
         val addParity = binding.checkAddParity.isChecked
 
-        if (binding.containerFiles.childCount == 0) {
+        if (binding.containerFiles.isEmpty()) {
             toast(getString(R.string.paper_no_files_error)); return
         }
 

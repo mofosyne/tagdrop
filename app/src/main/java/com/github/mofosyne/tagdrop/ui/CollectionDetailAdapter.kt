@@ -122,7 +122,7 @@ class CollectionDetailAdapter(
                     binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = cache.mimeType
                     binding.textSubtitle.visibility = View.VISIBLE
-                    binding.textStatus.text = DATE_FMT.format(Date(cache.discoveredAt))
+                    binding.textStatus.text = dateFormat().format(Date(cache.discoveredAt))
                     binding.buttonOpen.isEnabled = cache.isOpenable
                     binding.buttonOpen.setOnClickListener { onOpen(cache) }
                     binding.buttonMap.visibility = View.GONE
@@ -226,6 +226,6 @@ class CollectionDetailAdapter(
     companion object {
         private const val VIEW_TYPE_ROW = 0
         private const val VIEW_TYPE_HEADER = 1
-        private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
 }

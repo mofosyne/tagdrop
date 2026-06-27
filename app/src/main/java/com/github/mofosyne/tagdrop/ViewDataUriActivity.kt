@@ -378,7 +378,11 @@ class ViewDataUriActivity : AppCompatActivity() {
         binding.previewTitle.text = cache?.filename?.takeIf { it.isNotBlank() }
             ?: cache?.hint?.takeIf { it.isNotBlank() }
             ?: getString(R.string.preview_unavailable_title)
-        binding.previewSubtitle.text = "$mimeType • ${Formatter.formatShortFileSize(this, previewSizeBytes.toLong())}"
+        binding.previewSubtitle.text = getString(
+            R.string.preview_subtitle_format,
+            mimeType,
+            Formatter.formatShortFileSize(this, previewSizeBytes.toLong())
+        )
         val canExport = cache?.contentBytes != null
         binding.previewButtonOpen.isEnabled = canExport
         binding.previewButtonSave.isEnabled = canExport

@@ -74,7 +74,7 @@ class CollectionListAdapter(
                     binding.textSubtitle.text = ctx.getString(R.string.collection_item_count, item.items.size)
                     binding.textMeta.text = buildString {
                         if (item.tags.isNotEmpty()) append(item.tags.joinToString(" ") { "#$it" } + "  ·  ")
-                        append(DATE_FMT.format(Date(item.timestamp)))
+                        append(dateFormat().format(Date(item.timestamp)))
                     }
                     val firstLoc = item.items.firstOrNull { it.lat != null && it.lng != null }
                     if (firstLoc != null) {
@@ -93,7 +93,7 @@ class CollectionListAdapter(
                         ?: item.cache.filename
                         ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = item.cache.mimeType
-                    binding.textMeta.text = DATE_FMT.format(Date(item.cache.discoveredAt))
+                    binding.textMeta.text = dateFormat().format(Date(item.cache.discoveredAt))
                     if (item.cache.lat != null && item.cache.lng != null) {
                         binding.buttonMap.visibility = View.VISIBLE
                         binding.buttonMap.setOnClickListener { onMap(item.cache.lat, item.cache.lng) }
@@ -120,6 +120,6 @@ class CollectionListAdapter(
     }
 
     companion object {
-        private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
 }
