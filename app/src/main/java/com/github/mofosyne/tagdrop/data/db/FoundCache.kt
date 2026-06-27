@@ -20,6 +20,7 @@ data class FoundCache(
     val icon: String? = null,             // optional emoji icon
     val createdByMe: Boolean = false,     // true if authored in-app (Create Cache/Paper), not scanned
     val pendingOverrideBlob: ByteArray? = null,  // candidate encrypted override-map blob not yet unlocked by any retained key (SPEC §9)
+    val pendingOverrideDeclared: Boolean = false, // true if the author declared this candidate (encryption hint or kdf_alg), not just size-eligible (SPEC §9)
     val pendingCompression: Int = 0,             // compression to apply when decoding pendingOverrideBlob's plaintext (SPEC §9)
     val wasEncrypted: Boolean = false,           // true if this cache ever carried an encrypted override-map blob (SPEC §9); stays true even after unlock
     val kdfAlg: Int = 0,                         // KDF algorithm for passphrase-derived key (0 = none, 1 = PBKDF2-SHA256); non-zero only while pendingOverrideBlob is set
@@ -36,8 +37,17 @@ data class FoundCache(
 /** [FoundCache.contentBytes] is the resolved clear-map content — always safe to render/export, even with a [hasPendingOverride] (SPEC §9). */
 val FoundCache.isOpenable: Boolean get() = contentBytes != null
 
-/** True if this cache carries a hidden override-map blob not yet unlocked by any retained key (SPEC §9) — shown as a 🔒 hint, not a block. */
+/** True if this cache carries a hidden override-map blob not yet unlocked by any retained key (SPEC §9) — internal trial-decryption candidate; see [showsLockHint] for the user-facing signal. */
 val FoundCache.hasPendingOverride: Boolean get() = pendingOverrideBlob != null
+
+/**
+ * True if [hasPendingOverride] AND the author actually declared it (cosmetic `encryption` field
+ * or a passphrase `kdf_alg`, SPEC §9) — the correct trigger for the 🔒 "locked" UI hint. Plain
+ * content's content slot can also be ≥28 bytes and thus a [hasPendingOverride] trial-decryption
+ * candidate (SPEC §9 "discovery, not declaration"), but that alone must not surface a lock badge,
+ * or every scan would look "locked".
+ */
+val FoundCache.showsLockHint: Boolean get() = hasPendingOverride && pendingOverrideDeclared
 
 /** True if [hasPendingOverride] and the blob is passphrase-derived (PBKDF2) — user can retry by entering the passphrase. */
 val FoundCache.hasPendingPassphrase: Boolean get() = pendingOverrideBlob != null && kdfAlg != 0 && kdfSalt != null

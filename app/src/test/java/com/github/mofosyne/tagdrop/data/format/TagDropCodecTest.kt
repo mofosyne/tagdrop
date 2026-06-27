@@ -593,6 +593,7 @@ class TagDropCodecTest {
         val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
         assertEquals("cover hint", state.hint)
         assertNotNull(state.pendingOverrideBlob)
+        assertTrue(state.pendingOverrideDeclared)
         assertTrue(state.wasEncrypted)
 
         // A later matching key self-corrects to the real fields (as ReceiveActivity.unlockPending does).
@@ -607,6 +608,23 @@ class TagDropCodecTest {
             roundTrip(TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray()))
         ) as SectorAssembler.State.ContentReady
         assertNull(state.pendingOverrideBlob)
+        assertFalse(state.wasEncrypted)
+    }
+
+    /**
+     * Ordinary plain content with no override/encryption can still be ≥28 bytes (the
+     * trial-decryption size threshold, SPEC §9 "discovery, not declaration"), so
+     * [SectorAssembler.State.ContentReady.pendingOverrideBlob] is non-null — it's still a valid
+     * candidate to try keys against. But since the author declared no `encryption`/`kdf_alg`,
+     * [SectorAssembler.State.ContentReady.pendingOverrideDeclared] must be false so callers don't
+     * show a "🔒 Locked" hint on every scan (the bug this guards against).
+     */
+    @Test fun unencryptedLongContentIsCandidateButNotDeclaredLocked() {
+        val state = assemble(
+            roundTrip(TagDropCodec.createContentSectors(null, null, "text/plain", "x".repeat(40).toByteArray()))
+        ) as SectorAssembler.State.ContentReady
+        assertNotNull(state.pendingOverrideBlob)
+        assertFalse(state.pendingOverrideDeclared)
         assertFalse(state.wasEncrypted)
     }
 

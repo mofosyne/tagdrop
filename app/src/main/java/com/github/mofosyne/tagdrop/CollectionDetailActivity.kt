@@ -254,6 +254,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             mimeType = override.mimeType ?: cache.mimeType,
             contentBytes = override.content ?: cache.contentBytes,
             pendingOverrideBlob = null,
+            pendingOverrideDeclared = false,
             pendingCompression = 0,
             kdfAlg = 0,
             kdfSalt = null

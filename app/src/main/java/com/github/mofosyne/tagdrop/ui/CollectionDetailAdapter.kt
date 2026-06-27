@@ -11,6 +11,7 @@ import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
 import com.github.mofosyne.tagdrop.data.db.isOpenable
+import com.github.mofosyne.tagdrop.data.db.showsLockHint
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
@@ -77,7 +78,7 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> item.cache
                 is PageItem.RelatedHint -> null
             }
-            binding.textLockBadge.visibility = if (cacheForBadge?.hasPendingOverride == true) View.VISIBLE else View.GONE
+            binding.textLockBadge.visibility = if (cacheForBadge?.showsLockHint == true) View.VISIBLE else View.GONE
             val wasEncrypted = when (item) {
                 is PageItem.CacheEntry -> item.cache.wasEncrypted
                 is PageItem.PaperFile -> item.cache?.wasEncrypted == true
@@ -200,6 +201,7 @@ class CollectionDetailAdapter(
             val ca = a.cacheOrNull()
             val cb = b.cacheOrNull()
             return ca?.hasPendingOverride == cb?.hasPendingOverride &&
+                ca?.pendingOverrideDeclared == cb?.pendingOverrideDeclared &&
                 ca?.wasEncrypted == cb?.wasEncrypted
         }
 

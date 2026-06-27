@@ -451,7 +451,7 @@ class ReceiveActivity : AppCompatActivity() {
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray, collectionId: String? = null,
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
-        pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0,
+        pendingOverrideBlob: ByteArray? = null, pendingOverrideDeclared: Boolean = false, pendingCompression: Int = 0,
         wasEncrypted: Boolean = false,
         kdfAlg: Int = 0, kdfSalt: ByteArray? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
@@ -481,6 +481,7 @@ class ReceiveActivity : AppCompatActivity() {
                     locationRadiusM    = resolved.radiusM,
                     icon               = icon,
                     pendingOverrideBlob = pendingOverrideBlob,
+                    pendingOverrideDeclared = pendingOverrideDeclared,
                     pendingCompression  = pendingCompression,
                     wasEncrypted        = wasEncrypted,
                     kdfAlg              = kdfAlg,
@@ -561,7 +562,8 @@ class ReceiveActivity : AppCompatActivity() {
         completeSingle(
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
-            pendingOverrideBlob = blob, pendingCompression = state.pendingOverrideCompression,
+            pendingOverrideBlob = blob, pendingOverrideDeclared = state.pendingOverrideDeclared,
+            pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation,
@@ -636,7 +638,7 @@ class ReceiveActivity : AppCompatActivity() {
             completeSingle(
                 cacheIdHex, hint, filename, mimeType, fallbackContent,
                 collectionId, collectionLabel, collectionTag, icon,
-                pendingOverrideBlob = blob, pendingCompression = compression,
+                pendingOverrideBlob = blob, pendingOverrideDeclared = true, pendingCompression = compression,
                 wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt,
                 lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
                 inReplyTo = inReplyTo, title = title, description = description,
@@ -702,6 +704,7 @@ class ReceiveActivity : AppCompatActivity() {
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = state.pendingOverrideBlob,
+            pendingOverrideDeclared = state.pendingOverrideDeclared,
             pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
@@ -729,6 +732,7 @@ class ReceiveActivity : AppCompatActivity() {
                     mimeType = override.mimeType ?: cache.mimeType,
                     contentBytes = override.content ?: cache.contentBytes,
                     pendingOverrideBlob = null,
+                    pendingOverrideDeclared = false,
                     pendingCompression = 0,
                     wasEncrypted = true
                 )

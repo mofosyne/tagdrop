@@ -8,8 +8,8 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
-import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
 import com.github.mofosyne.tagdrop.data.db.isOpenable
+import com.github.mofosyne.tagdrop.data.db.showsLockHint
 import com.github.mofosyne.tagdrop.databinding.ItemScanBlockBinding
 
 /** One file in a scanned paper's directory, shown as a fill-in block on the scan screen. */
@@ -30,7 +30,7 @@ class ScanBoardAdapter(private val onOpen: (FoundCache) -> Unit) :
             binding.textSlug.text = item.slug
             binding.textIcon.text = cache?.icon ?: iconForMimeType(item.mimeType)
             binding.textCheck.visibility = if (cache != null) View.VISIBLE else View.GONE
-            binding.textCheck.text = if (cache?.hasPendingOverride == true) "🔒" else "✓"
+            binding.textCheck.text = if (cache?.showsLockHint == true) "🔒" else "✓"
             binding.root.setCardBackgroundColor(
                 binding.root.context.getColor(if (cache != null) R.color.scan_block_found else R.color.scan_block_pending)
             )
@@ -51,7 +51,7 @@ class ScanBoardAdapter(private val onOpen: (FoundCache) -> Unit) :
         // FoundCache.equals() compares only cacheId, so `a == b` alone can't see
         // `pendingOverrideBlob` clearing once a SPEC §9 key unlocks it — check it explicitly.
         override fun areContentsTheSame(a: ScanBlock, b: ScanBlock) =
-            a == b && a.cache?.hasPendingOverride == b.cache?.hasPendingOverride
+            a == b && a.cache?.showsLockHint == b.cache?.showsLockHint
     }
 
     companion object {

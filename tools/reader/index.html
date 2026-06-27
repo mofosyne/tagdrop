@@ -1057,8 +1057,12 @@ class SectorAssembler {
       };
     }
     const pendingBlob = content.overrideBlob;
+    // Only treat the candidate blob as a UI-worthy "locked" hint if the author actually
+    // declared it (cosmetic `encryption` field or a passphrase KDF) — SPEC §9 deliberately
+    // leaves undeclared candidates indistinguishable from ordinary content.
+    const declared = pendingBlob != null && (content.encryption === 1 || content.kdfAlg !== 0);
     return readyContentState(content, content.hint, content.filename, content.mimeType, cover,
-      pendingBlob, pendingBlob != null);
+      pendingBlob, declared, declared);
   }
 }
 
@@ -1067,7 +1071,7 @@ function isTerminalState(state) {
          state.kind === 'HashMismatch' || state.kind === 'Failed';
 }
 
-function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted) {
+function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted, declared = false) {
   return {
     kind: 'ContentReady',
     cacheId: content.cacheId, hint, filename, mimeType, content: resolved,
@@ -1075,6 +1079,7 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     collectionTag: content.collectionTag, icon: content.icon,
     keyMaterial: content.keyMaterial, retainKey: content.retainKey,
     pendingOverrideBlob: pendingBlob,
+    pendingOverrideDeclared: declared,
     pendingOverrideCompression: pendingBlob != null ? content.compression : 0,
     kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
     wasEncrypted,
@@ -1215,13 +1220,13 @@ async function candidateKeys(kdfSalt) {
 async function completeSingle(cacheId, hint, filename, mimeType, content, opts = {}) {
   const {
     collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
-    pendingOverrideBlob = null, pendingCompression = 0, wasEncrypted = false,
+    pendingOverrideBlob = null, pendingOverrideDeclared = false, pendingCompression = 0, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
     inReplyTo = null, title = null, createdAt = null,
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
-    pendingOverrideBlob, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
+    pendingOverrideBlob, pendingOverrideDeclared, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
     inReplyTo, title, createdAt,
   });
   const label = filename || hint || mimeType;
@@ -1292,11 +1297,12 @@ async function handleContentReady(state) {
     cacheId, state.hint, state.filename, state.mimeType, state.content,
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
-      pendingOverrideBlob: blob, pendingCompression: state.pendingOverrideCompression,
+      pendingOverrideBlob: blob, pendingOverrideDeclared: state.pendingOverrideDeclared,
+      pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
       inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
   );
-  showMsg(blob ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
+  showMsg(state.pendingOverrideDeclared ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
 }
 
 /**
@@ -1372,7 +1378,7 @@ async function unlockWithPassphrase({
     const label = await completeSingle(
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
-        pendingOverrideBlob: blob, pendingCompression: compression, wasEncrypted: true,
+        pendingOverrideBlob: blob, pendingOverrideDeclared: true, pendingCompression: compression, wasEncrypted: true,
         kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt }
     );
     showMsg(wrongPassphrase
@@ -1409,7 +1415,8 @@ async function completeContentReady(state) {
     state.cacheId, state.hint, state.filename, state.mimeType, state.content,
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
-      pendingOverrideBlob: state.pendingOverrideBlob, pendingCompression: state.pendingOverrideCompression,
+      pendingOverrideBlob: state.pendingOverrideBlob, pendingOverrideDeclared: state.pendingOverrideDeclared,
+      pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
   );
   showMsg('🔓 Unlocked: ' + label, 'ok');
@@ -1427,7 +1434,7 @@ async function unlockPending(key) {
     const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, key, cached.pendingCompression);
     if (!override) continue;
     const merged = mergeOverride(cached, override, cached.content);
-    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingCompression: 0, wasEncrypted: true });
+    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingOverrideDeclared: false, pendingCompression: 0, wasEncrypted: true });
     unlocked++;
     showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
   }
@@ -1765,8 +1772,10 @@ async function renderPaper(rootHash) {
     const descHtml = f.description ? '<span class="desc">' + escHtml(f.description) + '</span>' : '';
     if (cache) {
       // SPEC §9: a pending override blob means this file's cover content is shown but a
-      // later key could "self-correct" hint/filename/mime_type/content.
-      const lock = cache.pendingOverrideBlob ? ' 🔒' : '';
+      // later key could "self-correct" hint/filename/mime_type/content. Only show the lock
+      // hint when the author actually declared it (encryption hint or kdf_alg) — every
+      // content slot ≥28 bytes is a trial-decryption candidate, but that alone isn't "locked".
+      const lock = (cache.pendingOverrideBlob && cache.pendingOverrideDeclared) ? ' 🔒' : '';
       const home = HOME_SLUGS.includes(f.slug) ? ' 🏠' : '';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + lock + home + '</span>' +
