@@ -148,15 +148,25 @@ again or a concrete need emerges.
   badge on the matching `PageItem.PaperFile` row, via
   `TagDropLinkResolver.HOME_SLUGS`. Pure naming convention, no SPEC.md
   change.
+- ~~**Ad-hoc collection homepage via `filename` convention**~~ — **done**
+  (Android only). The same `HOME_SLUGS` convention now also applies to an
+  ad-hoc `collection_id` group's members, keyed on `FoundCache.filename`
+  (Content's nearest equivalent to a paper file's `slug`, since
+  `collection_id` has no manifest/directory of its own):
+  `CollectionDetailAdapter` shows the 🏠 badge on a `PageItem.CacheEntry`
+  row whose `cache.filename` is in `HOME_SLUGS`, same as a `PaperFile`
+  row. `tools/reader/index.html` has no equivalent — it has no ad-hoc
+  collection browsing screen at all (only single-scan and Paper views), so
+  there's nothing to mirror there yet.
 - **Collection "default" via `collection_home` field** (assessed:
   *later, possibly never*). A boolean field (CBOR key TBD), set on one
   paper/cache within a `collection_id` group, marking it as that
   collection's entry point — analogous to `retain_key`. Would need a new
   permanent CBOR key in SPEC.md plus updates to both codec implementations
-  (see above). Existing "first scanned wins" fallback for
-  `collection_label`/`icon` may be sufficient; only add this if a real case
-  shows up where users need to designate/re-designate a collection's home
-  item explicitly.
+  (see above). The `filename`-based convention above may be sufficient;
+  only add this heavier field if a real case shows up where users need to
+  designate/re-designate a collection's home item explicitly (e.g. no file
+  named `index`/etc., or multiple candidates needing disambiguation).
 - **Analog/graffiti "find" logger** (assessed: *rejected as a SPEC.md
   feature*). The idea: TagDrop's dead-drop spirit naturally extends to
   fully analog drops — graffiti, a poster, a handwritten note on a wall —

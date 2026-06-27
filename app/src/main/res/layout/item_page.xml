@@ -115,7 +115,8 @@
         android:visibility="gone"
         android:contentDescription="@string/lock_badge_desc" />
 
-    <!-- Homepage convention: shown for the paper file marking its landing page. -->
+    <!-- Homepage convention: shown for the paper file (by slug) or ad-hoc collection entry
+         (by filename) marking that collection's landing page. -->
     <TextView
         android:id="@+id/textHomeBadge"
         android:layout_width="wrap_content"

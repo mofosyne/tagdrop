@@ -72,7 +72,7 @@
     <string name="status_not_cached">Not yet scanned</string>
     <string name="lock_badge_desc">Hidden content not yet unlocked — scan its key code to reveal more</string>
     <string name="unlock_badge_desc">Content was encrypted — now unlocked with its key</string>
-    <string name="home_badge_desc">This paper\'s homepage</string>
+    <string name="home_badge_desc">This collection\'s homepage</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
     <string name="related_found">Already in your collection — tap Open</string>

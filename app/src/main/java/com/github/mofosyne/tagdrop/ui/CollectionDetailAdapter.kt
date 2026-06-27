@@ -86,8 +86,16 @@ class CollectionDetailAdapter(
             }
             binding.textUnlockBadge.visibility =
                 if (wasEncrypted && cacheForBadge?.hasPendingOverride != true) View.VISIBLE else View.GONE
+            // Same homepage convention as a paper's file directory (TagDropLinkResolver.HOME_SLUGS),
+            // applied to an ad-hoc collection's filename — collection_id has no slug/manifest of its
+            // own, so filename is the nearest equivalent "this is the entry point" signal.
+            val homeName = when (item) {
+                is PageItem.PaperFile -> item.slug
+                is PageItem.CacheEntry -> item.cache.filename
+                is PageItem.RelatedHint -> null
+            }
             binding.textHomeBadge.visibility =
-                if (item is PageItem.PaperFile && item.slug in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
+                if (homeName != null && homeName in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug
@@ -194,7 +202,9 @@ class CollectionDetailAdapter(
          * [FoundCache.equals] compares only `cacheId` (it holds a `ByteArray`, which can't
          * be structurally `==`-compared), so `a == b` alone can't see e.g. `pendingOverrideBlob`
          * clearing once a SPEC §9 key unlocks it — check that explicitly so the row re-binds
-         * and drops its lock badge and gains its unlock badge.
+         * and drops its lock badge and gains its unlock badge. Also check `filename`, since an
+         * override can self-correct it to "index"/etc. post-unlock, which should (re)show the
+         * 🏠 home badge on an ad-hoc collection entry.
          */
         override fun areContentsTheSame(a: PageItem, b: PageItem): Boolean {
             if (a != b) return false
@@ -202,7 +212,8 @@ class CollectionDetailAdapter(
             val cb = b.cacheOrNull()
             return ca?.hasPendingOverride == cb?.hasPendingOverride &&
                 ca?.pendingOverrideDeclared == cb?.pendingOverrideDeclared &&
-                ca?.wasEncrypted == cb?.wasEncrypted
+                ca?.wasEncrypted == cb?.wasEncrypted &&
+                ca?.filename == cb?.filename
         }
 
         private fun PageItem.cacheOrNull(): FoundCache? = when (this) {
