@@ -1871,6 +1871,197 @@ function renderHtmlInIframe(area, html) {
   area.appendChild(frame);
 }
 
+// ── Lenient JSON (best-effort) ────────────────────────────────────────────
+// Mirrors the Android app's LenientJson.kt: a syntax error returns the
+// object/array built so far with an inline error marker in place of the
+// broken entry instead of throwing, so a truncated or corrupted JSON-like
+// blob in showContent()'s application/json branch still shows whatever came
+// before the break instead of nothing at all. Pure discovery aid, not a
+// validator.
+const LenientJson = (() => {
+  class ParseError {
+    constructor(message, offset) { this.message = message; this.offset = offset; }
+  }
+
+  function describe(text) {
+    if (!text || !text.trim()) return '(empty)';
+    const out = [];
+    describeValue(new Parser(text).parseTopLevel(), 0, out);
+    return out.join('');
+  }
+
+  function describeValue(value, indent, out) {
+    const pad = '  '.repeat(indent);
+    if (value === null) { out.push('null'); return; }
+    if (value instanceof ParseError) { out.push(`⚠ ${value.message} (at byte ${value.offset})`); return; }
+    if (typeof value === 'string') { out.push('"' + value + '"'); return; }
+    if (value instanceof Map) {
+      if (value.size === 0) { out.push('{}'); return; }
+      out.push('{\n');
+      const entries = [...value.entries()];
+      entries.forEach(([k, v], i) => {
+        out.push(`${pad}  "${k}": `);
+        describeValue(v, indent + 1, out);
+        if (i < entries.length - 1) out.push(',');
+        out.push('\n');
+      });
+      out.push(`${pad}}`);
+      return;
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) { out.push('[]'); return; }
+      out.push('[\n');
+      value.forEach((v, i) => {
+        out.push(`${pad}  `);
+        describeValue(v, indent + 1, out);
+        if (i < value.length - 1) out.push(',');
+        out.push('\n');
+      });
+      out.push(`${pad}]`);
+      return;
+    }
+    out.push(String(value));
+  }
+
+  const DIGIT = /[0-9]/;
+
+  class Parser {
+    constructor(text) { this.text = text; this.pos = 0; }
+
+    parseTopLevel() {
+      this.skipWs();
+      if (this.pos >= this.text.length) return new ParseError('empty input', this.pos);
+      return this.parseValue();
+    }
+
+    parseValue() {
+      this.skipWs();
+      const { text, pos } = this;
+      if (pos >= text.length) return new ParseError('unexpected end of input', pos);
+      const c = text[pos];
+      if (c === '{') return this.parseObject();
+      if (c === '[') return this.parseArray();
+      if (c === '"') return this.parseString();
+      if (c === 't' || c === 'f' || c === 'n') return this.parseLiteral();
+      if (c === '-' || DIGIT.test(c)) return this.parseNumber();
+      return new ParseError(`unexpected character '${c}'`, pos);
+    }
+
+    parseObject() {
+      const map = new Map();
+      this.pos++; // '{'
+      this.skipWs();
+      if (this.text[this.pos] === '}') { this.pos++; return map; }
+      while (true) {
+        this.skipWs();
+        if (this.pos >= this.text.length || this.text[this.pos] !== '"') {
+          map.set('⚠', new ParseError('expected string key', this.pos));
+          return map;
+        }
+        const parsedKey = this.parseString();
+        if (parsedKey instanceof ParseError) { map.set('⚠', parsedKey); return map; }
+        const key = parsedKey;
+        this.skipWs();
+        if (this.text[this.pos] !== ':') {
+          map.set(key, new ParseError("expected ':' after key", this.pos));
+          return map;
+        }
+        this.pos++; // ':'
+        const value = this.parseValue();
+        map.set(key, value);
+        if (value instanceof ParseError) return map;
+        this.skipWs();
+        if (this.text[this.pos] === ',') { this.pos++; }
+        else if (this.text[this.pos] === '}') { this.pos++; return map; }
+        else { map.set('⚠', new ParseError("expected ',' or '}'", this.pos)); return map; }
+      }
+    }
+
+    parseArray() {
+      const list = [];
+      this.pos++; // '['
+      this.skipWs();
+      if (this.text[this.pos] === ']') { this.pos++; return list; }
+      while (true) {
+        const value = this.parseValue();
+        list.push(value);
+        if (value instanceof ParseError) return list;
+        this.skipWs();
+        if (this.text[this.pos] === ',') { this.pos++; }
+        else if (this.text[this.pos] === ']') { this.pos++; return list; }
+        else { list.push(new ParseError("expected ',' or ']'", this.pos)); return list; }
+      }
+    }
+
+    parseString() {
+      const start = this.pos;
+      this.pos++; // opening quote
+      let sb = '';
+      while (true) {
+        if (this.pos >= this.text.length) return new ParseError('unterminated string', start);
+        const c = this.text[this.pos];
+        if (c === '"') { this.pos++; return sb; }
+        if (c === '\\') {
+          this.pos++;
+          if (this.pos >= this.text.length) return new ParseError('unterminated escape', this.pos);
+          const esc = this.text[this.pos];
+          if (esc === '"' || esc === '\\' || esc === '/') sb += esc;
+          else if (esc === 'b') sb += '\b';
+          else if (esc === 'f') sb += '\f';
+          else if (esc === 'n') sb += '\n';
+          else if (esc === 'r') sb += '\r';
+          else if (esc === 't') sb += '\t';
+          else if (esc === 'u') {
+            if (this.pos + 4 >= this.text.length) return new ParseError('truncated unicode escape', this.pos);
+            const hex = this.text.substring(this.pos + 1, this.pos + 5);
+            const code = /^[0-9a-fA-F]{4}$/.test(hex) ? parseInt(hex, 16) : NaN;
+            if (Number.isNaN(code)) return new ParseError('invalid unicode escape', this.pos);
+            sb += String.fromCharCode(code);
+            this.pos += 4;
+          } else return new ParseError(`invalid escape '\\${esc}'`, this.pos);
+          this.pos++;
+        } else if (c.charCodeAt(0) < 0x20) {
+          return new ParseError('control character in string', this.pos);
+        } else {
+          sb += c; this.pos++;
+        }
+      }
+    }
+
+    parseNumber() {
+      const start = this.pos;
+      const { text } = this;
+      if (text[this.pos] === '-') this.pos++;
+      if (this.pos >= text.length || !DIGIT.test(text[this.pos])) return new ParseError('invalid number', start);
+      while (this.pos < text.length && DIGIT.test(text[this.pos])) this.pos++;
+      if (text[this.pos] === '.') {
+        this.pos++;
+        if (this.pos >= text.length || !DIGIT.test(text[this.pos])) return new ParseError('invalid number', start);
+        while (this.pos < text.length && DIGIT.test(text[this.pos])) this.pos++;
+      }
+      if (text[this.pos] === 'e' || text[this.pos] === 'E') {
+        this.pos++;
+        if (text[this.pos] === '+' || text[this.pos] === '-') this.pos++;
+        if (this.pos >= text.length || !DIGIT.test(text[this.pos])) return new ParseError('invalid number', start);
+        while (this.pos < text.length && DIGIT.test(text[this.pos])) this.pos++;
+      }
+      return Number(text.substring(start, this.pos));
+    }
+
+    parseLiteral() {
+      const { text, pos } = this;
+      if (text.startsWith('true', pos)) { this.pos += 4; return true; }
+      if (text.startsWith('false', pos)) { this.pos += 5; return false; }
+      if (text.startsWith('null', pos)) { this.pos += 4; return null; }
+      return new ParseError('invalid literal', pos);
+    }
+
+    skipWs() { while (this.pos < this.text.length && /\s/.test(this.text[this.pos])) this.pos++; }
+  }
+
+  return { describe };
+})();
+
 // `meta` (optional) carries SPEC §7 collection/icon fields from a freshly-scanned
 // Single/Manifest's parsed payload — { icon, collectionLabel, collectionTag, collectionId }.
 // Only available right after a scan (not persisted to the caches/papers DB), so callers
@@ -1927,6 +2118,11 @@ async function showContent(mimeType, content, title, cacheId, meta) {
     const style = css ? '<style>' + css + '</style>' : '';
     const html = '<!DOCTYPE html><html><head><meta charset="utf-8">' + style + '</head><body>' + body + '</body></html>';
     renderHtmlInIframe(area, html);
+  } else if (mimeType.startsWith('application/json')) {
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';
+    pre.textContent = LenientJson.describe(new TextDecoder().decode(content));
+    area.appendChild(pre);
   } else if (mimeType.startsWith('text/')) {
     const pre = document.createElement('pre');
     pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';

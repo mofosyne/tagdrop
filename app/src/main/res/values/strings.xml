@@ -168,6 +168,7 @@
     <string name="view_mode_text">Text</string>
     <string name="view_mode_hex">Hex</string>
     <string name="view_mode_cbor">CBOR</string>
+    <string name="view_mode_json">JSON</string>
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>

@@ -248,15 +248,35 @@ class MiniCborTest {
     }
 
     @Test fun describeSequenceInvalidCbor() {
+        // Best-effort: nothing decodes, but the failure is reported rather than thrown.
         val description = MiniCbor.describeSequence(byteArrayOf(0xFF.toByte()))
-        assertTrue(description.startsWith("Not valid CBOR"))
+        assertTrue(description.contains("⚠ could not parse byte 0 onward"))
     }
 
     @Test fun describeSequencePlainText() {
-        // Plain text misparses as a truncated CBOR byte/text-string pair rather than
-        // decoding cleanly, so non-CBOR content fails closed instead of showing garbage.
+        // Plain text misparses as CBOR by chance (an 8-byte "byte string" happens to decode),
+        // exercising the best-effort path: what did decode is shown, followed by an error
+        // marker and a hex dump of whatever bytes remain once decoding breaks down.
         val description = MiniCbor.describeSequence("Hello from TagDrop!".toByteArray(Charsets.UTF_8))
-        assertTrue(description.startsWith("Not valid CBOR"))
+        assertTrue(description.contains("⚠ could not parse byte"))
+    }
+
+    @Test fun describeSequenceShowsItemsDecodedBeforeTruncation() {
+        // Two valid uint items, then a byte-string head claiming 4 bytes that never arrive.
+        val truncated = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(2) + byteArrayOf((2 shl 5 or 4).toByte())
+        val description = MiniCbor.describeSequence(truncated)
+        assertTrue(description.contains("— item 0 —"))
+        assertTrue(description.contains("— item 1 —"))
+        assertTrue(description.contains("⚠ could not parse byte"))
+    }
+
+    @Test fun describeSequenceGarbageAfterValidMapShowsMapAndRemainingHex() {
+        val cbor = MiniCbor.encodeMap(listOf(3 to "hint"))
+        val garbage = byteArrayOf(0xFF.toByte(), 0x01, 0x02)
+        val description = MiniCbor.describeSequence(cbor + garbage)
+        assertTrue(description.contains("3: \"hint\""))
+        assertTrue(description.contains("remaining bytes"))
+        assertTrue(description.contains("ff 01 02"))
     }
 
     @Test fun describeSequenceSingleMap() {

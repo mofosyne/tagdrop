@@ -208,19 +208,37 @@ object MiniCbor {
 
     /**
      * Pretty-prints arbitrary bytes as a generic CBOR Sequence, for inspecting content whose
-     * structure isn't known ahead of time. Unlike [TagDropCodec.describeCbor] (which expects
-     * TagDrop's own fixed version/type/part_meta/sector_bytes envelope and names its specific
-     * keys), this has no notion of TagDrop semantics -- it just walks whatever [decodeSequence]
-     * returns.
+     * structure isn't known ahead of time -- e.g. a found tag/QR of uncertain origin, possibly
+     * truncated or damaged. Unlike [TagDropCodec.describeCbor] (which expects TagDrop's own fixed
+     * version/type/part_meta/sector_bytes envelope and names its specific keys), this has no
+     * notion of TagDrop semantics -- it just walks whatever items it can decode.
+     *
+     * Best-effort: items are decoded one at a time, so a corrupt or truncated item only ends the
+     * walk from that point on -- every item decoded before it is still shown, followed by a hex
+     * dump of whatever bytes remain unparsed, rather than discarding everything (this is purely a
+     * discovery aid, not a correctness check).
      */
     fun describeSequence(bytes: ByteArray): String {
-        val items = runCatching { decodeSequence(bytes) }
-            .getOrElse { return "Not valid CBOR: ${it.message}" }
-        if (items.isEmpty()) return "(empty)"
+        if (bytes.isEmpty()) return "(empty)"
+        val stream = ByteArrayInputStream(bytes)
+        val items = mutableListOf<Any>()
+        var failure: Pair<Int, String>? = null
+        while (stream.available() > 0) {
+            val offset = bytes.size - stream.available()
+            val item = runCatching { readValue(stream) }
+                .getOrElse { failure = offset to (it.message ?: it.toString()); null }
+                ?: break
+            items.add(item)
+        }
         return buildString {
             items.forEachIndexed { i, item ->
-                if (items.size > 1) appendLine("— item $i —")
+                if (items.size > 1 || failure != null) appendLine("— item $i —")
                 describeValue(null, item, 0, this)
+            }
+            failure?.let { (offset, message) ->
+                if (items.isNotEmpty()) appendLine()
+                appendLine("⚠ could not parse byte $offset onward: $message")
+                describeValue("remaining bytes", bytes.copyOfRange(offset, bytes.size), 0, this)
             }
         }
     }

@@ -972,6 +972,86 @@ h1{color:#1a1a2e}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}
       "tags": ["demo", "test", "qr"]
     }, null, 2),
   },
+  {
+    // Demonstrates that JS runs in TagDrop content: the Android app loads text/html
+    // payloads with javaScriptEnabled = true, and the web reader runs them in a
+    // sandboxed iframe (sandbox="allow-scripts", see renderHtmlInIframe() in
+    // ../reader/index.html) — both execute this game's <script> entirely offline,
+    // straight from the bytes carried in the QR code.
+    label: 'Mini game (JS)',
+    mimeType: 'text/html',
+    compress: true,
+    hint: null,
+    filename: 'star-game.html',
+    content:
+`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Catch the Star — TagDrop Example</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:420px;margin:24px auto;padding:0 16px;color:#222;text-align:center}
+h1{color:#1a1a2e;font-size:1.3rem}
+#field{position:relative;height:240px;background:#0d1b2a;border-radius:10px;margin:16px 0;overflow:hidden}
+#star{position:absolute;font-size:2rem;cursor:pointer;user-select:none;transition:top .08s,left .08s}
+#hud{display:flex;justify-content:space-between;font-size:0.95rem;font-weight:600}
+#msg{min-height:1.4em;color:#555;font-size:0.85rem}
+button{margin-top:8px;padding:8px 16px;border:none;border-radius:6px;background:#1a1a2e;color:#fff;font-size:0.9rem;cursor:pointer}
+button:active{opacity:.8}
+</style>
+</head>
+<body>
+<h1>⭐ Catch the Star</h1>
+<p id="msg">Click the star before time runs out. No network needed — this game runs entirely from the JS stored in this QR code.</p>
+<div id="hud"><span>Score: <span id="score">0</span></span><span>Time: <span id="time">15</span>s</span></div>
+<div id="field"><span id="star">⭐</span></div>
+<button id="btn">Start</button>
+<script>
+var score = 0, timeLeft = 15, timer = null;
+var field = document.getElementById('field'), star = document.getElementById('star');
+var scoreEl = document.getElementById('score'), timeEl = document.getElementById('time');
+var msg = document.getElementById('msg'), btn = document.getElementById('btn');
+
+function moveStar() {
+  var w = field.clientWidth - 32, h = field.clientHeight - 32;
+  star.style.left = Math.floor(Math.random() * w) + 'px';
+  star.style.top = Math.floor(Math.random() * h) + 'px';
+}
+function tick() {
+  timeLeft--;
+  timeEl.textContent = timeLeft;
+  if (timeLeft <= 0) {
+    clearInterval(timer);
+    star.style.display = 'none';
+    msg.textContent = 'Game over! Final score: ' + score + '.';
+    btn.textContent = 'Play again';
+    btn.disabled = false;
+  }
+}
+function start() {
+  score = 0; timeLeft = 15;
+  scoreEl.textContent = score; timeEl.textContent = timeLeft;
+  star.style.display = 'block';
+  moveStar();
+  msg.textContent = 'Catch as many stars as you can!';
+  btn.disabled = true;
+  clearInterval(timer);
+  timer = setInterval(tick, 1000);
+}
+star.addEventListener('click', function (e) {
+  e.stopPropagation();
+  if (timeLeft <= 0) return;
+  score++;
+  scoreEl.textContent = score;
+  moveStar();
+});
+btn.addEventListener('click', start);
+star.style.display = 'none';
+<\/script>
+</body>
+</html>`,
+  },
 ];
 
 // Passphrase-encrypted example (SPEC §9 + PBKDF2-HMAC-SHA256 KDF). The cover
