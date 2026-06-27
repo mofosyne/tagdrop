@@ -23,6 +23,7 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.db.hasPendingPassphrase
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import kotlinx.coroutines.CompletableDeferred
 import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
@@ -113,6 +114,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             val cachesById = latestCaches.associateBy { it.cacheId }
 
             val fileItems = files.map { f -> PageItem.PaperFile(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) }
+            val homeFile = files.find { it.slug in TagDropLinkResolver.HOME_SLUGS }
+            bindHomepageButton(homeFile?.let { cachesById[it.fileId.toHex()] })
             val items = buildList {
                 addAll(fileItems)
                 if (related.isNotEmpty()) {
@@ -178,12 +181,29 @@ class CollectionDetailActivity : AppCompatActivity() {
             exportableCaches = caches.filter { it.isOpenable }
             currentAdHocCaches = caches
             invalidateOptionsMenu()
+            bindHomepageButton(caches.firstOrNull { it.filename in TagDropLinkResolver.HOME_SLUGS })
 
             title = caches.firstOrNull { it.collectionLabel != null }?.collectionLabel
                 ?: getString(R.string.collection_adhoc_default_title, collectionId.take(8))
             val tags = caches.mapNotNull { it.collectionTag }.distinct()
             binding.textInfo.text = tags.joinToString(" ") { "#$it" }
             binding.textInfo.visibility = if (tags.isNotEmpty()) View.VISIBLE else View.GONE
+        }
+    }
+
+    /**
+     * Shows/hides the header's "🏠 Open homepage" button for [homeCache] — the cached item
+     * (if any) whose slug/filename matches [TagDropLinkResolver.HOME_SLUGS], same convention
+     * as the 🏠 row badge, but as a one-tap primary action (mirrors the web reader's
+     * "🏠 Open homepage" button in `renderPaper()`).
+     */
+    private fun bindHomepageButton(homeCache: FoundCache?) {
+        if (homeCache != null && homeCache.isOpenable) {
+            binding.buttonOpenHomepage.visibility = View.VISIBLE
+            binding.buttonOpenHomepage.setOnClickListener { openCache(homeCache) }
+        } else {
+            binding.buttonOpenHomepage.visibility = View.GONE
+            binding.buttonOpenHomepage.setOnClickListener(null)
         }
     }
 
