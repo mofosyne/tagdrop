@@ -28,7 +28,7 @@ sealed class CollectionItem {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
         override val searchHaystack get() = listOfNotNull(
-            paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
+            paper.label, paper.set, paper.slug, paper.domain, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
         ).joinToString(" ")
         override val tags get() = listOfNotNull(paper.collectionTag)
     }

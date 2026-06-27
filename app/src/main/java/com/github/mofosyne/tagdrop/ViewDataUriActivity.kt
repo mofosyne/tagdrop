@@ -30,6 +30,7 @@ import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
 import com.github.mofosyne.tagdrop.util.ContentExporter
+import com.github.mofosyne.tagdrop.util.LocationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -40,6 +41,10 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityViewdatauriBinding
     private lateinit var resolver: TagDropLinkResolver
+
+    /** Device position at activity start, used to pick the closest paper among several claiming the same domain (SPEC §7). */
+    private var deviceLat: Double? = null
+    private var deviceLng: Double? = null
 
     /** The cached item being viewed, if any — used by the Open/Share/Save menu actions. */
     private var exportCache: FoundCache? = null
@@ -86,6 +91,7 @@ class ViewDataUriActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         resolver = TagDropLinkResolver(AppDatabase.get(this))
+        LocationUtils.lastKnownLocation(this)?.let { deviceLat = it.latitude; deviceLng = it.longitude }
 
         val dataUri = intent.getStringExtra(EXTRA_DATA_URI) ?: return
 
@@ -476,7 +482,7 @@ class ViewDataUriActivity : AppCompatActivity() {
      */
     private fun handleNavigation(uri: String) {
         lifecycleScope.launch {
-            when (val result = resolver.resolve(uri)) {
+            when (val result = resolver.resolve(uri, deviceLat, deviceLng)) {
                 is TagDropLinkResolver.Resolution.FileFound -> {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
@@ -500,6 +506,8 @@ class ViewDataUriActivity : AppCompatActivity() {
                     toast(getString(R.string.slug_not_found, result.slug))
                 is TagDropLinkResolver.Resolution.PaperNotFound ->
                     toast(getString(R.string.paper_not_scanned))
+                is TagDropLinkResolver.Resolution.DomainNotFound ->
+                    toast(getString(R.string.domain_not_found, result.domain))
                 is TagDropLinkResolver.Resolution.Invalid ->
                     toast(getString(R.string.link_invalid))
                 else -> {}
@@ -515,7 +523,7 @@ class ViewDataUriActivity : AppCompatActivity() {
      * showing an error page.
      */
     private fun resolveResource(uri: String): WebResourceResponse? {
-        val result = runBlocking { resolver.resolve(uri) }
+        val result = runBlocking { resolver.resolve(uri, deviceLat, deviceLng) }
         val cache = when (result) {
             is TagDropLinkResolver.Resolution.FileFound -> result.cache
             else -> return null

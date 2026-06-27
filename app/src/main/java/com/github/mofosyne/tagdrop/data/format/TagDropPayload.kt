@@ -125,7 +125,8 @@ sealed class TagDropPayload {
         val preferDeclaredLocation: Boolean = false, // if true, lat/lng wins over live GPS even when a fix is available
         val inReplyTo: ByteArray? = null,       // optional — cache_id/root_hash of the single parent this is replying to (SPEC §7)
         val title: String? = null,              // optional — short subject/caption, distinct from label (SPEC §4.3, issue #35)
-        val createdAt: Long? = null             // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
+        val createdAt: Long? = null,            // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
+        val domain: String? = null              // optional — human-readable name for tagdrop://<domain>/<slug> links; falls back to slug if absent (SPEC §7)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Paper && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()

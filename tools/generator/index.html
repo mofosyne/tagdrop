@@ -367,6 +367,10 @@
       <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
     </div>
     <div>
+      <label>Domain <small>(optional — human-readable name finders can type instead of the root hash, e.g. "helloworld"  →  tagdrop://helloworld; falls back to Slug above when absent — SPEC §7 "Domains")</small></label>
+      <input type="text" id="p-domain" placeholder="e.g. helloworld  →  tagdrop://helloworld">
+    </div>
+    <div>
       <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "Day 2 of the sunset trail: a poem and a hand-drawn map")</small></label>
       <input type="text" id="p-description" placeholder="e.g. Day 2 of the sunset trail: a poem and a hand-drawn map">
     </div>
@@ -950,7 +954,7 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52 };
+             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling beyond which a sector's
@@ -1147,7 +1151,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, inReplyTo, title, createdAt }) {
+async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, inReplyTo, title, createdAt }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
@@ -1179,6 +1183,7 @@ async function buildPaperStream({ label, set, slug, files, related, description,
     [K.IN_REPLY_TO, inReplyTo || null],
     [K.TITLE, title || null],
     [K.CREATED_AT, createdAt || null],
+    [K.DOMAIN, domain || null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
@@ -2130,6 +2135,7 @@ async function computePaperSectorPlan() {
   const label       = document.getElementById('p-label').value.trim() || null;
   const set         = document.getElementById('p-set').value.trim() || null;
   const slug        = document.getElementById('p-slug').value.trim() || null;
+  const domain      = document.getElementById('p-domain').value.trim() || null;
   const description = document.getElementById('p-description').value.trim() || null;
 
   // Collection/icon fields (SPEC §7) — optional. The same values are stamped onto the
@@ -2220,7 +2226,7 @@ async function computePaperSectorPlan() {
   let paper;
   try {
     paper = await createPaperAutoSized({
-      label, set, slug, files: manifestFiles, related, description,
+      label, set, slug, domain, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation,
       inReplyTo, title, createdAt,

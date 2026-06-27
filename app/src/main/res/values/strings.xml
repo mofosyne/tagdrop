@@ -149,6 +149,7 @@
     <string name="file_not_scanned">File \'%1$s\' not yet scanned. Find and scan its QR code.</string>
     <string name="slug_not_found">No file named \'%1$s\' in this paper\'s directory.</string>
     <string name="paper_not_scanned">Paper not found in collection. Scan the paper manifest QR first.</string>
+    <string name="domain_not_found">No scanned paper claims the domain \'%1$s\'.</string>
     <string name="link_invalid">Invalid tagdrop:// link.</string>
     <string name="chunk_before_manifest">Chunk received — scan the manifest QR first.</string>
 

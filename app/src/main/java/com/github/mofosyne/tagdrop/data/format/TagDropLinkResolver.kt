@@ -3,15 +3,23 @@ package com.github.mofosyne.tagdrop.data.format
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Resolves TagDrop navigation links. Two URL forms are recognised:
  *
- *   tagdrop://<rootHash-hex>/<slug>
- *     The portable form carried in QR-encoded content. rootHash is plain lowercase
- *     hex here -- NOT Base41, unlike the QR-payload encoding -- because Base41's
+ *   tagdrop://<rootHash-hex-or-domain>/<slug>
+ *     The portable form carried in QR-encoded content. The host is either plain
+ *     lowercase hex -- NOT Base41, unlike the QR-payload encoding, because Base41's
  *     alphabet includes ':', which breaks URL authority parsing if it lands in the
- *     host (SPEC.md §2).
+ *     host (SPEC.md §2) -- or a human-readable domain name (SPEC §7 "Domains").
+ *     An exact root-hash lookup is always tried first; only on a miss does
+ *     resolution fall back to a domain lookup (`ScannedPaper.domain`, falling back
+ *     to `ScannedPaper.slug`), so a real root hash can never be shadowed by a
+ *     same-looking domain name.
  *
  *   https://<rootHash-hex>.paper.tagdrop.invalid/<slug>
  *     A synthetic same-paper form. rootHash is a subdomain *label*, not a path
@@ -21,14 +29,17 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
  *     this as their base URL (see ViewDataUriActivity), so both ordinary relative
  *     links (./foo, ../bar, baz.html) and root-relative links (/foo) resolve to it
  *     via standard URL resolution. `.invalid` is an IANA-reserved TLD (RFC 2606)
- *     that never resolves over the network.
+ *     that never resolves over the network. This form is always a real root hash --
+ *     it's derived from an already-scanned paper, never user-typed -- so it has no
+ *     domain-name fallback.
  *
  * In both forms, the root hash identifies which physical paper to look up; the slug
  * selects a file within that paper's directory. Both are resolved from the local
  * Room database, so no network is needed -- the offline TagDropNet.
  *
  * The root hash is lowercased before lookup in either form, tolerating manual
- * transcription (e.g. a `tagdrop://` link copied or retyped by hand).
+ * transcription (e.g. a `tagdrop://` link copied or retyped by hand). Domain names
+ * are matched case-insensitively for the same reason.
  *
  * Encoding URIs (tagdrop:<base41-cbor-sequence>, no "//") are passed through as
  * EncodingUri so callers know not to treat them as navigation.
@@ -44,6 +55,8 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         object Invalid     : Resolution()
         /** Root hash not in the local DB — paper hasn't been scanned yet. */
         data class PaperNotFound (val rootHashHex: String, val slug: String?)              : Resolution()
+        /** Host isn't a known root hash, and no scanned paper claims it as a domain/slug either (SPEC §7). */
+        data class DomainNotFound(val domain: String, val slug: String?)                    : Resolution()
         /** Paper found but no specific file was requested. */
         data class PaperFound    (val paper: ScannedPaper, val slug: String?)              : Resolution()
         /** Paper found but it has no file with this slug. */
@@ -57,42 +70,94 @@ class TagDropLinkResolver(private val db: AppDatabase) {
     /** Identifies where a cached file sits within a scanned paper's directory. */
     data class PaperContext(val rootHashHex: String, val slug: String)
 
-    suspend fun resolve(uri: String): Resolution {
-        val ref = when {
-            uri.startsWith(SCHEME) -> {
-                val rest = uri.removePrefix(SCHEME)
-                val (rootHashHex, slug) = splitFirstSlash(rest)
-                val hex = rootHashHex.lowercase()
-                if (!HEX_ROOT_HASH.matches(hex)) return Resolution.Invalid
-                Ref(hex, slug)
-            }
+    /**
+     * Resolves a navigation link. [deviceLat]/[deviceLng] are the device's current position
+     * (if known) — used only to pick among several papers that claim the same domain name
+     * (SPEC §7 "Picking the closest match"); omitting them just falls back to recency.
+     */
+    suspend fun resolve(uri: String, deviceLat: Double? = null, deviceLng: Double? = null): Resolution {
+        return when {
+            uri.startsWith(SCHEME) -> resolveSchemeLink(uri.removePrefix(SCHEME), deviceLat, deviceLng)
             // tagdrop:<base41> with no "//" — an encoding URI, not a navigation link (SPEC §2).
-            uri.startsWith(ENCODING_PREFIX) -> return Resolution.EncodingUri
-            uri.startsWith(HTTPS_PREFIX) -> {
-                val (host, slug) = splitFirstSlash(uri.removePrefix(HTTPS_PREFIX))
-                if (!isSyntheticHost(host)) return Resolution.NotTagDrop
-                val hex = host.removeSuffix(".$SYNTHETIC_HOST_SUFFIX").lowercase()
-                if (!HEX_ROOT_HASH.matches(hex)) return Resolution.Invalid
-                Ref(hex, slug)
-            }
-            else -> return Resolution.NotTagDrop
+            uri.startsWith(ENCODING_PREFIX) -> Resolution.EncodingUri
+            uri.startsWith(HTTPS_PREFIX) -> resolveSyntheticHostLink(uri.removePrefix(HTTPS_PREFIX))
+            else -> Resolution.NotTagDrop
         }
+    }
 
-        val paper = db.paperDao().getByRootHash(ref.rootHashHex)
-            ?: return Resolution.PaperNotFound(ref.rootHashHex, ref.slug)
+    /**
+     * `tagdrop://<host>/<slug>` where `host` may be a root hash or a domain name. Tries the
+     * exact root-hash lookup first (cheap, primary-keyed); only on a miss does it fall back to
+     * a domain lookup, so a real root hash can never be shadowed by a same-looking domain name
+     * (SPEC §7 "Resolving a domain link"). A hex-shaped host that matches neither stays
+     * PaperNotFound (same as before this field existed); a non-hex-shaped host that matches
+     * neither is DomainNotFound.
+     */
+    private suspend fun resolveSchemeLink(rest: String, deviceLat: Double?, deviceLng: Double?): Resolution {
+        val (host, slug) = splitFirstSlash(rest)
+        val hex = host.lowercase()
+        val hexShaped = HEX_ROOT_HASH.matches(hex)
+        if (hexShaped) {
+            db.paperDao().getByRootHash(hex)?.let { return resolveWithinPaper(it, slug) }
+        }
+        pickClosestDomainMatch(host, deviceLat, deviceLng)?.let { return resolveWithinPaper(it, slug) }
+        return if (hexShaped) Resolution.PaperNotFound(hex, slug) else Resolution.DomainNotFound(host, slug)
+    }
 
-        val slug = ref.slug ?: return Resolution.PaperFound(paper, null)
+    /** `https://<rootHash-hex>.paper.tagdrop.invalid/<slug>` — always a real root hash, never a domain name. */
+    private suspend fun resolveSyntheticHostLink(rest: String): Resolution {
+        val (host, slug) = splitFirstSlash(rest)
+        if (!isSyntheticHost(host)) return Resolution.NotTagDrop
+        val hex = host.removeSuffix(".$SYNTHETIC_HOST_SUFFIX").lowercase()
+        if (!HEX_ROOT_HASH.matches(hex)) return Resolution.Invalid
+        val paper = db.paperDao().getByRootHash(hex) ?: return Resolution.PaperNotFound(hex, slug)
+        return resolveWithinPaper(paper, slug)
+    }
+
+    private suspend fun resolveWithinPaper(paper: ScannedPaper, slug: String?): Resolution {
+        val s = slug ?: return Resolution.PaperFound(paper, null)
 
         val manifest = TagDropCodec.decodePaperStream(paper.cborBytes)
-            ?: return Resolution.PaperFound(paper, slug)   // can't decode, show paper info
+            ?: return Resolution.PaperFound(paper, s)   // can't decode, show paper info
 
-        val file = manifest.files.find { it.slug == slug }
-            ?: return Resolution.FileNotFound(paper, slug)
+        val file = manifest.files.find { it.slug == s }
+            ?: return Resolution.FileNotFound(paper, s)
 
         val cache = db.cacheDao().getById(file.fileId.toHex())
             ?: return Resolution.FileNotCached(paper, file)
 
-        return Resolution.FileFound(cache, paper, slug)
+        return Resolution.FileFound(cache, paper, s)
+    }
+
+    /**
+     * Finds scanned papers claiming [domainName] — via `domain`, falling back to `slug` when
+     * `domain` is absent (SPEC §7) — matched case-insensitively, and picks the closest one when
+     * more than one matches (domains are unilateral/uncoordinated, so collisions are expected,
+     * not an error): nearest by device position when both a position and at least one
+     * candidate's location are known, otherwise the most recently scanned candidate.
+     */
+    private suspend fun pickClosestDomainMatch(domainName: String, deviceLat: Double?, deviceLng: Double?): ScannedPaper? {
+        val candidates = db.paperDao().getAllPapers().filter {
+            (it.domain ?: it.slug)?.equals(domainName, ignoreCase = true) == true
+        }
+        if (candidates.isEmpty()) return null
+        if (deviceLat != null && deviceLng != null) {
+            val located = candidates.filter { it.lat != null && it.lng != null }
+            if (located.isNotEmpty()) {
+                return located.minByOrNull { haversineMeters(deviceLat, deviceLng, it.lat!!, it.lng!!) }
+            }
+        }
+        return candidates.maxByOrNull { it.scannedAt }
+    }
+
+    /** Great-circle distance in meters between two lat/lng points — plain doubles, no Android/osmdroid dependency. */
+    private fun haversineMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        val earthRadiusM = 6_371_000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLng = Math.toRadians(lng2 - lng1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLng / 2) * sin(dLng / 2)
+        return earthRadiusM * 2 * atan2(sqrt(a), sqrt(1 - a))
     }
 
     /**
@@ -121,8 +186,6 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         val cache = db.cacheDao().getById(cssFile.fileId.toHex()) ?: return null
         return cache.contentBytes?.let { String(it, Charsets.UTF_8) }
     }
-
-    private data class Ref(val rootHashHex: String, val slug: String?)
 
     /** Splits "<head>/<tail>" into (head, tail); tail is null if absent or empty. */
     private fun splitFirstSlash(s: String): Pair<String, String?> {

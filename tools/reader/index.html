@@ -540,7 +540,7 @@ const K = {
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52
+  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -607,7 +607,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title', 52: 'created_at',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain',
 };
 
 function toHexDump(bytes) {
@@ -729,12 +729,14 @@ async function parseUri(uri) {
   if (uri.startsWith('tagdrop://')) {
     const rest = uri.slice('tagdrop://'.length);
     const slash = rest.indexOf('/');
-    const rootHashHex = (slash < 0 ? rest : rest.slice(0, slash)).toLowerCase();
+    // host may be a root-hash hex string or a human-readable domain name (SPEC §7
+    // "Domains") -- resolveNavLink tries the exact hash first, falling back to a
+    // domain lookup only on a miss, so a real root hash can never be shadowed by a
+    // same-looking domain name.
+    const host = slash < 0 ? rest : rest.slice(0, slash);
     const slug = slash < 0 ? null : (rest.slice(slash + 1) || null);
-    // No fixed length pinned to today's 8-byte truncation -- root_hash's actual byte
-    // length is defined by the versioned CBOR payload (SPEC §2/§3, key 2).
-    if (!/^([0-9a-f]{2})+$/.test(rootHashHex)) return { type: 'invalid' };
-    return { type: 'nav', rootHashHex, slug };
+    if (!host) return { type: 'invalid' };
+    return { type: 'nav', host, slug };
   }
 
   // Encoding URI: tagdrop:<base41-cbor-sequence>
@@ -889,6 +891,7 @@ function paperFromParts(parts, rootHash) {
     inReplyTo:       parts.core[K.IN_REPLY_TO] ? toHex(parts.core[K.IN_REPLY_TO]) : null,
     title:           parts.core[K.TITLE] ?? null,
     createdAt:       parts.core[K.CREATED_AT] ?? null,
+    domain:          parts.core[K.DOMAIN] ?? null,
   };
 }
 
@@ -1551,7 +1554,7 @@ async function handleScanned(rawBytes) {
     }
 
     case 'nav':
-      await resolveNavLink(parsed.rootHashHex, parsed.slug);
+      await resolveNavLink(parsed.host, parsed.slug);
       break;
 
     case 'invalid':
@@ -1625,15 +1628,39 @@ function formatMissingIndices(missingIndices) {
 }
 
 // ── Navigation link resolution ────────────────────────────────────────────
-async function resolveNavLink(rootHashHex, slug) {
-  const paper = await dbGet('papers', rootHashHex);
+/**
+ * Finds scanned papers claiming [domainName] -- via `domain`, falling back to `slug`
+ * when `domain` is absent (SPEC §7) -- matched case-insensitively, picking the most
+ * recently scanned match if more than one claims the same name (domains are
+ * unilateral/uncoordinated, so collisions are expected). Unlike the Android app, the
+ * browser has no device position to pick the closest match by, so recency is the only
+ * tie-breaker here. Mirrors Kotlin TagDropLinkResolver.pickClosestDomainMatch.
+ */
+async function findDomainMatch(domainName) {
+  const lower = domainName.toLowerCase();
+  const candidates = (await dbGetAll('papers')).filter(p => (p.domain || p.slug)?.toLowerCase() === lower);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((best, p) => (!best || p.scannedAt > best.scannedAt) ? p : best, null);
+}
+
+/**
+ * `host` is either a root-hash hex string or a domain name (SPEC §7 "Domains"). The
+ * exact-hash lookup is always tried first; only on a miss does resolution fall back to
+ * a domain lookup, so a real root hash can never be shadowed by a same-looking domain
+ * name. Mirrors Kotlin TagDropLinkResolver.resolveSchemeLink.
+ */
+async function resolveNavLink(host, slug) {
+  const hexShaped = /^([0-9a-f]{2})+$/.test(host.toLowerCase());
+  const paper = (hexShaped && await dbGet('papers', host.toLowerCase())) || await findDomainMatch(host);
   if (!paper) {
-    showMsg('Paper not in collection — scan its manifest QR first.', 'warn');
+    showMsg(hexShaped
+      ? 'Paper not in collection — scan its manifest QR first.'
+      : "No scanned paper claims the domain '" + host + "'.", 'warn');
     return;
   }
   if (!slug) {
-    activePaperHash = rootHashHex;
-    await renderPaper(rootHashHex);
+    activePaperHash = paper.rootHash;
+    await renderPaper(paper.rootHash);
     return;
   }
   const fileEntry = paper.files.find(f => f.slug === slug);
@@ -1738,6 +1765,7 @@ async function renderPaper(rootHash) {
   if (paper.collectionLabel) hdr += ' <span class="chip">' + escHtml(paper.collectionLabel) + '</span>';
   if (paper.set)  hdr += ' <span class="chip">' + escHtml(paper.set) + '</span>';
   if (paper.slug) hdr += ' <span class="chip">/' + escHtml(paper.slug) + '</span>';
+  if (paper.domain) hdr += ' <span class="chip">' + escHtml(paper.domain) + '.tagdrop</span>';
   if (paper.collectionTag) hdr += ' <span class="chip">#' + escHtml(paper.collectionTag) + '</span>';
   if (paper.collectionId)  hdr += ' <span class="chip">id:' + escHtml(paper.collectionId) + '</span>';
 
@@ -1936,7 +1964,7 @@ window.addEventListener('message', async e => {
   if (!e.data || e.data.type !== 'tagdrop-nav') return;
   let parsed;
   try { parsed = await parseUri(e.data.uri); } catch (err) { return; }
-  if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.rootHashHex, parsed.slug);
+  if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.host, parsed.slug);
 });
 
 // ── Assembly progress bar ─────────────────────────────────────────────────

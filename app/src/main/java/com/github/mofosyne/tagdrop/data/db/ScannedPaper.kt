@@ -19,7 +19,8 @@ data class ScannedPaper(
     val locationRadiusM: Double? = null, // circle-of-uncertainty radius in meters; only set when lat/lng came from a declared (not live-GPS) source
     val icon: String? = null,            // optional emoji icon
     val createdByMe: Boolean = false,    // true if authored in-app (Create Paper), not scanned
-    val inReplyTo: String? = null        // hex-encoded cache_id/root_hash of the single parent this is replying to (SPEC §7)
+    val inReplyTo: String? = null,       // hex-encoded cache_id/root_hash of the single parent this is replying to (SPEC §7)
+    val domain: String? = null           // optional human-readable tagdrop://<domain>/<slug> name; falls back to slug if absent (SPEC §7)
 ) {
     override fun equals(other: Any?) = other is ScannedPaper && rootHash == other.rootHash
     override fun hashCode() = rootHash.hashCode()

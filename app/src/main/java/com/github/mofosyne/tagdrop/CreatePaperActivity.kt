@@ -225,6 +225,7 @@ class CreatePaperActivity : AppCompatActivity() {
                     label       = manifest.label,
                     set         = manifest.set,
                     slug        = manifest.slug,
+                    domain      = manifest.domain,
                     cborBytes   = TagDropCodec.paperStreamBytes(manifest),
                     createdByMe = true
                 )
