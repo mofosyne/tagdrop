@@ -53,7 +53,7 @@ class CollectionsFragment : Fragment() {
             binding.chipGroupTags.visibility = if (tags.isEmpty()) View.GONE else View.VISIBLE
             for (tag in tags) {
                 val chip = layoutInflater.inflate(R.layout.item_tag_chip, binding.chipGroupTags, false) as Chip
-                chip.text = "#$tag"
+                chip.text = getString(R.string.tag_chip_format, tag)
                 chip.setOnClickListener {
                     val tagQuery = "#$tag"
                     val current = binding.editSearch.text?.toString().orEmpty()

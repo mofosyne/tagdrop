@@ -3,6 +3,8 @@ package com.github.mofosyne.tagdrop.util
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.util.Base64
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.set
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -17,10 +19,10 @@ object QrUtils {
             text, BarcodeFormat.QR_CODE, sizePx, sizePx,
             mapOf(EncodeHintType.CHARACTER_SET to "UTF-8", EncodeHintType.MARGIN to 2)
         )
-        val bmp = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.RGB_565)
+        val bmp = createBitmap(matrix.width, matrix.height, Bitmap.Config.RGB_565)
         for (x in 0 until matrix.width)
             for (y in 0 until matrix.height)
-                bmp.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+                bmp[x, y] = if (matrix[x, y]) Color.BLACK else Color.WHITE
         return bmp
     }
 

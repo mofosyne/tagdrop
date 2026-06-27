@@ -13,6 +13,7 @@
     <string name="empty_history">No scans yet.\nTap the camera button to scan your first TagDrop.</string>
     <string name="search_hint">Search, or #tag</string>
     <string name="search_no_results">No matches for \"%1$s\".</string>
+    <string name="tag_chip_format">#%1$s</string>
     <string name="map_no_locations">No located scans yet.\nGrant location access and scan a TagDrop to see it here.</string>
     <string name="button_enable_location">Enable location</string>
     <string name="button_open_settings">Open Settings</string>
@@ -171,11 +172,13 @@
     <string name="export_failed">Export failed.</string>
     <string name="preview_unavailable_title">Tag found</string>
     <string name="preview_unavailable_message">This content type can\'t be previewed here. Open it in another app, or save a copy to your device.\n\nIt\'s already saved — find it anytime in History.</string>
+    <string name="preview_subtitle_format">%1$s • %2$s</string>
 
     <!-- Retained Keys screen -->
     <string name="title_retained_keys">Retained Keys</string>
     <string name="retained_keys_empty">No retained keys stored.</string>
     <string name="retained_keys_hint">Key (no hint)</string>
+    <string name="retained_key_prefix_format">%1$s…</string>
     <string name="action_delete_all_keys">Delete all keys</string>
     <string name="delete_all_keys_confirm_title">Delete all keys?</string>
     <string name="delete_all_keys_confirm_message">Remove all %1$d retained key(s)? Encrypted items that haven\'t been unlocked yet will remain locked. This cannot be undone.</string>
