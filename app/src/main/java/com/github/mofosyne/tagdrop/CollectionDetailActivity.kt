@@ -57,6 +57,9 @@ class CollectionDetailActivity : AppCompatActivity() {
     /** The export zip's content:// URI awaiting a destination from [saveZipLauncher]. */
     private var pendingExportZipUri: Uri? = null
 
+    /** Set from [CollectionDetailActivity.EXTRA_AUTO_OPEN_HOME]; consumed (set false) the first time [bindHomepageButton] fires. */
+    private var pendingAutoOpenHome = false
+
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
     }
@@ -89,6 +92,7 @@ class CollectionDetailActivity : AppCompatActivity() {
         val rootHash = intent.getStringExtra(EXTRA_ROOT_HASH)
         val collectionId = intent.getStringExtra(EXTRA_COLLECTION_ID)
         val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
+        pendingAutoOpenHome = intent.getBooleanExtra(EXTRA_AUTO_OPEN_HOME, false)
 
         when {
             rootHash != null -> observePaper(db, rootHash, adapter)
@@ -196,11 +200,19 @@ class CollectionDetailActivity : AppCompatActivity() {
      * (if any) whose slug/filename matches [TagDropLinkResolver.HOME_SLUGS], same convention
      * as the 🏠 row badge, but as a one-tap primary action (mirrors the web reader's
      * "🏠 Open homepage" button in `renderPaper()`).
+     *
+     * Also fires [pendingAutoOpenHome] here (once) — the main collection list's "Open" button
+     * launches this activity with [EXTRA_AUTO_OPEN_HOME] set, reusing this same opened/locked
+     * handling instead of duplicating [openCache]/[tryPassphraseUnlock] a third time.
      */
     private fun bindHomepageButton(homeCache: FoundCache?) {
         if (homeCache != null && homeCache.isOpenable) {
             binding.buttonOpenHomepage.visibility = View.VISIBLE
             binding.buttonOpenHomepage.setOnClickListener { openCache(homeCache) }
+            if (pendingAutoOpenHome) {
+                pendingAutoOpenHome = false
+                openCache(homeCache)
+            }
         } else {
             binding.buttonOpenHomepage.visibility = View.GONE
             binding.buttonOpenHomepage.setOnClickListener(null)
@@ -482,14 +494,22 @@ class CollectionDetailActivity : AppCompatActivity() {
         const val EXTRA_ROOT_HASH = "extra_root_hash"
         const val EXTRA_COLLECTION_ID = "extra_collection_id"
         const val EXTRA_CACHE_ID = "extra_cache_id"
+        /** If true, immediately open the collection's homepage cache once it's resolved — see [bindHomepageButton]. */
+        const val EXTRA_AUTO_OPEN_HOME = "extra_auto_open_home"
     }
 }
 
 /** Opens the collection-detail ("map") screen for a paper, ad-hoc group, or loose scan. */
-fun Context.openCollectionDetail(rootHash: String? = null, collectionId: String? = null, cacheId: String? = null) {
+fun Context.openCollectionDetail(
+    rootHash: String? = null,
+    collectionId: String? = null,
+    cacheId: String? = null,
+    autoOpenHome: Boolean = false
+) {
     val intent = Intent(this, CollectionDetailActivity::class.java)
     rootHash?.let { intent.putExtra(CollectionDetailActivity.EXTRA_ROOT_HASH, it) }
     collectionId?.let { intent.putExtra(CollectionDetailActivity.EXTRA_COLLECTION_ID, it) }
     cacheId?.let { intent.putExtra(CollectionDetailActivity.EXTRA_CACHE_ID, it) }
+    if (autoOpenHome) intent.putExtra(CollectionDetailActivity.EXTRA_AUTO_OPEN_HOME, true)
     startActivity(intent)
 }

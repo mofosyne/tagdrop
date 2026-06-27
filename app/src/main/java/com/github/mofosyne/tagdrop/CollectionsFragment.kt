@@ -38,7 +38,8 @@ class CollectionsFragment : Fragment() {
             onMap = { lat, lng ->
                 viewModel.focusOnMap(lat, lng)
                 (activity as? MainActivity)?.switchToMap()
-            }
+            },
+            onOpenHome = { item -> openCollectionHome(item) }
         )
         binding.recyclerCollections.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerCollections.adapter = adapter
@@ -104,6 +105,15 @@ class CollectionsFragment : Fragment() {
             is CollectionItem.Paper -> requireContext().openCollectionDetail(rootHash = item.paper.rootHash)
             is CollectionItem.AdHoc -> requireContext().openCollectionDetail(collectionId = item.collectionId)
             is CollectionItem.Loose -> requireContext().openCollectionDetail(cacheId = item.cache.cacheId)
+        }
+    }
+
+    /** "Open" button on a Paper/AdHoc card: go straight to the collection's homepage cache via [CollectionDetailActivity]'s auto-open flow. */
+    private fun openCollectionHome(item: CollectionItem) {
+        when (item) {
+            is CollectionItem.Paper -> requireContext().openCollectionDetail(rootHash = item.paper.rootHash, autoOpenHome = true)
+            is CollectionItem.AdHoc -> requireContext().openCollectionDetail(collectionId = item.collectionId, autoOpenHome = true)
+            is CollectionItem.Loose -> {}
         }
     }
 

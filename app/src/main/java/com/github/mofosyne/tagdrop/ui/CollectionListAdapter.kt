@@ -7,6 +7,8 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
+import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.databinding.ItemCollectionBinding
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -14,11 +16,24 @@ import java.util.Locale
 
 class CollectionListAdapter(
     private val onClick: (CollectionItem) -> Unit,
-    private val onMap: (Double, Double) -> Unit
+    private val onMap: (Double, Double) -> Unit,
+    private val onOpenHome: (CollectionItem) -> Unit
 ) : ListAdapter<CollectionItem, CollectionListAdapter.ViewHolder>(Diff) {
 
     inner class ViewHolder(private val binding: ItemCollectionBinding) :
         RecyclerView.ViewHolder(binding.root) {
+
+        /** Shows/hides the row's "Open" button for [homeCache] — same TagDropLinkResolver.HOME_SLUGS
+         *  convention as CollectionDetailActivity's header "🏠 Open homepage" button. */
+        private fun bindOpenButton(homeCache: FoundCache?, item: CollectionItem) {
+            if (homeCache != null && homeCache.isOpenable) {
+                binding.buttonOpen.visibility = View.VISIBLE
+                binding.buttonOpen.setOnClickListener { onOpenHome(item) }
+            } else {
+                binding.buttonOpen.visibility = View.GONE
+                binding.buttonOpen.setOnClickListener(null)
+            }
+        }
 
         fun bind(item: CollectionItem) {
             val ctx = binding.root.context
@@ -50,6 +65,7 @@ class CollectionListAdapter(
                     } else {
                         binding.buttonMap.visibility = View.GONE
                     }
+                    bindOpenButton(item.homeCache, item)
                 }
                 is CollectionItem.AdHoc -> {
                     binding.textType.text = ctx.getString(R.string.collection_type_adhoc)
@@ -67,6 +83,7 @@ class CollectionListAdapter(
                     } else {
                         binding.buttonMap.visibility = View.GONE
                     }
+                    bindOpenButton(item.homeCache, item)
                 }
                 is CollectionItem.Loose -> {
                     binding.textType.text = ctx.getString(
@@ -83,6 +100,8 @@ class CollectionListAdapter(
                     } else {
                         binding.buttonMap.visibility = View.GONE
                     }
+                    binding.buttonOpen.visibility = View.GONE
+                    binding.buttonOpen.setOnClickListener(null)
                 }
             }
             binding.root.setOnClickListener { onClick(item) }
