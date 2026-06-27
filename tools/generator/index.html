@@ -262,6 +262,13 @@
     </div>
     <div class="row">
       <div>
+        <label>Location label <small>(optional — human-readable, non-coordinate description, e.g. "🚋 Tram 40"; see §4.2)</small></label>
+        <input type="text" id="s-location-label" placeholder="e.g. 🚋 Tram 40">
+        <small style="display:block;color:#888;margin-top:2px">Leaving latitude/longitude blank while this is set tells scanners this drop has no fixed point — they won't substitute their own GPS fix</small>
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>MIME type</label>
         <select id="s-mime">
           <option value="text/plain">text/plain</option>
@@ -367,6 +374,10 @@
       <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
     </div>
     <div>
+      <label>Domain <small>(optional — human-readable name finders can type instead of the root hash, e.g. "helloworld"  →  tagdrop://helloworld; falls back to Slug above when absent — SPEC §7 "Domains")</small></label>
+      <input type="text" id="p-domain" placeholder="e.g. helloworld  →  tagdrop://helloworld">
+    </div>
+    <div>
       <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "Day 2 of the sunset trail: a poem and a hand-drawn map")</small></label>
       <input type="text" id="p-description" placeholder="e.g. Day 2 of the sunset trail: a poem and a hand-drawn map">
     </div>
@@ -430,6 +441,13 @@
           Prefer declared location over live GPS
           <small style="display:block;color:#888;margin-top:2px">For placements where the author's coordinates are more reliable than the scanning device's GPS fix (e.g. indoors)</small>
         </label>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Location label <small>(optional — human-readable, non-coordinate description, e.g. "🚋 Tram 40"; see §4.2)</small></label>
+        <input type="text" id="p-location-label" placeholder="e.g. 🚋 Tram 40">
+        <small style="display:block;color:#888;margin-top:2px">Leaving latitude/longitude blank while this is set tells scanners this drop has no fixed point — they won't substitute their own GPS fix</small>
       </div>
     </div>
   </div>
@@ -764,7 +782,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title', 52: 'created_at',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 54: 'location_label',
 };
 
 function toHexDump(bytes) {
@@ -950,7 +968,7 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52 };
+             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling beyond which a sector's
@@ -1039,7 +1057,7 @@ async function createContentSectors({
   collectionId, collectionLabel, collectionTag, icon,
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
-  lat, lng, radiusM, preferDeclaredLocation = false,
+  lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
   inReplyTo, title, createdAt,
   maxSectorDataBytes = Infinity,
 }) {
@@ -1084,6 +1102,7 @@ async function createContentSectors({
       [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
       [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
       [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
+      [K.LOCATION_LABEL, locationLabel || null],
       [K.IN_REPLY_TO, inReplyTo || null],
       [K.TITLE, title || null],
       [K.CREATED_AT, createdAt || null],
@@ -1147,7 +1166,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, inReplyTo, title, createdAt }) {
+async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
@@ -1176,9 +1195,11 @@ async function buildPaperStream({ label, set, slug, files, related, description,
     [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
     [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
     [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
+    [K.LOCATION_LABEL, locationLabel || null],
     [K.IN_REPLY_TO, inReplyTo || null],
     [K.TITLE, title || null],
     [K.CREATED_AT, createdAt || null],
+    [K.DOMAIN, domain || null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
@@ -1883,6 +1904,7 @@ function buildSingleEncodeArgs() {
   const lng    = Number.isFinite(declaredLng) ? declaredLng : null;
   const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
   const preferDeclaredLocation = document.getElementById('s-prefer-declared-location').checked;
+  const locationLabel = document.getElementById('s-location-label').value.trim() || null;
 
   const sectorSizeRaw = parseInt(document.getElementById('s-sector-size').value, 10);
   const targetSectorBytes = Number.isFinite(sectorSizeRaw)
@@ -1912,7 +1934,7 @@ function buildSingleEncodeArgs() {
         override: { hint, mimeType, content: rawBytes, filename },
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
-        lat, lng, radiusM, preferDeclaredLocation,
+        lat, lng, radiusM, preferDeclaredLocation, locationLabel,
         inReplyTo, title, createdAt,
       };
     } else {
@@ -1926,14 +1948,14 @@ function buildSingleEncodeArgs() {
         override: { hint, mimeType, content: rawBytes, filename },
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
-        lat, lng, radiusM, preferDeclaredLocation,
+        lat, lng, radiusM, preferDeclaredLocation, locationLabel,
         inReplyTo, title, createdAt,
       };
     }
   } else {
     encodeArgs = {
       hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
-      lat, lng, radiusM, preferDeclaredLocation,
+      lat, lng, radiusM, preferDeclaredLocation, locationLabel,
       inReplyTo, title, createdAt,
     };
   }
@@ -2130,6 +2152,7 @@ async function computePaperSectorPlan() {
   const label       = document.getElementById('p-label').value.trim() || null;
   const set         = document.getElementById('p-set').value.trim() || null;
   const slug        = document.getElementById('p-slug').value.trim() || null;
+  const domain      = document.getElementById('p-domain').value.trim() || null;
   const description = document.getElementById('p-description').value.trim() || null;
 
   // Collection/icon fields (SPEC §7) — optional. The same values are stamped onto the
@@ -2159,6 +2182,7 @@ async function computePaperSectorPlan() {
   const lng    = Number.isFinite(declaredLng) ? declaredLng : null;
   const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
   const preferDeclaredLocation = document.getElementById('p-prefer-declared-location').checked;
+  const locationLabel = document.getElementById('p-location-label').value.trim() || null;
 
   const sectorSizeRaw = parseInt(document.getElementById('p-sector-size').value, 10);
   const targetSectorBytes = Number.isFinite(sectorSizeRaw)
@@ -2220,9 +2244,9 @@ async function computePaperSectorPlan() {
   let paper;
   try {
     paper = await createPaperAutoSized({
-      label, set, slug, files: manifestFiles, related, description,
+      label, set, slug, domain, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
-      lat, lng, radiusM, preferDeclaredLocation,
+      lat, lng, radiusM, preferDeclaredLocation, locationLabel,
       inReplyTo, title, createdAt,
     }, targetSectorBytes);
   }

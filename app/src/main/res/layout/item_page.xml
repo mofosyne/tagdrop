@@ -115,12 +115,18 @@
         android:visibility="gone"
         android:contentDescription="@string/lock_badge_desc" />
 
-    <!-- Homepage convention: shown for the paper file marking its landing page. -->
+    <!-- Homepage convention: shown for the paper file (by slug) or ad-hoc collection entry
+         (by filename) marking that collection's landing page. Anchored top|end like the
+         lock/unlock badges (rather than top|start) so it never overlaps textTitle, which
+         starts flush at the card's top-left whenever textIcon is hidden (the common case).
+         marginEnd offsets it clear of the lock/unlock badge, since a homepage file can also
+         be encrypted/unlocked at the same time. -->
     <TextView
         android:id="@+id/textHomeBadge"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
+        android:layout_gravity="top|end"
+        android:layout_marginEnd="36dp"
         android:padding="6dp"
         android:text="🏠"
         android:textSize="16sp"

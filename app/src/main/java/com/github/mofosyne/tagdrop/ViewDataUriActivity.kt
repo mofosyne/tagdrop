@@ -24,12 +24,14 @@ import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.format.LenientJson
 import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
 import com.github.mofosyne.tagdrop.data.format.MiniCbor
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
 import com.github.mofosyne.tagdrop.util.ContentExporter
+import com.github.mofosyne.tagdrop.util.LocationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -40,6 +42,10 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityViewdatauriBinding
     private lateinit var resolver: TagDropLinkResolver
+
+    /** Device position at activity start, used to pick the closest paper among several claiming the same domain (SPEC §7). */
+    private var deviceLat: Double? = null
+    private var deviceLng: Double? = null
 
     /** The cached item being viewed, if any — used by the Open/Share/Save menu actions. */
     private var exportCache: FoundCache? = null
@@ -58,8 +64,8 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     private data class ContentInfo(val mimeType: String, val bytes: ByteArray, val context: TagDropLinkResolver.PaperContext?)
 
-    /** The ways [currentContent]'s bytes can be shown -- one normal render, three raw dumps of the same bytes. */
-    private enum class ViewMode { RENDERED, TEXT, HEX, CBOR }
+    /** The ways [currentContent]'s bytes can be shown -- one normal render, four raw dumps of the same bytes. */
+    private enum class ViewMode { RENDERED, TEXT, HEX, CBOR, JSON }
 
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
@@ -86,6 +92,7 @@ class ViewDataUriActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         resolver = TagDropLinkResolver(AppDatabase.get(this))
+        LocationUtils.lastKnownLocation(this)?.let { deviceLat = it.latitude; deviceLng = it.longitude }
 
         val dataUri = intent.getStringExtra(EXTRA_DATA_URI) ?: return
 
@@ -155,6 +162,7 @@ class ViewDataUriActivity : AppCompatActivity() {
             ViewMode.TEXT -> R.id.action_view_text
             ViewMode.HEX -> R.id.action_view_hex
             ViewMode.CBOR -> R.id.action_view_cbor
+            ViewMode.JSON -> R.id.action_view_json
         }
         menu.findItem(checkedId)?.isChecked = true
         return super.onPrepareOptionsMenu(menu)
@@ -168,6 +176,7 @@ class ViewDataUriActivity : AppCompatActivity() {
         R.id.action_view_text -> { setViewMode(ViewMode.TEXT); true }
         R.id.action_view_hex -> { setViewMode(ViewMode.HEX); true }
         R.id.action_view_cbor -> { setViewMode(ViewMode.CBOR); true }
+        R.id.action_view_json -> { setViewMode(ViewMode.JSON); true }
         else -> super.onOptionsItemSelected(item)
     }
 
@@ -266,13 +275,15 @@ class ViewDataUriActivity : AppCompatActivity() {
             ViewMode.TEXT -> showMonospace(String(content.bytes, Charsets.UTF_8), wrap = true)
             ViewMode.HEX -> showMonospace(hexDump(content.bytes), wrap = false)
             ViewMode.CBOR -> showMonospace(MiniCbor.describeSequence(content.bytes), wrap = false)
+            ViewMode.JSON -> showMonospace(LenientJson.describe(content.bytes), wrap = true)
         }
     }
 
     /**
-     * The RENDERED view: HTML/Markdown rendered as a page, other text (vCard/Wi-Fi/calendar/...
-     * raw QR scans included) as preformatted text since the WebView can't otherwise display most
-     * non-web text subtypes, and anything else (images, audio) as its original data: URI.
+     * The RENDERED view: HTML/Markdown rendered as a page, JSON pretty-printed, other text
+     * (vCard/Wi-Fi/calendar/... raw QR scans included) as preformatted text since the WebView
+     * can't otherwise display most non-web text subtypes, and anything else (images, audio) as
+     * its original data: URI.
      */
     private fun renderRendered(content: ContentInfo) {
         when {
@@ -289,6 +300,8 @@ class ViewDataUriActivity : AppCompatActivity() {
                     else binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
                 }
             }
+            content.mimeType.startsWith("application/json") ->
+                showMonospace(LenientJson.describe(content.bytes), wrap = true)
             content.mimeType.startsWith("text/") -> showMonospace(String(content.bytes, Charsets.UTF_8), wrap = true)
             else -> {
                 val dataUri = "data:${content.mimeType};base64," +
@@ -337,7 +350,8 @@ class ViewDataUriActivity : AppCompatActivity() {
      * (EPUB, video, archives, ...) gets the "can't preview" panel instead of a blank page.
      */
     private fun isWebViewRenderable(mimeType: String): Boolean =
-        mimeType.startsWith("text/") || mimeType.startsWith("image/") || mimeType.startsWith("audio/")
+        mimeType.startsWith("text/") || mimeType.startsWith("image/") || mimeType.startsWith("audio/") ||
+            mimeType.startsWith("application/json")
 
     /** Hides the preview-unavailable panel and shows the WebView, e.g. when navigating to a renderable file. */
     private fun showWebView() {
@@ -480,7 +494,7 @@ class ViewDataUriActivity : AppCompatActivity() {
      */
     private fun handleNavigation(uri: String) {
         lifecycleScope.launch {
-            when (val result = resolver.resolve(uri)) {
+            when (val result = resolver.resolve(uri, deviceLat, deviceLng)) {
                 is TagDropLinkResolver.Resolution.FileFound -> {
                     val content = result.cache.contentBytes
                         ?: run { toast(getString(R.string.content_not_stored)); return@launch }
@@ -504,6 +518,8 @@ class ViewDataUriActivity : AppCompatActivity() {
                     toast(getString(R.string.slug_not_found, result.slug))
                 is TagDropLinkResolver.Resolution.PaperNotFound ->
                     toast(getString(R.string.paper_not_scanned))
+                is TagDropLinkResolver.Resolution.DomainNotFound ->
+                    toast(getString(R.string.domain_not_found, result.domain))
                 is TagDropLinkResolver.Resolution.Invalid ->
                     toast(getString(R.string.link_invalid))
                 else -> {}
@@ -519,7 +535,7 @@ class ViewDataUriActivity : AppCompatActivity() {
      * showing an error page.
      */
     private fun resolveResource(uri: String): WebResourceResponse? {
-        val result = runBlocking { resolver.resolve(uri) }
+        val result = runBlocking { resolver.resolve(uri, deviceLat, deviceLng) }
         val cache = when (result) {
             is TagDropLinkResolver.Resolution.FileFound -> result.cache
             else -> return null

@@ -55,7 +55,8 @@ import javax.crypto.spec.SecretKeySpec
  *   core_meta_item also carries 26 lat / 27 lng (author-declared location of THIS
  *                     Content/Paper, distinct from a related paper's hint location),
  *                     48 radius_m (circle of uncertainty, shared wherever lat/lng
- *                     appears), 49 prefer_declared_location
+ *                     appears), 49 prefer_declared_location, 54 location_label
+ *                     (non-coordinate location description, e.g. "Tram 40")
  */
 object TagDropCodec {
 
@@ -155,6 +156,8 @@ object TagDropCodec {
     private const val K_IN_REPLY_TO = 50  // core_meta_item only — cache_id/root_hash of the single parent being replied to (SPEC §7)
     private const val K_TITLE       = 51  // short subject/caption, distinct from hint/label — valid for both Content and Paper
     private const val K_CREATED_AT  = 52  // author-declared Unix timestamp (seconds since epoch) this payload was authored — valid for both Content and Paper
+    private const val K_DOMAIN      = 53  // core_meta_item only, Paper only — human-readable tagdrop://<domain>/<slug> name, falls back to slug (SPEC §7)
+    private const val K_LOCATION_LABEL = 54  // core_meta_item only — human-readable, non-coordinate location description, e.g. "Tram 40" (SPEC §4.2)
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -282,7 +285,12 @@ object TagDropCodec {
      * device may lack a GPS lock. [radiusM] is an optional circle-of-uncertainty radius in
      * meters. [preferDeclaredLocation] defaults to false (live GPS wins when available,
      * declared location is a fallback); set true to make the declared location win even over
-     * an available live GPS fix.
+     * an available live GPS fix. [preferDeclaredLocation] set true with [lat]/[lng] both absent,
+     * or a non-null [locationLabel] with [lat]/[lng] both absent, declares this content has no
+     * fixed point at all (e.g. mailed, or carried on a moving vehicle) — a live GPS fix MUST NOT
+     * be substituted for it (SPEC §4.2, "Explicit no fixed point"). [locationLabel] is an optional
+     * human-readable, non-coordinate location description (e.g. "🚋 Tram 40"); it may also be
+     * present alongside coordinates, simply as descriptive text.
      *
      * [inReplyTo] is the `cache_id`/`root_hash` of a single parent this content is replying to
      * (SPEC §7, "Replies and threading") — omit for a new, unprompted message.
@@ -304,7 +312,7 @@ object TagDropCodec {
         override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
         declareEncryption: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false,
+        preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null,
         title: String? = null, description: String? = null,
         createdAt: Long? = null,
@@ -346,6 +354,7 @@ object TagDropCodec {
             K_LNG     to lng,
             K_RADIUS_M to radiusM,
             K_PREFER_DECLARED_LOCATION to true.takeIf { preferDeclaredLocation },
+            K_LOCATION_LABEL to locationLabel,
             K_IN_REPLY_TO to inReplyTo,
             K_CREATED_AT to createdAt
         )
@@ -373,7 +382,7 @@ object TagDropCodec {
         override: TagDropPayload.OverrideMap? = null, encryptionKey: ByteArray? = null,
         declareEncryption: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false,
+        preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null,
         title: String? = null, description: String? = null,
         createdAt: Long? = null
@@ -382,7 +391,7 @@ object TagDropCodec {
             hint, filename, mimeType, rawContent, compress,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
-            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title, description,
+            lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title, description,
             createdAt,
             maxSectorDataBytes = Int.MAX_VALUE
         )
@@ -391,7 +400,7 @@ object TagDropCodec {
             hint, filename, mimeType, rawContent, compress,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
-            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title, description,
+            lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title, description,
             createdAt,
             maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
@@ -429,10 +438,11 @@ object TagDropCodec {
         collectionTag: String? = null, icon: String? = null,
         keyMaterial: ByteArray? = null, retainKey: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false,
+        preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null,
         title: String? = null,
         createdAt: Long? = null,
+        domain: String? = null,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val draft = TagDropPayload.Paper(
@@ -442,7 +452,8 @@ object TagDropCodec {
             collectionTag = collectionTag, icon = icon,
             keyMaterial = keyMaterial, retainKey = retainKey,
             lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
-            inReplyTo = inReplyTo, title = title, createdAt = createdAt
+            locationLabel = locationLabel,
+            inReplyTo = inReplyTo, title = title, createdAt = createdAt, domain = domain
         )
         val stream = buildPaperStream(draft)
         val rootHash = sha256(stream).copyOf(8)
@@ -459,17 +470,18 @@ object TagDropCodec {
         collectionTag: String? = null, icon: String? = null,
         keyMaterial: ByteArray? = null, retainKey: Boolean = true,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false,
+        preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null,
         title: String? = null,
-        createdAt: Long? = null
+        createdAt: Long? = null,
+        domain: String? = null
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val first = createPaper(
             label, set, slug, files, related, description,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
-            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title,
-            createdAt,
+            lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title,
+            createdAt, domain,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.second.first()).length <= DEFAULT_URI_LENGTH) return first
@@ -477,8 +489,8 @@ object TagDropCodec {
             label, set, slug, files, related, description,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
-            lat, lng, radiusM, preferDeclaredLocation, inReplyTo, title,
-            createdAt,
+            lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title,
+            createdAt, domain,
             maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
@@ -537,8 +549,10 @@ object TagDropCodec {
             K_LNG      to paper.lng,
             K_RADIUS_M to paper.radiusM,
             K_PREFER_DECLARED_LOCATION to true.takeIf { paper.preferDeclaredLocation },
+            K_LOCATION_LABEL to paper.locationLabel,
             K_IN_REPLY_TO to paper.inReplyTo,
             K_CREATED_AT to paper.createdAt,
+            K_DOMAIN to paper.domain,
             K_BULKY_SHA to sha256(bulkyBytes)
         )
         val out = ByteArrayOutputStream()
@@ -778,6 +792,7 @@ object TagDropCodec {
                 lng             = core.doubleOrNull(K_LNG),
                 radiusM         = core.doubleOrNull(K_RADIUS_M),
                 preferDeclaredLocation = core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false,
+                locationLabel   = core.text(K_LOCATION_LABEL),
                 inReplyTo       = core.bytesOrNull(K_IN_REPLY_TO),
                 title           = core.text(K_TITLE),
                 description     = core.text(K_DESCRIPTION),
@@ -872,9 +887,11 @@ object TagDropCodec {
             lng             = parts.core.doubleOrNull(K_LNG),
             radiusM         = parts.core.doubleOrNull(K_RADIUS_M),
             preferDeclaredLocation = parts.core.boolOrNull(K_PREFER_DECLARED_LOCATION) ?: false,
+            locationLabel   = parts.core.text(K_LOCATION_LABEL),
             inReplyTo       = parts.core.bytesOrNull(K_IN_REPLY_TO),
             title           = parts.core.text(K_TITLE),
-            createdAt       = parts.core.uint(K_CREATED_AT)
+            createdAt       = parts.core.uint(K_CREATED_AT),
+            domain          = parts.core.text(K_DOMAIN)
         )
     }
 
@@ -922,7 +939,8 @@ object TagDropCodec {
         K_BULKY_COMPRESSION to "bulky_meta_compression",
         K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
         K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
-        K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at"
+        K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at",
+        K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label"
     )
 
     private val TYPE_NAMES = mapOf(TYPE_CONTENT to "Content", TYPE_PAPER to "Paper")

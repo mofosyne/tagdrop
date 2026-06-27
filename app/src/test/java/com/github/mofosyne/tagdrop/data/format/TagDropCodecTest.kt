@@ -520,6 +520,48 @@ class TagDropCodecTest {
         assertTrue(decoded.preferDeclaredLocation)
     }
 
+    /** SPEC §4.2 key 54: a non-coordinate location description round-trips alongside declared coordinates. */
+    @Test fun contentLocationLabelRoundTripsAlongsideCoordinates() {
+        val sectors = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(),
+            lat = -33.8688, lng = 151.2093, locationLabel = "back garden, behind the shed"
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals(-33.8688, state.lat!!, 0.0)
+        assertEquals(151.2093, state.lng!!, 0.0)
+        assertEquals("back garden, behind the shed", state.locationLabel)
+    }
+
+    /** SPEC §4.2 "Explicit no fixed point": a label with no declared coordinates round-trips as-is — the codec itself doesn't enforce the no-substitution rule, that's LocationUtils's job at scan time. */
+    @Test fun contentLocationLabelRoundTripsWithoutCoordinates() {
+        val sectors = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(),
+            locationLabel = "🚋 Tram 40"
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertNull(state.lat)
+        assertNull(state.lng)
+        assertEquals("🚋 Tram 40", state.locationLabel)
+    }
+
+    @Test fun contentLocationLabelDefaultsToNull() {
+        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertNull(state.locationLabel)
+    }
+
+    @Test fun paperLocationLabelRoundTrip() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (_, sectors) = TagDropCodec.createPaper(
+            "Trail Stop", "sunset-trail", "oak-tree", files,
+            locationLabel = "mailed, destination unknown"
+        )
+        val decoded = (assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady).paper
+        assertNull(decoded.lat)
+        assertNull(decoded.lng)
+        assertEquals("mailed, destination unknown", decoded.locationLabel)
+    }
+
     // ── Key-only code (SPEC §9) ────────────────────────────────────────────────
 
     @Test fun keyCodeOmitsCacheIdAndContent() {
@@ -593,6 +635,7 @@ class TagDropCodecTest {
         val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
         assertEquals("cover hint", state.hint)
         assertNotNull(state.pendingOverrideBlob)
+        assertTrue(state.pendingOverrideDeclared)
         assertTrue(state.wasEncrypted)
 
         // A later matching key self-corrects to the real fields (as ReceiveActivity.unlockPending does).
@@ -607,6 +650,23 @@ class TagDropCodecTest {
             roundTrip(TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray()))
         ) as SectorAssembler.State.ContentReady
         assertNull(state.pendingOverrideBlob)
+        assertFalse(state.wasEncrypted)
+    }
+
+    /**
+     * Ordinary plain content with no override/encryption can still be ≥28 bytes (the
+     * trial-decryption size threshold, SPEC §9 "discovery, not declaration"), so
+     * [SectorAssembler.State.ContentReady.pendingOverrideBlob] is non-null — it's still a valid
+     * candidate to try keys against. But since the author declared no `encryption`/`kdf_alg`,
+     * [SectorAssembler.State.ContentReady.pendingOverrideDeclared] must be false so callers don't
+     * show a "🔒 Locked" hint on every scan (the bug this guards against).
+     */
+    @Test fun unencryptedLongContentIsCandidateButNotDeclaredLocked() {
+        val state = assemble(
+            roundTrip(TagDropCodec.createContentSectors(null, null, "text/plain", "x".repeat(40).toByteArray()))
+        ) as SectorAssembler.State.ContentReady
+        assertNotNull(state.pendingOverrideBlob)
+        assertFalse(state.pendingOverrideDeclared)
         assertFalse(state.wasEncrypted)
     }
 

@@ -70,7 +70,7 @@ HTML pages embedded in TagDrop caches can link to other files and papers using:
 tagdrop://<rootHash-hex>/<slug>
 ```
 
-`rootHash` is the Paper's `root_hash` (§4.4) — the 8-byte SHA-256 of its reassembled stream (`core_meta_item || bulky_meta_item || content`, §4.2) — lowercase-hex-encoded (16 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
+`rootHash` is the Paper's `root_hash` (§4.4) — the 8-byte SHA-256 of its reassembled stream (`core_meta_item || bulky_meta_item || content`, §4.2) — lowercase-hex-encoded (16 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed. A human-readable **domain name** may be used in place of `<rootHash-hex>` — see "Domains" in §7.
 
 **Why hex, not Base41, here?** Base41's alphabet includes `:`, which is fine inside the *path* of an opaque URI like `tagdrop:<base41-cbor-sequence>` but not inside a URL's *authority* (host[:port]) component — a `:` there starts the port subcomponent per the WHATWG URL Standard, and anything after it that isn't a bare port number is a hard parse failure for the whole URL. Since the root hash sits in the authority position of a `tagdrop://` link, a Base41-encoded root hash containing `:` (roughly 1 in 4, since `:` is 1 of 41 alphabet characters) would make the link unparseable. Plain lowercase hex has no such character, at the cost of 4 extra characters (16 hex vs 12 Base41 for 8 bytes) — cheap, since navigation links are clicked/typed, not scanned from a QR code.
 
@@ -156,6 +156,8 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 50 | `in_reply_to` | bytes (8, opt) | `core_meta_item` — `cache_id`/`root_hash` of the single parent this is replying to (§7) |
 | 51 | `title` | text (opt) | `core_meta_item` |
 | 52 | `created_at` | uint (opt) | `core_meta_item` — author-declared Unix timestamp (seconds since epoch) this payload was authored; reflects the authoring device's clock, not independently verified |
+| 53 | `domain` | text (opt) | `core_meta_item`; Paper only — human-readable name for `tagdrop://<domain>/<slug>` links, see §7 "Domains" |
+| 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -165,9 +167,10 @@ reused with the same meaning inside the encrypted override map structure only
 (§9). Key 25 is reserved for a future small embedded image icon (raw bytes),
 as an alternative to the emoji `icon` field. Keys 28, 30, 31 are defined in §9
 (Encryption); keys 32–36 in §10 (Verified Authorship); keys 37–39 in §9
-(Passphrase-based key derivation); keys 26, 27, 48, 49 in §4.2 (Declared
-location and priority). Key 29 is reserved and unused — see §9 for
-why an encrypted override map's nonce doesn't need its own clear field.
+(Passphrase-based key derivation); keys 26, 27, 48, 49, 54 in §4.2 (Declared
+location and priority); key 53 in §7 (Domains). Key 29 is reserved and
+unused — see §9 for why an encrypted override map's nonce doesn't need its
+own clear field.
 
 **`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
 1`.** Without it, an adversary who substitutes one sector of a multi-sector
@@ -289,8 +292,8 @@ Laid out as a sequence of three concatenated parts:
 small — by authoring convention, meant to fit in the first sector or two. It
 carries the preview-tier fields — `hint`/`label`, `title`, `mime_type`,
 `filename`, `set`/`slug`, `description`, collection fields, `icon`, declared
-location (`lat`/`lng`/`radius_m`/`prefer_declared_location`), `key_material`/
-`retain_key`, kdf fields, the small signature fields, `in_reply_to` — plus
+location (`lat`/`lng`/`radius_m`/`prefer_declared_location`/`location_label`),
+`key_material`/`retain_key`, kdf fields, the small signature fields, `in_reply_to` — plus
 declarations about what follows: `bulky_meta_compression`, `bulky_meta_compressed_bytes`
 (only present when key 45 is, since uncompressed `bulky_meta_item` keeps the
 free self-delimiting boundary — §3), `bulky_meta_sha256`,
@@ -315,6 +318,37 @@ scanning device manages (e.g. deep indoors, under tree cover, in a
 basement). Implementations are expected to resolve and store only the single
 effective `(lat, lng, radius_m)` triple after applying this priority, not
 both candidate locations.
+
+**Explicit no fixed point.** Some drops have no single coordinate worth
+recording at all — e.g. an item mailed to a recipient whose address the
+author never geocoded, or one carried on a moving vehicle ("🚋 Tram 40")
+rather than left at a point. Two ways to say so:
+
+- `prefer_declared_location` (key 49) set `true` while `lat`/`lng` are both
+  absent. Ordinarily this key only reorders *priority* between two
+  candidate locations (declared vs. live), but with no declared coordinates
+  to prioritize there is nothing for it to prefer — so this combination is
+  instead read as an explicit author assertion that this payload has no
+  reliable fixed point, and a live GPS fix at scan time (which would
+  otherwise fill the gap by default, per the priority rule above) MUST NOT
+  be substituted for it.
+- `location_label` (key 54, text, optional) — a human-readable, non-coordinate
+  description of the drop's location ("🚋 Tram 40", "mailed, destination
+  unknown"). Decoders SHOULD display it as-is. Its presence without
+  declared `lat`/`lng` carries the same "no fixed point, don't substitute
+  live GPS" meaning as the flag above (a label like "Tram 40" describes
+  something that moves, so a scan-time GPS fix would misrepresent it as a
+  fixed point); the two MAY be combined for emphasis but neither requires
+  the other. `location_label` MAY also be present alongside declared or
+  resolved coordinates, simply as descriptive text (e.g. "back garden, behind
+  the shed") — only its presence *without* coordinates changes resolution
+  behavior.
+
+In either case, implementations resolving location for storage/display MUST
+treat the result as "no location" — `(lat, lng, radius_m)` all absent —
+rather than falling back to a live GPS fix. `location_label`, when present,
+is independent of that triple and is carried/stored alongside it regardless
+of whether a fixed point was resolved.
 
 **`bulky_meta_item`** holds whatever doesn't need to be in the early preview
 but isn't raw content — for a Paper, that's `files[]` and `related[]`; for
@@ -656,7 +690,7 @@ When the TagDrop WebView encounters such a link, it:
 3. Looks up the file's `cache_id` in the found-caches database.
 4. If found: loads the file. If not: shows a "not yet scanned" message with the location hint.
 
-This gives the experience of browsing a website, but entirely offline and made of physical paper.
+This gives the experience of browsing a website, but entirely offline and made of physical paper. `rootHash` may instead be a human-readable **domain name** — see "Domains" below.
 
 ### Relative links (same-paper)
 
@@ -731,6 +765,76 @@ tagdrop://<letterbox-paper-root-hash-hex>/index
 ```
 
 Root hashes are permanent because paper is immutable. If a paper is updated, it gets a new hash — the old one continues to work as long as the old paper exists physically.
+
+### Domains
+
+A 16-character hex root hash is precise but not memorable. The optional
+`domain` field (key 53, text) lets a paper claim a short, human-readable
+name instead — `helloworld`, say — for use in navigation links. If a paper
+doesn't declare `domain`, its `slug` (key 14) is used as a fallback domain,
+so a paper that's already part of a named set gets a memorable address for
+free with no extra field.
+
+Like `collection_id` ("Collections" below), a domain is **unilateral, not
+coordinated**: any author can claim any name, there's no registry, and
+nothing stops two unrelated papers from claiming the same one. This is a
+deliberate trade-off — useful names stay short — and is resolved at lookup
+time rather than prevented at authoring time (see "Resolving a domain
+link" below).
+
+#### Domain links
+
+A navigation link may use a domain name in place of the root hash:
+
+```
+tagdrop://<domain-name>/<slug>
+```
+
+The TagDrop app intercepts this exactly like a `tagdrop://<rootHash-hex>/<slug>`
+link, finds the file's `cache_id` in the resolved paper's directory, and
+loads it from the found-caches database.
+
+#### Resolving a domain link
+
+A domain name and a root hash occupy the same position in the link, and a
+domain name made only of hex digits is indistinguishable from a root hash
+by shape alone. Resolvers MUST therefore:
+
+1. Try an exact `root_hash` lookup first (the database's primary key for
+   papers, so this is cheap regardless of whether the host turns out to be
+   hex-shaped).
+2. Only if that lookup misses — whether because the host isn't hex-shaped at
+   all, or because it is but no paper with that exact hash is known — fall
+   back to a domain lookup: scan known papers for `domain` (or, absent that,
+   `slug`) case-insensitively matching the host.
+
+This "exact match wins" order means a real root hash can never be shadowed
+by a same-looking domain name, while a hex-shaped domain name (e.g.
+`deadbeef`) still resolves normally on any device that hasn't *also* scanned
+a paper with that literal root hash.
+
+**Picking the closest match.** Because domains are uncoordinated, more than
+one known paper can match the same name — this is expected, not an error.
+When it happens, the app resolves to a single candidate using:
+
+1. If the device has a current position fix, and at least one candidate has
+   a known location (declared, or resolved from a live GPS fix when it was
+   scanned — §4.2's location/priority rules), pick the candidate nearest to
+   the device.
+2. Otherwise — no device position, or no candidate has a location — pick
+   the most recently scanned candidate.
+
+This favours "the one you're standing next to" when that's knowable, and
+"the one you saw most recently" otherwise, both better guesses than an
+arbitrary pick. If no known paper matches the name under either field, the
+app reports the domain as not found (with the requested `slug`, so the UI
+can still show what was being looked for) rather than treating it as
+invalid input — the name may simply not have been scanned yet.
+
+**Searchability:** since `domain` (and its `slug` fallback) is meant to be
+memorable, it's included alongside `label`/`set`/`slug` in the app's
+collection search, so a paper can be found by name without needing its
+exact link.
 
 ### Collections (ad-hoc grouping)
 

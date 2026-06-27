@@ -3,6 +3,7 @@ package com.github.mofosyne.tagdrop.ui
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 
 /**
  * One card on the home screen — a "collection" of one or more pages.
@@ -24,16 +25,16 @@ sealed class CollectionItem {
     /** True if [query] is blank, or found case-insensitively in [searchHaystack] (so typing "#trail" filters by tag). */
     fun matches(query: String): Boolean = query.isBlank() || searchHaystack.contains(query.trim(), ignoreCase = true)
 
-    data class Paper(val paper: ScannedPaper, val totalFiles: Int, val cachedFiles: Int) : CollectionItem() {
+    data class Paper(val paper: ScannedPaper, val totalFiles: Int, val cachedFiles: Int, val homeCache: FoundCache?) : CollectionItem() {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
         override val searchHaystack get() = listOfNotNull(
-            paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
+            paper.label, paper.set, paper.slug, paper.domain, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
         ).joinToString(" ")
         override val tags get() = listOfNotNull(paper.collectionTag)
     }
 
-    data class AdHoc(val collectionId: String, val label: String?, override val tags: List<String>, val icon: String?, val items: List<FoundCache>) : CollectionItem() {
+    data class AdHoc(val collectionId: String, val label: String?, override val tags: List<String>, val icon: String?, val items: List<FoundCache>, val homeCache: FoundCache?) : CollectionItem() {
         override val key get() = "adhoc:$collectionId"
         override val timestamp get() = items.maxOf { it.discoveredAt }
         override val searchHaystack get() = (
@@ -70,12 +71,17 @@ sealed class CollectionItem {
             val paperItems = papers.map { paper ->
                 val files = TagDropCodec.decodePaperStream(paper.cborBytes)?.files.orEmpty()
                 var cachedCount = 0
+                var homeCache: FoundCache? = null
                 for (file in files) {
                     val fileId = file.fileId.toHex()
                     claimedIds += fileId
-                    if (cachesById.containsKey(fileId)) cachedCount++
+                    val cache = cachesById[fileId]
+                    if (cache != null) {
+                        cachedCount++
+                        if (file.slug in TagDropLinkResolver.HOME_SLUGS) homeCache = cache
+                    }
                 }
-                Paper(paper, totalFiles = files.size, cachedFiles = cachedCount)
+                Paper(paper, totalFiles = files.size, cachedFiles = cachedCount, homeCache = homeCache)
             }
 
             val unclaimed = caches.filterNot { claimedIds.contains(it.cacheId) }
@@ -87,7 +93,8 @@ sealed class CollectionItem {
                 // distinct tag seen across the collection's pages as they're discovered.
                 val tags = items.mapNotNull { it.collectionTag }.distinct()
                 val icon = items.firstOrNull { it.icon != null }?.icon
-                AdHoc(collectionId, withLabel?.collectionLabel, tags, icon, items)
+                val homeCache = items.firstOrNull { it.filename in TagDropLinkResolver.HOME_SLUGS }
+                AdHoc(collectionId, withLabel?.collectionLabel, tags, icon, items, homeCache)
             }
 
             val looseItems = loose.map { Loose(it) }

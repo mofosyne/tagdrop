@@ -540,7 +540,7 @@ const K = {
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52
+  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -607,7 +607,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title', 52: 'created_at',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label',
 };
 
 function toHexDump(bytes) {
@@ -729,12 +729,14 @@ async function parseUri(uri) {
   if (uri.startsWith('tagdrop://')) {
     const rest = uri.slice('tagdrop://'.length);
     const slash = rest.indexOf('/');
-    const rootHashHex = (slash < 0 ? rest : rest.slice(0, slash)).toLowerCase();
+    // host may be a root-hash hex string or a human-readable domain name (SPEC §7
+    // "Domains") -- resolveNavLink tries the exact hash first, falling back to a
+    // domain lookup only on a miss, so a real root hash can never be shadowed by a
+    // same-looking domain name.
+    const host = slash < 0 ? rest : rest.slice(0, slash);
     const slug = slash < 0 ? null : (rest.slice(slash + 1) || null);
-    // No fixed length pinned to today's 8-byte truncation -- root_hash's actual byte
-    // length is defined by the versioned CBOR payload (SPEC §2/§3, key 2).
-    if (!/^([0-9a-f]{2})+$/.test(rootHashHex)) return { type: 'invalid' };
-    return { type: 'nav', rootHashHex, slug };
+    if (!host) return { type: 'invalid' };
+    return { type: 'nav', host, slug };
   }
 
   // Encoding URI: tagdrop:<base41-cbor-sequence>
@@ -810,6 +812,7 @@ async function parseContentStream(stream, partMeta) {
       lng:             core[K.LNG] ?? null,
       radiusM:         core[K.RADIUS_M] ?? null,
       preferDeclaredLocation: core[K.PREFER_DECLARED_LOCATION] === true,
+      locationLabel:   core[K.LOCATION_LABEL] ?? null,
       inReplyTo:       core[K.IN_REPLY_TO] ? toHex(core[K.IN_REPLY_TO]) : null,
       title:           core[K.TITLE] ?? null,
       createdAt:       core[K.CREATED_AT] ?? null,
@@ -886,9 +889,11 @@ function paperFromParts(parts, rootHash) {
     lng:             parts.core[K.LNG] ?? null,
     radiusM:         parts.core[K.RADIUS_M] ?? null,
     preferDeclaredLocation: parts.core[K.PREFER_DECLARED_LOCATION] === true,
+    locationLabel:   parts.core[K.LOCATION_LABEL] ?? null,
     inReplyTo:       parts.core[K.IN_REPLY_TO] ? toHex(parts.core[K.IN_REPLY_TO]) : null,
     title:           parts.core[K.TITLE] ?? null,
     createdAt:       parts.core[K.CREATED_AT] ?? null,
+    domain:          parts.core[K.DOMAIN] ?? null,
   };
 }
 
@@ -906,7 +911,7 @@ function paperFromParts(parts, rootHash) {
 //   { kind: 'ContentReady', cacheId, hint, filename, mimeType, content, collectionId,
 //     collectionLabel, collectionTag, icon, keyMaterial, retainKey, pendingOverrideBlob,
 //     pendingOverrideCompression, kdfAlg, kdfSalt, kdfIters, wasEncrypted,
-//     lat, lng, radiusM, preferDeclaredLocation }
+//     lat, lng, radiusM, preferDeclaredLocation, locationLabel }
 //   { kind: 'PaperReady', paper, streamBytes }
 //   { kind: 'AwaitingKey', cacheId, hint, contentSlot, compression, kdfAlg, kdfSalt, kdfIters }
 //   { kind: 'HashMismatch' }
@@ -1057,8 +1062,12 @@ class SectorAssembler {
       };
     }
     const pendingBlob = content.overrideBlob;
+    // Only treat the candidate blob as a UI-worthy "locked" hint if the author actually
+    // declared it (cosmetic `encryption` field or a passphrase KDF) — SPEC §9 deliberately
+    // leaves undeclared candidates indistinguishable from ordinary content.
+    const declared = pendingBlob != null && (content.encryption === 1 || content.kdfAlg !== 0);
     return readyContentState(content, content.hint, content.filename, content.mimeType, cover,
-      pendingBlob, pendingBlob != null);
+      pendingBlob, declared, declared);
   }
 }
 
@@ -1067,7 +1076,7 @@ function isTerminalState(state) {
          state.kind === 'HashMismatch' || state.kind === 'Failed';
 }
 
-function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted) {
+function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted, declared = false) {
   return {
     kind: 'ContentReady',
     cacheId: content.cacheId, hint, filename, mimeType, content: resolved,
@@ -1075,11 +1084,13 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     collectionTag: content.collectionTag, icon: content.icon,
     keyMaterial: content.keyMaterial, retainKey: content.retainKey,
     pendingOverrideBlob: pendingBlob,
+    pendingOverrideDeclared: declared,
     pendingOverrideCompression: pendingBlob != null ? content.compression : 0,
     kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
     wasEncrypted,
     lat: content.lat, lng: content.lng, radiusM: content.radiusM,
     preferDeclaredLocation: content.preferDeclaredLocation,
+    locationLabel: content.locationLabel,
     inReplyTo: content.inReplyTo, title: content.title, createdAt: content.createdAt,
   };
 }
@@ -1215,13 +1226,13 @@ async function candidateKeys(kdfSalt) {
 async function completeSingle(cacheId, hint, filename, mimeType, content, opts = {}) {
   const {
     collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
-    pendingOverrideBlob = null, pendingCompression = 0, wasEncrypted = false,
+    pendingOverrideBlob = null, pendingOverrideDeclared = false, pendingCompression = 0, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
     inReplyTo = null, title = null, createdAt = null,
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
-    pendingOverrideBlob, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
+    pendingOverrideBlob, pendingOverrideDeclared, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
     inReplyTo, title, createdAt,
   });
   const label = filename || hint || mimeType;
@@ -1292,11 +1303,12 @@ async function handleContentReady(state) {
     cacheId, state.hint, state.filename, state.mimeType, state.content,
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
-      pendingOverrideBlob: blob, pendingCompression: state.pendingOverrideCompression,
+      pendingOverrideBlob: blob, pendingOverrideDeclared: state.pendingOverrideDeclared,
+      pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
       inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
   );
-  showMsg(blob ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
+  showMsg(state.pendingOverrideDeclared ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
 }
 
 /**
@@ -1372,7 +1384,7 @@ async function unlockWithPassphrase({
     const label = await completeSingle(
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
-        pendingOverrideBlob: blob, pendingCompression: compression, wasEncrypted: true,
+        pendingOverrideBlob: blob, pendingOverrideDeclared: true, pendingCompression: compression, wasEncrypted: true,
         kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt }
     );
     showMsg(wrongPassphrase
@@ -1409,7 +1421,8 @@ async function completeContentReady(state) {
     state.cacheId, state.hint, state.filename, state.mimeType, state.content,
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
-      pendingOverrideBlob: state.pendingOverrideBlob, pendingCompression: state.pendingOverrideCompression,
+      pendingOverrideBlob: state.pendingOverrideBlob, pendingOverrideDeclared: state.pendingOverrideDeclared,
+      pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
   );
   showMsg('🔓 Unlocked: ' + label, 'ok');
@@ -1427,7 +1440,7 @@ async function unlockPending(key) {
     const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, key, cached.pendingCompression);
     if (!override) continue;
     const merged = mergeOverride(cached, override, cached.content);
-    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingCompression: 0, wasEncrypted: true });
+    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingOverrideDeclared: false, pendingCompression: 0, wasEncrypted: true });
     unlocked++;
     showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
   }
@@ -1544,7 +1557,7 @@ async function handleScanned(rawBytes) {
     }
 
     case 'nav':
-      await resolveNavLink(parsed.rootHashHex, parsed.slug);
+      await resolveNavLink(parsed.host, parsed.slug);
       break;
 
     case 'invalid':
@@ -1618,15 +1631,39 @@ function formatMissingIndices(missingIndices) {
 }
 
 // ── Navigation link resolution ────────────────────────────────────────────
-async function resolveNavLink(rootHashHex, slug) {
-  const paper = await dbGet('papers', rootHashHex);
+/**
+ * Finds scanned papers claiming [domainName] -- via `domain`, falling back to `slug`
+ * when `domain` is absent (SPEC §7) -- matched case-insensitively, picking the most
+ * recently scanned match if more than one claims the same name (domains are
+ * unilateral/uncoordinated, so collisions are expected). Unlike the Android app, the
+ * browser has no device position to pick the closest match by, so recency is the only
+ * tie-breaker here. Mirrors Kotlin TagDropLinkResolver.pickClosestDomainMatch.
+ */
+async function findDomainMatch(domainName) {
+  const lower = domainName.toLowerCase();
+  const candidates = (await dbGetAll('papers')).filter(p => (p.domain || p.slug)?.toLowerCase() === lower);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((best, p) => (!best || p.scannedAt > best.scannedAt) ? p : best, null);
+}
+
+/**
+ * `host` is either a root-hash hex string or a domain name (SPEC §7 "Domains"). The
+ * exact-hash lookup is always tried first; only on a miss does resolution fall back to
+ * a domain lookup, so a real root hash can never be shadowed by a same-looking domain
+ * name. Mirrors Kotlin TagDropLinkResolver.resolveSchemeLink.
+ */
+async function resolveNavLink(host, slug) {
+  const hexShaped = /^([0-9a-f]{2})+$/.test(host.toLowerCase());
+  const paper = (hexShaped && await dbGet('papers', host.toLowerCase())) || await findDomainMatch(host);
   if (!paper) {
-    showMsg('Paper not in collection — scan its manifest QR first.', 'warn');
+    showMsg(hexShaped
+      ? 'Paper not in collection — scan its manifest QR first.'
+      : "No scanned paper claims the domain '" + host + "'.", 'warn');
     return;
   }
   if (!slug) {
-    activePaperHash = rootHashHex;
-    await renderPaper(rootHashHex);
+    activePaperHash = paper.rootHash;
+    await renderPaper(paper.rootHash);
     return;
   }
   const fileEntry = paper.files.find(f => f.slug === slug);
@@ -1731,6 +1768,7 @@ async function renderPaper(rootHash) {
   if (paper.collectionLabel) hdr += ' <span class="chip">' + escHtml(paper.collectionLabel) + '</span>';
   if (paper.set)  hdr += ' <span class="chip">' + escHtml(paper.set) + '</span>';
   if (paper.slug) hdr += ' <span class="chip">/' + escHtml(paper.slug) + '</span>';
+  if (paper.domain) hdr += ' <span class="chip">' + escHtml(paper.domain) + '.tagdrop</span>';
   if (paper.collectionTag) hdr += ' <span class="chip">#' + escHtml(paper.collectionTag) + '</span>';
   if (paper.collectionId)  hdr += ' <span class="chip">id:' + escHtml(paper.collectionId) + '</span>';
 
@@ -1765,8 +1803,10 @@ async function renderPaper(rootHash) {
     const descHtml = f.description ? '<span class="desc">' + escHtml(f.description) + '</span>' : '';
     if (cache) {
       // SPEC §9: a pending override blob means this file's cover content is shown but a
-      // later key could "self-correct" hint/filename/mime_type/content.
-      const lock = cache.pendingOverrideBlob ? ' 🔒' : '';
+      // later key could "self-correct" hint/filename/mime_type/content. Only show the lock
+      // hint when the author actually declared it (encryption hint or kdf_alg) — every
+      // content slot ≥28 bytes is a trial-decryption candidate, but that alone isn't "locked".
+      const lock = (cache.pendingOverrideBlob && cache.pendingOverrideDeclared) ? ' 🔒' : '';
       const home = HOME_SLUGS.includes(f.slug) ? ' 🏠' : '';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + lock + home + '</span>' +
@@ -1834,6 +1874,197 @@ function renderHtmlInIframe(area, html) {
   area.appendChild(frame);
 }
 
+// ── Lenient JSON (best-effort) ────────────────────────────────────────────
+// Mirrors the Android app's LenientJson.kt: a syntax error returns the
+// object/array built so far with an inline error marker in place of the
+// broken entry instead of throwing, so a truncated or corrupted JSON-like
+// blob in showContent()'s application/json branch still shows whatever came
+// before the break instead of nothing at all. Pure discovery aid, not a
+// validator.
+const LenientJson = (() => {
+  class ParseError {
+    constructor(message, offset) { this.message = message; this.offset = offset; }
+  }
+
+  function describe(text) {
+    if (!text || !text.trim()) return '(empty)';
+    const out = [];
+    describeValue(new Parser(text).parseTopLevel(), 0, out);
+    return out.join('');
+  }
+
+  function describeValue(value, indent, out) {
+    const pad = '  '.repeat(indent);
+    if (value === null) { out.push('null'); return; }
+    if (value instanceof ParseError) { out.push(`⚠ ${value.message} (at byte ${value.offset})`); return; }
+    if (typeof value === 'string') { out.push('"' + value + '"'); return; }
+    if (value instanceof Map) {
+      if (value.size === 0) { out.push('{}'); return; }
+      out.push('{\n');
+      const entries = [...value.entries()];
+      entries.forEach(([k, v], i) => {
+        out.push(`${pad}  "${k}": `);
+        describeValue(v, indent + 1, out);
+        if (i < entries.length - 1) out.push(',');
+        out.push('\n');
+      });
+      out.push(`${pad}}`);
+      return;
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) { out.push('[]'); return; }
+      out.push('[\n');
+      value.forEach((v, i) => {
+        out.push(`${pad}  `);
+        describeValue(v, indent + 1, out);
+        if (i < value.length - 1) out.push(',');
+        out.push('\n');
+      });
+      out.push(`${pad}]`);
+      return;
+    }
+    out.push(String(value));
+  }
+
+  const DIGIT = /[0-9]/;
+
+  class Parser {
+    constructor(text) { this.text = text; this.pos = 0; }
+
+    parseTopLevel() {
+      this.skipWs();
+      if (this.pos >= this.text.length) return new ParseError('empty input', this.pos);
+      return this.parseValue();
+    }
+
+    parseValue() {
+      this.skipWs();
+      const { text, pos } = this;
+      if (pos >= text.length) return new ParseError('unexpected end of input', pos);
+      const c = text[pos];
+      if (c === '{') return this.parseObject();
+      if (c === '[') return this.parseArray();
+      if (c === '"') return this.parseString();
+      if (c === 't' || c === 'f' || c === 'n') return this.parseLiteral();
+      if (c === '-' || DIGIT.test(c)) return this.parseNumber();
+      return new ParseError(`unexpected character '${c}'`, pos);
+    }
+
+    parseObject() {
+      const map = new Map();
+      this.pos++; // '{'
+      this.skipWs();
+      if (this.text[this.pos] === '}') { this.pos++; return map; }
+      while (true) {
+        this.skipWs();
+        if (this.pos >= this.text.length || this.text[this.pos] !== '"') {
+          map.set('⚠', new ParseError('expected string key', this.pos));
+          return map;
+        }
+        const parsedKey = this.parseString();
+        if (parsedKey instanceof ParseError) { map.set('⚠', parsedKey); return map; }
+        const key = parsedKey;
+        this.skipWs();
+        if (this.text[this.pos] !== ':') {
+          map.set(key, new ParseError("expected ':' after key", this.pos));
+          return map;
+        }
+        this.pos++; // ':'
+        const value = this.parseValue();
+        map.set(key, value);
+        if (value instanceof ParseError) return map;
+        this.skipWs();
+        if (this.text[this.pos] === ',') { this.pos++; }
+        else if (this.text[this.pos] === '}') { this.pos++; return map; }
+        else { map.set('⚠', new ParseError("expected ',' or '}'", this.pos)); return map; }
+      }
+    }
+
+    parseArray() {
+      const list = [];
+      this.pos++; // '['
+      this.skipWs();
+      if (this.text[this.pos] === ']') { this.pos++; return list; }
+      while (true) {
+        const value = this.parseValue();
+        list.push(value);
+        if (value instanceof ParseError) return list;
+        this.skipWs();
+        if (this.text[this.pos] === ',') { this.pos++; }
+        else if (this.text[this.pos] === ']') { this.pos++; return list; }
+        else { list.push(new ParseError("expected ',' or ']'", this.pos)); return list; }
+      }
+    }
+
+    parseString() {
+      const start = this.pos;
+      this.pos++; // opening quote
+      let sb = '';
+      while (true) {
+        if (this.pos >= this.text.length) return new ParseError('unterminated string', start);
+        const c = this.text[this.pos];
+        if (c === '"') { this.pos++; return sb; }
+        if (c === '\\') {
+          this.pos++;
+          if (this.pos >= this.text.length) return new ParseError('unterminated escape', this.pos);
+          const esc = this.text[this.pos];
+          if (esc === '"' || esc === '\\' || esc === '/') sb += esc;
+          else if (esc === 'b') sb += '\b';
+          else if (esc === 'f') sb += '\f';
+          else if (esc === 'n') sb += '\n';
+          else if (esc === 'r') sb += '\r';
+          else if (esc === 't') sb += '\t';
+          else if (esc === 'u') {
+            if (this.pos + 4 >= this.text.length) return new ParseError('truncated unicode escape', this.pos);
+            const hex = this.text.substring(this.pos + 1, this.pos + 5);
+            const code = /^[0-9a-fA-F]{4}$/.test(hex) ? parseInt(hex, 16) : NaN;
+            if (Number.isNaN(code)) return new ParseError('invalid unicode escape', this.pos);
+            sb += String.fromCharCode(code);
+            this.pos += 4;
+          } else return new ParseError(`invalid escape '\\${esc}'`, this.pos);
+          this.pos++;
+        } else if (c.charCodeAt(0) < 0x20) {
+          return new ParseError('control character in string', this.pos);
+        } else {
+          sb += c; this.pos++;
+        }
+      }
+    }
+
+    parseNumber() {
+      const start = this.pos;
+      const { text } = this;
+      if (text[this.pos] === '-') this.pos++;
+      if (this.pos >= text.length || !DIGIT.test(text[this.pos])) return new ParseError('invalid number', start);
+      while (this.pos < text.length && DIGIT.test(text[this.pos])) this.pos++;
+      if (text[this.pos] === '.') {
+        this.pos++;
+        if (this.pos >= text.length || !DIGIT.test(text[this.pos])) return new ParseError('invalid number', start);
+        while (this.pos < text.length && DIGIT.test(text[this.pos])) this.pos++;
+      }
+      if (text[this.pos] === 'e' || text[this.pos] === 'E') {
+        this.pos++;
+        if (text[this.pos] === '+' || text[this.pos] === '-') this.pos++;
+        if (this.pos >= text.length || !DIGIT.test(text[this.pos])) return new ParseError('invalid number', start);
+        while (this.pos < text.length && DIGIT.test(text[this.pos])) this.pos++;
+      }
+      return Number(text.substring(start, this.pos));
+    }
+
+    parseLiteral() {
+      const { text, pos } = this;
+      if (text.startsWith('true', pos)) { this.pos += 4; return true; }
+      if (text.startsWith('false', pos)) { this.pos += 5; return false; }
+      if (text.startsWith('null', pos)) { this.pos += 4; return null; }
+      return new ParseError('invalid literal', pos);
+    }
+
+    skipWs() { while (this.pos < this.text.length && /\s/.test(this.text[this.pos])) this.pos++; }
+  }
+
+  return { describe };
+})();
+
 // `meta` (optional) carries SPEC §7 collection/icon fields from a freshly-scanned
 // Single/Manifest's parsed payload — { icon, collectionLabel, collectionTag, collectionId }.
 // Only available right after a scan (not persisted to the caches/papers DB), so callers
@@ -1890,6 +2121,11 @@ async function showContent(mimeType, content, title, cacheId, meta) {
     const style = css ? '<style>' + css + '</style>' : '';
     const html = '<!DOCTYPE html><html><head><meta charset="utf-8">' + style + '</head><body>' + body + '</body></html>';
     renderHtmlInIframe(area, html);
+  } else if (mimeType.startsWith('application/json')) {
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';
+    pre.textContent = LenientJson.describe(new TextDecoder().decode(content));
+    area.appendChild(pre);
   } else if (mimeType.startsWith('text/')) {
     const pre = document.createElement('pre');
     pre.style.cssText = 'padding:16px;margin:0;white-space:pre-wrap;word-break:break-word;';
@@ -1927,7 +2163,7 @@ window.addEventListener('message', async e => {
   if (!e.data || e.data.type !== 'tagdrop-nav') return;
   let parsed;
   try { parsed = await parseUri(e.data.uri); } catch (err) { return; }
-  if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.rootHashHex, parsed.slug);
+  if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.host, parsed.slug);
 });
 
 // ── Assembly progress bar ─────────────────────────────────────────────────

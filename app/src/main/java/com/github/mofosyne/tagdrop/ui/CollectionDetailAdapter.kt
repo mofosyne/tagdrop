@@ -11,6 +11,7 @@ import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
 import com.github.mofosyne.tagdrop.data.db.isOpenable
+import com.github.mofosyne.tagdrop.data.db.showsLockHint
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
@@ -77,7 +78,7 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> item.cache
                 is PageItem.RelatedHint -> null
             }
-            binding.textLockBadge.visibility = if (cacheForBadge?.hasPendingOverride == true) View.VISIBLE else View.GONE
+            binding.textLockBadge.visibility = if (cacheForBadge?.showsLockHint == true) View.VISIBLE else View.GONE
             val wasEncrypted = when (item) {
                 is PageItem.CacheEntry -> item.cache.wasEncrypted
                 is PageItem.PaperFile -> item.cache?.wasEncrypted == true
@@ -85,12 +86,20 @@ class CollectionDetailAdapter(
             }
             binding.textUnlockBadge.visibility =
                 if (wasEncrypted && cacheForBadge?.hasPendingOverride != true) View.VISIBLE else View.GONE
+            // Same homepage convention as a paper's file directory (TagDropLinkResolver.HOME_SLUGS),
+            // applied to an ad-hoc collection's filename — collection_id has no slug/manifest of its
+            // own, so filename is the nearest equivalent "this is the entry point" signal.
+            val homeName = when (item) {
+                is PageItem.PaperFile -> item.slug
+                is PageItem.CacheEntry -> item.cache.filename
+                is PageItem.RelatedHint -> null
+            }
             binding.textHomeBadge.visibility =
-                if (item is PageItem.PaperFile && item.slug in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
+                if (homeName != null && homeName in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug
-                    binding.textSubtitle.text = item.mimeType
+                    binding.textSubtitle.text = subtitleWithLocationLabel(item.mimeType, item.cache?.locationLabel)
                     binding.textSubtitle.visibility = View.VISIBLE
                     val cache = item.cache
                     if (cache != null) {
@@ -111,7 +120,7 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> {
                     val cache = item.cache
                     binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
-                    binding.textSubtitle.text = cache.mimeType
+                    binding.textSubtitle.text = subtitleWithLocationLabel(cache.mimeType, cache.locationLabel)
                     binding.textSubtitle.visibility = View.VISIBLE
                     binding.textStatus.text = dateFormat().format(Date(cache.discoveredAt))
                     binding.buttonOpen.isEnabled = cache.isOpenable
@@ -193,14 +202,18 @@ class CollectionDetailAdapter(
          * [FoundCache.equals] compares only `cacheId` (it holds a `ByteArray`, which can't
          * be structurally `==`-compared), so `a == b` alone can't see e.g. `pendingOverrideBlob`
          * clearing once a SPEC §9 key unlocks it — check that explicitly so the row re-binds
-         * and drops its lock badge and gains its unlock badge.
+         * and drops its lock badge and gains its unlock badge. Also check `filename`, since an
+         * override can self-correct it to "index"/etc. post-unlock, which should (re)show the
+         * 🏠 home badge on an ad-hoc collection entry.
          */
         override fun areContentsTheSame(a: PageItem, b: PageItem): Boolean {
             if (a != b) return false
             val ca = a.cacheOrNull()
             val cb = b.cacheOrNull()
             return ca?.hasPendingOverride == cb?.hasPendingOverride &&
-                ca?.wasEncrypted == cb?.wasEncrypted
+                ca?.pendingOverrideDeclared == cb?.pendingOverrideDeclared &&
+                ca?.wasEncrypted == cb?.wasEncrypted &&
+                ca?.filename == cb?.filename
         }
 
         private fun PageItem.cacheOrNull(): FoundCache? = when (this) {
@@ -214,5 +227,9 @@ class CollectionDetailAdapter(
         private const val VIEW_TYPE_ROW = 0
         private const val VIEW_TYPE_HEADER = 1
         private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+
+        /** Appends a non-coordinate location description (SPEC §4.2) to a subtitle, since it has no map pin to show instead. */
+        private fun subtitleWithLocationLabel(base: String, locationLabel: String?) =
+            if (locationLabel != null) "$base · 📍 $locationLabel" else base
     }
 }

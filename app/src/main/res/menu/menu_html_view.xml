@@ -36,6 +36,9 @@
                 <item
                     android:id="@+id/action_view_cbor"
                     android:title="@string/view_mode_cbor" />
+                <item
+                    android:id="@+id/action_view_json"
+                    android:title="@string/view_mode_json" />
             </group>
         </menu>
     </item>

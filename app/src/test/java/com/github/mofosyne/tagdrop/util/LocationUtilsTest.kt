@@ -46,14 +46,42 @@ class LocationUtilsTest {
         assertNull(resolved.radiusM)
     }
 
-    @Test fun preferDeclaredHasNoEffectWithoutADeclaredLocation() {
+    /**
+     * SPEC §4.2, "Explicit no fixed point": `prefer_declared_location=true` with no declared
+     * coordinates at all is an author assertion that this payload has no reliable fixed point
+     * (e.g. mailed, or carried on a moving vehicle) — a live GPS fix MUST NOT be substituted
+     * for it. (Until issue #40's fix, `preferDeclared` alone here was a no-op and live GPS won
+     * by default — this inverts that.)
+     */
+    @Test fun preferDeclaredWithoutADeclaredLocationMeansNoFixedPoint() {
         val resolved = LocationUtils.resolveLocation(
             declaredLat = null, declaredLng = null, declaredRadiusM = null, preferDeclared = true,
             liveLat = -37.8136, liveLng = 144.9631
         )
+        assertNull(resolved.lat)
+        assertNull(resolved.lng)
+        assertNull(resolved.radiusM)
+    }
+
+    @Test fun locationLabelWithoutADeclaredLocationMeansNoFixedPoint() {
+        val resolved = LocationUtils.resolveLocation(
+            declaredLat = null, declaredLng = null, declaredRadiusM = null, preferDeclared = false,
+            liveLat = -37.8136, liveLng = 144.9631, locationLabel = "🚋 Tram 40"
+        )
+        assertNull(resolved.lat)
+        assertNull(resolved.lng)
+        assertNull(resolved.radiusM)
+        assertEquals("🚋 Tram 40", resolved.locationLabel)
+    }
+
+    @Test fun locationLabelIsPassThroughAndDoesNotAffectCoordinateResolution() {
+        val resolved = LocationUtils.resolveLocation(
+            declaredLat = -33.8688, declaredLng = 151.2093, declaredRadiusM = 25.0, preferDeclared = false,
+            liveLat = -37.8136, liveLng = 144.9631, locationLabel = "back garden, behind the shed"
+        )
         assertEquals(-37.8136, resolved.lat!!, 0.0)
         assertEquals(144.9631, resolved.lng!!, 0.0)
-        assertNull(resolved.radiusM)
+        assertEquals("back garden, behind the shed", resolved.locationLabel)
     }
 
     @Test fun partialDeclaredCoordinateIsTreatedAsAbsent() {

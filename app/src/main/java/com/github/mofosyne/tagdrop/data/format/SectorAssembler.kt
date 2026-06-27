@@ -65,6 +65,14 @@ class SectorAssembler {
             val keyMaterial: ByteArray?,
             val retainKey: Boolean,
             val pendingOverrideBlob: ByteArray? = null,
+            /**
+             * True only when the author actually declared an override (`encryption` cosmetic
+             * hint or a passphrase `kdf_alg`, SPEC §9) — as opposed to [pendingOverrideBlob]
+             * merely being long enough to *try* keys against (every payload this size is a
+             * candidate, per "discovery, not declaration"). Gates the 🔒 UI hint so it doesn't
+             * fire on ordinary unencrypted content that happens to be ≥28 bytes.
+             */
+            val pendingOverrideDeclared: Boolean = false,
             val pendingOverrideCompression: Int = TagDropCodec.COMPRESSION_NONE,
             val kdfAlg: Int = TagDropCodec.KDF_NONE,
             val kdfSalt: ByteArray? = null,
@@ -74,6 +82,7 @@ class SectorAssembler {
             val lng: Double? = null,
             val radiusM: Double? = null,
             val preferDeclaredLocation: Boolean = false,
+            val locationLabel: String? = null,
             val inReplyTo: ByteArray? = null,
             val title: String? = null,
             val description: String? = null,
@@ -222,13 +231,18 @@ class SectorAssembler {
                 content.kdfAlg, content.kdfSalt, content.kdfIters
             )
         val pendingBlob = content.overrideBlob
+        // Only treat the candidate blob as a UI-worthy "locked" hint if the author actually
+        // declared it (cosmetic `encryption` field or a passphrase KDF) — SPEC §9 deliberately
+        // leaves undeclared candidates indistinguishable from ordinary content.
+        val declared = pendingBlob != null &&
+            (content.encryption == TagDropCodec.ENCRYPTION_AES256GCM || content.kdfAlg != TagDropCodec.KDF_NONE)
         return readyState(content, content.hint, content.filename, content.mimeType, cover,
-            pendingBlob = pendingBlob, wasEncrypted = pendingBlob != null)
+            pendingBlob = pendingBlob, wasEncrypted = declared, declared = declared)
     }
 
     private fun readyState(
         content: TagDropPayload.Content, hint: String?, filename: String?, mimeType: String,
-        resolved: ByteArray, pendingBlob: ByteArray?, wasEncrypted: Boolean
+        resolved: ByteArray, pendingBlob: ByteArray?, wasEncrypted: Boolean, declared: Boolean = false
     ) = State.ContentReady(
         cacheId = content.cacheId,
         hint = hint,
@@ -242,6 +256,7 @@ class SectorAssembler {
         keyMaterial = content.keyMaterial,
         retainKey = content.retainKey,
         pendingOverrideBlob = pendingBlob,
+        pendingOverrideDeclared = declared,
         pendingOverrideCompression = if (pendingBlob != null) content.compression else TagDropCodec.COMPRESSION_NONE,
         kdfAlg = content.kdfAlg,
         kdfSalt = content.kdfSalt,
@@ -251,6 +266,7 @@ class SectorAssembler {
         lng = content.lng,
         radiusM = content.radiusM,
         preferDeclaredLocation = content.preferDeclaredLocation,
+        locationLabel = content.locationLabel,
         inReplyTo = content.inReplyTo,
         title = content.title,
         description = content.description,

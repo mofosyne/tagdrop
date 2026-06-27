@@ -410,7 +410,7 @@ class ReceiveActivity : AppCompatActivity() {
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(
             paper.lat, paper.lng, paper.radiusM, paper.preferDeclaredLocation,
-            location?.first, location?.second
+            location?.first, location?.second, paper.locationLabel
         )
         lifecycleScope.launch {
             AppDatabase.get(this@ReceiveActivity).paperDao().insert(
@@ -420,6 +420,7 @@ class ReceiveActivity : AppCompatActivity() {
                     label           = paper.label,
                     set             = paper.set,
                     slug            = paper.slug,
+                    domain          = paper.domain,
                     cborBytes       = streamBytes,
                     collectionId    = paper.collectionId?.toHex(),
                     collectionLabel = paper.collectionLabel,
@@ -427,6 +428,7 @@ class ReceiveActivity : AppCompatActivity() {
                     lat             = resolved.lat,
                     lng             = resolved.lng,
                     locationRadiusM = resolved.radiusM,
+                    locationLabel   = resolved.locationLabel,
                     icon            = paper.icon,
                     inReplyTo       = paper.inReplyTo?.toHex()
                 )
@@ -451,16 +453,16 @@ class ReceiveActivity : AppCompatActivity() {
         cacheId: String, hint: String?, filename: String?,
         mimeType: String, content: ByteArray, collectionId: String? = null,
         collectionLabel: String? = null, collectionTag: String? = null, icon: String? = null,
-        pendingOverrideBlob: ByteArray? = null, pendingCompression: Int = 0,
+        pendingOverrideBlob: ByteArray? = null, pendingOverrideDeclared: Boolean = false, pendingCompression: Int = 0,
         wasEncrypted: Boolean = false,
         kdfAlg: Int = 0, kdfSalt: ByteArray? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false,
+        preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
         createdAt: Long? = null
     ) {
         val location = getLastKnownLocation()
-        val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second)
+        val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second, locationLabel)
         val paper = lastPaper
         lifecycleScope.launch {
             val cacheDao = AppDatabase.get(this@ReceiveActivity).cacheDao()
@@ -479,8 +481,10 @@ class ReceiveActivity : AppCompatActivity() {
                     lat                = resolved.lat,
                     lng                = resolved.lng,
                     locationRadiusM    = resolved.radiusM,
+                    locationLabel      = resolved.locationLabel,
                     icon               = icon,
                     pendingOverrideBlob = pendingOverrideBlob,
+                    pendingOverrideDeclared = pendingOverrideDeclared,
                     pendingCompression  = pendingCompression,
                     wasEncrypted        = wasEncrypted,
                     kdfAlg              = kdfAlg,
@@ -536,7 +540,7 @@ class ReceiveActivity : AppCompatActivity() {
                 state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
                 wasEncrypted = true,
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-                preferDeclaredLocation = state.preferDeclaredLocation,
+                preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
                 inReplyTo = state.inReplyTo, title = state.title, description = state.description,
                 createdAt = state.createdAt
             )
@@ -551,7 +555,7 @@ class ReceiveActivity : AppCompatActivity() {
                 collectionId = state.collectionId?.toHex(), collectionLabel = state.collectionLabel,
                 collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg,
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-                preferDeclaredLocation = state.preferDeclaredLocation,
+                preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
                 inReplyTo = state.inReplyTo, title = state.title, description = state.description,
                 createdAt = state.createdAt
             )
@@ -561,10 +565,11 @@ class ReceiveActivity : AppCompatActivity() {
         completeSingle(
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
-            pendingOverrideBlob = blob, pendingCompression = state.pendingOverrideCompression,
+            pendingOverrideBlob = blob, pendingOverrideDeclared = state.pendingOverrideDeclared,
+            pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
-            preferDeclaredLocation = state.preferDeclaredLocation,
+            preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
             inReplyTo = state.inReplyTo, title = state.title, description = state.description,
             createdAt = state.createdAt
         )
@@ -604,7 +609,7 @@ class ReceiveActivity : AppCompatActivity() {
         kdfSalt: ByteArray, kdfIters: Int, fallbackContent: ByteArray?, filename: String?, mimeType: String,
         collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
-        preferDeclaredLocation: Boolean = false,
+        preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
         createdAt: Long? = null
     ) {
@@ -625,6 +630,7 @@ class ReceiveActivity : AppCompatActivity() {
                     override.mimeType ?: mimeType, override.content ?: ByteArray(0),
                     collectionId, collectionLabel, collectionTag, icon, wasEncrypted = true,
                     lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
+                    locationLabel = locationLabel,
                     inReplyTo = inReplyTo, title = title, description = description,
                     createdAt = createdAt
                 )
@@ -636,9 +642,10 @@ class ReceiveActivity : AppCompatActivity() {
             completeSingle(
                 cacheIdHex, hint, filename, mimeType, fallbackContent,
                 collectionId, collectionLabel, collectionTag, icon,
-                pendingOverrideBlob = blob, pendingCompression = compression,
+                pendingOverrideBlob = blob, pendingOverrideDeclared = true, pendingCompression = compression,
                 wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt,
                 lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
+                locationLabel = locationLabel,
                 inReplyTo = inReplyTo, title = title, description = description,
                 createdAt = createdAt
             )
@@ -702,6 +709,7 @@ class ReceiveActivity : AppCompatActivity() {
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = state.pendingOverrideBlob,
+            pendingOverrideDeclared = state.pendingOverrideDeclared,
             pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
@@ -729,6 +737,7 @@ class ReceiveActivity : AppCompatActivity() {
                     mimeType = override.mimeType ?: cache.mimeType,
                     contentBytes = override.content ?: cache.contentBytes,
                     pendingOverrideBlob = null,
+                    pendingOverrideDeclared = false,
                     pendingCompression = 0,
                     wasEncrypted = true
                 )

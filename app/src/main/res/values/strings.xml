@@ -29,6 +29,7 @@
     <string name="collection_item_count">%1$d item(s)</string>
     <string name="collection_adhoc_default_title">Collection #%1$s</string>
     <string name="collection_untitled">Untitled</string>
+    <string name="action_open_homepage">🏠 Open homepage</string>
     <string name="action_view_raw_cbor">View raw CBOR</string>
     <string name="cbor_debug_title">Raw CBOR — %1$s</string>
     <string name="action_delete_paper">Delete paper</string>
@@ -73,7 +74,7 @@
     <string name="status_not_cached">Not yet scanned</string>
     <string name="lock_badge_desc">Hidden content not yet unlocked — scan its key code to reveal more</string>
     <string name="unlock_badge_desc">Content was encrypted — now unlocked with its key</string>
-    <string name="home_badge_desc">This paper\'s homepage</string>
+    <string name="home_badge_desc">This collection\'s homepage</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
     <string name="related_found">Already in your collection — tap Open</string>
@@ -149,6 +150,7 @@
     <string name="file_not_scanned">File \'%1$s\' not yet scanned. Find and scan its QR code.</string>
     <string name="slug_not_found">No file named \'%1$s\' in this paper\'s directory.</string>
     <string name="paper_not_scanned">Paper not found in collection. Scan the paper manifest QR first.</string>
+    <string name="domain_not_found">No scanned paper claims the domain \'%1$s\'.</string>
     <string name="link_invalid">Invalid tagdrop:// link.</string>
     <string name="chunk_before_manifest">Chunk received — scan the manifest QR first.</string>
 
@@ -167,6 +169,7 @@
     <string name="view_mode_text">Text</string>
     <string name="view_mode_hex">Hex</string>
     <string name="view_mode_cbor">CBOR</string>
+    <string name="view_mode_json">JSON</string>
     <string name="export_no_app_found">No app found to handle this content.</string>
     <string name="export_saved">Saved to device.</string>
     <string name="export_failed">Export failed.</string>

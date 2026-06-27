@@ -11,9 +11,13 @@ import android.view.View
 import android.text.InputType
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
@@ -23,6 +27,7 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.db.hasPendingPassphrase
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import kotlinx.coroutines.CompletableDeferred
 import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.ActivityCollectionDetailBinding
@@ -56,6 +61,9 @@ class CollectionDetailActivity : AppCompatActivity() {
     /** The export zip's content:// URI awaiting a destination from [saveZipLauncher]. */
     private var pendingExportZipUri: Uri? = null
 
+    /** Set from [CollectionDetailActivity.EXTRA_AUTO_OPEN_HOME]; consumed (set false) the first time [bindHomepageButton] fires. */
+    private var pendingAutoOpenHome = false
+
     private val saveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null) writeToUri(uri)
     }
@@ -65,9 +73,22 @@ class CollectionDetailActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         binding = ActivityCollectionDetailBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.updatePadding(
+                left = systemBars.left,
+                top = systemBars.top,
+                right = systemBars.right,
+                bottom = systemBars.bottom
+            )
+            insets
+        }
+
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
@@ -88,6 +109,7 @@ class CollectionDetailActivity : AppCompatActivity() {
         val rootHash = intent.getStringExtra(EXTRA_ROOT_HASH)
         val collectionId = intent.getStringExtra(EXTRA_COLLECTION_ID)
         val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
+        pendingAutoOpenHome = intent.getBooleanExtra(EXTRA_AUTO_OPEN_HOME, false)
 
         when {
             rootHash != null -> observePaper(db, rootHash, adapter)
@@ -113,6 +135,8 @@ class CollectionDetailActivity : AppCompatActivity() {
             val cachesById = latestCaches.associateBy { it.cacheId }
 
             val fileItems = files.map { f -> PageItem.PaperFile(f.slug, f.mimeType, cachesById[f.fileId.toHex()]) }
+            val homeFile = files.find { it.slug in TagDropLinkResolver.HOME_SLUGS }
+            bindHomepageButton(homeFile?.let { cachesById[it.fileId.toHex()] })
             val items = buildList {
                 addAll(fileItems)
                 if (related.isNotEmpty()) {
@@ -178,12 +202,37 @@ class CollectionDetailActivity : AppCompatActivity() {
             exportableCaches = caches.filter { it.isOpenable }
             currentAdHocCaches = caches
             invalidateOptionsMenu()
+            bindHomepageButton(caches.firstOrNull { it.filename in TagDropLinkResolver.HOME_SLUGS })
 
             title = caches.firstOrNull { it.collectionLabel != null }?.collectionLabel
                 ?: getString(R.string.collection_adhoc_default_title, collectionId.take(8))
             val tags = caches.mapNotNull { it.collectionTag }.distinct()
             binding.textInfo.text = tags.joinToString(" ") { "#$it" }
             binding.textInfo.visibility = if (tags.isNotEmpty()) View.VISIBLE else View.GONE
+        }
+    }
+
+    /**
+     * Shows/hides the header's "🏠 Open homepage" button for [homeCache] — the cached item
+     * (if any) whose slug/filename matches [TagDropLinkResolver.HOME_SLUGS], same convention
+     * as the 🏠 row badge, but as a one-tap primary action (mirrors the web reader's
+     * "🏠 Open homepage" button in `renderPaper()`).
+     *
+     * Also fires [pendingAutoOpenHome] here (once) — the main collection list's "Open" button
+     * launches this activity with [EXTRA_AUTO_OPEN_HOME] set, reusing this same opened/locked
+     * handling instead of duplicating [openCache]/[tryPassphraseUnlock] a third time.
+     */
+    private fun bindHomepageButton(homeCache: FoundCache?) {
+        if (homeCache != null && homeCache.isOpenable) {
+            binding.buttonOpenHomepage.visibility = View.VISIBLE
+            binding.buttonOpenHomepage.setOnClickListener { openCache(homeCache) }
+            if (pendingAutoOpenHome) {
+                pendingAutoOpenHome = false
+                openCache(homeCache)
+            }
+        } else {
+            binding.buttonOpenHomepage.visibility = View.GONE
+            binding.buttonOpenHomepage.setOnClickListener(null)
         }
     }
 
@@ -254,6 +303,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             mimeType = override.mimeType ?: cache.mimeType,
             contentBytes = override.content ?: cache.contentBytes,
             pendingOverrideBlob = null,
+            pendingOverrideDeclared = false,
             pendingCompression = 0,
             kdfAlg = 0,
             kdfSalt = null
@@ -461,14 +511,22 @@ class CollectionDetailActivity : AppCompatActivity() {
         const val EXTRA_ROOT_HASH = "extra_root_hash"
         const val EXTRA_COLLECTION_ID = "extra_collection_id"
         const val EXTRA_CACHE_ID = "extra_cache_id"
+        /** If true, immediately open the collection's homepage cache once it's resolved — see [bindHomepageButton]. */
+        const val EXTRA_AUTO_OPEN_HOME = "extra_auto_open_home"
     }
 }
 
 /** Opens the collection-detail ("map") screen for a paper, ad-hoc group, or loose scan. */
-fun Context.openCollectionDetail(rootHash: String? = null, collectionId: String? = null, cacheId: String? = null) {
+fun Context.openCollectionDetail(
+    rootHash: String? = null,
+    collectionId: String? = null,
+    cacheId: String? = null,
+    autoOpenHome: Boolean = false
+) {
     val intent = Intent(this, CollectionDetailActivity::class.java)
     rootHash?.let { intent.putExtra(CollectionDetailActivity.EXTRA_ROOT_HASH, it) }
     collectionId?.let { intent.putExtra(CollectionDetailActivity.EXTRA_COLLECTION_ID, it) }
     cacheId?.let { intent.putExtra(CollectionDetailActivity.EXTRA_CACHE_ID, it) }
+    if (autoOpenHome) intent.putExtra(CollectionDetailActivity.EXTRA_AUTO_OPEN_HOME, true)
     startActivity(intent)
 }

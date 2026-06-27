@@ -69,14 +69,25 @@ class TagDropLinkResolverTest {
     private val resolver = TagDropLinkResolver(FakeAppDatabase(paperDao, cacheDao))
 
     /** Stores a paper with the given files and returns it (with its computed root hash already lowercase-hex). */
-    private fun storePaper(label: String? = "Test Paper", files: List<TagDropPayload.FileEntry> = emptyList()): ScannedPaper {
-        val (manifest, _) = TagDropCodec.createPaper(label = label, set = null, slug = null, files = files)
+    private fun storePaper(
+        label: String? = "Test Paper",
+        files: List<TagDropPayload.FileEntry> = emptyList(),
+        slug: String? = null,
+        domain: String? = null,
+        scannedAt: Long = 0L,
+        lat: Double? = null,
+        lng: Double? = null
+    ): ScannedPaper {
+        val (manifest, _) = TagDropCodec.createPaper(label = label, set = null, slug = slug, files = files, domain = domain)
         val paper = ScannedPaper(
             rootHash = manifest.rootHash.toHex(),
-            scannedAt = 0L,
+            scannedAt = scannedAt,
             label = label,
             set = null,
-            slug = null,
+            slug = slug,
+            domain = domain,
+            lat = lat,
+            lng = lng,
             cborBytes = TagDropCodec.paperStreamBytes(manifest)
         )
         paperDao.papers[paper.rootHash] = paper
@@ -110,15 +121,22 @@ class TagDropLinkResolverTest {
         assertEquals(TagDropLinkResolver.Resolution.EncodingUri, resolver.resolve("tagdrop:ABCDEFGH"))
     }
 
-    // ── Invalid root hash ─────────────────────────────────────────────────────
+    // ── Non-hex host: treated as an (uncoordinated) domain name, not rejected ───
 
-    @Test fun navLinkWithNonHexRootHashIsInvalid() = runBlocking {
-        assertEquals(TagDropLinkResolver.Resolution.Invalid, resolver.resolve("tagdrop://not-hex-zzzz/slug"))
+    @Test fun navLinkWithNonHexHostAndNoDomainClaimIsDomainNotFound() = runBlocking {
+        assertEquals(
+            TagDropLinkResolver.Resolution.DomainNotFound("not-hex-zzzz", "slug"),
+            resolver.resolve("tagdrop://not-hex-zzzz/slug")
+        )
     }
 
-    @Test fun navLinkWithOddLengthHexIsInvalid() = runBlocking {
-        // An odd number of hex digits can't represent a whole number of bytes.
-        assertEquals(TagDropLinkResolver.Resolution.Invalid, resolver.resolve("tagdrop://abc/slug"))
+    @Test fun navLinkWithOddLengthHexAndNoDomainClaimIsDomainNotFound() = runBlocking {
+        // An odd number of hex digits can't represent a whole number of bytes, so this host
+        // isn't hex-shaped either -- treated as an (unclaimed) domain name instead of rejected.
+        assertEquals(
+            TagDropLinkResolver.Resolution.DomainNotFound("abc", "slug"),
+            resolver.resolve("tagdrop://abc/slug")
+        )
     }
 
     @Test fun syntheticHostWithNonHexRootHashIsInvalid() = runBlocking {
@@ -256,6 +274,63 @@ class TagDropLinkResolverTest {
     @Test fun findStylesheetReturnsNullWhenAbsent() = runBlocking {
         val paper = storePaper()
         assertNull(resolver.findStylesheet(paper.rootHash))
+    }
+
+    // ── Domain name resolution (SPEC §7 "Domains") ───────────────────────────
+
+    @Test fun domainFieldResolvesToClaimingPaper() = runBlocking {
+        val paper = storePaper(label = "Hello World Cafe", domain = "helloworld")
+        val result = resolver.resolve("tagdrop://helloworld")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), result)
+    }
+
+    @Test fun domainMatchIsCaseInsensitive() = runBlocking {
+        val paper = storePaper(label = "Hello World Cafe", domain = "helloworld")
+        val result = resolver.resolve("tagdrop://HelloWorld")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), result)
+    }
+
+    @Test fun slugFallsBackAsDomainWhenDomainFieldAbsent() = runBlocking {
+        val paper = storePaper(label = "Old Style Paper", slug = "oldstyle")
+        val result = resolver.resolve("tagdrop://oldstyle")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), result)
+    }
+
+    @Test fun unclaimedDomainNameIsDomainNotFound() = runBlocking {
+        storePaper(label = "Unrelated Paper", domain = "somewhere")
+        val result = resolver.resolve("tagdrop://nowhere/index")
+        assertEquals(TagDropLinkResolver.Resolution.DomainNotFound("nowhere", "index"), result)
+    }
+
+    @Test fun exactRootHashMatchWinsOverSameLookingDomainClaim() = runBlocking {
+        val real = storePaper(label = "Real Paper")
+        // A second paper claims the first paper's root hash as its own domain name -- the
+        // exact-hash lookup must still win (SPEC §7 "Resolving a domain link").
+        storePaper(label = "Impostor", domain = real.rootHash)
+        val result = resolver.resolve("tagdrop://${real.rootHash}")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(real, null), result)
+    }
+
+    @Test fun multipleDomainClaimsPickClosestByDevicePosition() = runBlocking {
+        val near = storePaper(label = "Near Cafe", domain = "cafe", lat = 10.0, lng = 10.0, scannedAt = 1L)
+        storePaper(label = "Far Cafe", domain = "cafe", lat = 50.0, lng = 50.0, scannedAt = 2L)
+        val result = resolver.resolve("tagdrop://cafe", deviceLat = 10.1, deviceLng = 10.1)
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(near, null), result)
+    }
+
+    @Test fun multipleDomainClaimsFallBackToMostRecentWithoutDevicePosition() = runBlocking {
+        storePaper(label = "Older Cafe", domain = "cafe", scannedAt = 1L)
+        val newer = storePaper(label = "Newer Cafe", domain = "cafe", scannedAt = 2L)
+        val result = resolver.resolve("tagdrop://cafe")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(newer, null), result)
+    }
+
+    @Test fun multipleDomainClaimsFallBackToMostRecentWhenNoCandidateHasLocation() = runBlocking {
+        storePaper(label = "Older Cafe", domain = "cafe", scannedAt = 1L)
+        val newer = storePaper(label = "Newer Cafe", domain = "cafe", scannedAt = 2L)
+        // Device position is known, but no candidate declares a location -- falls back to recency.
+        val result = resolver.resolve("tagdrop://cafe", deviceLat = 10.0, deviceLng = 10.0)
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(newer, null), result)
     }
 
     // ── HOME_SLUGS convention ─────────────────────────────────────────────────
