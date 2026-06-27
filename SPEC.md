@@ -157,6 +157,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 51 | `title` | text (opt) | `core_meta_item` |
 | 52 | `created_at` | uint (opt) | `core_meta_item` — author-declared Unix timestamp (seconds since epoch) this payload was authored; reflects the authoring device's clock, not independently verified |
 | 53 | `domain` | text (opt) | `core_meta_item`; Paper only — human-readable name for `tagdrop://<domain>/<slug>` links, see §7 "Domains" |
+| 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -166,7 +167,7 @@ reused with the same meaning inside the encrypted override map structure only
 (§9). Key 25 is reserved for a future small embedded image icon (raw bytes),
 as an alternative to the emoji `icon` field. Keys 28, 30, 31 are defined in §9
 (Encryption); keys 32–36 in §10 (Verified Authorship); keys 37–39 in §9
-(Passphrase-based key derivation); keys 26, 27, 48, 49 in §4.2 (Declared
+(Passphrase-based key derivation); keys 26, 27, 48, 49, 54 in §4.2 (Declared
 location and priority); key 53 in §7 (Domains). Key 29 is reserved and
 unused — see §9 for why an encrypted override map's nonce doesn't need its
 own clear field.
@@ -291,8 +292,8 @@ Laid out as a sequence of three concatenated parts:
 small — by authoring convention, meant to fit in the first sector or two. It
 carries the preview-tier fields — `hint`/`label`, `title`, `mime_type`,
 `filename`, `set`/`slug`, `description`, collection fields, `icon`, declared
-location (`lat`/`lng`/`radius_m`/`prefer_declared_location`), `key_material`/
-`retain_key`, kdf fields, the small signature fields, `in_reply_to` — plus
+location (`lat`/`lng`/`radius_m`/`prefer_declared_location`/`location_label`),
+`key_material`/`retain_key`, kdf fields, the small signature fields, `in_reply_to` — plus
 declarations about what follows: `bulky_meta_compression`, `bulky_meta_compressed_bytes`
 (only present when key 45 is, since uncompressed `bulky_meta_item` keeps the
 free self-delimiting boundary — §3), `bulky_meta_sha256`,
@@ -317,6 +318,37 @@ scanning device manages (e.g. deep indoors, under tree cover, in a
 basement). Implementations are expected to resolve and store only the single
 effective `(lat, lng, radius_m)` triple after applying this priority, not
 both candidate locations.
+
+**Explicit no fixed point.** Some drops have no single coordinate worth
+recording at all — e.g. an item mailed to a recipient whose address the
+author never geocoded, or one carried on a moving vehicle ("🚋 Tram 40")
+rather than left at a point. Two ways to say so:
+
+- `prefer_declared_location` (key 49) set `true` while `lat`/`lng` are both
+  absent. Ordinarily this key only reorders *priority* between two
+  candidate locations (declared vs. live), but with no declared coordinates
+  to prioritize there is nothing for it to prefer — so this combination is
+  instead read as an explicit author assertion that this payload has no
+  reliable fixed point, and a live GPS fix at scan time (which would
+  otherwise fill the gap by default, per the priority rule above) MUST NOT
+  be substituted for it.
+- `location_label` (key 54, text, optional) — a human-readable, non-coordinate
+  description of the drop's location ("🚋 Tram 40", "mailed, destination
+  unknown"). Decoders SHOULD display it as-is. Its presence without
+  declared `lat`/`lng` carries the same "no fixed point, don't substitute
+  live GPS" meaning as the flag above (a label like "Tram 40" describes
+  something that moves, so a scan-time GPS fix would misrepresent it as a
+  fixed point); the two MAY be combined for emphasis but neither requires
+  the other. `location_label` MAY also be present alongside declared or
+  resolved coordinates, simply as descriptive text (e.g. "back garden, behind
+  the shed") — only its presence *without* coordinates changes resolution
+  behavior.
+
+In either case, implementations resolving location for storage/display MUST
+treat the result as "no location" — `(lat, lng, radius_m)` all absent —
+rather than falling back to a live GPS fix. `location_label`, when present,
+is independent of that triple and is carried/stored alongside it regardless
+of whether a fixed point was resolved.
 
 **`bulky_meta_item`** holds whatever doesn't need to be in the early preview
 but isn't raw content — for a Paper, that's `files[]` and `related[]`; for

@@ -540,7 +540,7 @@ const K = {
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53
+  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -607,7 +607,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label',
 };
 
 function toHexDump(bytes) {
@@ -812,6 +812,7 @@ async function parseContentStream(stream, partMeta) {
       lng:             core[K.LNG] ?? null,
       radiusM:         core[K.RADIUS_M] ?? null,
       preferDeclaredLocation: core[K.PREFER_DECLARED_LOCATION] === true,
+      locationLabel:   core[K.LOCATION_LABEL] ?? null,
       inReplyTo:       core[K.IN_REPLY_TO] ? toHex(core[K.IN_REPLY_TO]) : null,
       title:           core[K.TITLE] ?? null,
       createdAt:       core[K.CREATED_AT] ?? null,
@@ -888,6 +889,7 @@ function paperFromParts(parts, rootHash) {
     lng:             parts.core[K.LNG] ?? null,
     radiusM:         parts.core[K.RADIUS_M] ?? null,
     preferDeclaredLocation: parts.core[K.PREFER_DECLARED_LOCATION] === true,
+    locationLabel:   parts.core[K.LOCATION_LABEL] ?? null,
     inReplyTo:       parts.core[K.IN_REPLY_TO] ? toHex(parts.core[K.IN_REPLY_TO]) : null,
     title:           parts.core[K.TITLE] ?? null,
     createdAt:       parts.core[K.CREATED_AT] ?? null,
@@ -909,7 +911,7 @@ function paperFromParts(parts, rootHash) {
 //   { kind: 'ContentReady', cacheId, hint, filename, mimeType, content, collectionId,
 //     collectionLabel, collectionTag, icon, keyMaterial, retainKey, pendingOverrideBlob,
 //     pendingOverrideCompression, kdfAlg, kdfSalt, kdfIters, wasEncrypted,
-//     lat, lng, radiusM, preferDeclaredLocation }
+//     lat, lng, radiusM, preferDeclaredLocation, locationLabel }
 //   { kind: 'PaperReady', paper, streamBytes }
 //   { kind: 'AwaitingKey', cacheId, hint, contentSlot, compression, kdfAlg, kdfSalt, kdfIters }
 //   { kind: 'HashMismatch' }
@@ -1088,6 +1090,7 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     wasEncrypted,
     lat: content.lat, lng: content.lng, radiusM: content.radiusM,
     preferDeclaredLocation: content.preferDeclaredLocation,
+    locationLabel: content.locationLabel,
     inReplyTo: content.inReplyTo, title: content.title, createdAt: content.createdAt,
   };
 }

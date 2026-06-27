@@ -17,6 +17,7 @@ data class ScannedPaper(
     val lat: Double? = null,             // effective latitude (live GPS, or author-declared if it won — SPEC §3 prefer_declared_location)
     val lng: Double? = null,             // effective longitude, same resolution rule as lat
     val locationRadiusM: Double? = null, // circle-of-uncertainty radius in meters; only set when lat/lng came from a declared (not live-GPS) source
+    val locationLabel: String? = null,   // optional human-readable, non-coordinate location description, e.g. "🚋 Tram 40" (SPEC §4.2)
     val icon: String? = null,            // optional emoji icon
     val createdByMe: Boolean = false,    // true if authored in-app (Create Paper), not scanned
     val inReplyTo: String? = null,       // hex-encoded cache_id/root_hash of the single parent this is replying to (SPEC §7)
