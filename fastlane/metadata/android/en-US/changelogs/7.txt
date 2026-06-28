@@ -4,5 +4,7 @@
 - Codes can now declare what time they were authored, shown as a clock-icon chip.
 - New "JSON" view alongside the existing decoded/hex/CBOR options; both JSON and CBOR views now show whatever they can decode instead of failing outright on a damaged or partial code.
 - Papers and ad-hoc collections with a homepage file get a one-tap "Open homepage" button; ad-hoc collections also show the 🏠 homepage badge, not just papers.
+- Writing to an NFC tag can now also add a standard record alongside TagDrop's own, so non-TagDrop phones can read something too.
+- Cached image previews now also work for SVG content, and other file types show a placeholder icon matching their kind (picture, audio, video, PDF, etc.) instead of a blank space.
 - Fix: the 🔒 "locked" badge no longer shows up on ordinary unencrypted scans — only on content actually declared as encrypted.
 - Fix: toolbars no longer overlap the status bar on newer Android versions.
