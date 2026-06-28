@@ -47,9 +47,19 @@ object ThumbnailLoader {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
 
-    /** Renders into a fixed [TARGET_PX] square; AndroidSVG fits the document inside it per the SVG's own `preserveAspectRatio` (default: centered, letterboxed), same as an `<img>` would. */
+    /**
+     * Renders into a fixed [TARGET_PX] square; AndroidSVG fits the document inside it per the
+     * SVG's own `preserveAspectRatio` (default: centered, letterboxed), same as an `<img>` would.
+     * Forcing the outer width/height to "100%" makes AndroidSVG size the document to the canvas
+     * it's actually given rather than to any fixed pixel `width`/`height` attributes on the root
+     * `<svg>` — without this, a document like `<svg width="200" height="200" viewBox="0 0 100
+     * 100">` renders at its literal 200×200, and only the top-left [TARGET_PX]² slice of that
+     * would land on our canvas instead of the whole, scaled-down document.
+     */
     private fun decodeSvg(bytes: ByteArray): Bitmap? = runCatching {
         val svg = SVG.getFromInputStream(ByteArrayInputStream(bytes))
+        svg.setDocumentWidth("100%")
+        svg.setDocumentHeight("100%")
         val bitmap = Bitmap.createBitmap(TARGET_PX, TARGET_PX, Bitmap.Config.ARGB_8888)
         svg.renderToCanvas(Canvas(bitmap))
         bitmap
