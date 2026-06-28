@@ -17,6 +17,7 @@ import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
 import com.github.mofosyne.tagdrop.openCollectionDetail
+import com.github.mofosyne.tagdrop.util.iconForMimeType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -82,7 +83,12 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> item.cache.takeIf { it.isThumbnailEligible }
                 is PageItem.RelatedHint -> null
             }
-            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, scope)
+            val fallbackIcon = when (item) {
+                is PageItem.PaperFile -> iconForMimeType(item.mimeType)
+                is PageItem.CacheEntry -> iconForMimeType(item.cache.mimeType)
+                is PageItem.RelatedHint -> "🧭"
+            }
+            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, fallbackIcon, scope)
             val cacheForBadge = when (item) {
                 is PageItem.PaperFile -> item.cache
                 is PageItem.CacheEntry -> item.cache

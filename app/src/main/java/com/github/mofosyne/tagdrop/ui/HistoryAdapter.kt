@@ -9,6 +9,8 @@ import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.databinding.ItemCollectionBinding
+import com.github.mofosyne.tagdrop.util.DEFAULT_COLLECTION_ICON
+import com.github.mofosyne.tagdrop.util.iconForMimeType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,7 +38,11 @@ class HistoryAdapter(
                 is HistoryItem.CacheScan -> item.cache.takeIf { it.isThumbnailEligible }
                 is HistoryItem.PaperScan -> item.thumbnailCache
             }
-            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, scope)
+            val fallbackIcon = when (item) {
+                is HistoryItem.CacheScan -> iconForMimeType(item.cache.mimeType)
+                is HistoryItem.PaperScan -> DEFAULT_COLLECTION_ICON
+            }
+            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, fallbackIcon, scope)
             when (item) {
                 is HistoryItem.CacheScan -> {
                     val cache = item.cache

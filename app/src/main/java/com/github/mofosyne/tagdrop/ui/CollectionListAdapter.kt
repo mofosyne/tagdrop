@@ -11,6 +11,8 @@ import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.databinding.ItemCollectionBinding
+import com.github.mofosyne.tagdrop.util.DEFAULT_COLLECTION_ICON
+import com.github.mofosyne.tagdrop.util.iconForMimeType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,7 +55,12 @@ class CollectionListAdapter(
                 is CollectionItem.AdHoc -> item.thumbnailCache
                 is CollectionItem.Loose -> item.cache.takeIf { it.isThumbnailEligible }
             }
-            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, scope)
+            val fallbackIcon = when (item) {
+                is CollectionItem.Paper -> DEFAULT_COLLECTION_ICON
+                is CollectionItem.AdHoc -> DEFAULT_COLLECTION_ICON
+                is CollectionItem.Loose -> iconForMimeType(item.cache.mimeType)
+            }
+            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, fallbackIcon, scope)
             when (item) {
                 is CollectionItem.Paper -> {
                     binding.textType.text = ctx.getString(

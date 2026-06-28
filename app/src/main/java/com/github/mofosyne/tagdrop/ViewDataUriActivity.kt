@@ -32,6 +32,7 @@ import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
 import com.github.mofosyne.tagdrop.util.ContentExporter
 import com.github.mofosyne.tagdrop.util.LocationUtils
+import com.github.mofosyne.tagdrop.util.iconForMimeType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -386,17 +387,6 @@ class ViewDataUriActivity : AppCompatActivity() {
         val canExport = cache?.contentBytes != null
         binding.previewButtonOpen.isEnabled = canExport
         binding.previewButtonSave.isEnabled = canExport
-    }
-
-    private fun iconForMimeType(mime: String): String = when {
-        mime.startsWith("image/") -> "🖼"
-        mime.startsWith("audio/") -> "🎵"
-        mime.startsWith("video/") -> "🎬"
-        mime == "application/pdf" -> "📕"
-        mime == "text/calendar" -> "📅"
-        mime == "text/vcard" -> "👤"
-        mime.startsWith("text/") -> "📄"
-        else -> "📦"
     }
 
     /** Re-resolves and shows/hides the reply bar (parent link + replies link) for the current [exportCache]. */

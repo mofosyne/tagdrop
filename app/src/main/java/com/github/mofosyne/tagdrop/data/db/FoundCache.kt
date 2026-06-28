@@ -53,5 +53,10 @@ val FoundCache.showsLockHint: Boolean get() = hasPendingOverride && pendingOverr
 /** True if [hasPendingOverride] and the blob is passphrase-derived (PBKDF2) — user can retry by entering the passphrase. */
 val FoundCache.hasPendingPassphrase: Boolean get() = pendingOverrideBlob != null && kdfAlg != 0 && kdfSalt != null
 
-/** True if this cache's resolved content is image bytes that can be decoded into a list-row thumbnail (see [com.github.mofosyne.tagdrop.util.ThumbnailLoader]). */
-val FoundCache.isThumbnailEligible: Boolean get() = isOpenable && mimeType.startsWith("image/")
+/**
+ * True if this cache's resolved content is raster image bytes that can be decoded into a
+ * list-row thumbnail (see [com.github.mofosyne.tagdrop.util.ThumbnailLoader]). Excludes
+ * `image/svg+xml`: it's XML, not a format [android.graphics.BitmapFactory] can ever decode, so
+ * treating it as eligible would just mean a guaranteed-failing decode attempt on every bind.
+ */
+val FoundCache.isThumbnailEligible: Boolean get() = isOpenable && mimeType.startsWith("image/") && mimeType != "image/svg+xml"

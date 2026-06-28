@@ -11,6 +11,7 @@ import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.db.showsLockHint
 import com.github.mofosyne.tagdrop.databinding.ItemScanBlockBinding
+import com.github.mofosyne.tagdrop.util.iconForMimeType
 
 /** One file in a scanned paper's directory, shown as a fill-in block on the scan screen. */
 data class ScanBlock(val slug: String, val mimeType: String, val cache: FoundCache?)
@@ -52,18 +53,5 @@ class ScanBoardAdapter(private val onOpen: (FoundCache) -> Unit) :
         // `pendingOverrideBlob` clearing once a SPEC §9 key unlocks it — check it explicitly.
         override fun areContentsTheSame(a: ScanBlock, b: ScanBlock) =
             a == b && a.cache?.showsLockHint == b.cache?.showsLockHint
-    }
-
-    companion object {
-        private fun iconForMimeType(mime: String): String = when {
-            mime.startsWith("image/") -> "🖼"
-            mime.startsWith("audio/") -> "🎵"
-            mime.startsWith("video/") -> "🎬"
-            mime == "application/pdf" -> "📕"
-            mime == "text/calendar" -> "📅"
-            mime == "text/vcard" -> "👤"
-            mime.startsWith("text/") -> "📄"
-            else -> "📦"
-        }
     }
 }
