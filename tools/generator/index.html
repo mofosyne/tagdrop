@@ -1706,7 +1706,9 @@ function autofillTitleField(titleFieldId, mimeType, text) {
 // Reads `file` into a filename input (optional), a MIME <select>, a content
 // <textarea>, and — for HTML/Markdown text content — an optional title-ish field
 // (see autofillTitleField above). Used by both the Single File upload and
-// per-file uploads on the Paper Layout tab.
+// per-file uploads on the Paper Layout tab. Returns the decoded {mime, text} (text
+// is null for non-text MIME types) so batch callers can also feed
+// autofillPaperTitleFromCandidates below.
 async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId, titleId) {
   const mime = guessMimeType(file.name, file.type);
   if (filenameId) document.getElementById(filenameId).value = file.name;
@@ -1715,6 +1717,21 @@ async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId, tit
   const text = isTextMime(mime) ? new TextDecoder().decode(bytes) : null;
   document.getElementById(contentId).value = text ?? bytesToBase64(bytes);
   if (text != null) autofillTitleField(titleId, mime, text);
+  return { mime, text };
+}
+
+// Fills p-title (if still empty) from whichever of `candidates` ({slug, mimeType, text})
+// has the best claim to being the paper's subject: a HOME_SLUGS match wins outright;
+// otherwise the first candidate (in the order given) with a derivable title.
+function autofillPaperTitleFromCandidates(candidates) {
+  const titleEl = document.getElementById('p-title');
+  if (titleEl.value.trim()) return;
+  const titled = candidates
+    .map(c => ({ slug: c.slug, title: deriveTitleFromText(c.mimeType, c.text) }))
+    .filter(c => c.title);
+  if (titled.length === 0) return;
+  const home = titled.find(c => HOME_SLUGS.includes(c.slug));
+  titleEl.value = (home ?? titled[0]).title;
 }
 
 // Minimal ZIP reader: Stored and Deflate entries only, no ZIP64. Reads the
@@ -2122,6 +2139,8 @@ function addFileEntry() {
 }
 
 // Adds a new file entry pre-filled from already-read bytes (e.g. a ZIP entry).
+// Returns {slug, mimeType, text} for autofillPaperTitleFromCandidates (text is null
+// for non-text MIME types).
 function addFileEntryFromBytes(name, bytes, mimeType) {
   const id = addFileEntry();
   document.getElementById('fslug-' + id).value = name;
@@ -2130,6 +2149,7 @@ function addFileEntryFromBytes(name, bytes, mimeType) {
   document.getElementById('fcontent-' + id).value = text ?? bytesToBase64(bytes);
   if (text != null) autofillTitleField('fdesc-' + id, mimeType, text);
   updatePaperEstimate();
+  return { slug: name, mimeType, text };
 }
 
 function addRelatedEntry() {
@@ -2550,11 +2570,14 @@ document.querySelectorAll('input[name="s-key-mode"]').forEach(r => {
 // from its contents (slug defaults to the filename — edit afterwards to add a
 // folder prefix, drop the extension, etc).
 async function addFilesToPaper(files) {
+  const candidates = [];
   for (const file of files) {
     const id = addFileEntry();
     document.getElementById('fslug-' + id).value = file.name;
-    await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id, 'fdesc-' + id);
+    const { mime, text } = await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id, 'fdesc-' + id);
+    if (text != null) candidates.push({ slug: file.name, mimeType: mime, text });
   }
+  autofillPaperTitleFromCandidates(candidates);
   // loadFileIntoFields() sets values programmatically (no input/change event), and a
   // slow read could outlast updatePaperEstimate()'s debounce window started by
   // addFileEntry() above — re-trigger now that every file's content is actually loaded.
@@ -2566,9 +2589,12 @@ async function addFilesToPaper(files) {
 // entries added; throws if `file` isn't a readable ZIP.
 async function addZipToPaper(file) {
   const entries = await parseZip(await file.arrayBuffer());
+  const candidates = [];
   for (const entry of entries) {
-    addFileEntryFromBytes(entry.name, entry.bytes, guessMimeType(entry.name, ''));
+    const c = addFileEntryFromBytes(entry.name, entry.bytes, guessMimeType(entry.name, ''));
+    if (c.text != null) candidates.push(c);
   }
+  autofillPaperTitleFromCandidates(candidates);
   updatePaperEstimate();
   return entries.length;
 }
