@@ -1,5 +1,6 @@
 package com.github.mofosyne.tagdrop.data.format
 
+import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.parser.Parser
 import org.commonmark.renderer.html.HtmlRenderer
 
@@ -7,10 +8,14 @@ import org.commonmark.renderer.html.HtmlRenderer
  * Renders `text/markdown` content (SPEC §7) to a standalone HTML document, for display
  * via the same WebView path as `text/html` content (relative links, tagdrop:// resolution,
  * subresource interception all keep working).
+ *
+ * Includes the GFM tables extension — needed for SPEC.md's pipe tables (rendered in-app by
+ * SpecActivity), not just author-supplied `text/markdown` content.
  */
 object MarkdownRenderer {
-    private val parser: Parser = Parser.builder().build()
-    private val renderer: HtmlRenderer = HtmlRenderer.builder().build()
+    private val extensions = listOf(TablesExtension.create())
+    private val parser: Parser = Parser.builder().extensions(extensions).build()
+    private val renderer: HtmlRenderer = HtmlRenderer.builder().extensions(extensions).build()
 
     /**
      * Converts [markdown] to a full HTML document. If [css] is non-null, it's inlined as a

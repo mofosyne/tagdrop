@@ -59,6 +59,8 @@ Already-scanned content can be re-shared as a fresh QR code, or written straight
 
 ## Extra
 
+The full technical wire-format spec is also available in-app — see **Wire Format Spec** in the menu, next to this page.
+
 Source: [github.com/mofosyne/tagdrop](https://github.com/mofosyne/tagdrop)
 
 Licence: GNU GENERAL PUBLIC LICENSE Version 3, 29 June 2007

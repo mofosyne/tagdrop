@@ -29,4 +29,13 @@ class MarkdownRendererTest {
         val html = MarkdownRenderer.toHtmlDocument("[map](tagdrop://abc123/map)")
         assertTrue(html.contains("href=\"tagdrop://abc123/map\""))
     }
+
+    @Test fun rendersGfmPipeTables() {
+        val html = MarkdownRenderer.toHtmlDocument(
+            "| Key | Type |\n|---|---|\n| 1 | uint |\n"
+        )
+        assertTrue(html.contains("<table>"))
+        assertTrue(html.contains("<th>Key</th>"))
+        assertTrue(html.contains("<td>uint</td>"))
+    }
 }

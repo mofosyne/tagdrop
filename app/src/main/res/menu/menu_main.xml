@@ -27,4 +27,9 @@
         android:title="@string/button_readme"
         app:showAsAction="never" />
 
+    <item
+        android:id="@+id/action_spec"
+        android:title="@string/button_spec"
+        app:showAsAction="never" />
+
 </menu>

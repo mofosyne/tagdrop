@@ -13,3 +13,4 @@
 - The Collections, History, and Map tabs now show TagDrop's icon mark in the toolbar for clearer branding.
 - The in-app Help page now renders proper formatting — headings, lists, bold/italic — instead of a plain approximation.
 - Printed and PDF paper sheets now show a title and useful details (file count, set/slug, domain, date) before you start scanning, and sector labels now match the "Sector N of M" numbering printed right next to them.
+- The full wire-format spec is now readable in-app from the menu, next to About / Read Me.

@@ -3,6 +3,16 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Copies the repo-root SPEC.md into a generated raw resource on every build, so the in-app
+// "Wire Format Spec" screen (SpecActivity) always shows the exact same text as SPEC.md —
+// never a manually-maintained copy that can silently drift out of sync.
+def specRawResDir = layout.buildDirectory.dir("generated/specRawRes")
+tasks.register("copySpecToRawRes", Copy) {
+    from(rootProject.file("SPEC.md"))
+    into(specRawResDir.map { it.dir("raw") })
+    rename { "spec.md" }
+}
+
 android {
     namespace = 'com.github.mofosyne.tagdrop'
     compileSdk = 35
@@ -17,6 +27,12 @@ android {
 
     buildFeatures {
         viewBinding = true
+    }
+
+    sourceSets {
+        main {
+            res.srcDirs += specRawResDir
+        }
     }
 
     compileOptions {
@@ -36,6 +52,10 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("copySpecToRawRes")
 }
 
 dependencies {
@@ -64,6 +84,8 @@ dependencies {
 
     // Markdown rendering for text/markdown content (pure Kotlin/Java, no native deps)
     implementation libs.commonmark
+    // GFM pipe-table support — SPEC.md (rendered in-app by SpecActivity) relies on tables
+    implementation libs.commonmark.ext.gfm.tables
 
     // SVG rendering for image/svg+xml thumbnails (BitmapFactory can't decode XML)
     implementation libs.androidsvg
