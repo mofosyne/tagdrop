@@ -39,8 +39,9 @@ network, or account needed to read or write a drop.
 - **Drop a whole "paper"** — a printable sheet with a directory QR code (a
   *paper manifest*) plus one QR per file, built in-app (Create Paper) or with
   the web generator. Pages can link to each other with ordinary relative
-  links or `tagdrop://<root-hash>/<slug>` links, so a small static site
-  survives being printed and scanned back in.
+  links or `tagdrop://@<root-hash>/<slug>` links (or `tagdrop://<domain>/<slug>`
+  for a human-readable name), so a small static site survives being printed
+  and scanned back in.
 - **Spread large content across multiple codes** — split a payload too big
   for one QR into multiple sector codes placed along a trail. The app
   collects sectors in any order and reassembles and verifies them, with an
