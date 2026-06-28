@@ -1555,7 +1555,7 @@ function svgToPngDataUrl(svgMarkup, sizePx) {
 // near-square 2x3 instead of a wide-but-short 3x2. Page 1 also carries a
 // letterhead-style banner (brand stamp + scan instructions); its grid area
 // shrinks to make room, but still comfortably fits the same `perSheet` count.
-async function downloadPdfSheet(items, perSheet) {
+async function downloadPdfSheet(items, perSheet, headerInfo = null) {
   try {
     const QRCode = await loadQRCode();
     const { jsPDF } = await loadJsPDF();
@@ -1564,16 +1564,31 @@ async function downloadPdfSheet(items, perSheet) {
     const pageHeight = pdf.internal.pageSize.getHeight();
     const margin = 10;
 
-    const bannerHeight = 22;
+    // headerInfo (title/meta) is passed for a Paper sheet — gives a person picking up
+    // the sheet enough to recognise/triage it before scanning; a Single File sheet has
+    // no paper-level title/metadata to show, so it keeps the plain instructional banner.
+    const bannerHeight = headerInfo ? 30 : 22;
     try {
       const logoDataUrl = await svgToPngDataUrl(QR_STAMP_SVG, 128);
       const logoSize = 14;
+      const textX = margin + logoSize + 4;
+      const textMaxWidth = pageWidth - margin * 2 - logoSize - 4;
       pdf.addImage(logoDataUrl, 'PNG', margin, margin, logoSize, logoSize);
       pdf.setFontSize(13);
-      pdf.text('TagDrop', margin + logoSize + 4, margin + 6);
-      pdf.setFontSize(9);
-      pdf.text('Scan each QR code with the TagDrop app (or any reader that follows tagdrop: links) — works fully offline.',
-        margin + logoSize + 4, margin + 12, { maxWidth: pageWidth - margin * 2 - logoSize - 4 });
+      pdf.text(headerInfo ? headerInfo.title : 'TagDrop', textX, margin + 7, { maxWidth: textMaxWidth });
+      if (headerInfo) {
+        pdf.setFontSize(9);
+        pdf.setTextColor(120);
+        pdf.text(headerInfo.meta, textX, margin + 13, { maxWidth: textMaxWidth });
+        pdf.setTextColor(0);
+        pdf.setFontSize(8);
+        pdf.text('Scan each QR code with the TagDrop app (or any reader that follows tagdrop: links) — works fully offline.',
+          textX, margin + 19, { maxWidth: textMaxWidth });
+      } else {
+        pdf.setFontSize(9);
+        pdf.text('Scan each QR code with the TagDrop app (or any reader that follows tagdrop: links) — works fully offline.',
+          textX, margin + 12, { maxWidth: textMaxWidth });
+      }
     } catch (e) {
       // Logo/instructions are decorative — still produce the sheet without them,
       // but warn since this failure is otherwise invisible (no UI error shown).
@@ -1616,7 +1631,7 @@ async function downloadPdfSheet(items, perSheet) {
 // id/getElementById since #s-result and #p-result both stay resident in the DOM
 // (only CSS-hidden when their tab isn't active) — duplicate ids would risk one
 // tab's button acting on the other tab's stale item list.
-function appendBulkActions(result, items) {
+function appendBulkActions(result, items, headerInfo = null) {
   if (items.length === 0) return;
   const row = document.createElement('div');
   row.className = 'action-row'; row.id = 'no-print';
@@ -1631,7 +1646,7 @@ function appendBulkActions(result, items) {
   const perSheetInput = row.querySelector('.per-sheet');
   row.querySelector('.pdf-sheet').addEventListener('click', () => {
     const perSheet = Math.max(1, parseInt(perSheetInput.value, 10) || 6);
-    downloadPdfSheet(items, perSheet);
+    downloadPdfSheet(items, perSheet, headerInfo);
   });
   result.appendChild(row);
 }
@@ -2489,7 +2504,15 @@ async function generatePaper() {
   actionRow.innerHTML = `<button class="secondary" onclick="window.print()">🖨 Print Paper Layout (one code per page)</button>`;
   result.appendChild(actionRow);
 
-  appendBulkActions(result, paperBulkItems);
+  appendBulkActions(result, paperBulkItems, {
+    title: label || 'TagDrop Paper',
+    meta: [
+      `${fileCount} file${fileCount === 1 ? '' : 's'}`,
+      set ? `Set: ${set}${slug ? ' / ' + slug : ''}` : null,
+      domain ? `tagdrop://${domain}` : null,
+      createdAt ? formatCreatedAt(createdAt) : null,
+    ].filter(Boolean).join(' · '),
+  });
 }
 
 // `qrData` (defaults to `uri`) is what's actually rendered/downloaded as the QR — pass
