@@ -31,7 +31,7 @@ sealed class HistoryItem {
 
     data class PaperScan(
         val paper: ScannedPaper,
-        /** A cached image file to show as this paper's row thumbnail, in place of its emoji icon — same convention as [CollectionItem.Paper.thumbnailCache]. */
+        /** A cached image file to show as this paper's row thumbnail, in place of its emoji icon — same pick as [CollectionItem.Paper.thumbnailCache]. */
         val thumbnailCache: FoundCache? = null
     ) : HistoryItem() {
         override val key get() = "paper:${paper.rootHash}"
@@ -48,13 +48,18 @@ sealed class HistoryItem {
             val cachesById = caches.associateBy { it.cacheId }
             val paperScans = papers.map { paper ->
                 val files = TagDropCodec.decodePaperStream(paper.cborBytes)?.files.orEmpty()
-                var thumbnailCache: FoundCache? = null
+                var homeCache: FoundCache? = null
+                var faviconCache: FoundCache? = null
+                var firstImageCache: FoundCache? = null
                 for (file in files) {
                     val cache = cachesById[file.fileId.toHex()] ?: continue
-                    if (cache.isThumbnailEligible && (thumbnailCache == null || file.slug in TagDropLinkResolver.HOME_SLUGS)) {
-                        thumbnailCache = cache
+                    if (file.slug in TagDropLinkResolver.HOME_SLUGS) homeCache = cache
+                    if (cache.isThumbnailEligible) {
+                        if (file.slug in TagDropLinkResolver.FAVICON_SLUGS) faviconCache = cache
+                        if (firstImageCache == null) firstImageCache = cache
                     }
                 }
+                val thumbnailCache = faviconCache ?: homeCache?.takeIf { it.isThumbnailEligible } ?: firstImageCache
                 PaperScan(paper, thumbnailCache)
             }
             return (caches.map { CacheScan(it) } + paperScans).sortedByDescending { it.timestamp }

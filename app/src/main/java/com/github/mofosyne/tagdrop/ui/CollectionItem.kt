@@ -31,7 +31,7 @@ sealed class CollectionItem {
         val totalFiles: Int,
         val cachedFiles: Int,
         val homeCache: FoundCache?,
-        /** A cached image file to show as this paper's row thumbnail, in place of its emoji [icon] — its de facto "favicon". */
+        /** A cached image file to show as this paper's row thumbnail, in place of its emoji [icon] — see [TagDropLinkResolver.FAVICON_SLUGS]. */
         val thumbnailCache: FoundCache? = null
     ) : CollectionItem() {
         override val key get() = "paper:${paper.rootHash}"
@@ -49,7 +49,7 @@ sealed class CollectionItem {
         val icon: String?,
         val items: List<FoundCache>,
         val homeCache: FoundCache?,
-        /** A cached image file to show as this collection's row thumbnail, in place of its emoji [icon] — its de facto "favicon". */
+        /** A cached image file to show as this collection's row thumbnail, in place of its emoji [icon] — see [TagDropLinkResolver.FAVICON_SLUGS]. */
         val thumbnailCache: FoundCache? = null
     ) : CollectionItem() {
         override val key get() = "adhoc:$collectionId"
@@ -89,7 +89,8 @@ sealed class CollectionItem {
                 val files = TagDropCodec.decodePaperStream(paper.cborBytes)?.files.orEmpty()
                 var cachedCount = 0
                 var homeCache: FoundCache? = null
-                var thumbnailCache: FoundCache? = null
+                var faviconCache: FoundCache? = null
+                var firstImageCache: FoundCache? = null
                 for (file in files) {
                     val fileId = file.fileId.toHex()
                     claimedIds += fileId
@@ -97,11 +98,16 @@ sealed class CollectionItem {
                     if (cache != null) {
                         cachedCount++
                         if (file.slug in TagDropLinkResolver.HOME_SLUGS) homeCache = cache
-                        if (cache.isThumbnailEligible && (thumbnailCache == null || file.slug in TagDropLinkResolver.HOME_SLUGS)) {
-                            thumbnailCache = cache
+                        if (cache.isThumbnailEligible) {
+                            if (file.slug in TagDropLinkResolver.FAVICON_SLUGS) faviconCache = cache
+                            if (firstImageCache == null) firstImageCache = cache
                         }
                     }
                 }
+                // Priority: an explicitly named favicon file, else the homepage file if it's
+                // itself an image, else whichever eligible image came first (SPEC.md key-25's
+                // lighter-weight alternative — see TagDropLinkResolver.FAVICON_SLUGS).
+                val thumbnailCache = faviconCache ?: homeCache?.takeIf { it.isThumbnailEligible } ?: firstImageCache
                 Paper(paper, totalFiles = files.size, cachedFiles = cachedCount, homeCache = homeCache, thumbnailCache = thumbnailCache)
             }
 
@@ -115,7 +121,11 @@ sealed class CollectionItem {
                 val tags = items.mapNotNull { it.collectionTag }.distinct()
                 val icon = items.firstOrNull { it.icon != null }?.icon
                 val homeCache = items.firstOrNull { it.filename in TagDropLinkResolver.HOME_SLUGS }
-                val thumbnailCache = homeCache?.takeIf { it.isThumbnailEligible }
+                val faviconCache = items.firstOrNull {
+                    it.filename in TagDropLinkResolver.FAVICON_SLUGS && it.isThumbnailEligible
+                }
+                val thumbnailCache = faviconCache
+                    ?: homeCache?.takeIf { it.isThumbnailEligible }
                     ?: items.firstOrNull { it.isThumbnailEligible }
                 AdHoc(collectionId, withLabel?.collectionLabel, tags, icon, items, homeCache, thumbnailCache)
             }

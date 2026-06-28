@@ -226,6 +226,20 @@ class TagDropLinkResolver(private val db: AppDatabase) {
         val HOME_SLUGS = setOf("index", "index.html", "index.md")
 
         /**
+         * Slug convention: a paper file with one of these names is the collection's deliberate
+         * thumbnail/icon, if it's itself an image — the same browser convention as a site's
+         * `favicon.ico`/`favicon.png`, applied to TagDrop's flat paper file directory. Lets an
+         * author pick a specific image when a collection has several, overriding the default
+         * "homepage file if it's an image, else first image found" pick (see
+         * CollectionItem.build()/HistoryItem.build()). `.ico`/`.svg` are deliberately omitted:
+         * BitmapFactory (the only image decoder this app has) can't read either format, so
+         * naming a favicon that way would just silently fall back to the emoji icon.
+         */
+        val FAVICON_SLUGS = setOf(
+            "favicon", "favicon.png", "favicon.jpg", "favicon.jpeg", "favicon.gif", "favicon.webp", "favicon.bmp"
+        )
+
+        /**
          * Matches a root hash as lowercase hex pairs, with no fixed length pinned to today's
          * 8-byte truncation. root_hash's actual byte length is defined by the versioned CBOR
          * payload (SPEC §2/§3, key 2) -- if a future version changes it, this still matches,
