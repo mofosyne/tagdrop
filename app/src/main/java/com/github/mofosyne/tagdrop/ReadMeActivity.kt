@@ -1,21 +1,18 @@
 package com.github.mofosyne.tagdrop
 
-import android.graphics.Typeface
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
-import android.text.Spannable
-import android.text.SpannableString
-import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
-import android.text.style.StyleSpan
-import android.text.style.TypefaceSpan
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
+import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
 import com.github.mofosyne.tagdrop.databinding.ActivityReadMeBinding
-import java.io.ByteArrayOutputStream
-import java.io.IOException
 
 class ReadMeActivity : AppCompatActivity() {
 
@@ -41,11 +38,20 @@ class ReadMeActivity : AppCompatActivity() {
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         title = getString(R.string.title_activity_read_me)
-        
-        val rawText = readRaw()
-        val spannable = SpannableString(rawText)
-        applyMarkdownSpans(spannable)
-        binding.readmeInfo.text = spannable
+
+        // Matches the system "Font size" accessibility setting, since a WebView's text
+        // otherwise ignores it (unlike a TextView, which used to scale automatically).
+        binding.readmeWebView.settings.textZoom = (resources.configuration.fontScale * 100).toInt()
+        binding.readmeWebView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (request.url.scheme != "http" && request.url.scheme != "https") return false
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, request.url)) }
+                return true
+            }
+        }
+
+        val html = MarkdownRenderer.toHtmlDocument(readRaw(), README_CSS)
+        binding.readmeWebView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
@@ -58,81 +64,30 @@ class ReadMeActivity : AppCompatActivity() {
         }
     }
 
-    // ── Markdown-style span formatter (preserved from original ReadMe.java) ──
-
-    private fun applyMarkdownSpans(span: Spannable) {
-        styleLine(span, "# ",    0xfff4585d.toInt(), 2.0f)
-        styleLine(span, "\n# ",  0xFFF4A158.toInt(), 1.5f)
-        styleLine(span, "\n## ", 0xFFF4A158.toInt(), 1.2f)
-        styleLine(span, "\n---", 0xFFF4A158.toInt(), 1.2f)
-        styleLine(span, "\n>",   0xFF89e24d.toInt(), 0.9f)
-        styleLine(span, "\n - ", 0xFFA74DE3.toInt(), 1.0f)
-        styleLine(span, "\n- ",  0xFFA74DE3.toInt(), 1.0f)
-        styleSpan(span, " **",    "** ",    Typeface.BOLD,        "",          0xFF89e24d.toInt(), 1.0f, endAtLine = true)
-        styleSpan(span, " *",     "* ",     Typeface.ITALIC,      "",          0xFF4dd8e2.toInt(), 1.0f, endAtLine = true)
-        styleSpan(span, " ***",   "*** ",   Typeface.BOLD_ITALIC, "",          0xFF4de25c.toInt(), 1.0f, endAtLine = true)
-        styleSpan(span, " `",     "` ",     Typeface.BOLD,        "monospace", 0xFF45c152.toInt(), 1.1f, endAtLine = true)
-        styleSpan(span, "\n    ", "\n",     Typeface.BOLD,        "monospace", 0xFF45c152.toInt(), 1.1f, endAtLine = true)
-        styleSpan(span, "\n```\n","\n```\n",Typeface.BOLD,        "monospace", 0xFF45c152.toInt(), 1.1f, endAtLine = false)
-    }
-
-    private fun styleLine(span: Spannable, target: String, colour: Int, size: Float) {
-        val s = span.toString()
-        var searchFrom = 0
-        while (true) {
-            val start = s.indexOf(target, searchFrom)
-            if (start < 0) break
-            
-            var lineEnd = s.indexOf("\n", start + target.length)
-            if (lineEnd < 0) lineEnd = s.length
-            
-            // If target starts with a newline, don't include it in the styled span
-            val styleStart = if (target.startsWith("\n")) start + 1 else start
-            
-            if (lineEnd > styleStart) {
-                span.setSpan(ForegroundColorSpan(colour), styleStart, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                span.setSpan(RelativeSizeSpan(size),      styleStart, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                span.setSpan(StyleSpan(Typeface.BOLD),    styleStart, lineEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    companion object {
+        /** Brand palette from ARTASSET/icon/HISTORY.md, with a `prefers-color-scheme: dark` variant. */
+        private const val README_CSS = """
+            body { margin: 16px; font-family: sans-serif; font-size: 15px; line-height: 1.5;
+                   color: #1a1a1a; background: #ffffff; }
+            h1, h2 { color: #D9652B; }
+            h1 { font-size: 1.6em; margin-top: 0; }
+            h2 { font-size: 1.25em; margin-top: 1.4em; border-bottom: 1px solid #e0d7c8; padding-bottom: 4px; }
+            a { color: #2A3941; }
+            blockquote { margin: 0.8em 0; padding: 0.4em 0.8em; border-left: 4px solid #D9652B;
+                         background: #F3EDE1; color: #333333; }
+            hr { border: none; border-top: 1px solid #dddddd; margin: 1.5em 0; }
+            strong { color: #2A3941; }
+            code { font-family: monospace; }
+            li { margin-bottom: 0.4em; }
+            @media (prefers-color-scheme: dark) {
+                body { color: #e8e8e8; background: #121212; }
+                h1, h2 { color: #f08a4b; }
+                h2 { border-bottom-color: #333333; }
+                a { color: #8fb8c9; }
+                blockquote { background: #1e1e1e; color: #cccccc; border-left-color: #f08a4b; }
+                hr { border-top-color: #333333; }
+                strong { color: #cfe3ea; }
             }
-            
-            searchFrom = lineEnd
-        }
-    }
-
-    private fun styleSpan(
-        span: Spannable, startTag: String, endTag: String,
-        typefaceStyle: Int, fontFamily: String, colour: Int, size: Float, endAtLine: Boolean
-    ) {
-        val s = span.toString()
-        var searchFrom = 0
-        while (true) {
-            val start = s.indexOf(startTag, searchFrom)
-            if (start < 0) break
-            
-            var contentStart = start + startTag.length
-            var endPos = s.indexOf(endTag, contentStart)
-            
-            if (endAtLine) {
-                val lb = s.indexOf("\n", contentStart)
-                if (lb in 0 until endPos || endPos < 0) endPos = lb
-            }
-            
-            if (endPos < 0) {
-                searchFrom = contentStart
-                continue
-            }
-            
-            val styleEnd = if (s.getOrNull(endPos) == '\n') endPos else endPos + endTag.length
-            
-            if (styleEnd > start) {
-                span.setSpan(ForegroundColorSpan(colour), start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                span.setSpan(RelativeSizeSpan(size),      start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                span.setSpan(StyleSpan(typefaceStyle),    start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                if (fontFamily.isNotEmpty())
-                    span.setSpan(TypefaceSpan(fontFamily), start, styleEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            
-            searchFrom = styleEnd
-        }
+        """
     }
 }
