@@ -8,3 +8,5 @@
 - Cached image previews now also work for SVG content, and other file types show a placeholder icon matching their kind (picture, audio, video, PDF, etc.) instead of a blank space.
 - Fix: the 🔒 "locked" badge no longer shows up on ordinary unencrypted scans — only on content actually declared as encrypted.
 - Fix: toolbars no longer overlap the status bar on newer Android versions.
+- Small images can now be marked as pixel art so they stay crisp and blocky when viewed larger, instead of being smoothed into a blur.
+- The Collections, History, and Map tabs now show TagDrop's icon mark in the toolbar for clearer branding.
