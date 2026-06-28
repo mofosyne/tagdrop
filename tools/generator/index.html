@@ -1677,17 +1677,44 @@ function setMimeSelect(selectEl, mimeType) {
   selectEl.value = mimeType;
 }
 
-// Reads `file` into a filename input (optional), a MIME <select>, and a
-// content <textarea> — used by both the Single File upload and per-file
-// uploads on the Paper Layout tab.
-async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId) {
+// Best-effort title/subject extraction from a just-loaded HTML or Markdown file's
+// decoded text — an HTML <title>, or the first heading line for Markdown. Used to
+// autofill a title-ish field below, GeoCities-era-author convenience, not a SPEC
+// requirement: the author can edit or clear the result afterwards either way.
+function deriveTitleFromText(mimeType, text) {
+  if (mimeType === 'text/html') {
+    return new DOMParser().parseFromString(text, 'text/html').title.trim() || null;
+  }
+  if (mimeType === 'text/markdown') {
+    const m = text.match(/^#{1,6}[ \t]+(.+)$/m);
+    return m ? m[1].trim() : null;
+  }
+  return null;
+}
+
+// Fills `titleFieldId` with a title derived from `text`/`mimeType` (see
+// deriveTitleFromText above), but only if the field exists and is still empty —
+// never overwrites something the author already typed.
+function autofillTitleField(titleFieldId, mimeType, text) {
+  if (!titleFieldId) return;
+  const el = document.getElementById(titleFieldId);
+  if (!el || el.value.trim()) return;
+  const title = deriveTitleFromText(mimeType, text);
+  if (title) el.value = title;
+}
+
+// Reads `file` into a filename input (optional), a MIME <select>, a content
+// <textarea>, and — for HTML/Markdown text content — an optional title-ish field
+// (see autofillTitleField above). Used by both the Single File upload and
+// per-file uploads on the Paper Layout tab.
+async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId, titleId) {
   const mime = guessMimeType(file.name, file.type);
   if (filenameId) document.getElementById(filenameId).value = file.name;
   setMimeSelect(document.getElementById(mimeSelectId), mime);
   const bytes = new Uint8Array(await file.arrayBuffer());
-  document.getElementById(contentId).value = isTextMime(mime)
-    ? new TextDecoder().decode(bytes)
-    : bytesToBase64(bytes);
+  const text = isTextMime(mime) ? new TextDecoder().decode(bytes) : null;
+  document.getElementById(contentId).value = text ?? bytesToBase64(bytes);
+  if (text != null) autofillTitleField(titleId, mime, text);
 }
 
 // Minimal ZIP reader: Stored and Deflate entries only, no ZIP64. Reads the
@@ -2099,9 +2126,9 @@ function addFileEntryFromBytes(name, bytes, mimeType) {
   const id = addFileEntry();
   document.getElementById('fslug-' + id).value = name;
   setMimeSelect(document.getElementById('fmime-' + id), mimeType);
-  document.getElementById('fcontent-' + id).value = isTextMime(mimeType)
-    ? new TextDecoder().decode(bytes)
-    : bytesToBase64(bytes);
+  const text = isTextMime(mimeType) ? new TextDecoder().decode(bytes) : null;
+  document.getElementById('fcontent-' + id).value = text ?? bytesToBase64(bytes);
+  if (text != null) autofillTitleField('fdesc-' + id, mimeType, text);
   updatePaperEstimate();
 }
 
@@ -2526,7 +2553,7 @@ async function addFilesToPaper(files) {
   for (const file of files) {
     const id = addFileEntry();
     document.getElementById('fslug-' + id).value = file.name;
-    await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id);
+    await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id, 'fdesc-' + id);
   }
   // loadFileIntoFields() sets values programmatically (no input/change event), and a
   // slow read could outlast updatePaperEstimate()'s debounce window started by
@@ -2550,7 +2577,7 @@ async function addZipToPaper(file) {
 document.getElementById('s-upload').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
-  if (file) await loadFileIntoFields(file, 's-filename', 's-mime', 's-content');
+  if (file) await loadFileIntoFields(file, 's-filename', 's-mime', 's-content', 's-title');
   // loadFileIntoFields() sets .value programmatically — no input/change event fires,
   // so the delegated listener on #tab-single never sees this; trigger explicitly.
   updateSingleEstimate();
@@ -2599,7 +2626,7 @@ function setupDropzone(el, onFiles) {
 }
 
 setupDropzone(document.getElementById('s-dropzone'), async files => {
-  await loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content');
+  await loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content', 's-title');
   updateSingleEstimate();
 });
 
