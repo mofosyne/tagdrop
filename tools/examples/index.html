@@ -1607,7 +1607,7 @@ async function addContentSectorCards(grid, sectors, { baseLabel, mime, extraBadg
     await addCard(grid, {
       label: count > 1 ? `${baseLabel} — sector ${sector.partMeta.sectorIndex + 1}/${count}` : baseLabel,
       mime, extraBadge, badgeClass,
-      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex}` : idHex,
+      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex + 1}` : idHex,
       uri: enc.uri,
       isManifest: false,
     });
@@ -1627,7 +1627,7 @@ async function addPaperSectorCards(grid, sectors, { baseLabel }) {
     await addCard(grid, {
       label: count > 1 ? `${baseLabel || 'Manifest'} — sector ${sector.partMeta.sectorIndex + 1}/${count}` : (baseLabel || 'Manifest'),
       mime: 'paper manifest', extraBadge: null,
-      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex}` : idHex,
+      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex + 1}` : idHex,
       uri: enc.uri,
       isManifest: true,
     });

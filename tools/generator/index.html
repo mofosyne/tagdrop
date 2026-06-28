@@ -146,6 +146,9 @@
   /* .print-area (#s-result/#p-result) holds the actual QR results — visible on screen by
      default (no rule needed) and unaffected by print; only .print-header is print-exclusive. */
   .print-header { display: none; }
+  .print-header { margin-bottom: 12px; }
+  .print-header .paper-description { margin: 0 0 4px; color: #333; }
+  .print-header .paper-meta { margin: 0; font-size: 0.85rem; color: #666; }
 </style>
 </head>
 <body>
@@ -1253,6 +1256,10 @@ function datetimeLocalToEpochSeconds(value) {
   const ms = new Date(value).getTime();
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
+/** `created_at` (epoch seconds) as a short locale-formatted date, for the Paper print header. */
+function formatCreatedAt(epochSeconds) {
+  return new Date(epochSeconds * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
 
 // Turns a human-readable label (a file slug, hint, or caption fragment) into a
 // safe filename component — keeps ZIP entries self-describing instead of
@@ -1879,7 +1886,7 @@ async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, enc
         sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
         badge: useBinary ? 'binary' : null,
         badgeClass: 'binary',
-        id: `${idHex}-sector${sector.partMeta.sectorIndex}`,
+        id: `${idHex}-sector${sector.partMeta.sectorIndex + 1}`,
         uri: enc.uri,
         qrData,
         slugBase: `${nameBase}-sector${sector.partMeta.sectorIndex + 1}`,
@@ -2312,7 +2319,7 @@ async function computePaperSectorPlan() {
   }
   catch(e) { throw new Error(`Paper encoding failed: ${e.message}`); }
 
-  return { label, set, slug, encodedFiles, paper };
+  return { label, set, slug, domain, description, createdAt, encodedFiles, paper };
 }
 
 // Live "how many QR codes will this be" preview for the Paper Layout tab — total
@@ -2341,13 +2348,16 @@ async function generatePaper() {
   let plan;
   try { plan = await computePaperSectorPlan(); }
   catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
-  const { label, set, slug, encodedFiles, paper } = plan;
+  const { label, set, slug, domain, description, createdAt, encodedFiles, paper } = plan;
+  const fileCount = encodedFiles.length;
 
-  // Render all QR codes
+  // Render all QR codes — print-header gives a person picking up the printed sheet
+  // enough to recognise/triage it before they start scanning any of the codes below.
   result.innerHTML = `
     <div class="print-header" style="display:none">
       <h2>${label ? escHtml(label) : 'TagDrop Paper'}</h2>
-      ${set ? `<p>Set: ${escHtml(set)}${slug ? ' / ' + escHtml(slug) : ''}</p>` : ''}
+      ${description ? `<p class="paper-description">${escHtml(description)}</p>` : ''}
+      <p class="paper-meta">${fileCount} file${fileCount === 1 ? '' : 's'}${set ? ` · Set: ${escHtml(set)}${slug ? ' / ' + escHtml(slug) : ''}` : ''}${domain ? ` · tagdrop://${escHtml(domain)}` : ''}${createdAt ? ` · ${formatCreatedAt(createdAt)}` : ''}</p>
     </div>
     <div class="qr-grid" id="p-qr-grid"></div>`;
   const grid = document.getElementById('p-qr-grid');
@@ -2370,7 +2380,7 @@ async function generatePaper() {
     const mSub = mCount > 1
       ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
       : 'paper manifest';
-    const mId = mCount > 1 ? `${rootHashHex}-sector${sector.partMeta.sectorIndex}` : rootHashHex;
+    const mId = mCount > 1 ? `${rootHashHex}-sector${sector.partMeta.sectorIndex + 1}` : rootHashHex;
     const mItem = makeQrItem(mLabel, mSub, mId, enc.uri, null, qrData);
     grid.appendChild(mItem.div);
     try {
@@ -2426,7 +2436,7 @@ async function generatePaper() {
       const fSub = fCount > 1
         ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
         : f.mimeType;
-      const fId = fCount > 1 ? `${fIdHex}-sector${sector.partMeta.sectorIndex}` : fIdHex;
+      const fId = fCount > 1 ? `${fIdHex}-sector${sector.partMeta.sectorIndex + 1}` : fIdHex;
       const fItem = makeQrItem(fLabel, fSub, fId, enc.uri, sector.partMeta.sectorIndex === 0 ? homeBadge : null, qrData);
       grid.appendChild(fItem.div);
       if (fCount === 1 && enc.uri.length > MAX_URI_LENGTH)

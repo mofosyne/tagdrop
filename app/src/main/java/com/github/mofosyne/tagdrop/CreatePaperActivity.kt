@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.print.PrintAttributes
 import android.print.PrintManager
 import android.text.Html
+import android.text.format.DateFormat
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -28,6 +29,7 @@ import com.github.mofosyne.tagdrop.databinding.ItemPaperQrBinding
 import com.github.mofosyne.tagdrop.util.QrUtils
 import com.google.zxing.WriterException
 import kotlinx.coroutines.launch
+import java.util.Date
 
 /**
  * Creates a multi-file TagDrop "paper": a manifest QR plus one QR per file, laid out
@@ -210,7 +212,7 @@ class CreatePaperActivity : AppCompatActivity() {
             val idx = sector.partMeta.sectorIndex
             QrEntry(
                 getString(R.string.paper_sector_label, label, idx + 1, sectors.size),
-                sub, "$idHex-sector$idx", TagDropCodec.encode(sector)
+                sub, "$idHex-sector${idx + 1}", TagDropCodec.encode(sector)
             )
         }
         if (!addParity) return entries
@@ -298,15 +300,30 @@ class CreatePaperActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Header shown above the QR grid on the printed/PDF sheet — gives a person picking
+     * up the paper enough to recognise/triage it (title, file count, set/slug, domain,
+     * authored date) before they start scanning any of the codes below.
+     */
     private fun buildPrintHtml(manifest: TagDropPayload.Paper, entries: List<QrEntry>): String {
         val header = buildString {
             append("<h2>").append(Html.escapeHtml(manifest.label ?: getString(R.string.title_create_paper))).append("</h2>")
-            val set = manifest.set
-            if (set != null) {
-                append("<p>Set: ").append(Html.escapeHtml(set))
-                manifest.slug?.let { append(" / ").append(Html.escapeHtml(it)) }
-                append("</p>")
+            manifest.description?.let { append("<p class=\"paper-description\">").append(Html.escapeHtml(it)).append("</p>") }
+
+            val fileCount = manifest.files.size
+            val metaParts = mutableListOf("$fileCount file${if (fileCount == 1) "" else "s"}")
+            manifest.set?.let { set ->
+                val setPart = buildString {
+                    append("Set: ").append(Html.escapeHtml(set))
+                    manifest.slug?.let { append(" / ").append(Html.escapeHtml(it)) }
+                }
+                metaParts.add(setPart)
             }
+            manifest.domain?.let { metaParts.add("tagdrop://" + Html.escapeHtml(it)) }
+            manifest.createdAt?.let {
+                metaParts.add(DateFormat.getMediumDateFormat(this@CreatePaperActivity).format(Date(it * 1000)))
+            }
+            append("<p class=\"paper-meta\">").append(metaParts.joinToString(" · ")).append("</p>")
         }
         val cells = entries.joinToString("") { entry ->
             val qrDataUri = QrUtils.bitmapToDataUri(QrUtils.encodeQr(entry.uri, 512))
@@ -322,6 +339,8 @@ class CreatePaperActivity : AppCompatActivity() {
         return """
             <!DOCTYPE html><html><head><style>
             body { font-family: sans-serif; margin: 24px; }
+            .paper-description { margin: 0 0 4px; color: #333; }
+            .paper-meta { margin: 0 0 12px; font-size: 0.85rem; color: #666; }
             .qr-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; }
             .qr-item { border: 1px solid #ccc; border-radius: 8px; padding: 12px; text-align: center;
                        width: 200px; page-break-inside: avoid; }
