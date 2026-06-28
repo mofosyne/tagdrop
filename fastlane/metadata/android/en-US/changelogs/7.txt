@@ -1,0 +1,8 @@
+- Papers can now claim a short, human-readable domain name (e.g. "helloworld"), so finders can open tagdrop://helloworld instead of typing out a long root hash.
+- Cached image files now show as a small picture preview instead of a generic icon, in your collection, history, and on the map — name a file "favicon" (or favicon.png, etc.) to pick which image is used.
+- Content with no fixed location can carry a short text description instead (like "🚋 Tram 40"), and no longer has a live GPS position silently substituted in once you've marked it that way.
+- Codes can now declare what time they were authored, shown as a clock-icon chip.
+- New "JSON" view alongside the existing decoded/hex/CBOR options; both JSON and CBOR views now show whatever they can decode instead of failing outright on a damaged or partial code.
+- Papers and ad-hoc collections with a homepage file get a one-tap "Open homepage" button; ad-hoc collections also show the 🏠 homepage badge, not just papers.
+- Fix: the 🔒 "locked" badge no longer shows up on ordinary unencrypted scans — only on content actually declared as encrypted.
+- Fix: toolbars no longer overlap the status bar on newer Android versions.
