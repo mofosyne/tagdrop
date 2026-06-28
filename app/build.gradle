@@ -65,6 +65,9 @@ dependencies {
     // Markdown rendering for text/markdown content (pure Kotlin/Java, no native deps)
     implementation libs.commonmark
 
+    // SVG rendering for image/svg+xml thumbnails (BitmapFactory can't decode XML)
+    implementation libs.androidsvg
+
     androidTestImplementation libs.androidx.junit
     androidTestImplementation libs.androidx.espresso.core
     testImplementation libs.junit

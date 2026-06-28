@@ -2,19 +2,24 @@ package com.github.mofosyne.tagdrop.util
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.util.LruCache
+import com.caverock.androidsvg.SVG
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 
 /**
- * Decodes a small downsampled preview [Bitmap] from a [FoundCache]'s resolved `contentBytes`,
- * for use in the list-row icon slot (`textIcon`'s `ImageView` sibling) wherever
- * `mimeType.startsWith("image/")` — see [FoundCache.isThumbnailEligible]. Caches decoded bitmaps
- * in memory so repeated rebinds during scrolling don't re-decode the same image.
+ * Decodes a small preview [Bitmap] from a [FoundCache]'s resolved `contentBytes`, for use in the
+ * list-row icon slot (`textIcon`'s `ImageView` sibling) wherever `mimeType.startsWith("image/")`
+ * — see [FoundCache.isThumbnailEligible]. Raster formats are downsampled via [BitmapFactory];
+ * `image/svg+xml` is rasterized via AndroidSVG, since [BitmapFactory] can't parse XML. Caches
+ * decoded bitmaps in memory so repeated rebinds during scrolling don't re-decode the same image.
  */
 object ThumbnailLoader {
     private const val TARGET_PX = 128
+    private const val SVG_MIME_TYPE = "image/svg+xml"
 
     private val cache = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
@@ -29,7 +34,8 @@ object ThumbnailLoader {
         val key = cacheKey(found)
         cache.get(key)?.let { return it }
         return withContext(Dispatchers.Default) {
-            decodeSampled(bytes)?.also { cache.put(key, it) }
+            val bitmap = if (found.mimeType == SVG_MIME_TYPE) decodeSvg(bytes) else decodeSampled(bytes)
+            bitmap?.also { cache.put(key, it) }
         }
     }
 
@@ -40,6 +46,14 @@ object ThumbnailLoader {
         val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight) }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
+
+    /** Renders into a fixed [TARGET_PX] square; AndroidSVG fits the document inside it per the SVG's own `preserveAspectRatio` (default: centered, letterboxed), same as an `<img>` would. */
+    private fun decodeSvg(bytes: ByteArray): Bitmap? = runCatching {
+        val svg = SVG.getFromInputStream(ByteArrayInputStream(bytes))
+        val bitmap = Bitmap.createBitmap(TARGET_PX, TARGET_PX, Bitmap.Config.ARGB_8888)
+        svg.renderToCanvas(Canvas(bitmap))
+        bitmap
+    }.getOrNull()
 
     private fun sampleSize(width: Int, height: Int): Int {
         var sample = 1
