@@ -152,13 +152,13 @@ class TagDropLinkResolverTest {
         // 24 hex chars = 12 bytes, longer than today's 8-byte truncation. Should reach the
         // DB lookup (and miss) rather than being rejected by the parser itself.
         val longHex = "001122334455667788990011"
-        val result = resolver.resolve("tagdrop://$longHex/index")
+        val result = resolver.resolve("tagdrop://@$longHex/index")
         assertEquals(TagDropLinkResolver.Resolution.PaperNotFound(longHex, "index"), result)
     }
 
     @Test fun navLinkAcceptsShorterThanTodaysRootHashLength() = runBlocking {
         val shortHex = "00ff" // 2 bytes
-        val result = resolver.resolve("tagdrop://$shortHex/index")
+        val result = resolver.resolve("tagdrop://@$shortHex/index")
         assertEquals(TagDropLinkResolver.Resolution.PaperNotFound(shortHex, "index"), result)
     }
 
@@ -166,13 +166,13 @@ class TagDropLinkResolverTest {
 
     @Test fun navLinkRootHashIsLowercasedBeforeLookup() = runBlocking {
         val paper = storePaper()
-        val result = resolver.resolve("tagdrop://${paper.rootHash.uppercase()}")
+        val result = resolver.resolve("tagdrop://@${paper.rootHash.uppercase()}")
         assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), result)
     }
 
     @Test fun unknownRootHashIsPaperNotFound() = runBlocking {
         val hex = "0011223344556677"
-        val result = resolver.resolve("tagdrop://$hex/index")
+        val result = resolver.resolve("tagdrop://@$hex/index")
         assertEquals(TagDropLinkResolver.Resolution.PaperNotFound(hex, "index"), result)
     }
 
@@ -180,18 +180,18 @@ class TagDropLinkResolverTest {
 
     @Test fun navLinkWithNoSlugIsPaperFoundWithNullSlug() = runBlocking {
         val paper = storePaper()
-        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), resolver.resolve("tagdrop://${paper.rootHash}"))
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), resolver.resolve("tagdrop://@${paper.rootHash}"))
     }
 
     @Test fun navLinkWithTrailingSlashIsPaperFoundWithNullSlug() = runBlocking {
         val paper = storePaper()
-        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), resolver.resolve("tagdrop://${paper.rootHash}/"))
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, null), resolver.resolve("tagdrop://@${paper.rootHash}/"))
     }
 
     @Test fun navLinkSlugKeepsOnlyFirstSlashAsSeparator() = runBlocking {
         val paper = storePaper()
         // Only the first '/' separates rootHash from slug -- the rest is part of the slug itself.
-        val result = resolver.resolve("tagdrop://${paper.rootHash}/sub/page.html")
+        val result = resolver.resolve("tagdrop://@${paper.rootHash}/sub/page.html")
         assertEquals(TagDropLinkResolver.Resolution.FileNotFound(paper, "sub/page.html"), result)
     }
 
@@ -203,13 +203,13 @@ class TagDropLinkResolverTest {
             cborBytes = byteArrayOf(1, 2, 3) // garbage, not a valid CBOR sequence
         )
         paperDao.papers[paper.rootHash] = paper
-        val result = resolver.resolve("tagdrop://${paper.rootHash}/index")
+        val result = resolver.resolve("tagdrop://@${paper.rootHash}/index")
         assertEquals(TagDropLinkResolver.Resolution.PaperFound(paper, "index"), result)
     }
 
     @Test fun slugNotInManifestIsFileNotFound() = runBlocking {
         val paper = storePaper()
-        val result = resolver.resolve("tagdrop://${paper.rootHash}/missing.html")
+        val result = resolver.resolve("tagdrop://@${paper.rootHash}/missing.html")
         assertEquals(TagDropLinkResolver.Resolution.FileNotFound(paper, "missing.html"), result)
     }
 
@@ -217,7 +217,7 @@ class TagDropLinkResolverTest {
         val fileId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
         val file = TagDropPayload.FileEntry(slug = "doc.html", mimeType = "text/html", fileId = fileId)
         val paper = storePaper(files = listOf(file))
-        val result = resolver.resolve("tagdrop://${paper.rootHash}/doc.html")
+        val result = resolver.resolve("tagdrop://@${paper.rootHash}/doc.html")
         assertEquals(TagDropLinkResolver.Resolution.FileNotCached(paper, file), result)
     }
 
@@ -226,7 +226,7 @@ class TagDropLinkResolverTest {
         val file = TagDropPayload.FileEntry(slug = "doc.html", mimeType = "text/html", fileId = fileId)
         val paper = storePaper(files = listOf(file))
         val cache = storeCache(fileId, "text/html", "<p>hi</p>".toByteArray())
-        val result = resolver.resolve("tagdrop://${paper.rootHash}/doc.html")
+        val result = resolver.resolve("tagdrop://@${paper.rootHash}/doc.html")
         assertEquals(TagDropLinkResolver.Resolution.FileFound(cache, paper, "doc.html"), result)
     }
 
@@ -302,13 +302,50 @@ class TagDropLinkResolverTest {
         assertEquals(TagDropLinkResolver.Resolution.DomainNotFound("nowhere", "index"), result)
     }
 
-    @Test fun exactRootHashMatchWinsOverSameLookingDomainClaim() = runBlocking {
+    // ── @ marker: syntax alone decides hash vs. domain (issue #51) ───────────
+
+    @Test fun bareHashShapedDomainNeverFallsBackToRootHashLookup() = runBlocking {
+        // No `@` means the host is only ever looked up as a domain/slug claim -- never
+        // attempted as a root hash, even though it's hex-shaped and a real paper exists
+        // under that root hash. (SPEC §7 "Domain and pinned links".)
         val real = storePaper(label = "Real Paper")
-        // A second paper claims the first paper's root hash as its own domain name -- the
-        // exact-hash lookup must still win (SPEC §7 "Resolving a domain link").
-        storePaper(label = "Impostor", domain = real.rootHash)
         val result = resolver.resolve("tagdrop://${real.rootHash}")
+        assertEquals(TagDropLinkResolver.Resolution.DomainNotFound(real.rootHash, null), result)
+    }
+
+    @Test fun pinnedHashLinkIsNeverShadowedByMatchingDomainClaim() = runBlocking {
+        // A second paper claims the first paper's root hash as its own domain name. With the
+        // `@` marker present, only the hash is ever looked up, so the impostor's domain claim
+        // can't shadow the real paper -- the vulnerability this grammar exists to close.
+        val real = storePaper(label = "Real Paper")
+        storePaper(label = "Impostor", domain = real.rootHash)
+        val result = resolver.resolve("tagdrop://@${real.rootHash}")
         assertEquals(TagDropLinkResolver.Resolution.PaperFound(real, null), result)
+    }
+
+    @Test fun domainShapedLikeHashStillResolvesAsDomainWhenClaimed() = runBlocking {
+        // Flip side: a paper whose domain field happens to be hex-shaped still resolves
+        // through the domain path when referenced without `@`.
+        val impostor = storePaper(label = "Impostor", domain = "0011223344556677")
+        val result = resolver.resolve("tagdrop://0011223344556677")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(impostor, null), result)
+    }
+
+    @Test fun combinedFormResolvesByHashIgnoringLabel() = runBlocking {
+        // `<domain>@<rootHash-hex>/<slug>` -- the domain half is a decorative label, never
+        // validated against the hash, so an unrelated/wrong label doesn't block resolution.
+        val real = storePaper(label = "Real Paper")
+        val result = resolver.resolve("tagdrop://totally-unrelated-label@${real.rootHash}")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(real, null), result)
+    }
+
+    @Test fun multipleAtSignsInHostFailsSafelyAsInvalid() = runBlocking {
+        // Only the first '@' is treated as the marker; everything after it (including any
+        // further '@') must still be hex-shaped. A malformed host with a stray second '@'
+        // fails closed as Invalid rather than partially matching.
+        val real = storePaper(label = "Real Paper")
+        val result = resolver.resolve("tagdrop://label@stray@${real.rootHash}")
+        assertEquals(TagDropLinkResolver.Resolution.Invalid, result)
     }
 
     @Test fun multipleDomainClaimsPickClosestByDevicePosition() = runBlocking {

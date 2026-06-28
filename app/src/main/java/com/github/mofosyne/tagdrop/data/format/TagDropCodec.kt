@@ -33,7 +33,7 @@ import javax.crypto.spec.SecretKeySpec
  *   - content: raw cache bytes (Content), empty (Paper), or a hidden override map (§9)
  *
  * Navigation links (NOT encoding URIs, NOT put in QR codes):
- *   tagdrop://<rootHash-hex>/<slug>
+ *   tagdrop://<domain-or-@rootHash-hex>/<slug>  — see TagDropLinkResolver for the grammar
  *   Disambiguated by "//": Base41's alphabet has no '/' at all, so an encoding
  *   URI can never have "//" right after the scheme.
  *

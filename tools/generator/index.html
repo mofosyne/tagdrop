@@ -386,7 +386,7 @@
       <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
     </div>
     <div>
-      <label>Domain <small>(optional — human-readable name finders can type instead of the root hash, e.g. "helloworld"  →  tagdrop://helloworld; falls back to Slug above when absent — SPEC §7 "Domains")</small></label>
+      <label>Domain <small>(optional — human-readable name finders can type instead of the root hash, e.g. "helloworld"  →  tagdrop://helloworld; falls back to Slug above when absent — SPEC §7 "Domains". Avoid '@' — it's reserved syntax for marking a pinned root hash, e.g. tagdrop://helloworld@&lt;hash&gt;)</small></label>
       <input type="text" id="p-domain" placeholder="e.g. helloworld  →  tagdrop://helloworld">
     </div>
     <div>
@@ -471,8 +471,8 @@
       <em>same or different</em> papers using absolute tagdrop:// links —
       the app intercepts these and serves the cached bytes inline, so images,
       audio, and SVGs load without a network connection:<br>
-      <code style="font-size:0.8rem">&lt;img src="tagdrop://ROOTHASH/photo.jpg"&gt;</code><br>
-      <code style="font-size:0.8rem">&lt;audio controls src="tagdrop://ROOTHASH/song.mid"&gt;</code><br>
+      <code style="font-size:0.8rem">&lt;img src="tagdrop://@ROOTHASH/photo.jpg"&gt;</code><br>
+      <code style="font-size:0.8rem">&lt;audio controls src="tagdrop://@ROOTHASH/song.mid"&gt;</code><br>
       Slugs can contain <code>/</code> to mimic folder paths
       (e.g. <code>images/photo.jpg</code>) — they are matched as plain strings.
       A file too large for one QR code is automatically split into multiple
@@ -2513,7 +2513,7 @@ async function generatePaper() {
       <strong>Root hash:</strong>
       <code style="display:block;margin:4px 0;font-size:0.85rem">${rootHashHex}</code>
       <small style="color:#555">Use in navigation links:
-        <code>tagdrop://${rootHashHex}/${slug || 'index'}</code></small>
+        <code>tagdrop://@${rootHashHex}/${slug || 'index'}</code></small>
     </div>`);
 
   const actionRow = document.createElement('div');
