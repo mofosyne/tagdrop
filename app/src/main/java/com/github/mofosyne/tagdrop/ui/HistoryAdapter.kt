@@ -7,7 +7,11 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
+import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.databinding.ItemCollectionBinding
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -16,6 +20,8 @@ class HistoryAdapter(
     private val onClick: (HistoryItem) -> Unit,
     private val onMap: (Double, Double) -> Unit
 ) : ListAdapter<HistoryItem, HistoryAdapter.ViewHolder>(Diff) {
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     inner class ViewHolder(private val binding: ItemCollectionBinding) :
         RecyclerView.ViewHolder(binding.root) {
@@ -26,8 +32,11 @@ class HistoryAdapter(
                 is HistoryItem.CacheScan -> item.cache.icon
                 is HistoryItem.PaperScan -> item.paper.icon
             }
-            binding.textIcon.text = icon
-            binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
+            val thumbnailCache = when (item) {
+                is HistoryItem.CacheScan -> item.cache.takeIf { it.isThumbnailEligible }
+                is HistoryItem.PaperScan -> item.thumbnailCache
+            }
+            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, scope)
             when (item) {
                 is HistoryItem.CacheScan -> {
                     val cache = item.cache

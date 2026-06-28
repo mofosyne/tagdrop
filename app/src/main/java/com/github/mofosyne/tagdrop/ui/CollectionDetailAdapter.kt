@@ -11,11 +11,15 @@ import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
 import com.github.mofosyne.tagdrop.data.db.isOpenable
+import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.data.db.showsLockHint
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
 import com.github.mofosyne.tagdrop.databinding.ItemSectionHeaderBinding
 import com.github.mofosyne.tagdrop.openCollectionDetail
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -30,6 +34,8 @@ class CollectionDetailAdapter(
     private val onShareQr: (FoundCache) -> Unit,
     private val onWriteNfc: (FoundCache) -> Unit
 ) : ListAdapter<PageItem, RecyclerView.ViewHolder>(Diff) {
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     inner class PageViewHolder(private val binding: ItemPageBinding) :
         RecyclerView.ViewHolder(binding.root) {
@@ -71,8 +77,12 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> item.cache.icon
                 is PageItem.RelatedHint -> item.scannedPaper?.icon ?: "🧭" // 🧭
             }
-            binding.textIcon.text = icon
-            binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
+            val thumbnailCache = when (item) {
+                is PageItem.PaperFile -> item.cache?.takeIf { it.isThumbnailEligible }
+                is PageItem.CacheEntry -> item.cache.takeIf { it.isThumbnailEligible }
+                is PageItem.RelatedHint -> null
+            }
+            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, scope)
             val cacheForBadge = when (item) {
                 is PageItem.PaperFile -> item.cache
                 is PageItem.CacheEntry -> item.cache

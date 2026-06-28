@@ -9,7 +9,11 @@ import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.isOpenable
+import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.databinding.ItemCollectionBinding
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -19,6 +23,8 @@ class CollectionListAdapter(
     private val onMap: (Double, Double) -> Unit,
     private val onOpenHome: (CollectionItem) -> Unit
 ) : ListAdapter<CollectionItem, CollectionListAdapter.ViewHolder>(Diff) {
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     inner class ViewHolder(private val binding: ItemCollectionBinding) :
         RecyclerView.ViewHolder(binding.root) {
@@ -42,8 +48,12 @@ class CollectionListAdapter(
                 is CollectionItem.AdHoc -> item.icon
                 is CollectionItem.Loose -> item.cache.icon
             }
-            binding.textIcon.text = icon
-            binding.textIcon.visibility = if (icon != null) View.VISIBLE else View.GONE
+            val thumbnailCache = when (item) {
+                is CollectionItem.Paper -> item.thumbnailCache
+                is CollectionItem.AdHoc -> item.thumbnailCache
+                is CollectionItem.Loose -> item.cache.takeIf { it.isThumbnailEligible }
+            }
+            binding.imageThumbnail.bindThumbnailOrIcon(binding.textIcon, thumbnailCache, icon, scope)
             when (item) {
                 is CollectionItem.Paper -> {
                     binding.textType.text = ctx.getString(

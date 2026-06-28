@@ -8,6 +8,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.location.LocationManager
@@ -24,13 +26,18 @@ import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toDrawable
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.matchesScannedPaper
 import com.github.mofosyne.tagdrop.databinding.FragmentMapBinding
+import com.github.mofosyne.tagdrop.ui.CollectionItem
 import com.github.mofosyne.tagdrop.util.LocationUtils
+import com.github.mofosyne.tagdrop.util.ThumbnailLoader
+import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapListener
 import org.osmdroid.events.ScrollEvent
@@ -146,6 +153,13 @@ class MapFragment : Fragment() {
         markerInfos.clear()
         val points = mutableListOf<GeoPoint>()
 
+        // Same favicon/homepage/first-image priority as the collection list rows
+        // (CollectionItem.Paper.thumbnailCache) — reused here rather than redecoding
+        // each paper's file directory.
+        val paperThumbnails = CollectionItem.build(latestPapers, latestCaches)
+            .filterIsInstance<CollectionItem.Paper>()
+            .associate { it.paper.rootHash to it.thumbnailCache }
+
         for (cache in latestCaches) {
             val lat = cache.lat
             val lng = cache.lng
@@ -165,7 +179,7 @@ class MapFragment : Fragment() {
                 }
             }
             markerFolder.add(marker)
-            markerInfos += MarkerInfo(marker, cache.icon, label)
+            markerInfos += MarkerInfo(marker, cache.icon, label, cache.takeIf { it.isThumbnailEligible })
         }
 
         for (paper in latestPapers) {
@@ -185,7 +199,7 @@ class MapFragment : Fragment() {
                 }
             }
             markerFolder.add(marker)
-            markerInfos += MarkerInfo(marker, paper.icon, label)
+            markerInfos += MarkerInfo(marker, paper.icon, label, paperThumbnails[paper.rootHash])
         }
 
         // Placeholder pins for related papers with a known location that haven't been scanned yet.
@@ -311,27 +325,43 @@ class MapFragment : Fragment() {
     }
 
     /**
-     * Sets a marker's visual icon based on its emoji (if any) and whether the zoom-dependent
-     * text label should currently be shown. Falls back to osmdroid's default pin when there's
-     * nothing custom to draw.
+     * Sets a marker's visual icon based on its emoji/thumbnail (if any) and whether the
+     * zoom-dependent text label should currently be shown. Falls back to osmdroid's default pin
+     * when there's nothing custom to draw. A thumbnail-eligible cache draws its emoji/default pin
+     * immediately, then swaps in the decoded image once [ThumbnailLoader.decode] completes — same
+     * "icon first, thumbnail replaces it" pattern as the list rows' `bindThumbnailOrIcon`, just
+     * without a request token since a stale decode landing on a since-rebuilt or no-longer-shown
+     * marker is harmless (it's not attached to anything visible).
      */
     private fun applyMarkerIcon(info: MarkerInfo, showLabel: Boolean) {
         val label = if (showLabel && info.label.isNotBlank()) info.label else null
-        if (info.icon.isNullOrBlank() && label == null) {
+        if (info.icon.isNullOrBlank() && label == null && info.thumbnailCache == null) {
             info.marker.setDefaultIcon()
             return
         }
-        val (drawable, anchorV) = buildMarkerDrawable(info.icon, label)
-        info.marker.setIcon(drawable)
-        info.marker.setAnchor(0.5f, anchorV)
+        setMarkerDrawable(info.marker, info.icon, label, thumbnail = null)
+        val thumbnailCache = info.thumbnailCache ?: return
+        viewLifecycleOwner.lifecycleScope.launch {
+            val bitmap = ThumbnailLoader.decode(thumbnailCache)
+            if (_binding == null || bitmap == null) return@launch
+            setMarkerDrawable(info.marker, info.icon, label, bitmap)
+            binding.map.invalidate()
+        }
+    }
+
+    private fun setMarkerDrawable(marker: Marker, icon: String?, label: String?, thumbnail: Bitmap?) {
+        val (drawable, anchorV) = buildMarkerDrawable(icon, label, thumbnail)
+        marker.setIcon(drawable)
+        marker.setAnchor(0.5f, anchorV)
     }
 
     /**
-     * Draws an emoji icon and/or a text label (on a white pill background) onto a single
-     * bitmap. When both are present the emoji is stacked above the label, and the returned
-     * anchor keeps the emoji — not the label — centered on the marker's geo point.
+     * Draws a small thumbnail image, or else an emoji icon, and/or a text label (on a white pill
+     * background) onto a single bitmap. A [thumbnail] takes priority over [icon] when both are
+     * given. When the icon slot and label are both present they're stacked vertically, and the
+     * returned anchor keeps the icon slot — not the label — centered on the marker's geo point.
      */
-    private fun buildMarkerDrawable(icon: String?, label: String?): Pair<BitmapDrawable, Float> {
+    private fun buildMarkerDrawable(icon: String?, label: String?, thumbnail: Bitmap?): Pair<BitmapDrawable, Float> {
         val density = resources.displayMetrics.density
         val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = 32f * density
@@ -348,9 +378,19 @@ class MapFragment : Fragment() {
         }
         val padding = 4f * density
 
-        val hasIcon = !icon.isNullOrBlank()
-        val iconHeight = if (hasIcon) iconPaint.descent() - iconPaint.ascent() else 0f
-        val iconWidth = if (hasIcon) iconPaint.measureText(icon) else 0f
+        val hasThumbnail = thumbnail != null
+        val hasIcon = !hasThumbnail && !icon.isNullOrBlank()
+        val thumbnailSize = THUMBNAIL_MARKER_DP * density
+        val iconHeight = when {
+            hasThumbnail -> thumbnailSize
+            hasIcon -> iconPaint.descent() - iconPaint.ascent()
+            else -> 0f
+        }
+        val iconWidth = when {
+            hasThumbnail -> thumbnailSize
+            hasIcon -> iconPaint.measureText(icon)
+            else -> 0f
+        }
         val labelHeight = if (label != null) (labelPaint.descent() - labelPaint.ascent()) + padding * 2 else 0f
         val labelWidth = if (label != null) labelPaint.measureText(label) + padding * 2 else 0f
 
@@ -360,7 +400,21 @@ class MapFragment : Fragment() {
         val bitmap = createBitmap(width.toInt(), height.toInt(), Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
-        if (hasIcon) {
+        if (hasThumbnail) {
+            val rect = RectF((width - thumbnailSize) / 2f, 0f, (width + thumbnailSize) / 2f, thumbnailSize)
+            val cornerRadius = 4f * density
+            canvas.save()
+            canvas.clipPath(Path().apply { addRoundRect(rect, cornerRadius, cornerRadius, Path.Direction.CW) })
+            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, labelBgPaint)
+            canvas.drawBitmap(thumbnail!!, null, rect, null)
+            canvas.restore()
+            val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f * density
+                color = Color.WHITE
+            }
+            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint)
+        } else if (hasIcon) {
             canvas.drawText(icon!!, width / 2f, -iconPaint.ascent(), iconPaint)
         }
         if (label != null) {
@@ -368,7 +422,7 @@ class MapFragment : Fragment() {
             canvas.drawText(label, width / 2f, iconHeight + padding - labelPaint.ascent(), labelPaint)
         }
 
-        val anchorV = if (hasIcon && label != null) (iconHeight / 2f) / height else 0.5f
+        val anchorV = if ((hasThumbnail || hasIcon) && label != null) (iconHeight / 2f) / height else 0.5f
         return bitmap.toDrawable(resources) to anchorV
     }
 
@@ -393,8 +447,12 @@ class MapFragment : Fragment() {
         _binding = null
     }
 
-    /** A placed marker plus the data needed to rebuild its icon when zoom crosses [LABEL_ZOOM_THRESHOLD]. */
-    private data class MarkerInfo(val marker: Marker, val icon: String?, val label: String)
+    /**
+     * A placed marker plus the data needed to rebuild its icon when zoom crosses
+     * [LABEL_ZOOM_THRESHOLD]. [thumbnailCache] is the cache (if any) whose decoded image should
+     * replace [icon] in the marker's icon slot — see [applyMarkerIcon].
+     */
+    private data class MarkerInfo(val marker: Marker, val icon: String?, val label: String, val thumbnailCache: FoundCache? = null)
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
@@ -404,6 +462,8 @@ class MapFragment : Fragment() {
         private const val NEARBY_RADIUS_METERS = 50_000.0
         // Show text labels once zoomed in to roughly street level.
         private const val LABEL_ZOOM_THRESHOLD = 15.0
+        // Square size of a marker's decoded thumbnail image, in dp.
+        private const val THUMBNAIL_MARKER_DP = 36
         // Margin kept between the fitted points and the viewport edge when framing
         // multiple pins, so edge-most pins aren't drawn at/past the edge.
         private const val MAP_FIT_PADDING_DP = 48

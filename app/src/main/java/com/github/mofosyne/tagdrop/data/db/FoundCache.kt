@@ -52,3 +52,6 @@ val FoundCache.showsLockHint: Boolean get() = hasPendingOverride && pendingOverr
 
 /** True if [hasPendingOverride] and the blob is passphrase-derived (PBKDF2) — user can retry by entering the passphrase. */
 val FoundCache.hasPendingPassphrase: Boolean get() = pendingOverrideBlob != null && kdfAlg != 0 && kdfSalt != null
+
+/** True if this cache's resolved content is image bytes that can be decoded into a list-row thumbnail (see [com.github.mofosyne.tagdrop.util.ThumbnailLoader]). */
+val FoundCache.isThumbnailEligible: Boolean get() = isOpenable && mimeType.startsWith("image/")
