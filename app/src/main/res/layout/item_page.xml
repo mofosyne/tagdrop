@@ -14,15 +14,30 @@
         android:orientation="horizontal"
         android:padding="12dp">
 
-        <!-- Icon slot: emoji today, could host a small ImageView for image icons later. -->
-        <TextView
-            android:id="@+id/textIcon"
+        <!-- Icon slot: textIcon shows the emoji icon; imageThumbnail shows a decoded preview of a
+             cached image file instead when one is available — only one of the two is visible at a time. -->
+        <FrameLayout
             android:layout_width="40dp"
             android:layout_height="40dp"
-            android:layout_marginEnd="12dp"
-            android:gravity="center"
-            android:textSize="24sp"
-            android:visibility="gone" />
+            android:layout_marginEnd="12dp">
+
+            <TextView
+                android:id="@+id/textIcon"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:textSize="24sp"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/imageThumbnail"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="centerCrop"
+                android:contentDescription="@string/thumbnail_desc"
+                android:visibility="gone" />
+
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="0dp"

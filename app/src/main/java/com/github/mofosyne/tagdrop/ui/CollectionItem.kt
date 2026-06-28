@@ -2,6 +2,7 @@ package com.github.mofosyne.tagdrop.ui
 
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 
@@ -25,7 +26,14 @@ sealed class CollectionItem {
     /** True if [query] is blank, or found case-insensitively in [searchHaystack] (so typing "#trail" filters by tag). */
     fun matches(query: String): Boolean = query.isBlank() || searchHaystack.contains(query.trim(), ignoreCase = true)
 
-    data class Paper(val paper: ScannedPaper, val totalFiles: Int, val cachedFiles: Int, val homeCache: FoundCache?) : CollectionItem() {
+    data class Paper(
+        val paper: ScannedPaper,
+        val totalFiles: Int,
+        val cachedFiles: Int,
+        val homeCache: FoundCache?,
+        /** A cached image file to show as this paper's row thumbnail, in place of its emoji [icon] — its de facto "favicon". */
+        val thumbnailCache: FoundCache? = null
+    ) : CollectionItem() {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
         override val searchHaystack get() = listOfNotNull(
@@ -34,7 +42,16 @@ sealed class CollectionItem {
         override val tags get() = listOfNotNull(paper.collectionTag)
     }
 
-    data class AdHoc(val collectionId: String, val label: String?, override val tags: List<String>, val icon: String?, val items: List<FoundCache>, val homeCache: FoundCache?) : CollectionItem() {
+    data class AdHoc(
+        val collectionId: String,
+        val label: String?,
+        override val tags: List<String>,
+        val icon: String?,
+        val items: List<FoundCache>,
+        val homeCache: FoundCache?,
+        /** A cached image file to show as this collection's row thumbnail, in place of its emoji [icon] — its de facto "favicon". */
+        val thumbnailCache: FoundCache? = null
+    ) : CollectionItem() {
         override val key get() = "adhoc:$collectionId"
         override val timestamp get() = items.maxOf { it.discoveredAt }
         override val searchHaystack get() = (
@@ -72,6 +89,7 @@ sealed class CollectionItem {
                 val files = TagDropCodec.decodePaperStream(paper.cborBytes)?.files.orEmpty()
                 var cachedCount = 0
                 var homeCache: FoundCache? = null
+                var thumbnailCache: FoundCache? = null
                 for (file in files) {
                     val fileId = file.fileId.toHex()
                     claimedIds += fileId
@@ -79,9 +97,12 @@ sealed class CollectionItem {
                     if (cache != null) {
                         cachedCount++
                         if (file.slug in TagDropLinkResolver.HOME_SLUGS) homeCache = cache
+                        if (cache.isThumbnailEligible && (thumbnailCache == null || file.slug in TagDropLinkResolver.HOME_SLUGS)) {
+                            thumbnailCache = cache
+                        }
                     }
                 }
-                Paper(paper, totalFiles = files.size, cachedFiles = cachedCount, homeCache = homeCache)
+                Paper(paper, totalFiles = files.size, cachedFiles = cachedCount, homeCache = homeCache, thumbnailCache = thumbnailCache)
             }
 
             val unclaimed = caches.filterNot { claimedIds.contains(it.cacheId) }
@@ -94,7 +115,9 @@ sealed class CollectionItem {
                 val tags = items.mapNotNull { it.collectionTag }.distinct()
                 val icon = items.firstOrNull { it.icon != null }?.icon
                 val homeCache = items.firstOrNull { it.filename in TagDropLinkResolver.HOME_SLUGS }
-                AdHoc(collectionId, withLabel?.collectionLabel, tags, icon, items, homeCache)
+                val thumbnailCache = homeCache?.takeIf { it.isThumbnailEligible }
+                    ?: items.firstOrNull { it.isThumbnailEligible }
+                AdHoc(collectionId, withLabel?.collectionLabel, tags, icon, items, homeCache, thumbnailCache)
             }
 
             val looseItems = loose.map { Loose(it) }
