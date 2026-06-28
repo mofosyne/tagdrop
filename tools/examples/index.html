@@ -59,6 +59,7 @@
   .qr-card .qr-badge.encrypted { background: #fce4ec; color: #ad1457; }
   .qr-card .qr-badge.key        { background: #fff3e0; color: #e65100; }
   .qr-card .qr-badge.parity     { background: #e0f7fa; color: #00838f; }
+  .qr-card .qr-badge.pixel-art  { background: #f3e5f5; color: #6a1b9a; }
   .qr-card .qr-id   { font-family: monospace; font-size: 0.65rem; color: #aaa; margin-top: 4px; word-break: break-all; }
   .qr-card .qr-uri  { margin-top: 8px; width: 100%; }
   .qr-card .qr-uri input {
@@ -491,6 +492,7 @@ const KEY_NAMES = {
   40: 'description', 41: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
+  55: 'pixel_art',
 };
 
 function toHexDump(bytes) {
@@ -675,7 +677,8 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
             PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
             SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
-            BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47 };
+            BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
+            PIXEL_ART:55 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES,
 // ../generator/index.html): MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling;
@@ -759,6 +762,7 @@ async function createContentSectors({
   hint, filename, mimeType, rawBytes, compress,
   collectionId, collectionLabel, collectionTag, icon,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
+  pixelArt = false,
   maxSectorDataBytes = Infinity,
 }) {
   let compression = null, compressedContent = rawBytes;
@@ -797,6 +801,7 @@ async function createContentSectors({
       [K.KDF_ALG,  kdfAlg],
       [K.KDF_SALT, kdfSalt],
       // kdf_iters is the default (100000) — omit to save bytes
+      [K.PIXEL_ART, pixelArt ? true : null],
     ];
   }
 
@@ -900,6 +905,48 @@ function toHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2,'0
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/**
+ * Renders an 8x8 pixel-art heart sprite to a real PNG at a native size of 65x65 — one
+ * pixel past PIXEL_ART_HEURISTIC_MAX_PX (64, see
+ * ../../app/src/main/java/.../util/PixelArtHeuristic.kt and ../reader/index.html), and
+ * still small enough to fit one QR sector. That's the point of this example: at 65x65 the
+ * size-based heuristic alone would NOT switch a reader to crisp/nearest-neighbour
+ * rendering, so this is exactly the case the explicit pixel_art flag (SPEC §7, key 55)
+ * exists for. Built with <canvas> + toBlob('image/png') rather than hand-encoded bytes,
+ * so the PNG is always valid; block bounds are rounded per-cell (65 isn't divisible by 8)
+ * but every edge still lands on an integer pixel, so blocks stay sharp, not antialiased.
+ */
+async function makePixelArtPng() {
+  const sprite = [
+    '..XXXX..',
+    '.XXXXXX.',
+    'XXXXXXXX',
+    'XXXXXXXX',
+    '.XXXXXX.',
+    '..XXXX..',
+    '...XX...',
+    '...XX...',
+  ];
+  const n = sprite.length;
+  const size = 65; // PIXEL_ART_HEURISTIC_MAX_PX (64, see PixelArtHeuristic.kt) + 1
+  const bound = i => Math.round((i * size) / n);
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0d1b2a';
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = '#e63950';
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (sprite[y][x] === 'X') {
+        ctx.fillRect(bound(x), bound(y), bound(x + 1) - bound(x), bound(y + 1) - bound(y));
+      }
+    }
+  }
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
 // ── Example definitions ───────────────────────────────────────────────────
@@ -1051,6 +1098,18 @@ star.style.display = 'none';
 <\/script>
 </body>
 </html>`,
+  },
+  {
+    // content is a function (rawBytes generator) rather than a string here — see the
+    // STANDALONE_EXAMPLES loop in main(), which TextEncoder's string content but awaits
+    // function content directly as bytes.
+    label: 'Pixel art icon',
+    mimeType: 'image/png',
+    compress: false,
+    hint: null,
+    filename: 'heart.png',
+    pixelArt: true,
+    content: makePixelArtPng,
   },
 ];
 
@@ -1581,15 +1640,19 @@ async function main() {
   // Standalone examples
   const standaloneGrid = document.getElementById('standalone-grid');
   for (const ex of STANDALONE_EXAMPLES) {
-    const rawBytes = new TextEncoder().encode(ex.content);
+    const rawBytes = typeof ex.content === 'function'
+      ? await ex.content()
+      : new TextEncoder().encode(ex.content);
     const sectors = await createContentSectorsAutoSized({
       hint: ex.hint, filename: ex.filename,
       mimeType: ex.mimeType, rawBytes, compress: ex.compress,
+      pixelArt: ex.pixelArt || false,
     });
     await addContentSectorCards(standaloneGrid, sectors, {
       baseLabel: ex.label,
       mime: ex.mimeType,
-      extraBadge: ex.compress ? 'deflate' : null,
+      extraBadge: ex.compress ? 'deflate' : (ex.pixelArt ? 'pixel art' : null),
+      badgeClass: ex.compress ? 'compress' : (ex.pixelArt ? 'pixel-art' : undefined),
     });
   }
 
