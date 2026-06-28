@@ -7,7 +7,7 @@
 // (which repopulates the cache) when sw.js's own bytes change — so without a bump
 // here, a returning offline-installed client would keep serving the old index.html
 // forever, never picking up the new one.
-const CACHE_NAME = 'tagdrop-reader-v2';
+const CACHE_NAME = 'tagdrop-reader-v3';
 
 const PRECACHE_URLS = [
   './',

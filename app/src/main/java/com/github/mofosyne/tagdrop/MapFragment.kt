@@ -37,6 +37,7 @@ import com.github.mofosyne.tagdrop.databinding.FragmentMapBinding
 import com.github.mofosyne.tagdrop.ui.CollectionItem
 import com.github.mofosyne.tagdrop.util.LocationUtils
 import com.github.mofosyne.tagdrop.util.ThumbnailLoader
+import com.github.mofosyne.tagdrop.util.looksLikePixelArt
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapListener
@@ -344,13 +345,14 @@ class MapFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             val bitmap = ThumbnailLoader.decode(thumbnailCache)
             if (_binding == null || bitmap == null) return@launch
-            setMarkerDrawable(info.marker, info.icon, label, bitmap)
+            val pixelArt = thumbnailCache.pixelArt || looksLikePixelArt(bitmap.width, bitmap.height)
+            setMarkerDrawable(info.marker, info.icon, label, bitmap, pixelArt)
             binding.map.invalidate()
         }
     }
 
-    private fun setMarkerDrawable(marker: Marker, icon: String?, label: String?, thumbnail: Bitmap?) {
-        val (drawable, anchorV) = buildMarkerDrawable(icon, label, thumbnail)
+    private fun setMarkerDrawable(marker: Marker, icon: String?, label: String?, thumbnail: Bitmap?, pixelArt: Boolean = false) {
+        val (drawable, anchorV) = buildMarkerDrawable(icon, label, thumbnail, pixelArt)
         marker.setIcon(drawable)
         marker.setAnchor(0.5f, anchorV)
     }
@@ -361,7 +363,7 @@ class MapFragment : Fragment() {
      * given. When the icon slot and label are both present they're stacked vertically, and the
      * returned anchor keeps the icon slot — not the label — centered on the marker's geo point.
      */
-    private fun buildMarkerDrawable(icon: String?, label: String?, thumbnail: Bitmap?): Pair<BitmapDrawable, Float> {
+    private fun buildMarkerDrawable(icon: String?, label: String?, thumbnail: Bitmap?, pixelArt: Boolean = false): Pair<BitmapDrawable, Float> {
         val density = resources.displayMetrics.density
         val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = 32f * density
@@ -406,7 +408,8 @@ class MapFragment : Fragment() {
             canvas.save()
             canvas.clipPath(Path().apply { addRoundRect(rect, cornerRadius, cornerRadius, Path.Direction.CW) })
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, labelBgPaint)
-            canvas.drawBitmap(thumbnail!!, null, rect, null)
+            val thumbnailPaint = Paint().apply { isFilterBitmap = !pixelArt }
+            canvas.drawBitmap(thumbnail!!, null, rect, thumbnailPaint)
             canvas.restore()
             val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE

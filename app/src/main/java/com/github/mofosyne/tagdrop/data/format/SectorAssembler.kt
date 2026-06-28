@@ -86,7 +86,8 @@ class SectorAssembler {
             val inReplyTo: ByteArray? = null,
             val title: String? = null,
             val description: String? = null,
-            val createdAt: Long? = null
+            val createdAt: Long? = null,
+            val pixelArt: Boolean = false
         ) : State()
 
         /** A Paper payload fully reassembled. [streamBytes] is the reassembled stream, stored as `ScannedPaper.cborBytes`. */
@@ -270,7 +271,8 @@ class SectorAssembler {
         inReplyTo = content.inReplyTo,
         title = content.title,
         description = content.description,
-        createdAt = content.createdAt
+        createdAt = content.createdAt,
+        pixelArt = content.pixelArt
     )
 
     /** Concatenates `sector_bytes` for indices `0..count-1` in order, or null if any is missing. */

@@ -286,6 +286,15 @@
       </div>
     </div>
     <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-pixel-art">
+          🟪 Pixel art (no smoothing)
+          <small style="display:block;color:#888;margin-top:2px">Declares this image should render at hard pixel edges rather than smoothed (SPEC §7) — only needed for pixel art too large for a renderer's own small-image heuristic (≤64×64px) to catch on its own</small>
+        </label>
+      </div>
+    </div>
+    <div class="row">
       <div>
         <label>Target sector size <small>(bytes per QR code, decoded)</small></label>
         <input type="number" id="s-sector-size" value="400" min="100" max="1300" step="50" style="width:8em">
@@ -782,7 +791,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title', 52: 'created_at', 54: 'location_label',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 54: 'location_label', 55: 'pixel_art',
 };
 
 function toHexDump(bytes) {
@@ -968,7 +977,7 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54 };
+             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling beyond which a sector's
@@ -1058,7 +1067,7 @@ async function createContentSectors({
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
   lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
-  inReplyTo, title, createdAt,
+  inReplyTo, title, createdAt, pixelArt = false,
   maxSectorDataBytes = Infinity,
 }) {
   let compression = null, compressedContent = rawBytes;
@@ -1106,6 +1115,7 @@ async function createContentSectors({
       [K.IN_REPLY_TO, inReplyTo || null],
       [K.TITLE, title || null],
       [K.CREATED_AT, createdAt || null],
+      [K.PIXEL_ART, pixelArt ? true : null],
     ];
   }
 
@@ -1949,6 +1959,7 @@ function buildSingleEncodeArgs() {
   const radiusM = Number.isFinite(declaredRadius) ? declaredRadius : null;
   const preferDeclaredLocation = document.getElementById('s-prefer-declared-location').checked;
   const locationLabel = document.getElementById('s-location-label').value.trim() || null;
+  const pixelArt = document.getElementById('s-pixel-art').checked;
 
   const sectorSizeRaw = parseInt(document.getElementById('s-sector-size').value, 10);
   const targetSectorBytes = Number.isFinite(sectorSizeRaw)
@@ -2000,7 +2011,7 @@ function buildSingleEncodeArgs() {
     encodeArgs = {
       hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-      inReplyTo, title, createdAt,
+      inReplyTo, title, createdAt, pixelArt,
     };
   }
 
@@ -2131,6 +2142,7 @@ function addFileEntry() {
     <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "A poem to read")</small></label>
     <input type="text" id="fdesc-${id}" placeholder="e.g. A poem to read">
     <label><input type="checkbox" id="fcompress-${id}"> Compress with DEFLATE</label>
+    <label><input type="checkbox" id="fpixelart-${id}"> 🟪 Pixel art (no smoothing, SPEC §7)</label>
     <label>Content</label>
     <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
   document.getElementById('p-files').appendChild(div);
@@ -2250,13 +2262,14 @@ async function computePaperSectorPlan() {
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
     const fdesc    = document.getElementById('fdesc-' + id)?.value.trim() || null;
+    const fpixelart = document.getElementById('fpixelart-' + id)?.checked ?? false;
     if (!fcontent?.trim()) throw new Error(`File "${fslug}" has no content.`);
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
     catch (e) { throw new Error(`File "${fslug}" content isn't valid base64 for MIME type "${fmime}".`); }
     const fileArgs = {
       hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr,
-      collectionId, collectionLabel, collectionTag, icon,
+      collectionId, collectionLabel, collectionTag, icon, pixelArt: fpixelart,
     };
     let sectors;
     try { sectors = await createContentSectorsAutoSized(fileArgs, targetSectorBytes); }

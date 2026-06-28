@@ -158,6 +158,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 52 | `created_at` | uint (opt) | `core_meta_item` — author-declared Unix timestamp (seconds since epoch) this payload was authored; reflects the authoring device's clock, not independently verified |
 | 53 | `domain` | text (opt) | `core_meta_item`; Paper only — human-readable name for `tagdrop://<domain>/<slug>` links, see §7 "Domains" |
 | 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
+| 55 | `pixel_art` | bool (opt, default `false`) | `core_meta_item`; Content only — see §7 "Pixel art" |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -168,9 +169,9 @@ reused with the same meaning inside the encrypted override map structure only
 as an alternative to the emoji `icon` field. Keys 28, 30, 31 are defined in §9
 (Encryption); keys 32–36 in §10 (Verified Authorship); keys 37–39 in §9
 (Passphrase-based key derivation); keys 26, 27, 48, 49, 54 in §4.2 (Declared
-location and priority); key 53 in §7 (Domains). Key 29 is reserved and
-unused — see §9 for why an encrypted override map's nonce doesn't need its
-own clear field.
+location and priority); key 53 in §7 (Domains); key 55 in §7 (Pixel art). Key
+29 is reserved and unused — see §9 for why an encrypted override map's nonce
+doesn't need its own clear field.
 
 **`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
 1`.** Without it, an adversary who substitutes one sector of a multi-sector
@@ -977,6 +978,30 @@ first scanned item that has one — the same "first wins" pattern used for
 Key 25 is reserved for a future small embedded image icon (raw bytes), as an
 alternative for authors who want a custom image instead of an emoji. The
 icon slot in the app's UI is designed to host either form.
+
+### Pixel art
+
+`pixel_art` (key 55) is an optional boolean, default `false`, Content only —
+an author's declaration that this image's bytes should be rendered with
+nearest-neighbor (no smoothing) scaling rather than a renderer's default
+bilinear/smooth scaling. It exists for pixel art whose native resolution is
+large enough that a renderer's own size-based heuristic (below) wouldn't
+otherwise catch it.
+
+Decoders SHOULD also independently disable smoothing for any raster image
+whose native pixel dimensions are small (the TagDrop app's own threshold is
+64×64 or smaller) and is being upscaled for display, regardless of whether
+`pixel_art` is set — most pixel art is small by nature, and requiring every
+author to remember a flag for it would be a poor default. `pixel_art` exists
+only to cover what the heuristic alone would miss, e.g. a larger pixel-art
+image that's still meant to be shown at hard pixel edges rather than
+smoothed. Vector image content (e.g. `image/svg+xml`) has no native pixel
+grid to smooth or sharpen, so neither the flag nor the heuristic applies to
+it.
+
+This field has no effect on decoding or content fidelity — it's a rendering
+hint only, like `icon`. A decoder that ignores it entirely (e.g. always
+smoothing, or never smoothing) still decodes the content correctly.
 
 ## 8. Compression
 

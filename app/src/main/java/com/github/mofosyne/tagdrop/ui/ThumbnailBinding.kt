@@ -1,10 +1,12 @@
 package com.github.mofosyne.tagdrop.ui
 
+import android.graphics.drawable.BitmapDrawable
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.util.ThumbnailLoader
+import com.github.mofosyne.tagdrop.util.looksLikePixelArt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -41,6 +43,11 @@ fun ImageView.bindThumbnailOrIcon(
     scope.launch {
         val bitmap = ThumbnailLoader.decode(thumbnailCache)
         if (tag != requestKey) return@launch
-        if (bitmap != null) setImageBitmap(bitmap) else showIcon()
+        if (bitmap == null) {
+            showIcon()
+            return@launch
+        }
+        val pixelArt = thumbnailCache.pixelArt || looksLikePixelArt(bitmap.width, bitmap.height)
+        setImageDrawable(BitmapDrawable(resources, bitmap).apply { isFilterBitmap = !pixelArt })
     }
 }

@@ -540,7 +540,7 @@ const K = {
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54
+  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55
 };
 
 // CBOR-sequence envelope (SPEC §2):
@@ -548,6 +548,10 @@ const K = {
 // Every code — standalone or one of several pieces — is a "sector" (SPEC §4.1).
 const VERSION = 1;
 const TYPE_CONTENT = 0, TYPE_PAPER = 1;
+
+// SPEC §7 pixel_art: images this small or smaller are assumed pixel art even when the
+// author didn't declare the flag — mirrors the Android app's looksLikePixelArt() heuristic.
+const PIXEL_ART_HEURISTIC_MAX_PX = 64;
 
 // True if a value decoded by cborDecodeSequencePrefix's readVal() is a CBOR map
 // (plain object) rather than a uint/string/bytes/array/null/bool/float64.
@@ -607,7 +611,7 @@ const KEY_NAMES = {
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
-  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label', 55: 'pixel_art',
 };
 
 function toHexDump(bytes) {
@@ -816,6 +820,7 @@ async function parseContentStream(stream, partMeta) {
       inReplyTo:       core[K.IN_REPLY_TO] ? toHex(core[K.IN_REPLY_TO]) : null,
       title:           core[K.TITLE] ?? null,
       createdAt:       core[K.CREATED_AT] ?? null,
+      pixelArt:        core[K.PIXEL_ART] === true,
     },
   };
 }
@@ -1092,6 +1097,7 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     preferDeclaredLocation: content.preferDeclaredLocation,
     locationLabel: content.locationLabel,
     inReplyTo: content.inReplyTo, title: content.title, createdAt: content.createdAt,
+    pixelArt: content.pixelArt,
   };
 }
 
@@ -1228,12 +1234,12 @@ async function completeSingle(cacheId, hint, filename, mimeType, content, opts =
     collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
     pendingOverrideBlob = null, pendingOverrideDeclared = false, pendingCompression = 0, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
-    inReplyTo = null, title = null, createdAt = null,
+    inReplyTo = null, title = null, createdAt = null, pixelArt = false,
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
     pendingOverrideBlob, pendingOverrideDeclared, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
-    inReplyTo, title, createdAt,
+    inReplyTo, title, createdAt, pixelArt,
   });
   const label = filename || hint || mimeType;
   await showContent(mimeType, content, label, cacheId, { icon, collectionLabel, collectionTag, collectionId });
@@ -1281,7 +1287,8 @@ async function handleContentReady(state) {
       override.mimeType ?? state.mimeType, override.content ?? new Uint8Array(0),
       { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
         collectionTag: state.collectionTag, icon: state.icon, wasEncrypted: true,
-        inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
+        inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
+        pixelArt: state.pixelArt }
     );
     showMsg('🔓 Decrypted: ' + label, 'ok');
     return;
@@ -1295,6 +1302,7 @@ async function handleContentReady(state) {
       collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
+      pixelArt: state.pixelArt,
     });
     return;
   }
@@ -1306,7 +1314,8 @@ async function handleContentReady(state) {
       pendingOverrideBlob: blob, pendingOverrideDeclared: state.pendingOverrideDeclared,
       pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
-      inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
+      inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
+      pixelArt: state.pixelArt }
   );
   showMsg(state.pendingOverrideDeclared ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
 }
@@ -1349,7 +1358,7 @@ async function handleAwaitingKey(state) {
  */
 async function unlockWithPassphrase({
   hint, cacheId, blob, compression, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
-  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title, createdAt
+  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title, createdAt, pixelArt = false
 }) {
   const saltHex = toHex(kdfSalt);
   const info = hint
@@ -1371,7 +1380,7 @@ async function unlockWithPassphrase({
       const label = await completeSingle(
         cacheId, override.hint ?? hint, override.filename ?? filename, override.mimeType ?? mimeType,
         override.content ?? new Uint8Array(0),
-        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title, createdAt }
+        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title, createdAt, pixelArt }
       );
       await unlockPending(derived);
       for (const r of await assembler.tryKey(derived)) await completeContentReady(r);
@@ -1385,7 +1394,7 @@ async function unlockWithPassphrase({
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
         pendingOverrideBlob: blob, pendingOverrideDeclared: true, pendingCompression: compression, wasEncrypted: true,
-        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt }
+        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt, pixelArt }
     );
     showMsg(wrongPassphrase
       ? 'Wrong passphrase. Loaded: ' + label + ' (🔒 still locked)'
@@ -1423,7 +1432,8 @@ async function completeContentReady(state) {
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: state.pendingOverrideBlob, pendingOverrideDeclared: state.pendingOverrideDeclared,
       pendingCompression: state.pendingOverrideCompression,
-      wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt }
+      wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
+      pixelArt: state.pixelArt }
   );
   showMsg('🔓 Unlocked: ' + label, 'ok');
 }
@@ -2134,8 +2144,15 @@ async function showContent(mimeType, content, title, cacheId, meta) {
   } else if (mimeType.startsWith('image/')) {
     const blob = new Blob([content], { type: mimeType });
     const img  = document.createElement('img');
-    img.src = URL.createObjectURL(blob);
     img.style.cssText = 'max-width:100%;display:block;margin:16px auto;';
+    if (cached && cached.pixelArt) img.style.imageRendering = 'pixelated';
+    img.onload = () => {
+      if (img.style.imageRendering) return;
+      if (img.naturalWidth <= PIXEL_ART_HEURISTIC_MAX_PX && img.naturalHeight <= PIXEL_ART_HEURISTIC_MAX_PX) {
+        img.style.imageRendering = 'pixelated';
+      }
+    };
+    img.src = URL.createObjectURL(blob);
     area.appendChild(img);
   } else if (mimeType.startsWith('audio/')) {
     const blob  = new Blob([content], { type: mimeType });

@@ -56,7 +56,8 @@ import javax.crypto.spec.SecretKeySpec
  *                     Content/Paper, distinct from a related paper's hint location),
  *                     48 radius_m (circle of uncertainty, shared wherever lat/lng
  *                     appears), 49 prefer_declared_location, 54 location_label
- *                     (non-coordinate location description, e.g. "Tram 40")
+ *                     (non-coordinate location description, e.g. "Tram 40"),
+ *                     55 pixel_art (Content only — no-smoothing render hint)
  */
 object TagDropCodec {
 
@@ -158,6 +159,7 @@ object TagDropCodec {
     private const val K_CREATED_AT  = 52  // author-declared Unix timestamp (seconds since epoch) this payload was authored — valid for both Content and Paper
     private const val K_DOMAIN      = 53  // core_meta_item only, Paper only — human-readable tagdrop://<domain>/<slug> name, falls back to slug (SPEC §7)
     private const val K_LOCATION_LABEL = 54  // core_meta_item only — human-readable, non-coordinate location description, e.g. "Tram 40" (SPEC §4.2)
+    private const val K_PIXEL_ART   = 55  // core_meta_item only, Content only — author hint to render with no smoothing/nearest-neighbor scaling (SPEC §7)
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -302,6 +304,10 @@ object TagDropCodec {
      * [createdAt] is an optional author-declared Unix timestamp (seconds since epoch) recording
      * when this payload was authored — the authoring device's clock at encode time, not an
      * independently verified timestamp (SPEC §3).
+     *
+     * [pixelArt] declares this image content should render with no smoothing/nearest-neighbor
+     * scaling rather than a renderer's default bilinear smoothing (SPEC §7, "Pixel art") — for
+     * pixel art large enough that a renderer's own small-image heuristic wouldn't catch it.
      */
     fun createContentSectors(
         hint: String?, filename: String?, mimeType: String,
@@ -316,6 +322,7 @@ object TagDropCodec {
         inReplyTo: ByteArray? = null,
         title: String? = null, description: String? = null,
         createdAt: Long? = null,
+        pixelArt: Boolean = false,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): List<Sector> {
         val (compressedContent, compression) =
@@ -356,7 +363,8 @@ object TagDropCodec {
             K_PREFER_DECLARED_LOCATION to true.takeIf { preferDeclaredLocation },
             K_LOCATION_LABEL to locationLabel,
             K_IN_REPLY_TO to inReplyTo,
-            K_CREATED_AT to createdAt
+            K_CREATED_AT to createdAt,
+            K_PIXEL_ART to true.takeIf { pixelArt }
         )
 
         // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
@@ -385,14 +393,15 @@ object TagDropCodec {
         preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null,
         title: String? = null, description: String? = null,
-        createdAt: Long? = null
+        createdAt: Long? = null,
+        pixelArt: Boolean = false
     ): List<Sector> {
         val first = createContentSectors(
             hint, filename, mimeType, rawContent, compress,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title, description,
-            createdAt,
+            createdAt, pixelArt,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.first()).length <= DEFAULT_URI_LENGTH) return first
@@ -401,7 +410,7 @@ object TagDropCodec {
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title, description,
-            createdAt,
+            createdAt, pixelArt,
             maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
@@ -796,7 +805,8 @@ object TagDropCodec {
                 inReplyTo       = core.bytesOrNull(K_IN_REPLY_TO),
                 title           = core.text(K_TITLE),
                 description     = core.text(K_DESCRIPTION),
-                createdAt       = core.uint(K_CREATED_AT)
+                createdAt       = core.uint(K_CREATED_AT),
+                pixelArt        = core.boolOrNull(K_PIXEL_ART) ?: false
             )
         )
     }
@@ -940,7 +950,7 @@ object TagDropCodec {
         K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
         K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
         K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at",
-        K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label"
+        K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label", K_PIXEL_ART to "pixel_art"
     )
 
     private val TYPE_NAMES = mapOf(TYPE_CONTENT to "Content", TYPE_PAPER to "Paper")

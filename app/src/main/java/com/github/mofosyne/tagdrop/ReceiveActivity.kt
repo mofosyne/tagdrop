@@ -459,7 +459,7 @@ class ReceiveActivity : AppCompatActivity() {
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
-        createdAt: Long? = null
+        createdAt: Long? = null, pixelArt: Boolean = false
     ) {
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second, locationLabel)
@@ -492,7 +492,8 @@ class ReceiveActivity : AppCompatActivity() {
                     inReplyTo           = inReplyTo?.toHex(),
                     title               = title,
                     description         = description,
-                    createdAt           = createdAt
+                    createdAt           = createdAt,
+                    pixelArt            = pixelArt
                 )
             )
             if (paper != null) {
@@ -542,7 +543,7 @@ class ReceiveActivity : AppCompatActivity() {
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
                 preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
                 inReplyTo = state.inReplyTo, title = state.title, description = state.description,
-                createdAt = state.createdAt
+                createdAt = state.createdAt, pixelArt = state.pixelArt
             )
             return
         }
@@ -557,7 +558,7 @@ class ReceiveActivity : AppCompatActivity() {
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
                 preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
                 inReplyTo = state.inReplyTo, title = state.title, description = state.description,
-                createdAt = state.createdAt
+                createdAt = state.createdAt, pixelArt = state.pixelArt
             )
             return
         }
@@ -571,7 +572,7 @@ class ReceiveActivity : AppCompatActivity() {
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
             inReplyTo = state.inReplyTo, title = state.title, description = state.description,
-            createdAt = state.createdAt
+            createdAt = state.createdAt, pixelArt = state.pixelArt
         )
     }
 
@@ -611,7 +612,7 @@ class ReceiveActivity : AppCompatActivity() {
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
-        createdAt: Long? = null
+        createdAt: Long? = null, pixelArt: Boolean = false
     ) {
         val result = askPassphrase(hint)
         if (result != null) {
@@ -632,7 +633,7 @@ class ReceiveActivity : AppCompatActivity() {
                     lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
                     locationLabel = locationLabel,
                     inReplyTo = inReplyTo, title = title, description = description,
-                    createdAt = createdAt
+                    createdAt = createdAt, pixelArt = pixelArt
                 )
                 return
             }
@@ -647,7 +648,7 @@ class ReceiveActivity : AppCompatActivity() {
                 lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
                 locationLabel = locationLabel,
                 inReplyTo = inReplyTo, title = title, description = description,
-                createdAt = createdAt
+                createdAt = createdAt, pixelArt = pixelArt
             )
         } else {
             toast(getString(R.string.awaiting_key))

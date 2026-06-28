@@ -32,6 +32,7 @@ import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ActivityViewdatauriBinding
 import com.github.mofosyne.tagdrop.util.ContentExporter
 import com.github.mofosyne.tagdrop.util.LocationUtils
+import com.github.mofosyne.tagdrop.util.PIXEL_ART_HEURISTIC_MAX_PX
 import com.github.mofosyne.tagdrop.util.iconForMimeType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -63,7 +64,12 @@ class ViewDataUriActivity : AppCompatActivity() {
     private var currentContent: ContentInfo? = null
     private var viewMode = ViewMode.RENDERED
 
-    private data class ContentInfo(val mimeType: String, val bytes: ByteArray, val context: TagDropLinkResolver.PaperContext?)
+    private data class ContentInfo(
+        val mimeType: String,
+        val bytes: ByteArray,
+        val context: TagDropLinkResolver.PaperContext?,
+        val pixelArt: Boolean = false
+    )
 
     /** The ways [currentContent]'s bytes can be shown -- one normal render, four raw dumps of the same bytes. */
     private enum class ViewMode { RENDERED, TEXT, HEX, CBOR, JSON }
@@ -134,9 +140,9 @@ class ViewDataUriActivity : AppCompatActivity() {
         binding.previewButtonOpen.setOnClickListener { openExternally() }
         binding.previewButtonSave.setOnClickListener { saveToDevice() }
 
-        loadInitial(dataUri)
-
         val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
+        loadInitial(dataUri, cacheId)
+
         if (cacheId != null) {
             lifecycleScope.launch {
                 exportCache = AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(cacheId)
@@ -235,8 +241,11 @@ class ViewDataUriActivity : AppCompatActivity() {
      * paper, load it with a same-paper synthetic base URL so relative links
      * (./about.html, ../images/logo.svg, ...) and subresources resolve to sibling
      * files in that paper. Otherwise fall back to the plain data: URI.
+     *
+     * [cacheId], if present, is used to look up the declared `pixel_art` flag (SPEC §7) for
+     * image content -- the data: URI alone has no room for that hint.
      */
-    private fun loadInitial(dataUri: String) {
+    private fun loadInitial(dataUri: String, cacheId: String?) {
         val (mimeType, bytes) = parseDataUri(dataUri) ?: run {
             binding.htmldisp.loadUrl(dataUri)
             return
@@ -246,13 +255,20 @@ class ViewDataUriActivity : AppCompatActivity() {
             return
         }
         showWebView()
-        if (mimeType.startsWith("text/")) {
-            lifecycleScope.launch {
-                val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
-                renderContent(ContentInfo(mimeType, bytes, context))
+        when {
+            mimeType.startsWith("text/") -> {
+                lifecycleScope.launch {
+                    val context = resolver.findPaperContext(TagDropCodec.contentId(bytes).toHex())
+                    renderContent(ContentInfo(mimeType, bytes, context))
+                }
             }
-        } else {
-            renderContent(ContentInfo(mimeType, bytes, null))
+            mimeType.startsWith("image/") -> {
+                lifecycleScope.launch {
+                    val pixelArt = cacheId?.let { AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(it)?.pixelArt } ?: false
+                    renderContent(ContentInfo(mimeType, bytes, null, pixelArt))
+                }
+            }
+            else -> renderContent(ContentInfo(mimeType, bytes, null))
         }
     }
 
@@ -304,12 +320,39 @@ class ViewDataUriActivity : AppCompatActivity() {
             content.mimeType.startsWith("application/json") ->
                 showMonospace(LenientJson.describe(content.bytes), wrap = true)
             content.mimeType.startsWith("text/") -> showMonospace(String(content.bytes, Charsets.UTF_8), wrap = true)
+            content.mimeType.startsWith("image/") -> {
+                val dataUri = "data:${content.mimeType};base64," +
+                    android.util.Base64.encodeToString(content.bytes, android.util.Base64.NO_WRAP)
+                val html = pixelArtImageHtml(dataUri, content.pixelArt)
+                binding.htmldisp.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
             else -> {
                 val dataUri = "data:${content.mimeType};base64," +
                     android.util.Base64.encodeToString(content.bytes, android.util.Base64.NO_WRAP)
                 binding.htmldisp.loadUrl(dataUri)
             }
         }
+    }
+
+    /**
+     * Minimal HTML wrapper for an image data: URI, applying `image-rendering:pixelated`
+     * (no smoothing) when [declaredPixelArt] is set or -- mirroring the heuristic the
+     * thumbnail/marker renderers apply post-decode (SPEC §7, "Pixel art") -- the image's own
+     * natural pixel dimensions are small enough that the browser must be upscaling it. The
+     * heuristic is JS-side (`onload`/`naturalWidth`/`naturalHeight`) since the WebView only
+     * has the encoded bytes, not a decoded bitmap, at HTML-build time.
+     */
+    private fun pixelArtImageHtml(dataUri: String, declaredPixelArt: Boolean): String {
+        val initialClass = if (declaredPixelArt) "pixelated" else ""
+        return """
+            <html><head><style>
+            html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#000;}
+            img{max-width:100%;max-height:100%;}
+            .pixelated{image-rendering:pixelated;}
+            </style></head><body>
+            <img class="$initialClass" src="$dataUri" onload="if(!this.classList.contains('pixelated')&&this.naturalWidth<=$PIXEL_ART_HEURISTIC_MAX_PX&&this.naturalHeight<=$PIXEL_ART_HEURISTIC_MAX_PX)this.classList.add('pixelated')">
+            </body></html>
+        """.trimIndent()
     }
 
     /**
@@ -500,7 +543,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                     val context = if (result.cache.mimeType.startsWith("text/"))
                         TagDropLinkResolver.PaperContext(result.paper.rootHash, result.slug)
                     else null
-                    renderContent(ContentInfo(result.cache.mimeType, content, context))
+                    renderContent(ContentInfo(result.cache.mimeType, content, context, result.cache.pixelArt))
                 }
                 is TagDropLinkResolver.Resolution.FileNotCached ->
                     toast(getString(R.string.file_not_scanned, result.file.slug))

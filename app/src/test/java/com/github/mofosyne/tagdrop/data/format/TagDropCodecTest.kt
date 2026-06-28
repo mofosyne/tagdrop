@@ -562,6 +562,22 @@ class TagDropCodecTest {
         assertEquals("mailed, destination unknown", decoded.locationLabel)
     }
 
+    // ── Pixel art (SPEC §7 key 55, Content only) ──────────────────────────────
+
+    @Test fun contentPixelArtRoundTripsWhenDeclaredTrue() {
+        val sectors = TagDropCodec.createContentSectors(
+            null, null, "image/png", byteArrayOf(1, 2, 3, 4), pixelArt = true
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertTrue(state.pixelArt)
+    }
+
+    @Test fun contentPixelArtDefaultsToFalse() {
+        val sectors = TagDropCodec.createContentSectors(null, null, "image/png", byteArrayOf(1, 2, 3, 4))
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertFalse(state.pixelArt)
+    }
+
     // ── Key-only code (SPEC §9) ────────────────────────────────────────────────
 
     @Test fun keyCodeOmitsCacheIdAndContent() {
