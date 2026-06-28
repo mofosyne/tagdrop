@@ -1,4 +1,5 @@
 - Papers can now claim a short, human-readable domain name (e.g. "helloworld"), so finders can open tagdrop://helloworld instead of typing out a long root hash.
+- Fix: a paper's self-claimed domain name could be crafted to look exactly like another paper's root hash, letting a found code redirect a tagdrop://<hash>/<slug> link meant for that other paper. Root-hash links now use an explicit tagdrop://@<hash>/<slug> marker so a domain claim can never be confused with one.
 - Cached image files now show as a small picture preview instead of a generic icon, in your collection, history, and on the map — name a file "favicon" (or favicon.png, etc.) to pick which image is used.
 - Content with no fixed location can carry a short text description instead (like "🚋 Tram 40"), and no longer has a live GPS position silently substituted in once you've marked it that way.
 - Codes can now declare what time they were authored, shown as a clock-icon chip.
