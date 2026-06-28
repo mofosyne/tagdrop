@@ -5,8 +5,8 @@
      instead of the cream @color/ic_launcher_background card the adaptive
      icon bakes in underneath it. See ARTASSET/icon/HISTORY.md. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="36dp"
-    android:height="36dp"
+    android:width="72dp"
+    android:height="72dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
