@@ -209,6 +209,9 @@
     <string name="write_nfc_tag_too_small">This tag\'s storage is too small for this content.</string>
     <string name="write_nfc_unsupported_tag">This tag type isn\'t supported for writing.</string>
     <string name="write_nfc_include_app_record">Launch TagDrop automatically on tap</string>
+    <string name="write_nfc_include_standard_record">Add a standard record so non-TagDrop phones can read it too</string>
+    <string name="write_nfc_standard_record_note">Can\'t be combined with automatic launch above — checking one turns the other off. Only works for content that fits on a single tag, and a tag written this way won\'t auto-open in TagDrop either.</string>
+    <string name="write_nfc_standard_record_too_large">This content plus the standard record doesn\'t fit on one tag. Uncheck the standard record option to split across multiple tags, or use a tag with more storage.</string>
 
     <!-- Passphrase unlock dialog -->
     <string name="passphrase_dialog_title">🔒 Passphrase required</string>

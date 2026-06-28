@@ -56,5 +56,23 @@
             android:checked="true"
             android:text="@string/write_nfc_include_app_record" />
 
+        <CheckBox
+            android:id="@+id/checkIncludeStandardRecord"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:checked="false"
+            android:text="@string/write_nfc_include_standard_record" />
+
+        <TextView
+            android:id="@+id/textStandardRecordNote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:textSize="12sp"
+            android:textColor="#888888"
+            android:text="@string/write_nfc_standard_record_note" />
+
     </LinearLayout>
 </LinearLayout>

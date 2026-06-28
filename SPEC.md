@@ -1466,6 +1466,16 @@ This lets the same physical sticker carry both a QR code (for camera scanning) a
 
 A NFC-NDEF capable multi-tag sequence would use the same sectoring scheme (§4.1), where each NFC tag holds one sector's CBOR sequence. (NFC Type 2 tags at 1 KB are suitable for single-sector payloads; 8 KB tags can hold payloads needing more sectors.)
 
+### Optional standard record, for non-TagDrop readers
+
+A tag may optionally carry a **second, preceding** NDEF record — at record index 0, ahead of the `application/vnd.tagdrop` record described above — matching the content's real type: a Well-Known URI record for link-shaped text, Well-Known Text for other text, or a MIME record with the real `mime_type` and raw bytes otherwise. This is purely additive: old readers (including TagDrop versions that predate this paragraph) ignore the extra record and single-record tags remain valid as before.
+
+The point is survivability and first contact: a phone with no TagDrop installed gets *something* useful from the tap (a page opens, a note displays, a file viewer launches) instead of nothing, and the tag's core content outlives the app.
+
+This only applies cleanly to a standalone single-sector payload — a slice of a multi-tag sectored stream isn't an openable file on its own — and it must not be combined with an Android Application Record (AAR): an AAR present anywhere in the message overrides normal dispatch and force-launches that app regardless of record order, defeating the point of putting a standard record first.
+
+Order matters, and so does a real limitation it introduces: Android resolves `ACTION_NDEF_DISCOVERED`'s dispatch type from **record 0 only**, for both a cold-start manifest `<intent-filter>` match and an already-running app's `enableForegroundDispatch` filter match alike. Putting the standard record first is what makes the tag dispatchable to a generic non-TagDrop handler — but by the same rule, **TagDrop's own automatic dispatch no longer matches such a tag either**, whether TagDrop is closed (cold start) or already open. A tag written this way only reaches TagDrop if some other path reads it; tapping it does not auto-launch TagDrop the way a single-record tag does.
+
 ---
 
 ## 13. Alternative Carriers

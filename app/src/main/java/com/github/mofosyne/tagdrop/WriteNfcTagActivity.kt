@@ -39,6 +39,7 @@ class WriteNfcTagActivity : AppCompatActivity() {
     @Volatile private var pendingSectors: List<Sector>? = null
     @Volatile private var nextSectorIndex = 0
     @Volatile private var includeAppRecord = true
+    @Volatile private var includeStandardRecord = false
     @Volatile private var lastWrittenTagId: ByteArray? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -66,10 +67,21 @@ class WriteNfcTagActivity : AppCompatActivity() {
         if (nfcAdapter == null) {
             binding.textStatus.text = getString(R.string.nfc_not_supported)
             binding.checkIncludeAppRecord.visibility = View.GONE
+            binding.checkIncludeStandardRecord.visibility = View.GONE
+            binding.textStandardRecordNote.visibility = View.GONE
             return
         }
 
-        binding.checkIncludeAppRecord.setOnCheckedChangeListener { _, checked -> includeAppRecord = checked }
+        // Mutually exclusive (SPEC §12): an AAR overrides dispatch regardless of record order,
+        // which would defeat the point of putting a standard record at record 0.
+        binding.checkIncludeAppRecord.setOnCheckedChangeListener { _, checked ->
+            includeAppRecord = checked
+            if (checked && binding.checkIncludeStandardRecord.isChecked) binding.checkIncludeStandardRecord.isChecked = false
+        }
+        binding.checkIncludeStandardRecord.setOnCheckedChangeListener { _, checked ->
+            includeStandardRecord = checked
+            if (checked && binding.checkIncludeAppRecord.isChecked) binding.checkIncludeAppRecord.isChecked = false
+        }
 
         val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
         if (cacheId == null) { finish(); return }
@@ -109,7 +121,7 @@ class WriteNfcTagActivity : AppCompatActivity() {
     private fun onTagDiscovered(tag: Tag) {
         val cache = cache ?: return
         if (tag.id != null && lastWrittenTagId?.contentEquals(tag.id) == true) return
-        val result = runCatching { writeNextSector(tag, cache, includeAppRecord) }
+        val result = runCatching { writeNextSector(tag, cache, includeAppRecord, includeStandardRecord) }
         if (result.isSuccess) lastWrittenTagId = tag.id
         runOnUiThread {
             result.fold(
@@ -119,17 +131,21 @@ class WriteNfcTagActivity : AppCompatActivity() {
         }
     }
 
-    private fun writeNextSector(tag: Tag, cache: FoundCache, includeAppRecord: Boolean) {
+    private fun writeNextSector(tag: Tag, cache: FoundCache, includeAppRecord: Boolean, includeStandardRecord: Boolean) {
         val ndef = Ndef.get(tag)
         val sectors = pendingSectors
-            ?: (if (ndef != null) sectorsFittingTag(cache, ndef.maxSize, includeAppRecord)
-                else sectorsFittingTag(cache, BLANK_TAG_CAPACITY_BYTES, includeAppRecord))
-            ?: throw IOException(getString(R.string.write_nfc_too_large))
+            ?: (if (ndef != null) sectorsFittingTag(cache, ndef.maxSize, includeAppRecord, includeStandardRecord)
+                else sectorsFittingTag(cache, BLANK_TAG_CAPACITY_BYTES, includeAppRecord, includeStandardRecord))
+            ?: throw IOException(
+                if (includeStandardRecord) getString(R.string.write_nfc_standard_record_too_large)
+                else getString(R.string.write_nfc_too_large)
+            )
         pendingSectors = sectors
         if (nextSectorIndex >= sectors.size) return // already done; ignore stray taps
 
         val sector = sectors[nextSectorIndex]
-        val message = NfcUtils.buildNdefMessage(TagDropCodec.sectorCbor(sector), packageName, includeAppRecord)
+        val standardRecord = if (includeStandardRecord) NfcUtils.buildStandardRecord(cache.mimeType, cache.contentBytes!!) else null
+        val message = NfcUtils.buildNdefMessage(TagDropCodec.sectorCbor(sector), packageName, includeAppRecord, standardRecord)
 
         if (ndef != null) {
             if (!ndef.isWritable) throw IOException(getString(R.string.write_nfc_read_only))
@@ -147,6 +163,7 @@ class WriteNfcTagActivity : AppCompatActivity() {
     private fun onSectorWritten() {
         val sectors = pendingSectors ?: return
         binding.checkIncludeAppRecord.isEnabled = false
+        binding.checkIncludeStandardRecord.isEnabled = false
         binding.textProgress.text = getString(R.string.share_qr_progress, nextSectorIndex, sectors.size)
         binding.textStatus.text =
             if (nextSectorIndex >= sectors.size) getString(R.string.write_nfc_done, sectors.size)
@@ -163,11 +180,18 @@ class WriteNfcTagActivity : AppCompatActivity() {
      * within [tagCapacity], rebuilding with a smaller per-sector cap each time and re-measuring --
      * mirrors [TagDropCodec.createContentSectorsAutoSized]'s two-pass sizing, generalized to an
      * arbitrary measured tag capacity instead of one fixed URI-length budget.
+     *
+     * [includeStandardRecord] only ever applies cleanly to a standalone single-sector tag (SPEC
+     * §12) -- a slice of a multi-tag sectored stream isn't an openable file -- so when set, this
+     * never grows past one sector; it returns null instead of falling back to splitting.
      */
-    private fun sectorsFittingTag(cache: FoundCache, tagCapacity: Int, includeAppRecord: Boolean): List<Sector>? {
+    private fun sectorsFittingTag(
+        cache: FoundCache, tagCapacity: Int, includeAppRecord: Boolean, includeStandardRecord: Boolean
+    ): List<Sector>? {
         val rawContent = cache.contentBytes!!
         val collectionId = cache.collectionId?.hexToBytes()
         val compress = TagDropCodec.compress(rawContent).size < rawContent.size
+        val standardRecord = if (includeStandardRecord) NfcUtils.buildStandardRecord(cache.mimeType, rawContent) else null
 
         fun build(maxSectorDataBytes: Int) = TagDropCodec.createContentSectors(
             cache.hint, cache.filename, cache.mimeType, rawContent, compress,
@@ -178,11 +202,12 @@ class WriteNfcTagActivity : AppCompatActivity() {
         )
 
         fun fitsCapacity(sector: Sector) =
-            NfcUtils.buildNdefMessage(TagDropCodec.sectorCbor(sector), packageName, includeAppRecord)
+            NfcUtils.buildNdefMessage(TagDropCodec.sectorCbor(sector), packageName, includeAppRecord, standardRecord)
                 .toByteArray().size <= tagCapacity
 
         val single = build(Int.MAX_VALUE)
         if (fitsCapacity(single.first())) return single
+        if (includeStandardRecord) return null
 
         val total = single.first().partMeta.totalBytes
         for (count in 2..MAX_SECTOR_PROBES) {
