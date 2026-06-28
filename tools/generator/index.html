@@ -1934,7 +1934,7 @@ async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, enc
   }
 
   if (encrypt) await renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType });
-  appendBulkActions(result, singleBulkItems);
+  appendBulkActions(result, singleBulkItems, buildSingleHeaderInfo(encodeArgs, encrypt));
 }
 
 // Builds the args for createContentSectorsAutoSized() from the Single File tab's
@@ -2040,6 +2040,23 @@ function buildSingleEncodeArgs() {
   return { encodeArgs, targetSectorBytes, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType };
 }
 
+// Builds the jsPDF "Download PDF Sheet" banner's headerInfo for a Single File
+// sheet (mirrors generatePaper()'s headerInfo below). `title` (key 51) is never
+// part of the encrypted override map (SPEC §9) — it's always the real, cleartext
+// value — so it's safe to prefer even when "Encrypt" replaces hint/filename with
+// a generic cover; falling back to hint/filename then keeps a heading even when
+// no title was set.
+function buildSingleHeaderInfo(encodeArgs, encrypt) {
+  return {
+    title: encodeArgs.title || encodeArgs.hint || encodeArgs.filename || 'TagDrop',
+    meta: [
+      encodeArgs.mimeType,
+      encrypt ? '🔒 locked' : null,
+      encodeArgs.createdAt ? formatCreatedAt(encodeArgs.createdAt) : null,
+    ].filter(Boolean).join(' · '),
+  };
+}
+
 // Live "how many QR codes will this be" preview, kept in sync with the Single File
 // tab's fields via a delegated listener plus explicit calls after async uploads (see
 // bottom of file). Debounced and sequence-guarded since building/compressing the
@@ -2115,7 +2132,7 @@ async function generateSingle() {
   }
 
   if (encrypt) await renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPassphrase, hint, filename, mimeType });
-  appendBulkActions(result, singleBulkItems);
+  appendBulkActions(result, singleBulkItems, buildSingleHeaderInfo(encodeArgs, encrypt));
 }
 
 // ── Paper layout generator ─────────────────────────────────────────────────
