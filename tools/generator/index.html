@@ -64,6 +64,14 @@
   button.secondary:hover { background: #f0f0f0; }
   button.danger { color: #c00; border-color: #c00; }
 
+  .sector-presets { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+  .sector-preset {
+    padding: 4px 10px; background: #fff; border: 1px solid #ccc; border-radius: 6px;
+    cursor: pointer; font-size: 0.8rem; color: #444;
+  }
+  .sector-preset:hover { background: #f0f0f0; }
+  .sector-preset.active { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
+
   .card { background: #fff; border-radius: 8px; padding: 16px; margin-top: 16px;
           box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 
@@ -301,6 +309,12 @@
       <div>
         <label>Target sector size <small>(bytes per QR code, decoded)</small></label>
         <input type="number" id="s-sector-size" value="400" min="100" max="1300" step="50" style="width:8em">
+        <div class="sector-presets" id="s-sector-presets">
+          <button type="button" class="sector-preset" data-bytes="400" title="400B ≈ QR Version 14. Easiest to scan — works on most phones and printers, even older or budget cameras.">Super Reliable (400B)</button>
+          <button type="button" class="sector-preset" data-bytes="600" title="600B ≈ QR Version 17. Good balance — scans quickly on modern phones with autofocus.">Average (600B)</button>
+          <button type="button" class="sector-preset" data-bytes="800" title="800B ≈ QR Version 20. Noticeably slower to acquire — recommended only for high-end phones and good printing.">Dense (800B)</button>
+          <button type="button" class="sector-preset" data-bytes="1000" title="1000B ≈ QR Version 23. Densest practical size — high-end phone with autofocus and good printing required.">Super Dense (1000B)</button>
+        </div>
         <small style="display:block;color:#888;margin-top:2px">Smaller = easier to scan, more codes if it doesn't fit in one. Larger = denser QR, fewer codes. Default 400 ≈ QR Version 15 (SPEC §6); the old default was 1300 (zoom required on many phones).</small>
         <small id="s-sector-estimate" style="display:block;color:#555;margin-top:2px;font-weight:600"></small>
       </div>
@@ -481,6 +495,12 @@
     <label style="margin:0 0 10px;display:block">
       Target sector size <small>(bytes per QR code, decoded)</small><br>
       <input type="number" id="p-sector-size" value="400" min="100" max="1300" step="50" style="width:8em">
+      <div class="sector-presets" id="p-sector-presets">
+        <button type="button" class="sector-preset" data-bytes="400" title="400B ≈ QR Version 14. Easiest to scan — works on most phones and printers, even older or budget cameras.">Super Reliable (400B)</button>
+        <button type="button" class="sector-preset" data-bytes="600" title="600B ≈ QR Version 17. Good balance — scans quickly on modern phones with autofocus.">Average (600B)</button>
+        <button type="button" class="sector-preset" data-bytes="800" title="800B ≈ QR Version 20. Noticeably slower to acquire — recommended only for high-end phones and good printing.">Dense (800B)</button>
+        <button type="button" class="sector-preset" data-bytes="1000" title="1000B ≈ QR Version 23. Densest practical size — high-end phone with autofocus and good printing required.">Super Dense (1000B)</button>
+      </div>
       <small style="display:block;color:#888;margin-top:2px">Applies to every file and to the paper manifest. Smaller = easier to scan, more codes. Larger = denser QR, fewer codes. Default 400 ≈ QR Version 15 (SPEC §6).</small>
       <small id="p-sector-estimate" style="display:block;color:#555;margin-top:2px;font-weight:600"></small>
     </label>
@@ -2753,6 +2773,35 @@ document.getElementById('tab-single').addEventListener('input', updateSingleEsti
 document.getElementById('tab-single').addEventListener('change', updateSingleEstimate);
 document.getElementById('tab-paper').addEventListener('input', updatePaperEstimate);
 document.getElementById('tab-paper').addEventListener('change', updatePaperEstimate);
+
+// ── Sector size presets ─────────────────────────────────────────────────────
+// Buttons next to the fine-control number input for common scan-reliability/density
+// tradeoffs (empirically tuned against a Pixel phone with autofocus, see CLAUDE.md
+// history — the silent default stays conservative at 400 since printed codes are
+// scanned by unknown phones in the wild, not just the creator's own high-end device).
+// Sets the existing number input's value and dispatches a bubbling `input` event so
+// the existing delegated tab listeners pick it up without any extra wiring.
+function wireSectorPresets(inputId, presetsId) {
+  const input = document.getElementById(inputId);
+  const presets = document.getElementById(presetsId);
+  if (!input || !presets) return;
+  const buttons = [...presets.querySelectorAll('.sector-preset')];
+  const syncActive = () => {
+    const current = String(parseInt(input.value, 10));
+    for (const btn of buttons) btn.classList.toggle('active', btn.dataset.bytes === current);
+  };
+  for (const btn of buttons) {
+    btn.addEventListener('click', () => {
+      input.value = btn.dataset.bytes;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      syncActive();
+    });
+  }
+  input.addEventListener('input', syncActive);
+  syncActive();
+}
+wireSectorPresets('s-sector-size', 's-sector-presets');
+wireSectorPresets('p-sector-size', 'p-sector-presets');
 </script>
 </body>
 </html>
