@@ -726,17 +726,18 @@ function sectorScanResult(bytes) {
 async function parseUri(uri) {
   if (!uri.startsWith('tagdrop:')) return null;
 
-  // Navigation link: tagdrop://ROOTHASH_HEX[/slug] — disambiguated from encoding
-  // URIs by the "//" (SPEC §2): Base41's alphabet has no '/' at all. The root hash
-  // here is plain lowercase hex, NOT Base41 — Base41's alphabet includes ':', which
-  // breaks URL authority parsing if it lands in the host (SPEC.md §2).
+  // Navigation link: tagdrop://HOST[/slug] — disambiguated from encoding URIs by the
+  // "//" (SPEC §2): Base41's alphabet has no '/' at all. HOST's grammar is decided
+  // purely by the presence of an `@` marker (SPEC §7 "Domain and pinned links"),
+  // resolved in resolveNavLink:
+  //   <domain>                  floating: domain/slug lookup only, never a root hash
+  //   @<rootHash-hex>           pinned: exact root-hash lookup only
+  //   <domain>@<rootHash-hex>   both: hash authoritative, domain a decorative label
+  // The hash half, when present, is plain lowercase hex, NOT Base41 — Base41's alphabet
+  // includes ':', which breaks URL authority parsing if it lands in the host (SPEC.md §2).
   if (uri.startsWith('tagdrop://')) {
     const rest = uri.slice('tagdrop://'.length);
     const slash = rest.indexOf('/');
-    // host may be a root-hash hex string or a human-readable domain name (SPEC §7
-    // "Domains") -- resolveNavLink tries the exact hash first, falling back to a
-    // domain lookup only on a miss, so a real root hash can never be shadowed by a
-    // same-looking domain name.
     const host = slash < 0 ? rest : rest.slice(0, slash);
     const slug = slash < 0 ? null : (rest.slice(slash + 1) || null);
     if (!host) return { type: 'invalid' };
@@ -1657,19 +1658,37 @@ async function findDomainMatch(domainName) {
 }
 
 /**
- * `host` is either a root-hash hex string or a domain name (SPEC §7 "Domains"). The
- * exact-hash lookup is always tried first; only on a miss does resolution fall back to
- * a domain lookup, so a real root hash can never be shadowed by a same-looking domain
- * name. Mirrors Kotlin TagDropLinkResolver.resolveSchemeLink.
+ * Whether `host` is a root hash or a domain name is decided purely by the presence of an
+ * `@` marker (SPEC §7 "Domain and pinned links") -- never by whether the text looks
+ * hex-shaped, and never by trying one lookup and falling back to the other. No `@` means
+ * `host` is a domain/slug claim and is only ever looked up as one -- never attempted as a
+ * root hash, even if it happens to look hex-shaped. An `@` splits `host` into
+ * `<domain>@<rootHash-hex>`; everything after the first `@` is the hash and is the only
+ * thing looked up (the domain half, if present, is a decorative label, never validated
+ * against it). This keeps a real root hash from ever being shadowed by a same-looking
+ * domain claim, and vice versa (issue #51). Mirrors Kotlin
+ * TagDropLinkResolver.resolveSchemeLink.
  */
 async function resolveNavLink(host, slug) {
-  const hexShaped = /^([0-9a-f]{2})+$/.test(host.toLowerCase());
-  const paper = (hexShaped && await dbGet('papers', host.toLowerCase())) || await findDomainMatch(host);
-  if (!paper) {
-    showMsg(hexShaped
-      ? 'Paper not in collection — scan its manifest QR first.'
-      : "No scanned paper claims the domain '" + host + "'.", 'warn');
-    return;
+  const at = host.indexOf('@');
+  let paper;
+  if (at < 0) {
+    paper = await findDomainMatch(host);
+    if (!paper) {
+      showMsg("No scanned paper claims the domain '" + host + "'.", 'warn');
+      return;
+    }
+  } else {
+    const hex = host.slice(at + 1).toLowerCase();
+    if (!/^([0-9a-f]{2})+$/.test(hex)) {
+      showMsg('Malformed tagdrop:// link.', 'err');
+      return;
+    }
+    paper = await dbGet('papers', hex);
+    if (!paper) {
+      showMsg('Paper not in collection — scan its manifest QR first.', 'warn');
+      return;
+    }
   }
   if (!slug) {
     activePaperHash = paper.rootHash;

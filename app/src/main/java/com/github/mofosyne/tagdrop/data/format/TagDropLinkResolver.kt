@@ -11,15 +11,32 @@ import kotlin.math.sqrt
 /**
  * Resolves TagDrop navigation links. Two URL forms are recognised:
  *
- *   tagdrop://<rootHash-hex-or-domain>/<slug>
- *     The portable form carried in QR-encoded content. The host is either plain
- *     lowercase hex -- NOT Base41, unlike the QR-payload encoding, because Base41's
- *     alphabet includes ':', which breaks URL authority parsing if it lands in the
- *     host (SPEC.md §2) -- or a human-readable domain name (SPEC §7 "Domains").
- *     An exact root-hash lookup is always tried first; only on a miss does
- *     resolution fall back to a domain lookup (`ScannedPaper.domain`, falling back
- *     to `ScannedPaper.slug`), so a real root hash can never be shadowed by a
- *     same-looking domain name.
+ *   tagdrop://<host>/<slug>
+ *     The portable form carried in QR-encoded content. Whether [host] is treated as
+ *     a root hash or a domain name is decided purely by the presence of an `@`
+ *     marker (SPEC §7 "Domain and pinned links") -- never by whether the text
+ *     happens to look hex-shaped, and never by trying one lookup and falling back
+ *     to the other. Three forms:
+ *
+ *       tagdrop://<domain>/<slug>           floating: domain/slug lookup only,
+ *                                           never attempted as a root hash.
+ *       tagdrop://@<rootHash-hex>/<slug>    pinned: exact root-hash lookup only.
+ *       tagdrop://<domain>@<rootHash-hex>/<slug>
+ *                                           both: the hash is authoritative; the
+ *                                           domain is a decorative label that is
+ *                                           never validated against it.
+ *
+ *     The hash half is plain lowercase hex -- NOT Base41, unlike the QR-payload
+ *     encoding, because Base41's alphabet includes ':', which breaks URL authority
+ *     parsing if it lands in the host (SPEC.md §2). `@` was chosen as the separator
+ *     because it reuses standard URI authority syntax (`[userinfo "@"] host`, RFC
+ *     3986 §3.2.1) -- see SPEC §16 for alternatives considered.
+ *
+ *     This split exists because a domain name is a self-declared, uncoordinated
+ *     claim (SPEC §7) -- anyone can craft a paper whose `domain` field happens to
+ *     match another paper's real root-hash hex string. Deciding hash-vs-domain by
+ *     shape or by lookup order would let whichever paper got scanned first shadow
+ *     the other; deciding by syntax instead makes that impossible (issue #51).
  *
  *   https://<rootHash-hex>.paper.tagdrop.invalid/<slug>
  *     A synthetic same-paper form. rootHash is a subdomain *label*, not a path
@@ -31,7 +48,7 @@ import kotlin.math.sqrt
  *     via standard URL resolution. `.invalid` is an IANA-reserved TLD (RFC 2606)
  *     that never resolves over the network. This form is always a real root hash --
  *     it's derived from an already-scanned paper, never user-typed -- so it has no
- *     domain-name fallback.
+ *     domain-name fallback and the `@` grammar doesn't apply to it.
  *
  * In both forms, the root hash identifies which physical paper to look up; the slug
  * selects a file within that paper's directory. Both are resolved from the local
@@ -86,22 +103,27 @@ class TagDropLinkResolver(private val db: AppDatabase) {
     }
 
     /**
-     * `tagdrop://<host>/<slug>` where `host` may be a root hash or a domain name. Tries the
-     * exact root-hash lookup first (cheap, primary-keyed); only on a miss does it fall back to
-     * a domain lookup, so a real root hash can never be shadowed by a same-looking domain name
-     * (SPEC §7 "Resolving a domain link"). A hex-shaped host that matches neither stays
-     * PaperNotFound (same as before this field existed); a non-hex-shaped host that matches
-     * neither is DomainNotFound.
+     * `tagdrop://<host>/<slug>` where whether `host` is a root hash or a domain name is decided
+     * purely by the presence of an `@` marker (SPEC §7 "Domain and pinned links") -- never by
+     * whether the text looks hex-shaped, and never by trying one lookup and falling back to the
+     * other. No `@` means `host` is a domain/slug claim and is only ever looked up as one --
+     * never attempted as a root hash, even if it happens to look hex-shaped. An `@` splits
+     * `host` into `<domain>@<rootHash-hex>`; everything after the first `@` is the hash and is
+     * the only thing looked up (the domain half, if present, is a decorative label that is never
+     * validated against it). This keeps a real root hash from ever being shadowed by a
+     * same-looking domain claim, and vice versa (issue #51).
      */
     private suspend fun resolveSchemeLink(rest: String, deviceLat: Double?, deviceLng: Double?): Resolution {
         val (host, slug) = splitFirstSlash(rest)
-        val hex = host.lowercase()
-        val hexShaped = HEX_ROOT_HASH.matches(hex)
-        if (hexShaped) {
-            db.paperDao().getByRootHash(hex)?.let { return resolveWithinPaper(it, slug) }
+        val at = host.indexOf('@')
+        if (at < 0) {
+            pickClosestDomainMatch(host, deviceLat, deviceLng)?.let { return resolveWithinPaper(it, slug) }
+            return Resolution.DomainNotFound(host, slug)
         }
-        pickClosestDomainMatch(host, deviceLat, deviceLng)?.let { return resolveWithinPaper(it, slug) }
-        return if (hexShaped) Resolution.PaperNotFound(hex, slug) else Resolution.DomainNotFound(host, slug)
+        val hex = host.substring(at + 1).lowercase()
+        if (!HEX_ROOT_HASH.matches(hex)) return Resolution.Invalid
+        val paper = db.paperDao().getByRootHash(hex) ?: return Resolution.PaperNotFound(hex, slug)
+        return resolveWithinPaper(paper, slug)
     }
 
     /** `https://<rootHash-hex>.paper.tagdrop.invalid/<slug>` — always a real root hash, never a domain name. */

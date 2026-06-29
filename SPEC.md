@@ -64,17 +64,30 @@ For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 maj
 
 ### Navigation links (not QR payloads)
 
-HTML pages embedded in TagDrop caches can link to other files and papers using:
+HTML pages embedded in TagDrop caches can link to other files and papers using one of three forms:
 
 ```
-tagdrop://<rootHash-hex>/<slug>
+tagdrop://<domain>/<slug>
+tagdrop://@<rootHash-hex>/<slug>
+tagdrop://<domain>@<rootHash-hex>/<slug>
 ```
 
-`rootHash` is the Paper's `root_hash` (§4.4) — the 8-byte SHA-256 of its reassembled stream (`core_meta_item || bulky_meta_item || content`, §4.2) — lowercase-hex-encoded (16 characters). `slug` is the file's identifier within that paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed. A human-readable **domain name** may be used in place of `<rootHash-hex>` — see "Domains" in §7.
+- `tagdrop://<domain>/<slug>` — **floating**: resolved by name (§7 "Domains"); the paper behind a domain can change over time.
+- `tagdrop://@<rootHash-hex>/<slug>` — **pinned**: resolved to one exact, immutable paper.
+- `tagdrop://<domain>@<rootHash-hex>/<slug>` — both: the hash is authoritative for resolution, `domain` is a decorative label only.
 
-**Why hex, not Base41, here?** Base41's alphabet includes `:`, which is fine inside the *path* of an opaque URI like `tagdrop:<base41-cbor-sequence>` but not inside a URL's *authority* (host[:port]) component — a `:` there starts the port subcomponent per the WHATWG URL Standard, and anything after it that isn't a bare port number is a hard parse failure for the whole URL. Since the root hash sits in the authority position of a `tagdrop://` link, a Base41-encoded root hash containing `:` (roughly 1 in 4, since `:` is 1 of 41 alphabet characters) would make the link unparseable. Plain lowercase hex has no such character, at the cost of 4 extra characters (16 hex vs 12 Base41 for 8 bytes) — cheap, since navigation links are clicked/typed, not scanned from a QR code.
+`rootHash` is the Paper's `root_hash` (§4.4) — the 8-byte SHA-256 of its reassembled stream (`core_meta_item || bulky_meta_item || content`, §4.2) — lowercase-hex-encoded (16 characters). `domain` is a human-readable name a paper claims for itself (§7 "Domains") — unlike `rootHash`, it is never unique, and is resolved by lookup rather than exact match. `slug` is the file's identifier within the resolved paper. The TagDrop app intercepts these links in its WebView and resolves them against the local scanned-paper database — no network needed.
 
-**Disambiguation:** encoding payloads never contain `//` — `tagdrop:<base41-cbor-sequence>` has no authority component. Navigation links always do — the root hash serves as the link's authority. Base41's alphabet has no `/` character at all, so it can never appear anywhere in a Base41-encoded string, let alone right after the scheme. Encoding URIs and navigation links are therefore unambiguously distinguishable by whether `//` follows the scheme.
+These three forms reuse standard URI **authority** syntax (`[userinfo "@"] host`, RFC 3986 §3.2.1) instead of inventing TagDrop-specific punctuation: `domain` occupies the userinfo slot, `rootHash` the host slot. The `@` is what decides resolution, never the shape of the text around it:
+
+- No `@` → the entire host is `domain`, looked up by name — **never** attempted as a hash, even if it happens to be the same length and shape as one.
+- `@` present → whatever follows it is always `rootHash`, looked up by exact match; whatever precedes it (possibly nothing) is an optional, purely cosmetic label, never used for resolution.
+
+See "Resolving a domain link" in §7 for why this needed to be a syntactic split rather than a lookup-order rule, and §16 for other markers considered.
+
+**Why hex, not Base41, for `rootHash`?** Base41's alphabet includes `:`, which is fine inside the *path* of an opaque URI like `tagdrop:<base41-cbor-sequence>` but not inside a URL's *authority* (host[:port]) component — a `:` there starts the port subcomponent per the WHATWG URL Standard, and anything after it that isn't a bare port number is a hard parse failure for the whole URL. Since `rootHash` sits in the authority position of a `tagdrop://` link, a Base41-encoded root hash containing `:` (roughly 1 in 4, since `:` is 1 of 41 alphabet characters) would make the link unparseable. Plain lowercase hex has no such character, at the cost of 4 extra characters (16 hex vs 12 Base41 for 8 bytes) — cheap, since navigation links are clicked/typed, not scanned from a QR code. This is the same hazard that ruled out `:` as the `domain`/`rootHash` marker (§16) — just relocated from inside the hash to between domain and hash.
+
+**Disambiguation from encoding URIs:** encoding payloads never contain `//` — `tagdrop:<base41-cbor-sequence>` has no authority component. Navigation links always do — `domain`/`rootHash` serve as the link's authority. Base41's alphabet has no `/` character at all, so it can never appear anywhere in a Base41-encoded string, let alone right after the scheme. Encoding URIs and navigation links are therefore unambiguously distinguishable by whether `//` follows the scheme, independent of the `@` marker.
 
 **Why Base41?** QR codes have an alphanumeric mode (charset 0–9, A–Z, space, `$%*+-./:`, 45 characters) that stores 5.5 bits per character vs 8 bits per character in binary mode. RFC 9285's Base45 uses that full 45-character set, encoding 2 bytes → 3 alphanumeric characters (~3% overhead over QR's alphanumeric capacity) — far better than Base64 (33% overhead, and forces binary mode since Base64 needs lowercase letters). TagDrop uses **Base41**: the same 2-bytes-to-3-characters packing as Base45, but over a 41-character subset of the QR alphanumeric set — `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*-.:` — that drops the 4 characters which cause trouble outside QR codes: space and `%` aren't valid unescaped in a URI (RFC 3986), and `+`/`/` carry special meaning in URLs (`+` as a space in query strings, `/` as a path separator). 41 is the smallest alphabet for which 3 characters can still represent every 16-bit value (41³ = 68921 ≥ 65536; 40³ = 64000 does not), so this costs nothing — Base41 output is exactly the same length as Base45 output would be for the same bytes. The result is a string that's always a strictly valid, unescaped URI component, with no percent-encoding step needed on either side. This alphabet is also a safe (if non-optimal) subset of Data Matrix's C40 mode and Aztec's Upper/Digit modes, so the same encoded string stays reasonably dense on those carriers too (§13).
 
@@ -470,7 +483,7 @@ location, per §4.2's priority rule) replaces the placeholder.
 
 **Navigation:** HTML files on the paper can link to other files using:
 ```html
-<a href="tagdrop://<paper-root-hash-hex>/map">See the map</a>
+<a href="tagdrop://@<paper-root-hash-hex>/map">See the map</a>
 ```
 The TagDrop app intercepts these links and resolves them from the local database.
 
@@ -680,18 +693,20 @@ Scan the Paper code first to get the directory, then scan whichever file you wan
 
 ### Navigation links
 
-HTML files can link across the TagDropNet using:
+HTML files can link across the TagDropNet using one of three forms (§2):
 ```
-tagdrop://<rootHash-hex>/<slug>
+tagdrop://<domain>/<slug>
+tagdrop://@<rootHash-hex>/<slug>
+tagdrop://<domain>@<rootHash-hex>/<slug>
 ```
 
 When the TagDrop WebView encounters such a link, it:
-1. Looks up `rootHash` in the local scanned-papers database.
+1. Resolves the host to a single paper — an exact `root_hash` lookup for the `@<rootHash-hex>` forms, or a domain lookup for the bare `<domain>` form (see "Domains" below).
 2. Finds the `slug` in that paper's file directory.
 3. Looks up the file's `cache_id` in the found-caches database.
 4. If found: loads the file. If not: shows a "not yet scanned" message with the location hint.
 
-This gives the experience of browsing a website, but entirely offline and made of physical paper. `rootHash` may instead be a human-readable **domain name** — see "Domains" below.
+This gives the experience of browsing a website, but entirely offline and made of physical paper.
 
 ### Relative links (same-paper)
 
@@ -723,10 +738,10 @@ This works because of how slugs and page-loading combine:
   with the root hash gone. The app's `WebViewClient` recognises any
   `*.paper.tagdrop.invalid` host (alongside the `tagdrop://` scheme) and
   resolves the resulting `<rootHash-hex>`/`<slug>` pair through
-  `TagDropLinkResolver`, exactly like a `tagdrop://<rootHash>/<slug>` link.
+  `TagDropLinkResolver`, exactly like a `tagdrop://@<rootHash>/<slug>` link.
 
 To reference a file on a **different** paper (a different root hash), use an
-explicit `tagdrop://<rootHash-hex>/<slug>` link — this can't be relative,
+explicit `tagdrop://@<rootHash-hex>/<slug>` link — this can't be relative,
 since it's a different content-addressed directory.
 
 Practical effect: a normal static-site folder (HTML + CSS + images with
@@ -762,8 +777,9 @@ links to another paper with slug="letterbox" in the same set.
 
 The full navigation URI for the letterbox paper's index file would be:
 ```
-tagdrop://<letterbox-paper-root-hash-hex>/index
+tagdrop://@<letterbox-paper-root-hash-hex>/index
 ```
+(or, with a decorative label, `tagdrop://letterbox@<letterbox-paper-root-hash-hex>/index` — see "Domains" below.)
 
 Root hashes are permanent because paper is immutable. If a paper is updated, it gets a new hash — the old one continues to work as long as the old paper exists physically.
 
@@ -779,44 +795,68 @@ free with no extra field.
 Like `collection_id` ("Collections" below), a domain is **unilateral, not
 coordinated**: any author can claim any name, there's no registry, and
 nothing stops two unrelated papers from claiming the same one. This is a
-deliberate trade-off — useful names stay short — and is resolved at lookup
-time rather than prevented at authoring time (see "Resolving a domain
-link" below).
+deliberate trade-off — useful names stay short, and a domain can be
+**floating**: re-pointed to a new paper just by printing a fresh one that
+claims the same name, the same way updating a website means pointing a DNS
+name at new content, or moving a `latest`-tagged container image to a new
+build. A `root_hash`, by contrast, is always **pinned** — content-addressed
+and immutable; the only way to "change" what it points to is to scan a
+different hash. Navigation links can ask for either property — see "Domain
+and pinned links" below.
 
-#### Domain links
+#### Domain and pinned links
 
-A navigation link may use a domain name in place of the root hash:
+§2 splits `tagdrop://` links into three syntactic forms so that "look this
+name up" and "use this exact hash" are never ambiguous:
 
 ```
-tagdrop://<domain-name>/<slug>
+tagdrop://<domain>/<slug>
+tagdrop://@<rootHash-hex>/<slug>
+tagdrop://<domain>@<rootHash-hex>/<slug>
 ```
 
-The TagDrop app intercepts this exactly like a `tagdrop://<rootHash-hex>/<slug>`
-link, finds the file's `cache_id` in the resolved paper's directory, and
-loads it from the found-caches database.
+- `tagdrop://<domain>/<slug>` — a **floating** reference: resolved by domain
+  lookup (below), tracking whichever paper currently claims that name.
+- `tagdrop://@<rootHash-hex>/<slug>` — a **pinned** reference: resolved by
+  exact `root_hash` lookup, always the same paper.
+- `tagdrop://<domain>@<rootHash-hex>/<slug>` — pinned, with `domain` carried
+  along purely as a decorative label (e.g. for display in a UI or a printed
+  caption). Resolution uses `rootHash` only — `domain` here is never checked
+  against the resolved paper's actual declared domain, validated, or used as
+  a fallback if the hash lookup misses. It's exactly as unverified as
+  `label`/`hint`, or the `domain` field itself, always are. An author who
+  wants this label to be *trustworthy*, not just descriptive, needs §10
+  signatures, not this field.
+
+The TagDrop app intercepts all three forms exactly alike, finds the file's
+`cache_id` in the resolved paper's directory, and loads it from the
+found-caches database.
 
 #### Resolving a domain link
 
-A domain name and a root hash occupy the same position in the link, and a
-domain name made only of hex digits is indistinguishable from a root hash
-by shape alone. Resolvers MUST therefore:
+Whether a link is a domain lookup or a pinned hash lookup is decided by
+syntax alone — the presence of `@` — never by the shape of the host text:
 
-1. Try an exact `root_hash` lookup first (the database's primary key for
-   papers, so this is cheap regardless of whether the host turns out to be
-   hex-shaped).
-2. Only if that lookup misses — whether because the host isn't hex-shaped at
-   all, or because it is but no paper with that exact hash is known — fall
-   back to a domain lookup: scan known papers for `domain` (or, absent that,
-   `slug`) case-insensitively matching the host.
+- No `@`: the whole host is `domain`. Resolvers MUST scan known papers for
+  `domain` (or, absent that, `slug`) case-insensitively matching it —
+  **never** as a `root_hash` lookup, even if the text happens to be 16 hex
+  characters.
+- `@` present: whatever follows it is `rootHash`, resolved by an exact
+  `root_hash` lookup only. Whatever precedes the `@` (possibly nothing) is
+  discarded for resolution purposes — see "Domain and pinned links" above.
 
-This "exact match wins" order means a real root hash can never be shadowed
-by a same-looking domain name, while a hex-shaped domain name (e.g.
-`deadbeef`) still resolves normally on any device that hasn't *also* scanned
-a paper with that literal root hash.
+This syntactic split exists specifically so a same-looking `domain` can
+never be confused with, or shadow, a real `root_hash`, regardless of which
+one a device happens to have scanned first. An earlier draft tried to get
+the same guarantee from lookup order instead (try `root_hash` first, fall
+back to a domain scan only on a miss) — see §16 for why that's
+order-dependent and insufficient on its own, and for other markers
+considered before `@`.
 
 **Picking the closest match.** Because domains are uncoordinated, more than
 one known paper can match the same name — this is expected, not an error.
-When it happens, the app resolves to a single candidate using:
+When a bare `tagdrop://<domain>/<slug>` link resolves to more than one
+candidate, the app picks a single one using:
 
 1. If the device has a current position fix, and at least one candidate has
    a known location (declared, or resolved from a live GPS fix when it was
@@ -830,7 +870,12 @@ This favours "the one you're standing next to" when that's knowable, and
 arbitrary pick. If no known paper matches the name under either field, the
 app reports the domain as not found (with the requested `slug`, so the UI
 can still show what was being looked for) rather than treating it as
-invalid input — the name may simply not have been scanned yet.
+invalid input — the name may simply not have been scanned yet. A future,
+backward-compatible refinement could prefer, among several candidates, the
+one whose §10 `signer_id` the device has already trusted under this domain
+— pinning *authority* over a name without giving up the name's
+human-readable convenience — but no such tie-break exists yet, and nothing
+here requires signatures today.
 
 **Searchability:** since `domain` (and its `slug` fallback) is meant to be
 memorable, it's included alongside `label`/`set`/`slug` in the app's
@@ -1597,7 +1642,7 @@ Version history:
   - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
   - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742) for the version/type envelope
   - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `(type, cache_id)` groups concurrently
-  - `TagDropLinkResolver.kt` — resolves `tagdrop://<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
+  - `TagDropLinkResolver.kt` — resolves `tagdrop://<domain>/<slug>` and `tagdrop://[<domain>]@<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
   - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark
 
 - **Android database:** `app/src/main/java/com/github/mofosyne/tagdrop/data/db/`
@@ -1612,6 +1657,51 @@ Version history:
 **Why not extend `data:` URI syntax?** (issues #2, #4, #13) Adding parameters like `;seq-id=`, `;seq-total=`, `;crc=` to the data URI was the original approach. It fails because data: URIs are opaque to QR readers — there's no way to route them to the app by scheme. The `tagdrop:` scheme gives us OS-level routing and a clean separation between the envelope and payload.
 
 **Why a version/type envelope instead of URI path segments or per-map keys?** An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §12/§13) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every sector with a CBOR Sequence (RFC 8742) led by `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — makes the same bytes self-describing on every carrier: Base41-encode them for `tagdrop:<base41>`, or store them raw in an NDEF record, with identical decode logic either way. It also lets the URI collapse to `tagdrop:<base41>` (no `//`, no `/<type>/` segment), gives a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — costs one less byte than an equivalent `[version, type, part_meta, sector_bytes]` array and doesn't require everything after `version`/`type` to be CBOR-wrapped, leaving room for raw non-CBOR bytes in a future version. `version` lives *only* in the envelope, not redundantly inside `part_meta` too: two fields claiming to describe the same fact can disagree, forcing a reader to pick which one to trust — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. CBOR's own self-describing-data convention (the tag-55799 "magic number", RFC 8949 §3.4.5.3) is likewise an external prefix rather than a duplicated internal field, reinforcing that self-description belongs in the envelope.
+
+**Why `@` to mark a pinned hash, not `:` or triple-slash?** (issue #51) An
+earlier draft resolved `domain`/`root_hash` collisions purely by *lookup
+order* — try an exact `root_hash` lookup first, fall back to a domain scan
+only on a miss. That closes the obvious case but is order-dependent: if a
+device scans an attacker-authored paper whose self-declared `domain` is
+crafted to exactly match a real paper's `root_hash` hex string *before* it
+ever scans the real paper, there's no real `root_hash` registered yet for
+the lookup to find first, so the domain claim wins silently — the device
+has no way to tell it apart from the genuine paper. Splitting `domain` and
+`root_hash` into syntactically distinct positions (rather than relying on
+order) needed a marker; alternatives considered and rejected:
+
+- `:` (`tagdrop://hash:<hex>/<slug>`) — rejected outright: `:` is the
+  host:port delimiter in URI authority syntax (WHATWG URL Standard), so
+  anything after it that isn't a bare port number is a hard parse failure.
+  This is the *exact* hazard §2 already documents for why root hashes use
+  hex instead of Base41 in this position — reusing `:` as a marker would
+  reintroduce it deliberately.
+- Triple-slash / empty authority (`tagdrop:///<hash>/<slug>`,
+  RFC 3986-idiomatic, like `file:///`) — not adopted: these links are
+  clicked inside a real Android WebView, where Chromium's URL canonicalizer
+  parses the href before the app's own resolver ever sees it, and whether
+  an empty authority survives that pass unmangled wasn't verified.
+- Requiring a literal `.` in domain names — rejected as strictly weaker: it
+  closes the bare-vs-bare ambiguity but has no way to express "named *and*
+  pinned" at once, which the combined form below gets for free.
+- Separate sub-schemes (`tagdrop-hash://`, `tagdrop-domain://`) — workable,
+  but doubles WebView interception surface and is the most verbose option.
+
+`@` was chosen instead, reusing standard URI authority syntax
+(`[userinfo "@"] host`, RFC 3986 §3.2.1) rather than inventing new
+TagDrop-specific punctuation: `domain` occupies the userinfo slot,
+`rootHash` the host slot. The marker sits on the hash side (`@<hash>`), not
+the domain side, because hash strings are always scanned, copy-pasted, or
+tool-generated — never hand-typed or memorized — so the punctuation costs a
+human nothing there, whereas `domain` exists specifically so links can be
+typed/spoken/memorized, and forcing extra punctuation onto it would
+undercut that purpose. The two non-bare forms map cleanly onto a
+distinction worth keeping on its own merits (§7 "Domains"): a bare
+`<domain>` is a **floating** reference that can be silently re-pointed by a
+later paper claiming the same name, while `@<rootHash-hex>` is a
+**pinned**, immutable one; `<domain>@<rootHash-hex>` gets both at once, with
+the leading label purely decorative and the hash always authoritative for
+resolution.
 
 **Why not NDEF as the primary format?** (issue #16) NDEF is a memory-layout format for NFC chips with a specific capability container. Adapting it for QR codes adds complexity without benefit — the QR code already handles error correction and binary framing. We use NDEF only as a transport option for NFC tags (§12).
 

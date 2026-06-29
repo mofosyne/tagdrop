@@ -101,6 +101,13 @@
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 
+        <!-- In-app wire-format spec viewer (SPEC.md, synced at build time — see app/build.gradle) -->
+        <activity
+            android:name=".SpecActivity"
+            android:label="@string/title_activity_spec"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Retained AES key management (SPEC §9) -->
         <activity
             android:name=".RetainedKeysActivity"

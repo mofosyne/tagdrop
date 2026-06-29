@@ -142,6 +142,7 @@ class MainActivity : AppCompatActivity() {
             R.id.action_backup -> { startBackup(); true }
             R.id.action_restore -> { triggerRestore(); true }
             R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }
+            R.id.action_spec -> { startActivity(Intent(this, SpecActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }
     }

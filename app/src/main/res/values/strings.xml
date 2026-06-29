@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">tagdrop</string>
     <string name="title_activity_read_me">Read Me</string>
+    <string name="title_activity_spec">Wire Format Spec</string>
     <string name="title_scan">Scan Tag</string>
 
     <!-- Bottom navigation tabs -->
@@ -45,6 +46,7 @@
     <string name="button_launch">Launch Content (legacy)</string>
     <string name="button_clear">Clear</string>
     <string name="button_readme">About / Read Me</string>
+    <string name="button_spec">Wire Format Spec</string>
     <string name="status_ready">Point the camera at a TagDrop code to begin.</string>
     <string name="status_collecting">Collecting chunks: %1$d / %2$d\nHint: %3$s\n\nStill need: %4$s</string>
     <string name="status_legacy">Legacy mode: %1$d fragment(s) accumulated.\n\nTap \'Launch Content\' when done.</string>

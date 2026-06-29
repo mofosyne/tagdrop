@@ -13,7 +13,7 @@ import com.github.mofosyne.tagdrop.data.db.ScannedPaper
  *     CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
  *
  * Navigation links (not QR payloads):
- *   tagdrop://<rootHash-hex>/<slug>  resolved by TagDropLinkResolver
+ *   tagdrop://<domain-or-@rootHash-hex>/<slug>  resolved by TagDropLinkResolver
  */
 sealed class TagDropPayload {
 
@@ -105,7 +105,9 @@ sealed class TagDropPayload {
      * there's no placeholder/re-encode pass needed — compute once, done.
      *
      * Navigation links embedded in HTML pages:
-     *   tagdrop://<rootHash-hex>/<slug>  — resolved by TagDropLinkResolver
+     *   tagdrop://@<rootHash-hex>/<slug>  — pinned to this exact paper, resolved by
+     *   TagDropLinkResolver (the `@` marker rules out an unrelated paper's `domain`
+     *   claim ever being mistaken for this root hash, SPEC §7).
      */
     data class Paper(
         val rootHash: ByteArray,           // SHA-256(CBOR)[0:8]; paper's permanent address
