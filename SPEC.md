@@ -644,8 +644,8 @@ alone is enough to identify the payload (`cache_id`/`root_hash` is on every
 one, §4.1) and to show its `hint`/`label` as soon as it's scanned, even
 before the rest arrive.
 
-**Sector size recommendation:** Target ~400 bytes per sector (decoded),
-which encodes to ~600 Base41 characters and fits in a QR Version 15 that
+**Sector size recommendation:** Target ~600 bytes per sector (decoded),
+which encodes to ~900 Base41 characters and fits in a QR Version 17 that
 prints cleanly at 3cm × 3cm and scans without zooming in on most phones.
 
 **Redundancy (issue #37):** Add one parity sector (`parity_scheme` 1, §5) at
