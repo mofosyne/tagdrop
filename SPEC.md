@@ -40,10 +40,10 @@ CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes)
 Laid out as a sequence of four concatenated items:
 
 ```
-┌──────────┬──────────┬────────────┬───────────────┐
-│ version  │ type     │ part_meta  │ sector_bytes  │
-│ (1 byte) │ (1 byte) │ (CBOR map) │ (byte string) │
-└──────────┴──────────┴────────────┴───────────────┘
++----------+----------+------------+---------------+
+| version  | type     | part_meta  | sector_bytes  |
+| (1 byte) | (1 byte) | (CBOR map) | (byte string) |
++----------+----------+------------+---------------+
 ```
 
 | Item | Type | Meaning |
@@ -295,11 +295,11 @@ CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
 Laid out as a sequence of three concatenated parts:
 
 ```
-┌────────────────┬─────────────────────┬─────────────────────────┐
-│ core_meta_item │ bulky_meta_item     │ content                 │
-│ plain CBOR map │ CBOR map            │ raw or compressed bytes │
-│ (always small) │ (may be compressed) │ (empty for Paper)       │
-└────────────────┴─────────────────────┴─────────────────────────┘
++----------------+---------------------+-------------------------+
+| core_meta_item | bulky_meta_item     | content                 |
+| plain CBOR map | CBOR map            | raw or compressed bytes |
+| (always small) | (may be compressed) | (empty for Paper)       |
++----------------+---------------------+-------------------------+
 ```
 
 **`core_meta_item`** is always plain CBOR (never compressed) and always
@@ -680,13 +680,13 @@ Each A4 sheet is analogous to a floppy disk:
 A recommended layout for an A4 paper:
 
 ```
-┌─────────────────────────────────────────────┐
-│  [ Paper QR ]      Trail Stop 3 — Oak Tree  │
-│                                             │
-│  [ index.html ]    [ map.svg ]              │
-│                                             │
-│  Next: letterbox 200m north                 │
-└─────────────────────────────────────────────┘
++-------------------------------------------+
+| [ Paper QR ]      Trail Stop 3 — Oak Tree |
+|                                           |
+| [ index.html ]    [ map.svg ]             |
+|                                           |
+| Next: letterbox 200m north                |
++-------------------------------------------+
 ```
 
 Scan the Paper code first to get the directory, then scan whichever file you want — you don't have to scan everything.
