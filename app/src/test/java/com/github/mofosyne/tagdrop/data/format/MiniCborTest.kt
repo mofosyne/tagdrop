@@ -275,7 +275,7 @@ class MiniCborTest {
         val garbage = byteArrayOf(0xFF.toByte(), 0x01, 0x02)
         val description = MiniCbor.describeSequence(cbor + garbage)
         assertTrue(description.contains("3: \"hint\""))
-        assertTrue(description.contains("remaining bytes"))
+        assertTrue(description.contains("hex dump"))
         assertTrue(description.contains("ff 01 02"))
     }
 

@@ -207,6 +207,28 @@ object MiniCbor {
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /**
+     * Classic 16-bytes-per-line hex dump. [startOffset] is added to the printed address so a
+     * partial dump (the unparsed tail) still shows accurate file offsets.
+     */
+    private fun hexDump(bytes: ByteArray, startOffset: Int = 0): String = buildString {
+        val w = 16
+        for (base in bytes.indices step w) {
+            val end = minOf(base + w, bytes.size)
+            append("%08x  ".format(startOffset + base))
+            for (i in base until base + w) {
+                append(if (i < end) "%02x ".format(bytes[i]) else "   ")
+                if (i - base == 7) append(' ')
+            }
+            append(' ')
+            for (i in base until end) {
+                val c = bytes[i].toInt() and 0xFF
+                append(if (c in 0x20..0x7e) c.toChar() else '.')
+            }
+            appendLine()
+        }
+    }
+
+    /**
      * Pretty-prints arbitrary bytes as a generic CBOR Sequence, for inspecting content whose
      * structure isn't known ahead of time -- e.g. a found tag/QR of uncertain origin, possibly
      * truncated or damaged. Unlike [TagDropCodec.describeCbor] (which expects TagDrop's own fixed
@@ -238,7 +260,10 @@ object MiniCbor {
             failure?.let { (offset, message) ->
                 if (items.isNotEmpty()) appendLine()
                 appendLine("⚠ could not parse byte $offset onward: $message")
-                describeValue("remaining bytes", bytes.copyOfRange(offset, bytes.size), 0, this)
+                appendLine()
+                // Use a formatted hex dump for readability (especially when nothing decoded at all).
+                appendLine("hex dump:")
+                append(hexDump(bytes.copyOfRange(offset, bytes.size), offset))
             }
         }
     }
