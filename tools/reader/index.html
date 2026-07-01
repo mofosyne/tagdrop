@@ -198,6 +198,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
     </svg>
     <div>
       <h1>TagDrop Reader</h1>
+      <small style="display:block;color:#b05000;">⚠ Wire format v1 is a draft — breaking changes may occur before the first real code is deployed.</small>
       <nav style="font-size:0.8rem; margin-top:4px;">
         <a href="../" style="color:#D9652B;">← Home</a> ·
         <a href="../generator/" style="color:#D9652B;">Generator</a> ·
@@ -532,16 +533,20 @@ const K = {
   TOTAL_BYTES:7, CONTENT_SHA:8,
   FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
   COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
-  FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24,
+  ICON:24,
   LAT:26, LNG:27,
   ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
   KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
-  PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
+  PAPER_DESCRIPTION:40,
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
   IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55
 };
+// Local keys for files[] sub-map entries (independent namespace, SPEC §3)
+const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
+// Local keys for related[] sub-map entries (independent namespace, SPEC §3)
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
 
 // CBOR-sequence envelope (SPEC §2):
 // tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
@@ -602,17 +607,19 @@ const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
   7: 'total_bytes', 8: 'content_sha256',
   11: 'filename', 12: 'content_compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
-  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
-  20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
+  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
-  40: 'description', 41: 'description',
+  40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
   50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label', 55: 'pixel_art',
 };
+const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
+const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -656,21 +663,22 @@ async function describeCbor(bytes) {
   return out;
 }
 
-function describeMap(map, indent) {
+function describeMap(map, indent, keyNames = KEY_NAMES) {
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
     const value = map[key];
-    const label = KEY_NAMES[key] ? key + ' (' + KEY_NAMES[key] + ')' : String(key);
+    const label = keyNames[key] ? key + ' (' + keyNames[key] + ')' : String(key);
     if (value instanceof Uint8Array) {
       out += pad + label + ': ' + toHexDump(value) + ' (' + value.length + ' bytes)\n';
     } else if (typeof value === 'string') {
       out += pad + label + ': "' + value + '"\n';
     } else if (Array.isArray(value)) {
       out += pad + label + ': [\n';
+      const itemKeyNames = SUB_KEY_NAMES[key] ?? keyNames;
       for (const item of value) {
         if (item !== null && typeof item === 'object' && !(item instanceof Uint8Array) && !Array.isArray(item)) {
-          out += pad + '  {\n' + describeMap(item, indent + 2) + pad + '  }\n';
+          out += pad + '  {\n' + describeMap(item, indent + 2, itemKeyNames) + pad + '  }\n';
         } else {
           out += pad + '  ' + item + '\n';
         }
@@ -854,26 +862,26 @@ function paperFromParts(parts, rootHash) {
   const filesRaw = parts.bulky[K.FILES];
   const files = Array.isArray(filesRaw) ? filesRaw.flatMap(entry => {
     if (!isCborMap(entry)) return [];
-    const slug = entry[K.FILE_SLUG], mimeType = entry[K.FILE_MIME], fileId = entry[K.FILE_ID];
+    const slug = entry[KF.SLUG], mimeType = entry[KF.MIME], fileId = entry[KF.FILE_ID];
     if (!slug || !mimeType || !fileId) return [];
-    return [{ slug, mimeType, fileId: toHex(fileId), description: entry[K.FILE_DESCRIPTION] ?? null }];
+    return [{ slug, mimeType, fileId: toHex(fileId), description: entry[KF.DESCRIPTION] ?? null, pixelArt: entry[KF.PIXEL_ART] === true }];
   }) : [];
 
   const relatedRaw = parts.bulky[K.RELATED];
   const related = Array.isArray(relatedRaw) ? relatedRaw.flatMap(entry => {
     if (!isCborMap(entry)) return [];
-    const hint = entry[K.HINT];
+    const hint = entry[KR.HINT];
     if (!hint) return [];
     return [{
       hint,
-      set:         entry[K.SET] ?? null,
-      slug:        entry[K.SLUG] ?? null,
-      paperId:     entry[K.PAPER_ID] ? toHex(entry[K.PAPER_ID]) : null,
-      lat:         entry[K.LAT] ?? null,
-      lng:         entry[K.LNG] ?? null,
-      radiusM:     entry[K.RADIUS_M] ?? null,
-      keyMaterial: entry[K.KEY_MATERIAL] ?? null,
-      retainKey:   entry[K.RETAIN_KEY] !== false,
+      set:         entry[KR.SET] ?? null,
+      slug:        entry[KR.SLUG] ?? null,
+      paperId:     entry[KR.PAPER_ID] ? toHex(entry[KR.PAPER_ID]) : null,
+      lat:         entry[KR.LAT] ?? null,
+      lng:         entry[KR.LNG] ?? null,
+      radiusM:     entry[KR.RADIUS_M] ?? null,
+      keyMaterial: entry[KR.KEY_MATERIAL] ?? null,
+      retainKey:   entry[KR.RETAIN_KEY] !== false,
     }];
   }) : [];
 
@@ -1549,12 +1557,27 @@ function updateCborButton() {
   document.getElementById('btnCbor').disabled = !lastScannedCbor;
 }
 
+/** Tries to match a non-TagDrop QR scan against the active paper's file_id list.
+ *  Raw QR files declare file_id = SHA-256(raw bytes)[0:8] in the manifest; content
+ *  and MIME type come from the QR bytes + the manifest entry respectively.
+ *  Requires a paper to have been scanned first (activePaperHash must be set). */
+async function handleRawScan(bytes) {
+  if (!activePaperHash) { showMsg('Not a TagDrop QR code.', 'err'); return; }
+  const paper = await dbGet('papers', activePaperHash);
+  if (!paper) { showMsg('Not a TagDrop QR code.', 'err'); return; }
+  const hashHex = toHex((await sha256(bytes)).slice(0, 8));
+  const file = paper.files.find(f => f.fileId === hashHex);
+  if (!file) { showMsg('Not a TagDrop QR code.', 'err'); return; }
+  await completeSingle(hashHex, null, file.slug, file.mimeType, bytes, { pixelArt: file.pixelArt ?? false });
+  showMsg('Found: ' + file.slug + ' (' + file.mimeType + ')', 'ok');
+}
+
 async function handleScanned(rawBytes) {
   const bytes = rawBytes instanceof Uint8Array ? rawBytes : new Uint8Array(rawBytes);
   let parsed;
   try { parsed = await parseScannedBytes(bytes); }
   catch (e) { showMsg('Parse error: ' + e.message, 'err'); return; }
-  if (!parsed) { showMsg('Not a TagDrop QR code.', 'err'); return; }
+  if (!parsed) { await handleRawScan(bytes); return; }
 
   switch (parsed.type) {
 
@@ -1632,7 +1655,10 @@ async function handlePaper(paper) {
   for (const related of paper.related) {
     if (related.keyMaterial) await handleDiscoveredKey(related.keyMaterial, related.retainKey, related.hint);
   }
-  showMsg('Paper: ' + (paper.label || 'untitled') + ' — ' + paper.files.length + ' file(s)', 'ok');
+  const cachedIds = new Set((await dbGetAll('caches')).map(c => c.cacheId));
+  const alreadyFoundCount = paper.files.filter(f => cachedIds.has(f.fileId)).length;
+  const foundSuffix = alreadyFoundCount > 0 ? ', ' + alreadyFoundCount + ' already in your collection' : '';
+  showMsg('Paper: ' + (paper.label || 'untitled') + ' — ' + paper.files.length + ' file(s)' + foundSuffix, 'ok');
   await renderPaper(paper.rootHash);
 }
 

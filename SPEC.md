@@ -127,28 +127,28 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 - **`bulky_meta_item`** — the second item of the reassembled stream. Whatever doesn't need to be in the early preview but isn't raw content: directories, related-paper hints, large fixed-size fields. May be compressed.
 - **content** — the third and last item: the actual bytes (a Content payload's cache; empty for a Paper, which has no content of its own). May be compressed, and may be a hidden encrypted override map (§9).
 
-| Key | Field | Type | Lives in |
+| Key | Field | Type | Valid in |
 |---|---|---|---|
 | 2 | `cache_id` / `root_hash` | bytes (8, opt) | `part_meta` |
-| 3 | `hint` / `label` | text (opt) | `core_meta_item` |
+| 3 | `hint` / `label` | text (opt) | `core_meta_item`; `related[]` (as `hint`) |
 | 4 | `mime_type` | text (opt) | `core_meta_item`; Content only |
 | 7 | `total_bytes` | uint | `part_meta` |
 | 8 | `content_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
 | 11 | `filename` | text (opt) | `core_meta_item`; Content only |
 | 12 | `content_compression` | uint (opt) | `core_meta_item` |
-| 13 | `set` | text (opt) | `core_meta_item`; Paper only |
-| 14 | `slug` | text (opt) | `core_meta_item`; Paper only |
-| 15 | `files` | array | `bulky_meta_item`; Paper only |
-| 16 | `related` | array | `bulky_meta_item`; Paper only |
+| 13 | `set` | text (opt) | `core_meta_item` (Paper only) |
+| 14 | `slug` | text (opt) | `core_meta_item` (Paper only) |
+| 15 | `files` | array of `files[]` sub-maps | `bulky_meta_item`; Paper only |
+| 16 | `related` | array of `related[]` sub-maps | `bulky_meta_item`; Paper only |
 | 17 | `collection_id` | bytes (8, opt) | `core_meta_item` |
 | 18 | `collection_label` | text (opt) | `core_meta_item` |
 | 19 | `collection_tag` | text (opt) | `core_meta_item` |
 | 24 | `icon` | text (opt) | `core_meta_item` |
-| 26 | `lat` | float64 (opt) | `core_meta_item` — author-declared latitude of this payload's own location |
-| 27 | `lng` | float64 (opt) | `core_meta_item` — author-declared longitude, same scope as `lat` |
+| 26 | `lat` | float64 (opt) | `core_meta_item` (author-declared location of this payload) |
+| 27 | `lng` | float64 (opt) | `core_meta_item` — longitude, same scope as `lat` |
 | 28 | `encryption` | uint (opt) | `core_meta_item`; Content only |
 | 30 | `key_material` | bytes (32, opt) | `core_meta_item` |
-| 31 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
+| 31 | `retain_key` | bool (opt, default `true`) | `core_meta_item` — see §9 |
 | 32 | `signature_algorithm` | uint (opt) | `core_meta_item` |
 | 33 | `signature` | bytes (2420, opt) | `bulky_meta_item` |
 | 34 | `signer_pubkey` | bytes (1312, opt) | `bulky_meta_item` |
@@ -164,27 +164,58 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 45 | `bulky_meta_compression` | uint (opt) | `core_meta_item` |
 | 46 | `bulky_meta_compressed_bytes` | uint (required iff key 45 present) | `core_meta_item` |
 | 47 | `bulky_meta_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
-| 48 | `radius_m` | float64 (opt) | wherever `lat`/`lng` appears — `core_meta_item` or a `related` entry |
+| 48 | `radius_m` | float64 (opt) | `core_meta_item` — circle-of-uncertainty radius in meters around `lat`/`lng` |
 | 49 | `prefer_declared_location` | bool (opt, default `false`) | `core_meta_item` only |
 | 50 | `in_reply_to` | bytes (8, opt) | `core_meta_item` — `cache_id`/`root_hash` of the single parent this is replying to (§7) |
 | 51 | `title` | text (opt) | `core_meta_item` |
 | 52 | `created_at` | uint (opt) | `core_meta_item` — author-declared Unix timestamp (seconds since epoch) this payload was authored; reflects the authoring device's clock, not independently verified |
 | 53 | `domain` | text (opt) | `core_meta_item`; Paper only — human-readable name for `tagdrop://<domain>/<slug>` links, see §7 "Domains" |
 | 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
-| 55 | `pixel_art` | bool (opt, default `false`) | `core_meta_item`; Content only — see §7 "Pixel art" |
+| 55 | `pixel_art` | bool (opt, default `false`) | `core_meta_item` (Content only) — render with nearest-neighbour scaling (no smoothing); see §7 "Pixel art" |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
 `version` and by `part_meta`'s `sector_index`/`sector_count`; §14). Key **5**
 (`content`) no longer appears in `core_meta_item` or `bulky_meta_item`, but is
 reused with the same meaning inside the encrypted override map structure only
-(§9). Key 25 is reserved for a future small embedded image icon (raw bytes),
-as an alternative to the emoji `icon` field. Keys 28, 30, 31 are defined in §9
-(Encryption); keys 32–36 in §10 (Verified Authorship); keys 37–39 in §9
-(Passphrase-based key derivation); keys 26, 27, 48, 49, 54 in §4.2 (Declared
-location and priority); key 53 in §7 (Domains); key 55 in §7 (Pixel art). Key
-29 is reserved and unused — see §9 for why an encrypted override map's nonce
-doesn't need its own clear field.
+(§9). Keys **20–23** and **41** are retired as global keys — they formerly named
+`files[]`/`related[]` sub-map fields, but those sub-maps now use their own
+independent local key namespaces (see below). Key 25 is reserved for a future
+small embedded image icon (raw bytes), as an alternative to the emoji `icon`
+field. Keys 28, 30, 31 are defined in §9 (Encryption); keys 32–36 in §10
+(Verified Authorship); keys 37–39 in §9 (Passphrase-based key derivation); keys
+26, 27, 48, 49, 54 in §4.2 (Declared location and priority); key 53 in §7
+(Domains); key 55 in §7 (Pixel art). Key 29 is reserved and unused — see §9 for
+why an encrypted override map's nonce doesn't need its own clear field.
+
+**Sub-map local key namespaces:** `files[]` and `related[]` entries are CBOR
+maps with their own independent key ranges, separate from the top-level key
+space. The same integer may appear in both a top-level map and a sub-map without
+conflict, because CBOR map keys are scoped per-map.
+
+**`files[]` entry keys** (each element of the `files` array, key 15):
+
+| Key | Field | Type | Notes |
+|---|---|---|---|
+| 1 | `slug` | text | URL-safe name for this file within the paper |
+| 2 | `mime_type` | text | MIME type of the file |
+| 3 | `file_id` | bytes (8) | `cache_id` of the file's root QR |
+| 4 | `description` | text (opt) | Content teaser, e.g. "A poem to read" |
+| 5 | `pixel_art` | bool (opt, default `false`) | Render with nearest-neighbour scaling (no smoothing); see §7 "Pixel art" |
+
+**`related[]` entry keys** (each element of the `related` array, key 16):
+
+| Key | Field | Type | Notes |
+|---|---|---|---|
+| 1 | `hint` | text | Human-readable label for this related paper |
+| 2 | `set` | text (opt) | Collection set identifier |
+| 3 | `slug` | text (opt) | Slug of the related paper |
+| 4 | `paper_id` | bytes (8, opt) | Root hash of the related paper |
+| 5 | `lat` | float64 (opt) | Location of the related paper |
+| 6 | `lng` | float64 (opt) | Longitude, same scope as `lat` |
+| 7 | `radius_m` | float64 (opt) | Circle-of-uncertainty radius in meters |
+| 8 | `key_material` | bytes (32, opt) | Decryption key for that paper's content (§9) |
+| 9 | `retain_key` | bool (opt, default `true`) | See §9 |
 
 **`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
 1`.** Without it, an adversary who substitutes one sector of a multi-sector
@@ -217,30 +248,11 @@ serve as the values shown before (or without) a matching key. See §9.
 
 ### File entry sub-keys (elements of key 15)
 
-Each element is a CBOR map:
-
-| Key | Field | Type |
-|---|---|---|
-| 20 | `slug` | text |
-| 21 | `mime_type` | text |
-| 22 | `file_id` | bytes (8) — `cache_id` of the file's root QR |
-| 41 | `description` | text (opt) — what this file is, e.g. "A poem to read" |
+Each element is a CBOR map using local keys **1** (`slug`), **2** (`mime_type`), **3** (`file_id`), **4** (`description`), **5** (`pixel_art`). These keys are local to the sub-map and independent of the top-level key space — see the `files[]` entry key table in §3.
 
 ### Related paper sub-keys (elements of key 16)
 
-Each element is a CBOR map:
-
-| Key | Field | Type |
-|---|---|---|
-| 3 | `hint` | text — human-readable location description |
-| 13 | `set` | text (opt) |
-| 14 | `slug` | text (opt) |
-| 23 | `paper_id` | bytes (8, opt) — root hash of the related paper |
-| 26 | `lat` | float64 (opt) — latitude of the related paper |
-| 27 | `lng` | float64 (opt) — longitude of the related paper |
-| 48 | `radius_m` | float64 (opt) — circle-of-uncertainty radius in meters around `lat`/`lng` |
-| 30 | `key_material` | bytes (32, opt) — decryption key for the related paper's content, see §9 |
-| 31 | `retain_key` | bool (opt, default `true`) — see §9 |
+Each element is a CBOR map using local keys **1** (`hint`), **2** (`set`), **3** (`slug`), **4** (`paper_id`), **5** (`lat`), **6** (`lng`), **7** (`radius_m`), **8** (`key_material`), **9** (`retain_key`). These keys are local to the sub-map and independent of the top-level key space — see the `related[]` entry key table in §3.
 
 ---
 
@@ -460,7 +472,7 @@ already being browsed rather than as a "should I look for this" decision;
 for a Content payload, free text alongside the cache's own bytes, or —
 when the content slot is occupied by an attachment instead — standing in
 as the message itself (see Postcards below). A per-file `description`
-(key 41, optional, in each `files[]` entry alongside `slug`/`mime_type`)
+(local key 4, optional, in each `files[]` entry alongside `slug`/`mime_type`)
 plays the analogous role for an individual file, e.g. "A poem to read" or
 "A hand-drawn map" — letting a finder choose among files they can already
 see listed, before scanning each one's own code. `title` (key 51,
@@ -1628,7 +1640,7 @@ Version history:
   (`parity_scheme` 1) at `sector_index == sector_count` reconstructs exactly
   one lost data sector per payload (§5).
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
-- Content-teaser `description` (key 40, both payload kinds) and per-file `description` (key 41, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
+- Content-teaser `description` (key 40, both payload kinds) and per-file `description` (local key 4, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.

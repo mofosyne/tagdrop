@@ -132,10 +132,6 @@ object TagDropCodec {
     private const val K_COLLECTION_ID    = 17
     private const val K_COLLECTION_LABEL = 18
     private const val K_COLLECTION_TAG   = 19
-    private const val K_FILE_SLUG   = 20
-    private const val K_FILE_MIME   = 21
-    private const val K_FILE_ID     = 22
-    private const val K_PAPER_ID    = 23
     private const val K_ICON        = 24
     // K_ICON_IMAGE = 25 — reserved for a future small embedded image icon (bytes)
     private const val K_LAT         = 26
@@ -148,8 +144,25 @@ object TagDropCodec {
     private const val K_KDF_SALT     = 38
     private const val K_KDF_ITERS    = 39
     private const val K_DESCRIPTION       = 40  // content teaser / message body — valid for both Content and Paper
-    private const val K_FILE_DESCRIPTION  = 41
     private const val K_BULKY_COMPRESSION      = 45
+
+    // files[] entry local keys (SPEC §3 — independent namespace, not part of the global key table)
+    private const val KF_SLUG        = 1
+    private const val KF_MIME        = 2
+    private const val KF_FILE_ID     = 3
+    private const val KF_DESCRIPTION = 4
+    private const val KF_PIXEL_ART   = 5
+
+    // related[] entry local keys (SPEC §3 — independent namespace)
+    private const val KR_HINT        = 1
+    private const val KR_SET         = 2
+    private const val KR_SLUG        = 3
+    private const val KR_PAPER_ID    = 4
+    private const val KR_LAT         = 5
+    private const val KR_LNG         = 6
+    private const val KR_RADIUS_M    = 7
+    private const val KR_KEY_MATERIAL = 8
+    private const val KR_RETAIN_KEY   = 9
     private const val K_BULKY_COMPRESSED_BYTES = 46
     private const val K_BULKY_SHA              = 47
     private const val K_RADIUS_M               = 48  // circle-of-uncertainty radius in meters, wherever lat/lng appears
@@ -521,23 +534,24 @@ object TagDropCodec {
         val bulky = listOf<Pair<Int, Any?>>(
             K_FILES   to paper.files.map { f ->
                 MiniCbor.CborMap(listOf(
-                    K_FILE_SLUG to f.slug,
-                    K_FILE_MIME to f.mimeType,
-                    K_FILE_ID   to f.fileId,
-                    K_FILE_DESCRIPTION to f.description
+                    KF_SLUG        to f.slug,
+                    KF_MIME        to f.mimeType,
+                    KF_FILE_ID     to f.fileId,
+                    KF_DESCRIPTION to f.description,
+                    KF_PIXEL_ART   to true.takeIf { f.pixelArt }
                 ))
             },
             K_RELATED to paper.related.map { r ->
                 MiniCbor.CborMap(listOf(
-                    K_HINT     to r.hint,
-                    K_SET      to r.set,
-                    K_SLUG     to r.slug,
-                    K_PAPER_ID to r.paperId,
-                    K_LAT      to r.lat,
-                    K_LNG      to r.lng,
-                    K_RADIUS_M to r.radiusM,
-                    K_KEY_MATERIAL to r.keyMaterial,
-                    K_RETAIN_KEY   to false.takeIf { r.keyMaterial != null && !r.retainKey }
+                    KR_HINT        to r.hint,
+                    KR_SET         to r.set,
+                    KR_SLUG        to r.slug,
+                    KR_PAPER_ID    to r.paperId,
+                    KR_LAT         to r.lat,
+                    KR_LNG         to r.lng,
+                    KR_RADIUS_M    to r.radiusM,
+                    KR_KEY_MATERIAL to r.keyMaterial,
+                    KR_RETAIN_KEY  to false.takeIf { r.keyMaterial != null && !r.retainKey }
                 ))
             }
         )
@@ -857,25 +871,26 @@ object TagDropCodec {
         val files = (parts.bulky[K_FILES] as? List<*>)?.mapNotNull { entry ->
             val em = entry as? Map<Int, Any> ?: return@mapNotNull null
             TagDropPayload.FileEntry(
-                slug        = em.text(K_FILE_SLUG) ?: return@mapNotNull null,
-                mimeType    = em.text(K_FILE_MIME) ?: return@mapNotNull null,
-                fileId      = em.bytesOrNull(K_FILE_ID) ?: return@mapNotNull null,
-                description = em.text(K_FILE_DESCRIPTION)
+                slug        = em.text(KF_SLUG) ?: return@mapNotNull null,
+                mimeType    = em.text(KF_MIME) ?: return@mapNotNull null,
+                fileId      = em.bytesOrNull(KF_FILE_ID) ?: return@mapNotNull null,
+                description = em.text(KF_DESCRIPTION),
+                pixelArt    = em.boolOrNull(KF_PIXEL_ART) ?: false
             )
         } ?: emptyList()
 
         val related = (parts.bulky[K_RELATED] as? List<*>)?.mapNotNull { entry ->
             val em = entry as? Map<Int, Any> ?: return@mapNotNull null
             TagDropPayload.RelatedPaper(
-                hint        = em.text(K_HINT) ?: return@mapNotNull null,
-                set         = em.text(K_SET),
-                slug        = em.text(K_SLUG),
-                paperId     = em.bytesOrNull(K_PAPER_ID),
-                lat         = em.doubleOrNull(K_LAT),
-                lng         = em.doubleOrNull(K_LNG),
-                radiusM     = em.doubleOrNull(K_RADIUS_M),
-                keyMaterial = em.bytesOrNull(K_KEY_MATERIAL),
-                retainKey   = em.boolOrNull(K_RETAIN_KEY) ?: true
+                hint        = em.text(KR_HINT) ?: return@mapNotNull null,
+                set         = em.text(KR_SET),
+                slug        = em.text(KR_SLUG),
+                paperId     = em.bytesOrNull(KR_PAPER_ID),
+                lat         = em.doubleOrNull(KR_LAT),
+                lng         = em.doubleOrNull(KR_LNG),
+                radiusM     = em.doubleOrNull(KR_RADIUS_M),
+                keyMaterial = em.bytesOrNull(KR_KEY_MATERIAL),
+                retainKey   = em.boolOrNull(KR_RETAIN_KEY) ?: true
             )
         } ?: emptyList()
 
@@ -932,25 +947,36 @@ object TagDropCodec {
 
     // ── Debug ─────────────────────────────────────────────────────────────────
 
-    /** Human-readable names for TagDrop's CBOR integer keys, used by [describeCbor]. */
+    /** Human-readable names for TagDrop's top-level CBOR integer keys, used by [describeCbor]. */
     private val KEY_NAMES = mapOf(
         K_CACHE_ID to "cache_id/root_hash", K_HINT to "hint/label", K_MIME to "mime_type",
         K_CONTENT to "content", K_TOTAL_BYTES to "total_bytes", K_CONTENT_SHA to "content_sha256",
         K_FILENAME to "filename", K_COMPRESSION to "content_compression", K_SET to "set",
         K_SLUG to "slug", K_FILES to "files", K_RELATED to "related",
         K_COLLECTION_ID to "collection_id", K_COLLECTION_LABEL to "collection_label",
-        K_COLLECTION_TAG to "collection_tag", K_FILE_SLUG to "slug", K_FILE_MIME to "mime_type",
-        K_FILE_ID to "file_id", K_PAPER_ID to "paper_id", K_ICON to "icon",
+        K_COLLECTION_TAG to "collection_tag", K_ICON to "icon",
         K_LAT to "lat", K_LNG to "lng", K_ENCRYPTION to "encryption",
         K_KEY_MATERIAL to "key_material", K_RETAIN_KEY to "retain_key",
         K_KDF_ALG to "kdf_alg", K_KDF_SALT to "kdf_salt", K_KDF_ITERS to "kdf_iters",
-        K_DESCRIPTION to "description", K_FILE_DESCRIPTION to "description",
+        K_DESCRIPTION to "description",
         K_SECTOR_INDEX to "sector_index", K_SECTOR_COUNT to "sector_count", K_PARITY to "parity_scheme",
         K_BULKY_COMPRESSION to "bulky_meta_compression",
         K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
         K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
         K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at",
         K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label", K_PIXEL_ART to "pixel_art"
+    )
+    private val FILE_ENTRY_KEY_NAMES = mapOf(
+        KF_SLUG to "slug", KF_MIME to "mime_type", KF_FILE_ID to "file_id",
+        KF_DESCRIPTION to "description", KF_PIXEL_ART to "pixel_art"
+    )
+    private val RELATED_ENTRY_KEY_NAMES = mapOf(
+        KR_HINT to "hint", KR_SET to "set", KR_SLUG to "slug", KR_PAPER_ID to "paper_id",
+        KR_LAT to "lat", KR_LNG to "lng", KR_RADIUS_M to "radius_m",
+        KR_KEY_MATERIAL to "key_material", KR_RETAIN_KEY to "retain_key"
+    )
+    private val SUB_MAP_KEY_NAMES = mapOf(
+        K_FILES to FILE_ENTRY_KEY_NAMES, K_RELATED to RELATED_ENTRY_KEY_NAMES
     )
 
     private val TYPE_NAMES = mapOf(TYPE_CONTENT to "Content", TYPE_PAPER to "Paper")
@@ -1002,19 +1028,20 @@ object TagDropCodec {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun describeMap(map: Map<Int, Any>, indent: Int, out: StringBuilder) {
+    private fun describeMap(map: Map<Int, Any>, indent: Int, out: StringBuilder, keyNames: Map<Int, String> = KEY_NAMES) {
         val pad = "  ".repeat(indent)
         for ((key, value) in map.toSortedMap()) {
-            val label = KEY_NAMES[key]?.let { "$key ($it)" } ?: "$key"
+            val label = keyNames[key]?.let { "$key ($it)" } ?: "$key"
             when (value) {
                 is ByteArray -> out.appendLine("$pad$label: ${value.toHexDump()} (${value.size} bytes)")
                 is String    -> out.appendLine("$pad$label: \"$value\"")
                 is List<*>   -> {
                     out.appendLine("$pad$label: [")
+                    val itemKeyNames = SUB_MAP_KEY_NAMES[key] ?: keyNames
                     for (item in value) {
                         if (item is Map<*, *>) {
                             out.appendLine("$pad  {")
-                            describeMap(item as Map<Int, Any>, indent + 2, out)
+                            describeMap(item as Map<Int, Any>, indent + 2, out, itemKeyNames)
                             out.appendLine("$pad  }")
                         } else {
                             out.appendLine("$pad  $item")

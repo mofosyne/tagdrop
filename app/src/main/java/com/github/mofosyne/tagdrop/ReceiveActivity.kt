@@ -43,6 +43,7 @@ import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
 import com.github.mofosyne.tagdrop.util.LocationUtils
+import com.github.mofosyne.tagdrop.util.MimeTypeGuesser
 import com.github.mofosyne.tagdrop.util.QrContentClassifier
 import com.github.mofosyne.tagdrop.util.showCborDebugDialog
 import com.google.zxing.BarcodeFormat
@@ -127,7 +128,9 @@ class ReceiveActivity : AppCompatActivity() {
             if (text == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
             lastDecodedText = text
             lastDecodedAt = now
-            processScanned(text, result.result.barcodeFormat)
+            // Pass rawBytes so completeRawScan can use them directly for non-TagDrop binary QRs
+            // (byte-mode content that didn't decode as TagDrop — e.g. a raw PNG stored in a code).
+            processScanned(text, result.result.barcodeFormat, rawBytes)
         }
         override fun possibleResultPoints(resultPoints: MutableList<ResultPoint>) {}
     }
@@ -342,7 +345,7 @@ class ReceiveActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun processScanned(scanned: String, format: BarcodeFormat = BarcodeFormat.QR_CODE) {
+    private fun processScanned(scanned: String, format: BarcodeFormat = BarcodeFormat.QR_CODE, rawBytes: ByteArray? = null) {
         val scan = TagDropCodec.decode(scanned)
         if (scan != null) { processScan(scan); return }
         when {
@@ -364,7 +367,7 @@ class ReceiveActivity : AppCompatActivity() {
             // -- SPEC.md defines no multi-fragment scheme for these (§11 is data: URIs only), so
             // there's no "more fragments" to wait for. Cache it immediately as content-addressed
             // raw content instead of stranding it in legacyChunks with no way to complete.
-            else -> completeRawScan(scanned, format)
+            else -> completeRawScan(scanned, format, rawBytes)
         }
     }
 
@@ -440,7 +443,15 @@ class ReceiveActivity : AppCompatActivity() {
         }
         lastPaper = paper
         updateDisplay()
-        toast(getString(R.string.paper_scanned, paper.files.size))
+        val cachedIds = latestCaches.mapTo(HashSet()) { it.cacheId }
+        val alreadyFoundCount = paper.files.count { cachedIds.contains(it.fileId.toHex()) }
+        toast(
+            if (alreadyFoundCount > 0) {
+                getString(R.string.paper_scanned_with_found, paper.files.size, alreadyFoundCount)
+            } else {
+                getString(R.string.paper_scanned, paper.files.size)
+            }
+        )
     }
 
     /**
@@ -459,7 +470,7 @@ class ReceiveActivity : AppCompatActivity() {
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
-        createdAt: Long? = null, pixelArt: Boolean = false
+        createdAt: Long? = null, pixelArt: Boolean = false, mimeTypeIsGuessed: Boolean = false
     ) {
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second, locationLabel)
@@ -493,7 +504,8 @@ class ReceiveActivity : AppCompatActivity() {
                     title               = title,
                     description         = description,
                     createdAt           = createdAt,
-                    pixelArt            = pixelArt
+                    pixelArt            = pixelArt,
+                    mimeTypeIsGuessed   = mimeTypeIsGuessed
                 )
             )
             if (paper != null) {
@@ -798,17 +810,35 @@ class ReceiveActivity : AppCompatActivity() {
      * display already falls back to "Untitled" without -- there's no author-declared hint for
      * non-TagDrop content, so this is the only source of a human-readable title.
      */
-    private fun completeRawScan(text: String, format: BarcodeFormat) {
-        val bytes = text.toByteArray(Charsets.UTF_8)
+    private fun completeRawScan(text: String, format: BarcodeFormat, rawBytes: ByteArray? = null) {
+        // cacheId is always derived from the text representation (UTF-8), matching how the paper
+        // manifest's file_id is computed by the generator (sha256 of UTF-8 bytes of the content
+        // string). rawBytes from ZXing BYTE_SEGMENTS may only cover byte-mode QR segments, not
+        // alphanumeric/numeric ones, so it can be a partial byte run for mixed-mode QR codes —
+        // using it for the cacheId would produce a hash mismatch against the manifest's file_id.
+        // We still prefer rawBytes as the stored content (preserves exact binary data) but always
+        // compute the cacheId from the full decoded text.
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val bytes = rawBytes ?: textBytes
+        val cacheId = TagDropCodec.contentId(textBytes).toHex()
+        val paperFile = lastPaper?.files?.find { it.fileId.toHex() == cacheId }
         val classification = QrContentClassifier.classify(text, format)
+        val declaredMime = paperFile?.mimeType ?: classification?.mimeType
+        val (mimeType, isGuessed) = if (declaredMime != null) {
+            declaredMime to false
+        } else {
+            (MimeTypeGuesser.guess(bytes) ?: "text/plain") to true
+        }
         completeSingle(
-            cacheId       = TagDropCodec.contentId(bytes).toHex(),
-            hint          = classification?.title,
-            filename      = null,
-            mimeType      = classification?.mimeType ?: "text/plain",
-            content       = bytes,
-            collectionTag = classification?.tag,
-            icon          = classification?.icon
+            cacheId          = cacheId,
+            hint             = classification?.title,
+            filename         = null,
+            mimeType         = mimeType,
+            content          = bytes,
+            collectionTag    = classification?.tag,
+            icon             = classification?.icon,
+            pixelArt         = paperFile?.pixelArt ?: false,
+            mimeTypeIsGuessed = isGuessed
         )
     }
 

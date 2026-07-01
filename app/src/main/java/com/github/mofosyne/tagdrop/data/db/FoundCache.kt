@@ -30,7 +30,8 @@ data class FoundCache(
     val title: String? = null,                   // optional short subject/caption, distinct from hint (SPEC §4.3, issue #35)
     val description: String? = null,             // optional content teaser / message body (SPEC §4.3, issue #35)
     val createdAt: Long? = null,                 // author-declared Unix timestamp (seconds) this payload was authored, unverified (SPEC §3); distinct from discoveredAt
-    val pixelArt: Boolean = false                // author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
+    val pixelArt: Boolean = false,               // author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
+    val mimeTypeIsGuessed: Boolean = false       // true when mimeType was inferred from magic bytes / text heuristics, not declared by the author or paper manifest
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()

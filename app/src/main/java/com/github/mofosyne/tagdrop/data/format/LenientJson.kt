@@ -12,9 +12,45 @@ object LenientJson {
     private class ParseError(val message: String, val offset: Int)
 
     fun describe(bytes: ByteArray): String {
+        if (bytes.isEmpty()) return "(empty)"
         val text = bytes.toString(Charsets.UTF_8)
         if (text.isBlank()) return "(empty)"
-        return buildString { describeValue(Parser(text).parseTopLevel(), 0, this) }
+        val parsed = Parser(text).parseTopLevel()
+        if (parsed is ParseError) {
+            // Not JSON — show the hex dump first so it's immediately visible, then the error.
+            return buildString {
+                appendLine("── hex dump ──────────────────────────────────────")
+                append(hexDump(bytes))
+                appendLine()
+                appendLine("⚠ ${parsed.message} (at byte ${parsed.offset})")
+                // Also show the raw text if the bytes are valid UTF-8 (common for plain-text QRs).
+                val asText = runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull()
+                if (asText != null && asText.any { it.isLetterOrDigit() }) {
+                    appendLine()
+                    appendLine("── as text ───────────────────────────────────────")
+                    append(asText)
+                }
+            }
+        }
+        return buildString { describeValue(parsed, 0, this) }
+    }
+
+    private fun hexDump(bytes: ByteArray): String = buildString {
+        val w = 16
+        for (offset in bytes.indices step w) {
+            val end = minOf(offset + w, bytes.size)
+            append("%08x  ".format(offset))
+            for (i in offset until offset + w) {
+                append(if (i < end) "%02x ".format(bytes[i]) else "   ")
+                if (i - offset == 7) append(' ')
+            }
+            append(' ')
+            for (i in offset until end) {
+                val c = bytes[i].toInt() and 0xFF
+                append(if (c in 0x20..0x7e) c.toChar() else '.')
+            }
+            appendLine()
+        }
     }
 
     private fun describeValue(value: Any?, indent: Int, out: StringBuilder) {

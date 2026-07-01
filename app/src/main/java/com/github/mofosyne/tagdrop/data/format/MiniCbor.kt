@@ -161,10 +161,12 @@ object MiniCbor {
         val arg   = readArg(b and 0x1F, stream)
         return when (major) {
             0 -> arg
+            1 -> -(arg + 1)                   // negative integer
             2 -> readBytes(stream, arg.toInt())
             3 -> readBytes(stream, arg.toInt()).toString(Charsets.UTF_8)
             4 -> List(arg.toInt()) { readValue(stream) }
             5 -> readMapFromStream(stream, arg.toInt())
+            6 -> "<tag $arg>(${readValue(stream)})"  // tagged value
             7 -> when (b and 0x1F) {
                 20 -> false                   // false (0xf4)
                 21 -> true                    // true (0xf5)
@@ -207,6 +209,28 @@ object MiniCbor {
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /**
+     * Classic 16-bytes-per-line hex dump. [startOffset] is added to the printed address so a
+     * partial dump (the unparsed tail) still shows accurate file offsets.
+     */
+    private fun hexDump(bytes: ByteArray, startOffset: Int = 0): String = buildString {
+        val w = 16
+        for (base in bytes.indices step w) {
+            val end = minOf(base + w, bytes.size)
+            append("%08x  ".format(startOffset + base))
+            for (i in base until base + w) {
+                append(if (i < end) "%02x ".format(bytes[i]) else "   ")
+                if (i - base == 7) append(' ')
+            }
+            append(' ')
+            for (i in base until end) {
+                val c = bytes[i].toInt() and 0xFF
+                append(if (c in 0x20..0x7e) c.toChar() else '.')
+            }
+            appendLine()
+        }
+    }
+
+    /**
      * Pretty-prints arbitrary bytes as a generic CBOR Sequence, for inspecting content whose
      * structure isn't known ahead of time -- e.g. a found tag/QR of uncertain origin, possibly
      * truncated or damaged. Unlike [TagDropCodec.describeCbor] (which expects TagDrop's own fixed
@@ -218,28 +242,58 @@ object MiniCbor {
      * dump of whatever bytes remain unparsed, rather than discarding everything (this is purely a
      * discovery aid, not a correctness check).
      */
+    /**
+     * Scans [bytes] for CBOR items, decoding whatever it can and dumping unrecognised stretches as
+     * hex. Unlike a strict decoder, a failure at position N does not abort the whole walk — it adds
+     * byte N to the current "unrecognised" run and retries from N+1, so CBOR structures embedded in
+     * binary garbage (e.g. a non-CBOR file that happens to contain a CBOR map partway through) are
+     * still surfaced. The full hex dump is always printed first so the raw bytes are immediately
+     * visible even when the CBOR interpretation is entirely garbage.
+     */
     fun describeSequence(bytes: ByteArray): String {
         if (bytes.isEmpty()) return "(empty)"
-        val stream = ByteArrayInputStream(bytes)
-        val items = mutableListOf<Any>()
-        var failure: Pair<Int, String>? = null
-        while (stream.available() > 0) {
-            val offset = bytes.size - stream.available()
-            val item = runCatching { readValue(stream) }
-                .getOrElse { failure = offset to (it.message ?: it.toString()); null }
-                ?: break
-            items.add(item)
-        }
         return buildString {
-            items.forEachIndexed { i, item ->
-                if (items.size > 1 || failure != null) appendLine("— item $i —")
-                describeValue(null, item, 0, this)
+            // Full hex dump first — always immediately visible.
+            appendLine("── hex ────────────────────────────────────────────────")
+            append(hexDump(bytes))
+            appendLine()
+            appendLine("── CBOR scan ──────────────────────────────────────────")
+
+            var offset = 0
+            var itemIndex = 0
+            val skipped = mutableListOf<Byte>() // consecutive bytes that couldn't be decoded
+
+            fun flushSkipped() {
+                if (skipped.isEmpty()) return
+                val start = offset - skipped.size
+                appendLine()
+                appendLine("  ⚠ ${skipped.size} unrecognised byte(s) at 0x${"%x".format(start)}:")
+                append("  ")
+                append(hexDump(skipped.toByteArray(), start).trimEnd().replace("\n", "\n  "))
+                appendLine()
+                skipped.clear()
             }
-            failure?.let { (offset, message) ->
-                if (items.isNotEmpty()) appendLine()
-                appendLine("⚠ could not parse byte $offset onward: $message")
-                describeValue("remaining bytes", bytes.copyOfRange(offset, bytes.size), 0, this)
+
+            while (offset < bytes.size) {
+                val slice = ByteArrayInputStream(bytes, offset, bytes.size - offset)
+                val before = slice.available()
+                val item = runCatching { readValue(slice) }.getOrNull()
+                val consumed = before - slice.available()
+
+                if (item != null && consumed > 0) {
+                    flushSkipped()
+                    appendLine()
+                    appendLine("  ── item $itemIndex  offset 0x${"%x".format(offset)}  ($consumed byte(s)) ──")
+                    describeValue(null, item, 1, this)
+                    offset += consumed
+                    itemIndex++
+                } else {
+                    skipped.add(bytes[offset])
+                    offset++
+                }
             }
+            flushSkipped()
+            if (itemIndex == 0) appendLine("  (no CBOR items found in ${bytes.size} bytes)")
         }
     }
 

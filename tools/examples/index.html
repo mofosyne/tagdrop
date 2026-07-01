@@ -204,6 +204,20 @@
     <div class="qr-grid" id="paper-grid"></div>
   </section>
 
+  <section id="sec-raw-qr-paper">
+    <h2>Paper with Raw QR Files</h2>
+    <p class="section-desc">
+      A paper manifest can reference <strong>raw QR files</strong> — codes whose content sits
+      directly in the QR symbol with no TagDrop encoding (a plain URL, vCard, Wi-Fi credential,
+      etc.). The manifest declares each raw file's <code>slug</code>, <code>mime_type</code>, and
+      the SHA-256 <code>file_id</code> of its raw bytes; the app recognises and caches these when
+      you scan each code. Files already cached from a previous scan are surfaced immediately when
+      you open the manifest, without re-scanning.
+    </p>
+    <div class="paper-info" id="raw-qr-paper-info"></div>
+    <div class="qr-grid" id="raw-qr-paper-grid"></div>
+  </section>
+
   <section id="sec-book">
     <h2>Mini E-Book (Markdown Pages)</h2>
     <p class="section-desc">
@@ -484,12 +498,11 @@ const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
   7: 'total_bytes', 8: 'content_sha256',
   11: 'filename', 12: 'content_compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
-  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
-  20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
+  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
-  40: 'description', 41: 'description',
+  40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   55: 'pixel_art',
@@ -577,21 +590,22 @@ async function describeCbor(bytes) {
   return out;
 }
 
-function describeMap(map, indent) {
+function describeMap(map, indent, keyNames = KEY_NAMES) {
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
     const value = map[key];
-    const label = KEY_NAMES[key] ? key + ' (' + KEY_NAMES[key] + ')' : String(key);
+    const label = keyNames[key] ? key + ' (' + keyNames[key] + ')' : String(key);
     if (value instanceof Uint8Array) {
       out += pad + label + ': ' + toHexDump(value) + ' (' + value.length + ' bytes)\n';
     } else if (typeof value === 'string') {
       out += pad + label + ': "' + value + '"\n';
     } else if (Array.isArray(value)) {
       out += pad + label + ': [\n';
+      const itemKeyNames = SUB_KEY_NAMES[key] ?? keyNames;
       for (const item of value) {
         if (item !== null && typeof item === 'object' && !(item instanceof Uint8Array) && !Array.isArray(item)) {
-          out += pad + '  {\n' + describeMap(item, indent + 2) + pad + '  }\n';
+          out += pad + '  {\n' + describeMap(item, indent + 2, itemKeyNames) + pad + '  }\n';
         } else {
           out += pad + '  ' + item + '\n';
         }
@@ -672,13 +686,20 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             TOTAL_BYTES:7, CONTENT_SHA:8,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
-            FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24, LAT:26, LNG:27,
+            ICON:24, LAT:26, LNG:27,
             ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
-            PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
+            PAPER_DESCRIPTION:40,
             SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
             PIXEL_ART:55 };
+// Local keys for files[] sub-map entries (independent namespace, SPEC §3)
+const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
+// Local keys for related[] sub-map entries (independent namespace, SPEC §3)
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
+const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
+const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES,
 // ../generator/index.html): MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling;
@@ -858,11 +879,11 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
 async function buildPaperStream({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
+      [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
     ]))],
     [K.RELATED, related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
+      [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null], [KR.PAPER_ID, r.paperId || null],
+      [KR.LAT, r.lat != null ? cfloat(r.lat) : null], [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
     ]))],
   ];
   const bulkyBytes = cborMap(bulky);
@@ -1305,6 +1326,83 @@ Slug:  note
   ],
 };
 
+// Raw QR + paper manifest: demonstrates files[] entries whose content lives
+// directly in a plain (non-TagDrop) QR symbol. The manifest declares each raw
+// file's slug, mime_type, and file_id (SHA-256 of the raw bytes) so the app
+// recognises and caches the file when that code is scanned. Raw QRs can be
+// mixed freely with standard TagDrop Content codes in the same paper.
+const RAW_QR_PAPER_EXAMPLE = {
+  label: 'Trailhead Info Board',
+  set:   'tagdrop-tests',
+  slug:  'trailhead-info',
+  // rawFiles: encoded directly in a plain QR (no tagdrop: envelope).
+  rawFiles: [
+    {
+      slug:     'contact',
+      mimeType: 'text/vcard',
+      // A vCard is the classic "raw QR" use-case — every standard scanner
+      // recognises it, so it works even without the TagDrop app installed.
+      content:
+`BEGIN:VCARD
+VERSION:3.0
+FN:Trailhead Visitor Centre
+ORG:TagDrop Example Trail
+TEL:+1-800-555-0191
+EMAIL:trail@example.com
+URL:https://example.com/trail
+END:VCARD`,
+    },
+    {
+      slug:     'map',
+      mimeType: 'text/uri-list',
+      // A plain URL — the most common raw QR payload. Any scanner opens it
+      // directly; TagDrop caches it under the paper and shows an "Open URL"
+      // contextual action button when you tap the tile.
+      content: 'https://www.openstreetmap.org/?mlat=51.5007&mlon=-0.1246#map=17/51.5007/-0.1246',
+    },
+  ],
+  // files: standard TagDrop Content sectors — mixed in alongside the raw QRs.
+  files: [
+    {
+      slug:     'index',
+      mimeType: 'text/html',
+      compress: true,
+      content:
+`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trailhead Info Board</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:540px;margin:30px auto;padding:0 20px;color:#222;line-height:1.5}
+h1{color:#1a1a2e}h2{color:#2e7d32;font-size:1rem;margin-top:24px}
+code{background:#f0f0f0;padding:2px 5px;border-radius:3px;font-size:0.85em}
+.tip{background:#e8f5e9;border-left:4px solid #2e7d32;padding:10px 14px;border-radius:4px;margin:16px 0;font-size:0.9em}
+</style>
+</head>
+<body>
+<h1>🌿 Trailhead Info Board</h1>
+<p>Welcome to the TagDrop Example Trail. This paper mixes two kinds of QR codes:</p>
+<h2>Standard TagDrop codes (this page)</h2>
+<p>Content is carried inside a <code>tagdrop:</code> URI — compressed, content-addressed,
+and offline-first. Scan with the TagDrop app to cache and browse.</p>
+<h2>Raw QR codes (contact + map)</h2>
+<p>The <strong>contact</strong> and <strong>map</strong> codes carry plain content with no
+TagDrop encoding — a vCard and an OpenStreetMap URL. Any standard QR scanner can read them;
+the TagDrop app also caches them under this paper when it sees the matching
+<code>file_id</code> in the manifest, and shows an <em>Add Contact</em> or
+<em>Open URL</em> action button when you view the cached tile.</p>
+<div class="tip">
+  Scan the manifest first, then each file code in any order. Raw-QR files you've scanned
+  before are surfaced immediately from the cache — no re-scanning needed.
+</div>
+</body>
+</html>`,
+    },
+  ],
+};
+
 // Mini e-book: a paper of text/markdown pages (a cover/TOC plus three short
 // chapters) that link to each other with ordinary relative links and share
 // one style.css sibling (SPEC.md §7 "Markdown content" stylesheet
@@ -1635,6 +1733,36 @@ async function addPaperSectorCards(grid, sectors, { baseLabel }) {
   return { count, idHex };
 }
 
+// Renders a card for a raw QR file (plain content, no tagdrop: envelope).
+// Shows the raw text/URI as a QR code alongside a "raw QR" badge; omits the
+// CBOR inspect button since there's no CBOR to inspect.
+async function addRawQrCard(grid, { label, mime, rawContent, fileIdHex }) {
+  const div = document.createElement('div');
+  div.className = 'qr-card';
+  const qrSlot = document.createElement('div');
+  div.appendChild(qrSlot);
+  div.insertAdjacentHTML('beforeend', `
+    <div class="qr-label">${escHtml(label)}</div>
+    <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge parity">raw QR</span></div>
+    <div class="qr-id">${fileIdHex} (sha256 file_id)</div>
+    <div class="qr-uri"><input type="text" readonly value="${escHtml(rawContent)}"></div>
+    <button class="copy-btn copy-raw">Copy content</button>`);
+  grid.appendChild(div);
+  try {
+    await renderQr(qrSlot, rawContent);
+  } catch (e) {
+    qrSlot.innerHTML = '<div class="err">QR render failed</div>';
+  }
+  div.querySelector('.copy-raw').addEventListener('click', (ev) => {
+    navigator.clipboard.writeText(rawContent).then(() => {
+      const btn = ev.target;
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
+  });
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 async function main() {
   // Standalone examples
@@ -1763,6 +1891,51 @@ async function main() {
   await addPaperSectorCards(paperGrid, paper.sectors, { baseLabel: p.label });
   for (const f of encodedFiles) {
     await addContentSectorCards(paperGrid, f.sectors, {
+      baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
+    });
+  }
+
+  // Raw QR + Paper manifest
+  const rqp = RAW_QR_PAPER_EXAMPLE;
+  const rqpManifestFiles = [];
+  const rqpRawFileInfos = [];
+  for (const f of rqp.rawFiles) {
+    const bytes = new TextEncoder().encode(f.content);
+    const fileId = await sha256first8(bytes);
+    rqpManifestFiles.push({ slug: f.slug, mimeType: f.mimeType, fileId });
+    rqpRawFileInfos.push({ ...f, bytes, fileId });
+  }
+  const rqpTagDropFiles = [];
+  for (const f of rqp.files) {
+    const rawBytes = new TextEncoder().encode(f.content);
+    const sectors = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
+    rqpTagDropFiles.push({ slug: f.slug, mimeType: f.mimeType, sectors, fileId: sectors[0].partMeta.cacheId, compress: f.compress });
+    rqpManifestFiles.push({ slug: f.slug, mimeType: f.mimeType, fileId: sectors[0].partMeta.cacheId });
+  }
+  const rqpPaper = await createPaperAutoSized({ label: rqp.label, set: rqp.set, slug: rqp.slug, files: rqpManifestFiles, related: [] });
+  const rqpRootHashHex = toHex(rqpPaper.rootHash);
+
+  document.getElementById('raw-qr-paper-info').innerHTML = `
+    <strong>${escHtml(rqp.label)}</strong>
+    — set: <code>${escHtml(rqp.set)}</code>, slug: <code>${escHtml(rqp.slug)}</code><br>
+    Root hash: <code>${rqpRootHashHex}</code>
+    — ${rqpRawFileInfos.length} raw QR file(s), ${rqpTagDropFiles.length} TagDrop Content sector(s)
+    <div class="step">① Scan the <strong>manifest</strong> — it registers the paper and its file list (including the raw QR file_ids).</div>
+    <div class="step">② Scan each file QR in any order. The raw QR codes (vCard, Wi-Fi) are plain — any scanner reads them; TagDrop caches them by matching their SHA-256 to the manifest's <code>file_id</code>.</div>
+    <div class="step">③ Open <strong>index</strong> to read the info page, which also explains the mixed format.</div>`;
+
+  const rqpGrid = document.getElementById('raw-qr-paper-grid');
+  await addPaperSectorCards(rqpGrid, rqpPaper.sectors, { baseLabel: rqp.label });
+  for (const f of rqpRawFileInfos) {
+    await addRawQrCard(rqpGrid, {
+      label: f.slug + ' (raw QR)',
+      mime: f.mimeType,
+      rawContent: f.content,
+      fileIdHex: toHex(f.fileId),
+    });
+  }
+  for (const f of rqpTagDropFiles) {
+    await addContentSectorCards(rqpGrid, f.sectors, {
       baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
     });
   }
