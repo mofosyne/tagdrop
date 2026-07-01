@@ -34,6 +34,8 @@ object ContentExporter {
     )
 
     /** Writes [cache]'s content into the app's cache dir and returns a shareable content:// URI. */
+    fun writeTempFile(context: Context, cache: FoundCache): Uri? = exportToCacheFile(context, cache)
+
     private fun exportToCacheFile(context: Context, cache: FoundCache): Uri? {
         if (!cache.isOpenable) return null
         val bytes = cache.contentBytes ?: return null

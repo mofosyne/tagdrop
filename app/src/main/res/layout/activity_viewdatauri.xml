@@ -15,6 +15,20 @@
             android:layout_height="?attr/actionBarSize" />
     </com.google.android.material.appbar.AppBarLayout>
 
+    <!-- Contextual action chip: "Add to Calendar", "Add Contact", "Connect to WiFi", etc.
+         Shown below the toolbar when a recognised content type has a direct system action.
+         Gone when not applicable. -->
+    <Button
+        android:id="@+id/actionChip"
+        style="@style/Widget.MaterialComponents.Button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="4dp"
+        android:textAllCaps="false"
+        android:visibility="gone" />
+
     <!-- Reply links (SPEC §7): shown when this item replies to a parent, and/or other
          cached items reply to it. Each row hides itself via visibility="gone" when not applicable. -->
     <TextView

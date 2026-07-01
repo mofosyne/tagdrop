@@ -139,6 +139,7 @@ class ViewDataUriActivity : AppCompatActivity() {
 
         binding.previewButtonOpen.setOnClickListener { openExternally() }
         binding.previewButtonSave.setOnClickListener { saveToDevice() }
+        binding.actionChip.setOnClickListener { launchContextualAction() }
 
         val cacheId = intent.getStringExtra(EXTRA_CACHE_ID)
         loadInitial(dataUri, cacheId)
@@ -149,6 +150,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                 invalidateOptionsMenu()
                 refreshPreviewPanel()
                 refreshReplyBar()
+                refreshActionChip()
             }
         }
     }
@@ -192,6 +194,95 @@ class ViewDataUriActivity : AppCompatActivity() {
         val content = currentContent ?: return
         viewMode = mode
         renderContent(content)
+    }
+
+    /** Shows or hides the contextual action chip based on the current [exportCache]'s content type. */
+    private fun refreshActionChip() {
+        val (label, _) = contextualAction() ?: run {
+            binding.actionChip.visibility = View.GONE
+            return
+        }
+        binding.actionChip.text = label
+        binding.actionChip.visibility = View.VISIBLE
+    }
+
+    /**
+     * Returns a (label, intent) pair for a direct system action appropriate to this content,
+     * or null if no contextual action applies.
+     *
+     * Covers: URL → open in browser, vCard → add contact, iCal → add to calendar,
+     * WiFi → connect (API 29+), geo → open in maps, tel → dial, sms → compose, email → compose.
+     */
+    @Suppress("DEPRECATION")
+    private fun contextualAction(): Pair<String, Intent>? {
+        val cache = exportCache ?: return null
+        val bytes = cache.contentBytes ?: return null
+        val text = bytes.toString(Charsets.UTF_8)
+        return when (cache.collectionTag) {
+            "url" -> {
+                val uri = Uri.parse(text.trim())
+                "🔗 Open URL" to Intent(Intent.ACTION_VIEW, uri)
+            }
+            "vcard" -> {
+                val uri = ContentExporter.writeTempFile(this, cache) ?: return null
+                "👤 Add Contact" to Intent(Intent.ACTION_VIEW).apply { setDataAndType(uri, "text/vcard") }
+            }
+            "calendar" -> {
+                val uri = ContentExporter.writeTempFile(this, cache) ?: return null
+                "📅 Add to Calendar" to Intent(Intent.ACTION_VIEW).apply { setDataAndType(uri, "text/calendar") }
+            }
+            "wifi" -> buildWifiIntent(text)
+            "geo" -> {
+                val uri = Uri.parse(text.trim())
+                "📍 Open in Maps" to Intent(Intent.ACTION_VIEW, uri)
+            }
+            "tel" -> {
+                val uri = Uri.parse(text.trim())
+                "📞 Dial" to Intent(Intent.ACTION_DIAL, uri)
+            }
+            "sms" -> {
+                val uri = Uri.parse(text.trim())
+                "💬 Send SMS" to Intent(Intent.ACTION_SENDTO, uri)
+            }
+            "email" -> {
+                val uri = Uri.parse(text.trim())
+                "📧 Compose Email" to Intent(Intent.ACTION_SENDTO, uri)
+            }
+            else -> null
+        }
+    }
+
+    /** Parses a WiFi QR string (WIFI:T:WPA;S:ssid;P:pass;;) and returns a connect intent, or null. */
+    @android.annotation.SuppressLint("NewApi")
+    private fun buildWifiIntent(wifiString: String): Pair<String, Intent>? {
+        if (android.os.Build.VERSION.SDK_INT < 29) return null
+        val fields = wifiString.removePrefix("WIFI:").removeSuffix(";").split(";")
+            .mapNotNull { it.split(":").takeIf { p -> p.size >= 2 }?.let { p -> p[0] to p.drop(1).joinToString(":") } }
+            .toMap()
+        val ssid = fields["S"]?.takeIf { it.isNotBlank() } ?: return null
+        val type = fields["T"] ?: "nopass"
+        val pass = fields["P"]
+        val suggestion = when (type.uppercase()) {
+            "WPA", "WPA2" -> android.net.wifi.WifiNetworkSuggestion.Builder()
+                .setSsid(ssid).setWpa2Passphrase(pass ?: "").build()
+            "WEP" -> android.net.wifi.WifiNetworkSuggestion.Builder()
+                .setSsid(ssid).setWpa2Passphrase(pass ?: "").build()
+            else -> android.net.wifi.WifiNetworkSuggestion.Builder().setSsid(ssid).build()
+        }
+        val intent = Intent(android.provider.Settings.ACTION_WIFI_ADD_NETWORKS).apply {
+            putParcelableArrayListExtra("android.net.wifi.extra.WIFI_NETWORK_LIST", arrayListOf(suggestion))
+        }
+        return "📶 Connect to Wi-Fi" to intent
+    }
+
+    /** Fires the contextual action intent for the current [exportCache]. */
+    private fun launchContextualAction() {
+        val (_, intent) = contextualAction() ?: return
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            toast(getString(R.string.export_no_app_found))
+        }
     }
 
     /** Opens the cached content in another app via a chooser. */
