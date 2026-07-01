@@ -811,10 +811,16 @@ class ReceiveActivity : AppCompatActivity() {
      * non-TagDrop content, so this is the only source of a human-readable title.
      */
     private fun completeRawScan(text: String, format: BarcodeFormat, rawBytes: ByteArray? = null) {
-        // Prefer raw bytes from the QR byte-mode segment (preserves binary content exactly);
-        // fall back to re-encoding the decoded text as UTF-8 (the common case for text QRs).
-        val bytes = rawBytes ?: text.toByteArray(Charsets.UTF_8)
-        val cacheId = TagDropCodec.contentId(bytes).toHex()
+        // cacheId is always derived from the text representation (UTF-8), matching how the paper
+        // manifest's file_id is computed by the generator (sha256 of UTF-8 bytes of the content
+        // string). rawBytes from ZXing BYTE_SEGMENTS may only cover byte-mode QR segments, not
+        // alphanumeric/numeric ones, so it can be a partial byte run for mixed-mode QR codes —
+        // using it for the cacheId would produce a hash mismatch against the manifest's file_id.
+        // We still prefer rawBytes as the stored content (preserves exact binary data) but always
+        // compute the cacheId from the full decoded text.
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val bytes = rawBytes ?: textBytes
+        val cacheId = TagDropCodec.contentId(textBytes).toHex()
         val paperFile = lastPaper?.files?.find { it.fileId.toHex() == cacheId }
         val classification = QrContentClassifier.classify(text, format)
         val declaredMime = paperFile?.mimeType ?: classification?.mimeType
