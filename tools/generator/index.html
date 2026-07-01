@@ -179,6 +179,7 @@
   <div>
     <h1>TagDrop Generator</h1>
     <small>Create QR codes for physical paper drops</small>
+    <small style="display:block;margin-top:4px;color:#b05000;">⚠ Wire format v1 is a draft — no real codes deployed yet. Breaking changes may occur without a version bump until the first code is printed and distributed.</small>
   </div>
   <nav>
     <a href="../">← Home</a> ·
@@ -805,17 +806,19 @@ const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
   7: 'total_bytes', 8: 'content_sha256',
   11: 'filename', 12: 'content_compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
-  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
-  20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
+  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
-  40: 'description', 41: 'description',
+  40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
   50: 'in_reply_to', 51: 'title', 52: 'created_at', 54: 'location_label', 55: 'pixel_art',
 };
+const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
+const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -899,21 +902,22 @@ async function describeCbor(bytes) {
   return out;
 }
 
-function describeMap(map, indent) {
+function describeMap(map, indent, keyNames = KEY_NAMES) {
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
     const value = map[key];
-    const label = KEY_NAMES[key] ? key + ' (' + KEY_NAMES[key] + ')' : String(key);
+    const label = keyNames[key] ? key + ' (' + keyNames[key] + ')' : String(key);
     if (value instanceof Uint8Array) {
       out += pad + label + ': ' + toHexDump(value) + ' (' + value.length + ' bytes)\n';
     } else if (typeof value === 'string') {
       out += pad + label + ': "' + value + '"\n';
     } else if (Array.isArray(value)) {
       out += pad + label + ': [\n';
+      const itemKeyNames = SUB_KEY_NAMES[key] ?? keyNames;
       for (const item of value) {
         if (item !== null && typeof item === 'object' && !(item instanceof Uint8Array) && !Array.isArray(item)) {
-          out += pad + '  {\n' + describeMap(item, indent + 2) + pad + '  }\n';
+          out += pad + '  {\n' + describeMap(item, indent + 2, itemKeyNames) + pad + '  }\n';
         } else {
           out += pad + '  ' + item + '\n';
         }
@@ -993,14 +997,18 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              TOTAL_BYTES:7, CONTENT_SHA:8,
              FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
              COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
-             FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24, LAT:26, LNG:27,
+             ICON:24, LAT:26, LNG:27,
              ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
              KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
-             PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
+             PAPER_DESCRIPTION:40,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
              IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55 };
+// Local keys for files[] sub-map entries (independent namespace, SPEC §3)
+const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
+// Local keys for related[] sub-map entries (independent namespace, SPEC §3)
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
 // MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling beyond which a sector's
@@ -1204,15 +1212,16 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
 async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
-      [K.FILE_DESCRIPTION, f.description || null],
+      [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
+      [KF.DESCRIPTION, f.description || null],
+      [KF.PIXEL_ART, f.pixelArt || null],
     ]))],
     [K.RELATED, related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
-      [K.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
-      [K.KEY_MATERIAL, r.keyMaterial || null],
-      [K.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
+      [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null], [KR.PAPER_ID, r.paperId || null],
+      [KR.LAT, r.lat != null ? cfloat(r.lat) : null], [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
+      [KR.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
+      [KR.KEY_MATERIAL, r.keyMaterial || null],
+      [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
     ]))],
   ];
   const bulkyBytes = cborMap(bulky);
@@ -2184,31 +2193,40 @@ function addFileEntry() {
         <label>Slug <small>(URL-safe name, e.g. index or map)</small></label>
         <input type="text" id="fslug-${id}" placeholder="index">
       </div>
-      <div>
-        <label>MIME type</label>
-        <select id="fmime-${id}">
-          <option value="text/html" selected>text/html</option>
-          <option value="text/plain">text/plain</option>
-          <option value="text/markdown">text/markdown</option>
-          <option value="text/css">text/css</option>
-          <option value="application/json">application/json</option>
-          <option value="image/svg+xml">image/svg+xml</option>
-          <option value="image/jpeg">image/jpeg (paste base64)</option>
-          <option value="image/png">image/png (paste base64)</option>
-          <option value="audio/midi">audio/midi (paste base64)</option>
-          <option value="audio/mpeg">audio/mpeg (paste base64)</option>
-        </select>
-      </div>
     </div>
     <label>Description <small>(optional — content teaser shown in the paper's directory, e.g. "A poem to read")</small></label>
     <input type="text" id="fdesc-${id}" placeholder="e.g. A poem to read">
-    <label><input type="checkbox" id="fcompress-${id}"> Compress with DEFLATE</label>
+    <div class="row">
+      <div style="flex:1"><label>MIME type</label><select id="fmime-${id}">
+        <option value="text/html" selected>text/html</option>
+        <option value="text/plain">text/plain</option>
+        <option value="text/markdown">text/markdown</option>
+        <option value="text/css">text/css</option>
+        <option value="application/json">application/json</option>
+        <option value="image/svg+xml">image/svg+xml</option>
+        <option value="image/jpeg">image/jpeg (paste base64)</option>
+        <option value="image/png">image/png (paste base64)</option>
+        <option value="audio/midi">audio/midi (paste base64)</option>
+        <option value="audio/mpeg">audio/mpeg (paste base64)</option>
+      </select></div>
+    </div>
+    <label><input type="checkbox" id="fraw-${id}" onchange="updateRawMode(${id})"> 📄 Raw QR — bare content in the QR symbol, metadata (MIME type, slug) declared in the manifest above</label>
+    <div id="fencoded-${id}">
+      <label><input type="checkbox" id="fcompress-${id}"> Compress with DEFLATE</label>
+    </div>
     <label><input type="checkbox" id="fpixelart-${id}"> 🟪 Pixel art (no smoothing, SPEC §7)</label>
     <label>Content</label>
     <textarea id="fcontent-${id}" placeholder="HTML, text, SVG…"></textarea>`;
   document.getElementById('p-files').appendChild(div);
   updatePaperEstimate();
   return id;
+}
+
+function updateRawMode(id) {
+  const raw = document.getElementById('fraw-' + id)?.checked;
+  const encodedDiv = document.getElementById('fencoded-' + id);
+  if (encodedDiv) encodedDiv.style.display = raw ? 'none' : '';
+  updatePaperEstimate();
 }
 
 // Adds a new file entry pre-filled from already-read bytes (e.g. a ZIP entry).
@@ -2319,12 +2337,26 @@ async function computePaperSectorPlan() {
   const encodedFiles = [];
   for (const id of fileEntries) {
     const fslug    = document.getElementById('fslug-' + id)?.value.trim();
+    const fraw     = document.getElementById('fraw-' + id)?.checked;
     const fmime    = document.getElementById('fmime-' + id)?.value;
     const fcompr   = document.getElementById('fcompress-' + id)?.checked;
     const fcontent = document.getElementById('fcontent-' + id)?.value;
     const fdesc    = document.getElementById('fdesc-' + id)?.value.trim() || null;
     const fpixelart = document.getElementById('fpixelart-' + id)?.checked ?? false;
     if (!fcontent?.trim()) throw new Error(`File "${fslug}" has no content.`);
+
+    if (fraw) {
+      let rawBytes;
+      try { rawBytes = bytesFromContent(fcontent, fmime); }
+      catch (e) { throw new Error(`File "${fslug}" content isn't valid base64 for MIME type "${fmime}".`); }
+      const fileId = await sha256first8(rawBytes);
+      // For text MIMEs, pass a decoded string so the QR library uses text/alphanumeric mode
+      // (more compact, readable by stock scanners). For binary MIMEs, pass raw bytes → byte mode.
+      const qrPayload = isTextMime(fmime) ? new TextDecoder().decode(rawBytes) : rawBytes;
+      encodedFiles.push({ slug: fslug, mimeType: fmime, fileId, sectors: null, description: fdesc, pixelArt: fpixelart, rawQrPayload: qrPayload });
+      continue;
+    }
+
     let rawBytes;
     try { rawBytes = bytesFromContent(fcontent, fmime); }
     catch (e) { throw new Error(`File "${fslug}" content isn't valid base64 for MIME type "${fmime}".`); }
@@ -2361,7 +2393,7 @@ async function computePaperSectorPlan() {
   });
 
   // Encode the paper itself
-  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description }));
+  const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description, pixelArt: f.pixelArt || false }));
   let paper;
   try {
     paper = await createPaperAutoSized({
@@ -2387,7 +2419,7 @@ const updatePaperEstimate = debounce(async () => {
   if (!el) return;
   try {
     const plan = await computePaperSectorPlan();
-    const total = plan.encodedFiles.reduce((sum, f) => sum + f.sectors.length, 0) + plan.paper.sectors.length;
+    const total = plan.encodedFiles.reduce((sum, f) => sum + (f.sectors ? f.sectors.length : 1), 0) + plan.paper.sectors.length;
     if (seq === paperEstimateSeq) showEstimate(el, describeQrCountEstimate(total), false);
   } catch (e) {
     if (seq === paperEstimateSeq) showEstimate(el, e.message, true);
@@ -2477,8 +2509,31 @@ async function generatePaper() {
   // once the reader has scanned/assembled them.
   for (const f of encodedFiles) {
     const homeBadge = HOME_SLUGS.includes(f.slug) ? '🏠 homepage' : null;
-    const fCount = f.sectors.length;
     const fIdHex = toHex(f.fileId);
+
+    if (f.rawQrPayload != null) {
+      // Raw QR — bare content in the symbol, no TagDrop encoding.
+      // manifest file_id = SHA-256(raw bytes)[0:8] links it to this paper without a SPEC change.
+      const isBinary = f.rawQrPayload instanceof Uint8Array;
+      const sub = isBinary ? `📄 raw QR · ${f.rawQrPayload.length} bytes · ${f.mimeType}` : `📄 raw QR · ${f.mimeType}`;
+      const fItem = makeQrItem(f.slug, sub, fIdHex, null, homeBadge, f.rawQrPayload);
+      fItem.div.querySelector('.inspect-cbor')?.remove();
+      grid.appendChild(fItem.div);
+      try {
+        await renderQr(fItem.qrDiv, f.rawQrPayload);
+        paperBulkItems.push({
+          filename: `tagdrop-${slugifyForFilename(f.slug)}-${fIdHex}.png`,
+          qrData: f.rawQrPayload,
+          caption: `${f.slug} (raw QR · ${f.mimeType})`,
+        });
+      } catch(e) {
+        fItem.div.querySelector('.action-row')?.remove();
+        fItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed — content is too large for a single raw QR.</div>`);
+      }
+      continue;
+    }
+
+    const fCount = f.sectors.length;
     if (fCount > 1) {
       msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.sectors[0].partMeta.totalBytes} bytes
         — split into ${fCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;

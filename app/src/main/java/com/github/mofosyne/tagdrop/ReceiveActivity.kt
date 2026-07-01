@@ -440,7 +440,15 @@ class ReceiveActivity : AppCompatActivity() {
         }
         lastPaper = paper
         updateDisplay()
-        toast(getString(R.string.paper_scanned, paper.files.size))
+        val cachedIds = latestCaches.mapTo(HashSet()) { it.cacheId }
+        val alreadyFoundCount = paper.files.count { cachedIds.contains(it.fileId.toHex()) }
+        toast(
+            if (alreadyFoundCount > 0) {
+                getString(R.string.paper_scanned_with_found, paper.files.size, alreadyFoundCount)
+            } else {
+                getString(R.string.paper_scanned, paper.files.size)
+            }
+        )
     }
 
     /**
@@ -800,15 +808,18 @@ class ReceiveActivity : AppCompatActivity() {
      */
     private fun completeRawScan(text: String, format: BarcodeFormat) {
         val bytes = text.toByteArray(Charsets.UTF_8)
+        val cacheId = TagDropCodec.contentId(bytes).toHex()
+        val paperFile = lastPaper?.files?.find { it.fileId.toHex() == cacheId }
         val classification = QrContentClassifier.classify(text, format)
         completeSingle(
-            cacheId       = TagDropCodec.contentId(bytes).toHex(),
+            cacheId       = cacheId,
             hint          = classification?.title,
             filename      = null,
-            mimeType      = classification?.mimeType ?: "text/plain",
+            mimeType      = paperFile?.mimeType ?: classification?.mimeType ?: "text/plain",
             content       = bytes,
             collectionTag = classification?.tag,
-            icon          = classification?.icon
+            icon          = classification?.icon,
+            pixelArt      = paperFile?.pixelArt ?: false
         )
     }
 

@@ -143,6 +143,7 @@
     <!-- Paper manifest -->
     <string name="paper_manifest_label">Paper Manifest</string>
     <string name="paper_scanned">Paper scanned: %1$d file(s) in directory.</string>
+    <string name="paper_scanned_with_found">Paper scanned: %1$d file(s) in directory, %2$d already in your collection.</string>
     <string name="paper_set">Set: %1$s</string>
     <string name="paper_related_header">Related papers:</string>
     <string name="paper_scan_hint">Keep scanning to find files from this paper. Tap a filled block below to open it.</string>

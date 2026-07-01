@@ -741,7 +741,7 @@ class TagDropCodecTest {
         assertTrue(text.contains("type: 1 (Paper)"))
         assertTrue(text.contains("3 (hint/label): \"Test Paper\""))
         assertTrue(text.contains("15 (files): ["))
-        assertTrue(text.contains("20 (slug): \"readme\""))
+        assertTrue(text.contains("1 (slug): \"readme\""))
         assertTrue(text.contains("16 (related): ["))
         assertTrue(text.contains("24 (icon): \"🌳\""))
     }

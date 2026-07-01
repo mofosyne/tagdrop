@@ -69,7 +69,8 @@ sealed class TagDropPayload {
         val slug: String,        // URL-safe name for this file within the paper
         val mimeType: String,
         val fileId: ByteArray,   // cache_id of the file's root QR (a Content payload)
-        val description: String? = null  // optional content teaser, e.g. "A poem to read" (SPEC §4.3, issue #35)
+        val description: String? = null,  // optional content teaser, e.g. "A poem to read" (SPEC §4.3, issue #35)
+        val pixelArt: Boolean = false     // render with nearest-neighbour scaling (no smoothing) — raw QR files only
     ) {
         override fun equals(other: Any?) = other is FileEntry && slug == other.slug && fileId.contentEquals(other.fileId)
         override fun hashCode() = 31 * slug.hashCode() + fileId.contentHashCode()

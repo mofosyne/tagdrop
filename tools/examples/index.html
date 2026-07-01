@@ -484,16 +484,18 @@ const KEY_NAMES = {
   2: 'cache_id/root_hash', 3: 'hint/label', 4: 'mime_type', 5: 'content',
   7: 'total_bytes', 8: 'content_sha256',
   11: 'filename', 12: 'content_compression', 13: 'set', 14: 'slug', 15: 'files', 16: 'related',
-  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag',
-  20: 'slug', 21: 'mime_type', 22: 'file_id', 23: 'paper_id', 24: 'icon',
+  17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
-  40: 'description', 41: 'description',
+  40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   55: 'pixel_art',
 };
+const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
+const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -577,21 +579,22 @@ async function describeCbor(bytes) {
   return out;
 }
 
-function describeMap(map, indent) {
+function describeMap(map, indent, keyNames = KEY_NAMES) {
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
     const value = map[key];
-    const label = KEY_NAMES[key] ? key + ' (' + KEY_NAMES[key] + ')' : String(key);
+    const label = keyNames[key] ? key + ' (' + keyNames[key] + ')' : String(key);
     if (value instanceof Uint8Array) {
       out += pad + label + ': ' + toHexDump(value) + ' (' + value.length + ' bytes)\n';
     } else if (typeof value === 'string') {
       out += pad + label + ': "' + value + '"\n';
     } else if (Array.isArray(value)) {
       out += pad + label + ': [\n';
+      const itemKeyNames = SUB_KEY_NAMES[key] ?? keyNames;
       for (const item of value) {
         if (item !== null && typeof item === 'object' && !(item instanceof Uint8Array) && !Array.isArray(item)) {
-          out += pad + '  {\n' + describeMap(item, indent + 2) + pad + '  }\n';
+          out += pad + '  {\n' + describeMap(item, indent + 2, itemKeyNames) + pad + '  }\n';
         } else {
           out += pad + '  ' + item + '\n';
         }
@@ -672,13 +675,17 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             TOTAL_BYTES:7, CONTENT_SHA:8,
             FILENAME:11, COMPRESSION:12, SET:13, SLUG:14, FILES:15, RELATED:16,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
-            FILE_SLUG:20, FILE_MIME:21, FILE_ID:22, PAPER_ID:23, ICON:24, LAT:26, LNG:27,
+            ICON:24, LAT:26, LNG:27,
             ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
-            PAPER_DESCRIPTION:40, FILE_DESCRIPTION:41,
+            PAPER_DESCRIPTION:40,
             SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
             PIXEL_ART:55 };
+// Local keys for files[] sub-map entries (independent namespace, SPEC §3)
+const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
+// Local keys for related[] sub-map entries (independent namespace, SPEC §3)
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES,
 // ../generator/index.html): MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling;
@@ -858,11 +865,11 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
 async function buildPaperStream({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
-      [K.FILE_SLUG, f.slug], [K.FILE_MIME, f.mimeType], [K.FILE_ID, f.fileId],
+      [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
     ]))],
     [K.RELATED, related.map(r => subMap([
-      [K.HINT, r.hint], [K.SET, r.set || null], [K.SLUG, r.slug || null], [K.PAPER_ID, r.paperId || null],
-      [K.LAT, r.lat != null ? cfloat(r.lat) : null], [K.LNG, r.lng != null ? cfloat(r.lng) : null],
+      [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null], [KR.PAPER_ID, r.paperId || null],
+      [KR.LAT, r.lat != null ? cfloat(r.lat) : null], [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
     ]))],
   ];
   const bulkyBytes = cborMap(bulky);
