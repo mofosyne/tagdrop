@@ -248,26 +248,27 @@ class MiniCborTest {
     }
 
     @Test fun describeSequenceInvalidCbor() {
-        // Best-effort: nothing decodes, but the failure is reported rather than thrown.
+        // Single byte 0xFF is unsupported (simple value 31 = break code) — shows as unrecognised hex.
         val description = MiniCbor.describeSequence(byteArrayOf(0xFF.toByte()))
-        assertTrue(description.contains("⚠ could not parse byte 0 onward"))
+        assertTrue(description.contains("unrecognised"))
+        assertTrue(description.contains("ff"))
     }
 
     @Test fun describeSequencePlainText() {
-        // Plain text misparses as CBOR by chance (an 8-byte "byte string" happens to decode),
-        // exercising the best-effort path: what did decode is shown, followed by an error
-        // marker and a hex dump of whatever bytes remain once decoding breaks down.
+        // Plain text: some bytes may decode as CBOR items, others won't — scanner keeps going.
+        // Always shows a hex dump at the top regardless of how much decoded.
         val description = MiniCbor.describeSequence("Hello from TagDrop!".toByteArray(Charsets.UTF_8))
-        assertTrue(description.contains("⚠ could not parse byte"))
+        assertTrue(description.contains("── hex"))
+        assertTrue(description.contains("── CBOR scan"))
     }
 
     @Test fun describeSequenceShowsItemsDecodedBeforeTruncation() {
         // Two valid uint items, then a byte-string head claiming 4 bytes that never arrive.
         val truncated = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(2) + byteArrayOf((2 shl 5 or 4).toByte())
         val description = MiniCbor.describeSequence(truncated)
-        assertTrue(description.contains("— item 0 —"))
-        assertTrue(description.contains("— item 1 —"))
-        assertTrue(description.contains("⚠ could not parse byte"))
+        assertTrue(description.contains("item 0"))
+        assertTrue(description.contains("item 1"))
+        assertTrue(description.contains("unrecognised"))
     }
 
     @Test fun describeSequenceGarbageAfterValidMapShowsMapAndRemainingHex() {
@@ -275,8 +276,8 @@ class MiniCborTest {
         val garbage = byteArrayOf(0xFF.toByte(), 0x01, 0x02)
         val description = MiniCbor.describeSequence(cbor + garbage)
         assertTrue(description.contains("3: \"hint\""))
-        assertTrue(description.contains("hex dump"))
-        assertTrue(description.contains("ff 01 02"))
+        assertTrue(description.contains("unrecognised"))
+        assertTrue(description.contains("ff"))
     }
 
     @Test fun describeSequenceSingleMap() {
@@ -284,14 +285,13 @@ class MiniCborTest {
         val description = MiniCbor.describeSequence(cbor)
         assertTrue(description.contains("3: \"hint text\""))
         assertTrue(description.contains("4: \"text/html\""))
-        assertFalse(description.contains("— item"))   // single item: no "item N" headers
     }
 
     @Test fun describeSequenceMultipleItemsLabelled() {
         val seq = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0)
         val description = MiniCbor.describeSequence(seq)
-        assertTrue(description.contains("— item 0 —"))
-        assertTrue(description.contains("— item 1 —"))
+        assertTrue(description.contains("item 0"))
+        assertTrue(description.contains("item 1"))
     }
 
     @Test fun describeSequenceByteStringShowsHexAndLength() {

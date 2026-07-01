@@ -17,17 +17,17 @@ object LenientJson {
         if (text.isBlank()) return "(empty)"
         val parsed = Parser(text).parseTopLevel()
         if (parsed is ParseError) {
-            // Not JSON — show the error then the bytes so the user has something to work with.
+            // Not JSON — show the hex dump first so it's immediately visible, then the error.
             return buildString {
-                appendLine("⚠ ${parsed.message} (at byte ${parsed.offset})")
+                appendLine("── hex dump ──────────────────────────────────────")
+                append(hexDump(bytes))
                 appendLine()
-                appendLine("hex dump:")
-                appendLine(hexDump(bytes))
+                appendLine("⚠ ${parsed.message} (at byte ${parsed.offset})")
                 // Also show the raw text if the bytes are valid UTF-8 (common for plain-text QRs).
                 val asText = runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull()
                 if (asText != null && asText.any { it.isLetterOrDigit() }) {
                     appendLine()
-                    appendLine("as text:")
+                    appendLine("── as text ───────────────────────────────────────")
                     append(asText)
                 }
             }
