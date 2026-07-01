@@ -1,0 +1,4 @@
+- Paper manifests can now include "Raw QR" files — content placed directly in the QR symbol with no TagDrop encoding, useful for small images or text snippets. Metadata (file name, type, pixel art flag) is declared in the manifest so the app recognises and caches them when you scan each code.
+- Files already cached from a previous scan are now surfaced immediately when you open a Paper manifest, without re-scanning their codes.
+- Wire format: files[] and related[] sub-map keys now use independent local ranges (1–5 and 1–9) instead of the global key space, keeping the master key table clean and giving each sub-structure room to grow.
+- Note: wire format v1 is still a draft — no real codes have been deployed yet, so breaking changes can occur without a version bump until the first code is printed and distributed.
