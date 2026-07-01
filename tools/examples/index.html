@@ -1353,11 +1353,12 @@ URL:https://example.com/trail
 END:VCARD`,
     },
     {
-      slug:     'wifi',
-      mimeType: 'text/plain',
-      // Wi-Fi credential in the standard WPA-PWD URI format recognised by
-      // Android, iOS, and most QR scanner apps out of the box.
-      content: 'WIFI:T:WPA;S:TrailheadWiFi;P:opentrail2025;;',
+      slug:     'map',
+      mimeType: 'text/uri-list',
+      // A plain URL — the most common raw QR payload. Any scanner opens it
+      // directly; TagDrop caches it under the paper and shows an "Open URL"
+      // contextual action button when you tap the tile.
+      content: 'https://www.openstreetmap.org/?mlat=51.5007&mlon=-0.1246#map=17/51.5007/-0.1246',
     },
   ],
   // files: standard TagDrop Content sectors — mixed in alongside the raw QRs.
@@ -1386,11 +1387,12 @@ code{background:#f0f0f0;padding:2px 5px;border-radius:3px;font-size:0.85em}
 <h2>Standard TagDrop codes (this page)</h2>
 <p>Content is carried inside a <code>tagdrop:</code> URI — compressed, content-addressed,
 and offline-first. Scan with the TagDrop app to cache and browse.</p>
-<h2>Raw QR codes (contact + Wi-Fi)</h2>
-<p>The <strong>contact</strong> and <strong>wifi</strong> codes carry plain content with no
-TagDrop encoding — a vCard and a Wi-Fi credential. Any standard QR scanner can read them;
+<h2>Raw QR codes (contact + map)</h2>
+<p>The <strong>contact</strong> and <strong>map</strong> codes carry plain content with no
+TagDrop encoding — a vCard and an OpenStreetMap URL. Any standard QR scanner can read them;
 the TagDrop app also caches them under this paper when it sees the matching
-<code>file_id</code> in the manifest.</p>
+<code>file_id</code> in the manifest, and shows an <em>Add Contact</em> or
+<em>Open URL</em> action button when you view the cached tile.</p>
 <div class="tip">
   Scan the manifest first, then each file code in any order. Raw-QR files you've scanned
   before are surfaced immediately from the cache — no re-scanning needed.
