@@ -29,6 +29,23 @@
         android:textAllCaps="false"
         android:visibility="gone" />
 
+    <!-- Shown when the MIME type was inferred from magic bytes rather than declared by the author.
+         Tapping it opens the "Set type…" dialog so the user can correct the guess. -->
+    <TextView
+        android:id="@+id/guessedTypeBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:background="?attr/colorSurfaceVariant"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:textSize="12sp"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone" />
+
     <!-- Reply links (SPEC §7): shown when this item replies to a parent, and/or other
          cached items reply to it. Each row hides itself via visibility="gone" when not applicable. -->
     <TextView

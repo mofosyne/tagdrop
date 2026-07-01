@@ -40,6 +40,9 @@ private class FakeCacheDao : CacheDao {
     override suspend fun getPendingOverrides(): List<FoundCache> = emptyList()
     override suspend fun getRepliesTo(parentId: String): List<FoundCache> =
         caches.values.filter { it.inReplyTo == parentId }
+    override suspend fun updateMimeType(cacheId: String, mimeType: String) {
+        caches[cacheId]?.let { caches[cacheId] = it.copy(mimeType = mimeType, mimeTypeIsGuessed = false) }
+    }
 }
 
 private class FakeKeyDao : KeyDao {

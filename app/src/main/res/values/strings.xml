@@ -168,7 +168,12 @@
     <string name="action_open_external">Open with…</string>
     <string name="action_share">Share</string>
     <string name="action_save">Save to device</string>
+    <string name="action_set_type">Set type…</string>
     <string name="action_view_as">View as</string>
+    <string name="guessed_type_banner">⚠️ Type guessed: %s — tap to change</string>
+    <string name="set_type_dialog_title">Set content type</string>
+    <string name="set_type_hint">MIME type (e.g. image/png)</string>
+    <string name="set_type_apply">Apply</string>
     <string name="view_mode_rendered">Rendered</string>
     <string name="view_mode_text">Text</string>
     <string name="view_mode_hex">Hex</string>

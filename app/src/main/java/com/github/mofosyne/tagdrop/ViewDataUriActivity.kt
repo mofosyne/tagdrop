@@ -55,6 +55,8 @@ class ViewDataUriActivity : AppCompatActivity() {
     /** Set by [showPreviewUnavailable]; re-read by [refreshPreviewPanel] once [exportCache] resolves asynchronously. */
     private var previewMimeType: String? = null
     private var previewSizeBytes: Int = 0
+    /** True while the preview-unavailable panel is showing (not the WebView). Used by [setViewMode] to restore the panel on RENDERED. */
+    private var isPreviewPanel = false
 
     /**
      * The content bytes currently on screen, tracked so the view-mode menu ([ViewMode]) can
@@ -151,6 +153,7 @@ class ViewDataUriActivity : AppCompatActivity() {
                 refreshPreviewPanel()
                 refreshReplyBar()
                 refreshActionChip()
+                refreshGuessedTypeBanner()
             }
         }
     }
@@ -165,7 +168,8 @@ class ViewDataUriActivity : AppCompatActivity() {
         menu.findItem(R.id.action_open_external)?.isEnabled = enabled
         menu.findItem(R.id.action_share)?.isEnabled = enabled
         menu.findItem(R.id.action_save)?.isEnabled = enabled
-        menu.findItem(R.id.action_view_as)?.isVisible = currentContent != null
+        menu.findItem(R.id.action_set_type)?.isVisible = enabled
+        menu.findItem(R.id.action_view_as)?.isVisible = enabled || currentContent != null
         val checkedId = when (viewMode) {
             ViewMode.RENDERED -> R.id.action_view_rendered
             ViewMode.TEXT -> R.id.action_view_text
@@ -181,6 +185,7 @@ class ViewDataUriActivity : AppCompatActivity() {
         R.id.action_open_external -> { openExternally(); true }
         R.id.action_share -> { shareContent(); true }
         R.id.action_save -> { saveToDevice(); true }
+        R.id.action_set_type -> { showSetTypeDialog(); true }
         R.id.action_view_rendered -> { setViewMode(ViewMode.RENDERED); true }
         R.id.action_view_text -> { setViewMode(ViewMode.TEXT); true }
         R.id.action_view_hex -> { setViewMode(ViewMode.HEX); true }
@@ -189,11 +194,74 @@ class ViewDataUriActivity : AppCompatActivity() {
         else -> super.onOptionsItemSelected(item)
     }
 
-    /** Switches [viewMode] and re-renders [currentContent]'s bytes the new way, without re-fetching them. */
+    /** Switches [viewMode] and re-renders content the new way, without re-fetching from DB. */
     private fun setViewMode(mode: ViewMode) {
-        val content = currentContent ?: return
         viewMode = mode
+        invalidateOptionsMenu()
+        // RENDERED on a non-renderable file: go back to the preview panel.
+        if (mode == ViewMode.RENDERED && isPreviewPanel) {
+            showPreviewUnavailable(previewMimeType ?: return, previewSizeBytes)
+            return
+        }
+        // For raw dump modes, build ContentInfo from exportCache if not already set.
+        val content = currentContent ?: run {
+            val cache = exportCache ?: return
+            val bytes = cache.contentBytes ?: return
+            ContentInfo(cache.mimeType, bytes, null, cache.pixelArt)
+        }
+        showWebView()
         renderContent(content)
+    }
+
+    /** Shows a warning banner when the cached MIME type was guessed; tapping it opens [showSetTypeDialog]. */
+    private fun refreshGuessedTypeBanner() {
+        val cache = exportCache
+        if (cache == null || !cache.mimeTypeIsGuessed) {
+            binding.guessedTypeBanner.visibility = View.GONE
+            return
+        }
+        binding.guessedTypeBanner.text = getString(R.string.guessed_type_banner, cache.mimeType)
+        binding.guessedTypeBanner.setOnClickListener { showSetTypeDialog() }
+        binding.guessedTypeBanner.visibility = View.VISIBLE
+    }
+
+    /** Dialog letting the user override the stored MIME type for the current cache entry. */
+    private fun showSetTypeDialog() {
+        val cache = exportCache ?: return
+        val input = android.widget.EditText(this).apply {
+            hint = getString(R.string.set_type_hint)
+            setText(cache.mimeType)
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.set_type_dialog_title)
+            .setView(input)
+            .setPositiveButton(R.string.set_type_apply) { _, _ ->
+                val newMime = input.text.toString().trim().takeIf { it.isNotEmpty() } ?: return@setPositiveButton
+                lifecycleScope.launch {
+                    AppDatabase.get(this@ViewDataUriActivity).cacheDao().updateMimeType(cache.cacheId, newMime)
+                    exportCache = AppDatabase.get(this@ViewDataUriActivity).cacheDao().getById(cache.cacheId)
+                    invalidateOptionsMenu()
+                    refreshPreviewPanel()
+                    refreshGuessedTypeBanner()
+                    // If showing a raw dump, re-render with the new MIME type in ContentInfo
+                    currentContent?.let { old ->
+                        currentContent = old.copy(mimeType = newMime)
+                        if (viewMode == ViewMode.RENDERED) {
+                            // Re-render in case the new MIME changes how we display it
+                            val bytes = exportCache?.contentBytes ?: return@let
+                            if (isWebViewRenderable(newMime)) {
+                                showWebView()
+                                renderContent(ContentInfo(newMime, bytes, old.context, old.pixelArt))
+                            } else {
+                                showPreviewUnavailable(newMime, bytes.size)
+                            }
+                        }
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Shows or hides the contextual action chip based on the current [exportCache]'s content type. */
@@ -490,6 +558,7 @@ class ViewDataUriActivity : AppCompatActivity() {
 
     /** Hides the preview-unavailable panel and shows the WebView, e.g. when navigating to a renderable file. */
     private fun showWebView() {
+        isPreviewPanel = false
         binding.previewPanel.visibility = View.GONE
         binding.htmldisp.visibility = View.VISIBLE
     }
@@ -497,6 +566,7 @@ class ViewDataUriActivity : AppCompatActivity() {
     /** Shows the "can't preview" panel for [mimeType] content instead of a blank WebView. */
     private fun showPreviewUnavailable(mimeType: String, sizeBytes: Int) {
         currentContent = null
+        isPreviewPanel = true
         previewMimeType = mimeType
         previewSizeBytes = sizeBytes
         binding.htmldisp.visibility = View.GONE

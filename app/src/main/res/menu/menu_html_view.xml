@@ -19,6 +19,12 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/action_set_type"
+        android:title="@string/action_set_type"
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/action_view_as"
         android:title="@string/action_view_as"
         app:showAsAction="never">

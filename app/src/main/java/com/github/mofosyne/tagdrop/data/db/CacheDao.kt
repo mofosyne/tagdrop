@@ -33,4 +33,8 @@ interface CacheDao {
     /** Other cached items whose `in_reply_to` points at [parentId] (SPEC §7) — the reverse of [FoundCache.inReplyTo]. */
     @Query("SELECT * FROM found_caches WHERE inReplyTo = :parentId ORDER BY discoveredAt DESC")
     suspend fun getRepliesTo(parentId: String): List<FoundCache>
+
+    /** Updates the stored MIME type for a single cache entry (used by the "Set type…" override in ViewDataUriActivity). */
+    @Query("UPDATE found_caches SET mimeType = :mimeType, mimeTypeIsGuessed = 0 WHERE cacheId = :cacheId")
+    suspend fun updateMimeType(cacheId: String, mimeType: String)
 }
