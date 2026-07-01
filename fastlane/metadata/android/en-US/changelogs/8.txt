@@ -2,4 +2,7 @@
 - Files already cached from a previous scan are now surfaced immediately when you open a Paper manifest, without re-scanning their codes.
 - Wire format: files[] and related[] sub-map keys now use independent local ranges (1–5 and 1–9) instead of the global key space, keeping the master key table clean and giving each sub-structure room to grow.
 - Contextual action button: when viewing a scanned item, a button now appears for recognised content types — Open URL, Add Contact, Add to Calendar, Connect to Wi-Fi, Open in Maps, Dial, Send SMS, Compose Email — matching the quick-action behaviour of typical QR scanner apps.
+- MIME type guessing for raw (non-TagDrop) QR codes: the app now detects common file types from magic bytes (PNG, JPEG, PDF, ZIP, HTML, JSON, SVG, …) instead of always falling back to plain text. When the type is guessed rather than declared, a banner says so and lets you correct it with a "Set type…" action.
+- "View as" (Text / Hex / CBOR / JSON) is now available for any cached content, including binary files that can't be previewed in-app.
+- CBOR view now shows a full hex dump first, then scans the bytes for CBOR structures — continuing past failures so any structures embedded in binary files are still surfaced.
 - Note: wire format v1 is still a draft — no real codes have been deployed yet, so breaking changes can occur without a version bump until the first code is printed and distributed.
