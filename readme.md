@@ -143,6 +143,42 @@ scan board, NFC tag read/write, search and `#hashtag` filtering, full
 backup/restore, and AES-256-GCM encryption via key-code QR or passphrase
 (PBKDF2-SHA256).
 
+## Community conventions
+
+These are recommended conventions for placing TagDrop codes in the wild so they
+can be discovered and catalogued by others.
+
+### OpenStreetMap tagging
+
+If you embed a TagDrop code at a physical location (sticker, sign, USB dead
+drop, geocache, etc.), consider adding it to
+[OpenStreetMap](https://www.openstreetmap.org/) so others can find it:
+
+- For a USB dead drop: use `man_made=dead_drop` and add `tagdrop=<uri>` (the
+  full `tagdrop:…` URI of the manifest or entry-point code).
+- For a standalone sticker/printout: use `tourism=artwork` or another suitable
+  primary tag, again with `tagdrop=<uri>`.
+- For a geocache-style hide: `leisure=geocache` + `tagdrop=<uri>`.
+
+A future version of the app may query OSM for nodes with a `tagdrop=*` tag to
+show nearby drops on the map — tagging your drop now means it will appear
+automatically when that feature ships.
+
+### Dead Drops project
+
+[Dead Drops](https://deaddrops.com/) (Aram Bartholl, 2010) is the original
+public USB dead-drop project. If your TagDrop code is attached to or near a
+registered dead drop, consider:
+
+1. Listing the drop on deaddrops.com (if not already listed).
+2. Adding a `tagdrop=<uri>` field to the drop's deaddrops.com entry, if/when
+   the site adds support for that field. (We've reached out to suggest this —
+   see below.)
+
+We've contacted the deaddrops.com team to suggest adding a **TagDrop URI
+field** to their drop database, so the two communities can cross-reference
+each other without either app needing to scrape the other's data.
+
 ## Extra Readings
 
 * [#nfcdab](https://nfcdab.org) : A DIY international and independent digital art biennale in Wroclaw, Poland, that uses wireless technology, light waves and electromagnetic fields e.g.: Wi-Fi routers, QR codes or NFC tags for accessing content with your 📱 smartphone
