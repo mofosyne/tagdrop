@@ -239,4 +239,6 @@
     <string name="source_last_fetched">Last fetched: %s</string>
     <string name="source_entry_count">%d drops</string>
     <string name="source_never_fetched">Never fetched</string>
+    <string name="add_source_manually">Add source URL manually</string>
+    <string name="source_name_hint">Name (optional)</string>
 </resources>

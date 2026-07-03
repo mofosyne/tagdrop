@@ -6,6 +6,8 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.LinearLayout
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -68,6 +70,58 @@ class SourcesActivity : AppCompatActivity() {
             binding.textEmpty.visibility = if (sources.isEmpty()) View.VISIBLE else View.GONE
             binding.recyclerSources.visibility = if (sources.isEmpty()) View.GONE else View.VISIBLE
         }
+
+        binding.fabAddSource.setOnClickListener { addSourceManually() }
+    }
+
+    private fun addSourceManually() {
+        val padding = (16 * resources.displayMetrics.density).toInt()
+        val urlInput = EditText(this).apply {
+            hint = "https://example.com/drops.json"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine()
+        }
+        val nameInput = EditText(this).apply {
+            hint = getString(R.string.source_name_hint)
+            setSingleLine()
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding / 2, padding, 0)
+            addView(nameInput)
+            addView(urlInput)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.add_source_manually)
+            .setView(container)
+            .setPositiveButton(R.string.add_source_confirm) { _, _ ->
+                val url = urlInput.text.toString().trim()
+                val name = nameInput.text.toString().trim().ifEmpty { url }
+                if (url.isNotEmpty()) {
+                    lifecycleScope.launch {
+                        val db = AppDatabase.get(this@SourcesActivity)
+                        val sourceId = db.dropSourceDao().insert(
+                            DropSource(name = name, url = url, enabled = true)
+                        )
+                        val json = SourceFetcher.fetch(url)
+                        if (json != null) {
+                            DropEntryCache.update(sourceId, json.drops)
+                            db.dropSourceDao().update(
+                                DropSource(id = sourceId,
+                                           name = json.label ?: name,
+                                           url = url,
+                                           enabled = true,
+                                           lastFetchedAt = System.currentTimeMillis(),
+                                           entryCount = json.drops.size)
+                            )
+                        }
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
