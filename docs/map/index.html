@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Community Drops Map — TagDrop</title>
+<link rel="icon" href="../icon.png" type="image/png">
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; line-height: 1.5; display: flex; flex-direction: column; min-height: 100vh; }
+
+  header { background: #F3EDE1; color: #2A3941; padding: 12px 20px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  header h1 { margin: 0; font-size: 1.2rem; }
+  header small { color: #2A3941; opacity: .65; font-size: 0.8rem; }
+  header a { color: #2A3941; opacity: .7; font-size: 0.85rem; text-decoration: none; margin-left: auto; }
+  header a:hover { opacity: 1; }
+
+  #map { flex: 1; min-height: 55vh; }
+
+  .panel { max-width: 860px; margin: 0 auto; padding: 20px 20px 32px; width: 100%; }
+
+  h2 { font-size: 1.15rem; margin: 24px 0 8px; }
+
+  .status-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 16px; font-size: 0.88rem; }
+  .status-legend span { display: flex; align-items: center; gap: 5px; }
+
+  .steps { padding-left: 20px; color: #444; }
+  .steps li { margin-bottom: 8px; }
+  code { background: #eee; border-radius: 4px; padding: 1px 5px; font-size: 0.88em; }
+
+  .card { background: #fff; border-radius: 8px; padding: 16px; margin-top: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+  #count { font-size: 0.88rem; color: #666; margin-bottom: 8px; }
+
+  .json-link { display: inline-block; margin-top: 8px; font-size: 0.85rem; color: #555; }
+
+  footer { max-width: 860px; margin: 0 auto; padding: 0 20px 24px; color: #888; font-size: 0.82rem; }
+  footer a { color: #555; }
+
+  /* Leaflet popup tweak */
+  .leaflet-popup-content { font-size: 0.88rem; line-height: 1.5; min-width: 180px; }
+  .leaflet-popup-content strong { display: block; margin-bottom: 4px; font-size: 0.95rem; }
+  .pop-status { display: inline-block; margin-top: 4px; font-size: 0.78rem; padding: 1px 7px;
+                border-radius: 20px; font-weight: 600; }
+  .pop-status.working { background: #d4edda; color: #1a6630; }
+  .pop-status.broken  { background: #f8d7da; color: #721c24; }
+  .pop-status.unknown { background: #e2e3e5; color: #383d41; }
+</style>
+</head>
+<body>
+
+<header>
+  <svg viewBox="26 26 56 56" width="36" height="36" aria-hidden="true">
+    <path d="M 73.628,76.933 C 68.743,76.940 62.548,76.493 57.971,75.803 C 50.651,74.698 44.938,72.899 40.950,70.442 C 36.068,67.433 32.540,61.931 31.600,55.860 C 31.329,54.112 31.399,50.425 31.735,48.688 C 33.480,39.677 40.813,32.612 49.853,31.231 C 51.611,30.963 55.302,31.033 57.032,31.368 C 63.232,32.569 68.718,36.484 71.489,41.685 C 74.212,46.796 75.893,54.367 76.413,63.867 C 76.578,66.891 76.617,71.660 76.497,74.358 C 76.436,75.740 76.370,76.884 76.351,76.900 C 76.332,76.916 75.107,76.931 73.628,76.933 L 73.628,76.933" fill="#2A3941"/>
+    <path d="M 52.287,52.678 C 53.025,52.493 53.756,51.761 53.942,51.023 C 54.132,50.268 54.132,41.728 53.942,40.972 C 53.756,40.234 53.025,39.503 52.287,39.317 C 51.532,39.127 42.991,39.127 42.236,39.317 C 41.498,39.503 40.767,40.234 40.581,40.972 C 40.391,41.728 40.391,50.268 40.581,51.023 C 40.754,51.713 41.506,52.497 42.158,52.670 C 42.830,52.847 51.587,52.855 52.287,52.678 L 52.287,52.678 M 42.912,45.998 L 42.912,41.648 L 47.261,41.648 L 51.611,41.648 L 51.611,45.998 L 51.611,50.347 L 47.261,50.347 L 42.912,50.347 L 42.912,45.998 M 49.397,48.154 C 49.589,47.981 49.612,47.750 49.612,46.018 C 49.612,44.376 49.582,44.043 49.418,43.862 C 49.244,43.670 49.013,43.647 47.282,43.647 C 45.640,43.647 45.307,43.677 45.125,43.841 C 44.934,44.015 44.910,44.246 44.910,45.977 C 44.910,47.619 44.940,47.952 45.105,48.134 C 45.278,48.325 45.509,48.349 47.241,48.349 C 48.883,48.349 49.216,48.319 49.397,48.154" fill="#D9652B"/>
+    <path d="M 65.640,47.506 C 66.079,47.395 66.515,46.960 66.626,46.520 C 66.739,46.070 66.739,40.986 66.626,40.536 C 66.515,40.097 66.079,39.661 65.640,39.551 C 65.190,39.437 60.106,39.437 59.656,39.551 C 59.217,39.661 58.781,40.097 58.670,40.536 C 58.557,40.986 58.557,46.070 58.670,46.520 C 58.774,46.931 59.221,47.398 59.609,47.501 C 60.009,47.606 65.223,47.611 65.640,47.506 L 65.640,47.506 M 60.058,43.528 L 60.058,40.939 L 62.648,40.939 L 65.238,40.939 L 65.238,43.528 L 65.238,46.118 L 62.648,46.118 L 60.058,46.118 L 60.058,43.528 M 63.920,44.812 C 64.034,44.709 64.048,44.571 64.048,43.540 C 64.048,42.563 64.030,42.365 63.932,42.256 C 63.829,42.142 63.691,42.128 62.660,42.128 C 61.683,42.128 61.484,42.146 61.376,42.244 C 61.262,42.348 61.248,42.485 61.248,43.516 C 61.248,44.493 61.266,44.692 61.364,44.800 C 61.467,44.914 61.605,44.928 62.636,44.928 C 63.613,44.928 63.812,44.910 63.920,44.812" fill="#D9652B"/>
+    <path d="M 47.990,65.494 C 48.429,65.383 48.865,64.948 48.976,64.508 C 49.089,64.059 49.089,58.974 48.976,58.524 C 48.865,58.085 48.429,57.649 47.990,57.539 C 47.540,57.425 42.456,57.425 42.006,57.539 C 41.567,57.649 41.131,58.085 41.020,58.524 C 40.907,58.974 40.907,64.059 41.020,64.508 C 41.124,64.919 41.571,65.386 41.960,65.489 C 42.359,65.594 47.573,65.599 47.990,65.494 L 47.990,65.494 M 42.408,61.516 L 42.408,58.927 L 44.998,58.927 L 47.588,58.927 L 47.588,61.516 L 47.588,64.106 L 44.998,64.106 L 42.408,64.106 L 42.408,61.516 M 46.270,62.800 C 46.384,62.697 46.398,62.559 46.398,61.528 C 46.398,60.551 46.380,60.353 46.282,60.244 C 46.179,60.130 46.041,60.116 45.010,60.116 C 44.033,60.116 43.834,60.134 43.726,60.232 C 43.612,60.336 43.598,60.473 43.598,61.504 C 43.598,62.481 43.616,62.680 43.714,62.788 C 43.817,62.902 43.955,62.916 44.986,62.916 C 45.963,62.916 46.162,62.898 46.270,62.800" fill="#D9652B"/>
+  </svg>
+  <div>
+    <h1>Community Drops Map</h1>
+    <small>TagDrop</small>
+  </div>
+  <a href="../">← Back to TagDrop</a>
+</header>
+
+<div id="map"></div>
+
+<div class="panel">
+
+  <div id="count">Loading drops…</div>
+
+  <div class="status-legend">
+    <strong>Status:</strong>
+    <span>📡 Working</span>
+    <span>📵 Reported broken</span>
+    <span>❓ Unknown</span>
+  </div>
+
+  <p style="color:#444;margin:0 0 4px">
+    This map shows known TagDrop codes placed in the wild, curated by the community.
+    Click a pin to see its hint and status. Scan the code at that location with the
+    <a href="https://f-droid.org/packages/com.github.mofosyne.tagdrop">TagDrop Android app</a>
+    or the <a href="../reader/">web reader</a>.
+  </p>
+  <a class="json-link" href="../db/drops.json">📄 drops.json (raw)</a>
+
+  <div class="card">
+    <h2 style="margin-top:0">➕ How to add your drop</h2>
+    <p style="color:#444;margin-top:0">
+      If you've placed a TagDrop code in a public space, open a pull request to add
+      it to the community database. Each entry needs:
+    </p>
+    <ol class="steps">
+      <li>
+        <strong>Cache ID</strong> — the <code>cache_id</code> of your TagDrop code.
+        You can copy it from the app's inspect screen (tap the <em>⋮</em> menu on a
+        scanned item → <em>Inspect</em>) or from the web generator's output panel.
+        It looks like <code>a3f8b2c1d4e5f6a7</code> (16 lowercase hex characters).
+      </li>
+      <li>
+        <strong>Coordinates</strong> — WGS84 latitude and longitude of the physical
+        location where you placed the code.
+      </li>
+      <li>
+        <strong>A short hint</strong> — a clue for the finder, e.g.
+        <em>"Behind the loose brick on the north wall"</em>. Keep it findable
+        without being a spoiler.
+      </li>
+      <li>
+        <strong>Optional:</strong> a longer <code>description</code> (directions or
+        context), a <code>status</code> (<code>"working"</code> / <code>"broken"</code>
+        / <code>"unknown"</code>), and a <code>status_updated</code> date.
+      </li>
+    </ol>
+    <p style="color:#444">
+      Add your entry to
+      <a href="https://github.com/mofosyne/tagdrop/blob/master/docs/db/drops.json"><code>docs/db/drops.json</code></a>
+      in the TagDrop repository and open a pull request. The entry format is:
+    </p>
+    <pre style="background:#f0f0f0;border-radius:6px;padding:12px;overflow-x:auto;font-size:0.85rem;margin:0">{
+  "id": "a3f8b2c1d4e5f6a7",
+  "lat": 51.5007,
+  "lng": -0.1246,
+  "hint": "Behind the loose brick on the north wall",
+  "description": "Pedestrian underpass, north face of the arch, eye level",
+  "status": "working",
+  "status_updated": "2026-07-03"
+}</pre>
+    <p style="color:#444;margin-bottom:0">
+      <a href="https://github.com/mofosyne/tagdrop/blob/master/docs/db/drops.json">→ Open drops.json on GitHub</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/mofosyne/tagdrop/compare">→ Open a pull request</a>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">🗂 Run your own source feed</h2>
+    <p style="color:#444;margin:0">
+      You can host a <code>drops.json</code> feed at any URL and share it with your
+      community. Anyone with the TagDrop Android app can add it via
+      <em>Sources → Add source</em> and see your drops on their map.
+      See the <a href="https://github.com/mofosyne/tagdrop/blob/master/SPEC.md#17-drop-source-registry">SPEC §17</a>
+      for the full schema — including <code>related_sources</code> for cross-linking feeds.
+    </p>
+  </div>
+
+</div>
+
+<footer>
+  <p>
+    Map tiles © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> ·
+    <a href="https://github.com/mofosyne/tagdrop">TagDrop on GitHub</a> ·
+    <a href="https://github.com/mofosyne/tagdrop/blob/master/COPYING.txt">License (GPLv3)</a>
+  </p>
+</footer>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN2GqF0=" crossorigin=""></script>
+
+<script>
+const map = L.map('map').setView([20, 0], 2);
+
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+
+const icons = {
+  working: L.divIcon({ className: '', html: '<span style="font-size:24px;line-height:1">📡</span>', iconSize: [28, 28], iconAnchor: [14, 24], popupAnchor: [0, -26] }),
+  broken:  L.divIcon({ className: '', html: '<span style="font-size:24px;line-height:1">📵</span>', iconSize: [28, 28], iconAnchor: [14, 24], popupAnchor: [0, -26] }),
+  unknown: L.divIcon({ className: '', html: '<span style="font-size:24px;line-height:1">❓</span>', iconSize: [28, 28], iconAnchor: [14, 24], popupAnchor: [0, -26] }),
+};
+
+fetch('../db/drops.json')
+  .then(r => r.json())
+  .then(data => {
+    const drops = (data.drops || []).filter(d => d.status !== 'removed');
+    const countEl = document.getElementById('count');
+    if (drops.length === 0) {
+      countEl.textContent = 'No drops listed yet — be the first to add one!';
+      return;
+    }
+    countEl.textContent = `${drops.length} drop${drops.length === 1 ? '' : 's'} listed`;
+
+    const bounds = [];
+    for (const d of drops) {
+      if (d.lat == null || d.lng == null) continue;
+      const status = d.status || 'unknown';
+      const icon = icons[status] || icons.unknown;
+      const statusLabel = status === 'working' ? 'Working'
+                        : status === 'broken'  ? 'Reported broken'
+                        : 'Unknown';
+      const statusClass = status === 'working' ? 'working'
+                        : status === 'broken'  ? 'broken'
+                        : 'unknown';
+      let popup = `<strong>${escHtml(d.hint || d.id)}</strong>`;
+      if (d.description) popup += `<br>${escHtml(d.description)}`;
+      if (d.status_updated) popup += `<br><small style="color:#888">Last checked: ${escHtml(d.status_updated)}</small>`;
+      popup += `<br><span class="pop-status ${statusClass}">${statusLabel}</span>`;
+      popup += `<br><small style="color:#aaa;font-size:0.72rem">ID: ${escHtml(d.id)}</small>`;
+      L.marker([d.lat, d.lng], { icon }).addTo(map).bindPopup(popup);
+      bounds.push([d.lat, d.lng]);
+    }
+    if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
+    else if (bounds.length === 1) map.setView(bounds[0], 14);
+  })
+  .catch(() => {
+    document.getElementById('count').textContent = 'Could not load drops.json.';
+  });
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+
+</body>
+</html>
