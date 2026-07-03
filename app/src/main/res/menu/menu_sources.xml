@@ -8,6 +8,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/action_browse_sources"
+        android:title="@string/source_browse_title"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/action_reload_defaults"
         android:title="@string/source_reload_defaults"
         app:showAsAction="never" />

@@ -6,9 +6,12 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
@@ -20,6 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.data.DropEntryCache
+import com.github.mofosyne.tagdrop.data.RelatedSource
 import com.github.mofosyne.tagdrop.data.SourceFetcher
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.DropSource
@@ -137,8 +141,9 @@ class SourcesActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
-        R.id.action_refresh_all    -> { refreshAll(); true }
+        R.id.action_refresh_all     -> { refreshAll(); true }
         R.id.action_reload_defaults -> { reloadDefaults(); true }
+        R.id.action_browse_sources  -> { browseRecommended(); true }
         else -> super.onOptionsItemSelected(item)
     }
 
@@ -155,6 +160,12 @@ class SourcesActivity : AppCompatActivity() {
                     entryCount    = json.drops.size
                 )
             )
+            if (json.relatedSources.isNotEmpty()) {
+                showSourcePickerDialog(
+                    getString(R.string.source_related_title, json.label ?: source.name),
+                    json.relatedSources
+                )
+            }
         }
     }
 
@@ -183,6 +194,81 @@ class SourcesActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    private fun browseRecommended() {
+        lifecycleScope.launch {
+            val dir = SourceFetcher.fetchDirectory()
+            if (dir == null) {
+                Toast.makeText(this@SourcesActivity,
+                    R.string.source_browse_failed, Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            showSourcePickerDialog(dir.label ?: getString(R.string.source_browse_title), dir.sources)
+        }
+    }
+
+    private suspend fun showSourcePickerDialog(title: String, candidates: List<RelatedSource>) {
+        if (candidates.isEmpty()) {
+            Toast.makeText(this, R.string.source_browse_none, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val db = AppDatabase.get(this)
+        val existingUrls = db.dropSourceDao().getAllOnce().map { it.url }.toSet()
+        val newCandidates = candidates.filter { it.url !in existingUrls }
+        if (newCandidates.isEmpty()) {
+            Toast.makeText(this, R.string.source_browse_all_added, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val padding = (16 * resources.displayMetrics.density).toInt()
+        val checks = newCandidates.map { source ->
+            CheckBox(this).apply {
+                isChecked = true
+                text = source.name
+            }
+        }
+        val scroll = ScrollView(this)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding / 2, padding, padding / 2)
+            newCandidates.forEachIndexed { i, source ->
+                addView(checks[i])
+                if (source.description != null) {
+                    addView(TextView(this@SourcesActivity).apply {
+                        text = source.description
+                        textSize = 12f
+                        setTextColor(0xFF888888.toInt())
+                        setPadding(padding * 2, 0, 0, padding / 2)
+                    })
+                }
+            }
+        }
+        scroll.addView(container)
+
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(scroll)
+            .setPositiveButton(R.string.source_browse_add) { _, _ ->
+                lifecycleScope.launch {
+                    var added = 0
+                    newCandidates.forEachIndexed { i, source ->
+                        if (checks[i].isChecked) {
+                            db.dropSourceDao().insert(
+                                DropSource(name = source.name, url = source.url, enabled = false)
+                            )
+                            added++
+                        }
+                    }
+                    if (added > 0) {
+                        Toast.makeText(this@SourcesActivity,
+                            resources.getQuantityString(R.plurals.source_browse_added, added, added),
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun reloadDefaults() {

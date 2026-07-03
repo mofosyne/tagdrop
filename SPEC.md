@@ -1805,6 +1805,59 @@ Per-drop entry fields:
 
 The `id` field is the join key between the source list and a locally scanned QR: when the finder scans the physical TagDrop code at that location, its `cache_id` matches `id`, and the app marks that pin as found on the map — no server round-trip needed.
 
+An optional `related_sources` top-level array lets a registry recommend other registries. The app surfaces these as an opt-in prompt after a successful fetch — the user sees a checklist of the recommended sources and can add whichever they want (all disabled by default, matching the behaviour for any newly added source):
+
+```json
+{
+  "version": 1,
+  "label": "London Dead Drops",
+  "drops": [ … ],
+  "related_sources": [
+    {
+      "name": "UK Nationwide Drops",
+      "url": "https://example.org/uk-drops.json",
+      "description": "All registered drops across the UK",
+      "maintainer": "UK TagDrop Community"
+    }
+  ]
+}
+```
+
+`related_sources` entry fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string (required) | Human-readable name for the recommended source. |
+| `url` | string (required) | URL of the recommended registry JSON file. |
+| `description` | string (opt) | Short description shown to the user before they add it. |
+| `maintainer` | string (opt) | Who maintains this registry. |
+
+### Source directory format
+
+The TagDrop project publishes a curated directory of known community registries at:
+
+```
+https://mofosyne.github.io/tagdrop/db/sources.json
+```
+
+This uses a parallel schema (top-level `sources` array instead of `drops`) and is the bootstrap discovery point — the app's "Browse recommended sources" action fetches this URL and presents a checklist so users can add any registry they want. Third-party registries can also publish their own directories; any URL that serves this schema can be used.
+
+```json
+{
+  "version": 1,
+  "label": "TagDrop Known Sources",
+  "updated": "2026-07-03",
+  "sources": [
+    {
+      "name": "TagDrop Community Drops",
+      "url": "https://mofosyne.github.io/tagdrop/db/drops.json",
+      "description": "Curated list of community-placed TagDrop codes worldwide.",
+      "maintainer": "TagDrop project"
+    }
+  ]
+}
+```
+
 ### The official TagDrop source
 
 The TagDrop project maintains a curated source at:
