@@ -40,6 +40,7 @@ import com.github.mofosyne.tagdrop.ui.CollectionItem
 import com.github.mofosyne.tagdrop.util.LocationUtils
 import com.github.mofosyne.tagdrop.util.ThumbnailLoader
 import com.github.mofosyne.tagdrop.util.looksLikePixelArt
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapListener
@@ -143,6 +144,12 @@ class MapFragment : Fragment() {
         db.dropSourceDao().getAll().observe(viewLifecycleOwner) { sources ->
             latestSources = sources
             render()
+        }
+
+        // Re-render whenever DropEntryCache is updated (fetch complete or source evicted).
+        // drop(1) skips the initial emission so we don't double-render on startup.
+        viewLifecycleOwner.lifecycleScope.launch {
+            DropEntryCache.changes.drop(1).collect { render() }
         }
 
         viewModel.mapFocusPoint.observe(viewLifecycleOwner) { point ->
