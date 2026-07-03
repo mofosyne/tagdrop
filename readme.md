@@ -134,7 +134,7 @@ running from source.
 
 > ⚠ **Wire format v1 is a draft.** No real-world codes have been printed or distributed yet, so breaking wire-format changes may occur without a version bump. Once the first code is deployed the format freezes.
 
-**TagDrop v2.1** — wire format version 1 (see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
+**TagDrop v2.1** — wire format version 1 (draft, see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
 (`tagdrop:<base41>`) with content split into one or more sectors plus
 optional parity recovery, paper manifests with multi-file directories and
 relative-link navigation, geographic trails via `related` hints and located

@@ -4,6 +4,8 @@ import androidx.lifecycle.LiveData
 import androidx.room.InvalidationTracker
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.CacheDao
+import com.github.mofosyne.tagdrop.data.db.DropSource
+import com.github.mofosyne.tagdrop.data.db.DropSourceDao
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.KeyDao
 import com.github.mofosyne.tagdrop.data.db.PaperDao
@@ -52,6 +54,14 @@ private class FakeKeyDao : KeyDao {
     override suspend fun deleteAll() {}
 }
 
+private class FakeDropSourceDao : DropSourceDao {
+    override fun getAll(): LiveData<List<DropSource>> = throw NotImplementedError()
+    override suspend fun getEnabled(): List<DropSource> = emptyList()
+    override suspend fun insert(source: DropSource): Long = 0L
+    override suspend fun update(source: DropSource) {}
+    override suspend fun delete(source: DropSource) {}
+}
+
 private class FakeAppDatabase(
     val paperDaoFake: FakePaperDao = FakePaperDao(),
     val cacheDaoFake: FakeCacheDao = FakeCacheDao(),
@@ -59,6 +69,7 @@ private class FakeAppDatabase(
     override fun paperDao(): PaperDao = paperDaoFake
     override fun cacheDao(): CacheDao = cacheDaoFake
     override fun keyDao(): KeyDao = FakeKeyDao()
+    override fun dropSourceDao(): DropSourceDao = FakeDropSourceDao()
     override fun createInvalidationTracker(): InvalidationTracker = throw NotImplementedError()
     override fun clearAllTables() = throw NotImplementedError()
 }
