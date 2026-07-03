@@ -1,0 +1,7 @@
+- Remote drop sources: add any URL that serves a TagDrop drops.json feed and its entries appear as map pins (📡 working, 📵 reported broken) so you can find drops before scanning them.
+- Source management: enable or disable each source independently; disabled sources are greyed out on the list and their pins are removed from the map instantly.
+- Refresh a source to pull the latest entries, or refresh all enabled sources at once from the menu.
+- Source discovery: tap "Browse recommended sources" to pull the official TagDrop directory and pick feeds to add in one step. Feeds can also recommend related sources, surfaced automatically after a successful refresh.
+- Reload default sources restores the bundled community and demo feeds if they were removed.
+- Pins for remote-source entries show a "Not yet scanned" note so it's clear they are hints, not scanned items.
+- Enabling a source that was previously disabled re-fetches its entries immediately so pins reappear without a manual refresh.
