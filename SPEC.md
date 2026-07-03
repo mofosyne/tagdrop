@@ -172,6 +172,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 53 | `domain` | text (opt) | `core_meta_item`; Paper only — human-readable name for `tagdrop://<domain>/<slug>` links, see §7 "Domains" |
 | 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
 | 55 | `pixel_art` | bool (opt, default `false`) | `core_meta_item` (Content only) — render with nearest-neighbour scaling (no smoothing); see §7 "Pixel art" |
+| 56 | `source_url` | text (opt) | `core_meta_item` — URL of a drop-source registry JSON file; see §17 |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -185,8 +186,9 @@ small embedded image icon (raw bytes), as an alternative to the emoji `icon`
 field. Keys 28, 30, 31 are defined in §9 (Encryption); keys 32–36 in §10
 (Verified Authorship); keys 37–39 in §9 (Passphrase-based key derivation); keys
 26, 27, 48, 49, 54 in §4.2 (Declared location and priority); key 53 in §7
-(Domains); key 55 in §7 (Pixel art). Key 29 is reserved and unused — see §9 for
-why an encrypted override map's nonce doesn't need its own clear field.
+(Domains); key 55 in §7 (Pixel art); key 56 in §17 (Drop Source Registry). Key
+29 is reserved and unused — see §9 for why an encrypted override map's nonce
+doesn't need its own clear field.
 
 **Sub-map local key namespaces:** `files[]` and `related[]` entries are CBOR
 maps with their own independent key ranges, separate from the top-level key
@@ -1644,6 +1646,7 @@ Version history:
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
+- Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
 
 ---
 
@@ -1726,3 +1729,81 @@ resolution.
 **No explicit folder hierarchy:** Papers list files as flat slug strings. Slugs that contain `/` (e.g. `images/photo.jpg`) create virtual path conventions without requiring a tree structure in the CBOR or the database. String equality on the full slug is the only lookup operation needed. This keeps the directory format simple and avoids directory-traversal edge cases.
 
 **Non-HTML content types (images, audio, MIDI):** The cache stores raw bytes for any MIME type, and the Android WebView can serve them all via `WebViewClient.shouldInterceptRequest`. When a loaded HTML page contains `<img src="tagdrop://...">`, `<audio src="tagdrop://...">`, or any other subresource reference, `shouldInterceptRequest` intercepts the fetch, looks up the slug in the local DB, and returns a `WebResourceResponse` with the cached bytes — no network involved. MIDI files require a JS player library embedded in the same HTML file (the MIDI bytes are served as `audio/midi` via the same mechanism). Purely binary payloads (a standalone image, a MIDI file) are displayed/played by wrapping them in a minimal HTML page that references the tagdrop:// URI. The navigation flow (`shouldOverrideUrlLoading`) and the subresource flow (`shouldInterceptRequest`) are independent: the former fires when the user clicks a link and loads a new top-level page; the latter fires for every embedded asset on the current page. Both resolve through the same `TagDropLinkResolver`.
+
+---
+
+## 17. Drop Source Registry
+
+A drop **source** is a URL pointing to a JSON file that lists TagDrop drop locations — cache IDs, coordinates, and hints for drops placed in the physical world. Sources let communities publish and share lists of drops without changing the wire format of the drops themselves.
+
+### Wire field
+
+`source_url` (key 56, text, optional) may appear in `core_meta_item` of any Content or Paper payload — typically a hint-only code (no `content` bytes) placed alongside a physical drop or distributed as a sticker. It names a URL that the finder's app can add as a source. No other wire-format changes are needed: the existing `hint`/`label` (key 3) names the source for the user; `lat`/`lng` (keys 26/27) can locate the physical QR that carries it; `icon` (key 24) gives it a visual identity.
+
+### App behaviour
+
+When a code carrying `source_url` is scanned the app MUST prompt the user before fetching anything:
+
+> **"Add drop source: \<hint or label\>? [Add] [Skip]"**
+
+The full URL MUST be shown to the user before they confirm. No fetch occurs on Skip. On Add, the URL is stored in the local source list and fetched immediately (if the device is online); the app MUST NOT fetch it silently or in the background without the user having added it first.
+
+A **source management screen** (separate from the map) lists all added sources with:
+- Enable / disable toggle (disabled sources contribute no pins to the map)
+- Remove (deletes the stored URL and all pins derived from it)
+- Last-fetched timestamp and entry count
+- Manual refresh button
+
+Re-fetching is user-initiated or on a configurable schedule chosen by the user. The app caches the last-fetched JSON locally so the map works offline after the first fetch.
+
+**Privacy:** fetching a source URL reveals the device's IP address and approximate fetch time to whoever hosts the file. The app SHOULD display this caveat on the Add prompt. Source files SHOULD be hosted on servers whose privacy practices users can assess (e.g. static GitHub Pages).
+
+### Source JSON format
+
+```json
+{
+  "version": 1,
+  "label": "London Dead Drops",
+  "updated": "2026-07-03",
+  "drops": [
+    {
+      "id": "a3f8b2c1d4e5f6a7",
+      "lat": 51.5007,
+      "lon": -0.1246,
+      "hint": "Behind the loose brick on the north wall",
+      "label": "Shoreditch Wall Drop"
+    }
+  ]
+}
+```
+
+Top-level fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | uint (required) | Schema version. Currently `1`. |
+| `label` | string (opt) | Human-readable name for the source. |
+| `updated` | string (opt) | ISO 8601 date of last content change, e.g. `"2026-07-03"`. |
+| `drops` | array (required) | List of drop entries (may be empty). |
+
+Per-drop entry fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string (required) | `cache_id` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). |
+| `lat` | number (required) | WGS84 latitude. |
+| `lon` | number (required) | WGS84 longitude. |
+| `hint` | string (opt) | Short human-readable location clue, e.g. `"Behind the loose brick"`. |
+| `label` | string (opt) | Name of the drop. |
+
+The `id` field is the join key between the source list and a locally scanned QR: when the finder scans the physical TagDrop code at that location, its `cache_id` matches `id`, and the app marks that pin as found on the map — no server round-trip needed.
+
+### The official TagDrop source
+
+The TagDrop project maintains a curated source at:
+
+```
+https://mofosyne.github.io/tagdrop/db/drops.json
+```
+
+This file is committed directly to the repository (`docs/db/drops.json`) and served via GitHub Pages. To list a drop, open a pull request adding an entry to that file. The entry's `id` must be the `cache_id` of the actual TagDrop code you have placed (computable from the generator or the app's share/inspect screen).

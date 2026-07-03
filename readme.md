@@ -179,6 +179,23 @@ We've contacted the deaddrops.com team to suggest adding a **TagDrop URI
 field** to their drop database, so the two communities can cross-reference
 each other without either app needing to scrape the other's data.
 
+### TagDrop community drop database
+
+The TagDrop project maintains a curated list of known drops at:
+
+```
+https://mofosyne.github.io/tagdrop/db/drops.json
+```
+
+To list your drop: open a pull request adding an entry to
+[`docs/db/drops.json`](docs/db/drops.json) in this repo. The entry needs the
+`cache_id` of your TagDrop code (visible in the app's inspect screen or the web
+generator), coordinates, and an optional hint.
+
+You can also publish your own drop list at any URL and distribute it as a
+`tagdrop:` hint QR — the app will prompt the finder to add it as a source when
+they scan the QR (see `source_url`, SPEC.md §17).
+
 ## Extra Readings
 
 * [#nfcdab](https://nfcdab.org) : A DIY international and independent digital art biennale in Wroclaw, Poland, that uses wireless technology, light waves and electromagnetic fields e.g.: Wi-Fi routers, QR codes or NFC tags for accessing content with your 📱 smartphone
