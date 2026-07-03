@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "label": "TagDrop Demo Drops",
+  "updated": "2026-07-03",
+  "drops": [
+    {
+      "id": "a3f8b2c1d4e5f6a7",
+      "lat": 51.5081,
+      "lng": -0.1281,
+      "hint": "South side of Waterloo Bridge, low railing",
+      "description": "Sticker on the downstream face of the middle support column. Reachable from the pedestrian walkway, no climbing needed.",
+      "status": "working",
+      "status_updated": "2026-07-03",
+      "drop_type": "tagdrop"
+    },
+    {
+      "id": "b1c2d3e4f5a6b7c8",
+      "lat": 51.5007,
+      "lng": -0.1246,
+      "hint": "Westminster Bridge, east footpath, third lamp post from the south end",
+      "description": "QR sticker wrapped around the base of the lamp post at knee height.",
+      "status": "unknown",
+      "status_updated": "2026-06-01",
+      "drop_type": "tagdrop"
+    },
+    {
+      "id": "c9d8e7f6a5b4c3d2",
+      "lat": 51.5136,
+      "lng": -0.0983,
+      "hint": "Millennium Bridge, north end, left pillar",
+      "description": "Was on the inside face of the left approach pillar. Last check found it gone — may have been removed by maintenance.",
+      "status": "removed",
+      "status_updated": "2026-05-15",
+      "drop_type": "tagdrop"
+    },
+    {
+      "id": "d1e2f3a4b5c6d7e8",
+      "lat": 51.5033,
+      "lng": -0.1195,
+      "hint": "Hungerford Bridge, upper walkway, halfway across",
+      "description": "Underneath the yellow handrail join bracket on the south rail, halfway along the bridge.",
+      "status": "broken",
+      "status_updated": "2026-06-20",
+      "drop_type": "tagdrop"
+    }
+  ]
+}

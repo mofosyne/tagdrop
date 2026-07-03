@@ -139,6 +139,7 @@ class MainActivity : AppCompatActivity() {
         return when (item.itemId) {
             R.id.action_demo_collection -> { addDemoCollection(); true }
             R.id.action_retained_keys -> { startActivity(Intent(this, RetainedKeysActivity::class.java)); true }
+            R.id.action_sources -> { startActivity(Intent(this, SourcesActivity::class.java)); true }
             R.id.action_backup -> { startBackup(); true }
             R.id.action_restore -> { triggerRestore(); true }
             R.id.action_readme -> { startActivity(Intent(this, ReadMeActivity::class.java)); true }

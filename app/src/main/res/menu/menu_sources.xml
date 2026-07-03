@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/action_refresh_all"
+        android:title="@string/source_refresh_all"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_browse_sources"
+        android:title="@string/source_browse_title"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_reload_defaults"
+        android:title="@string/source_reload_defaults"
+        app:showAsAction="never" />
+
+</menu>

@@ -115,6 +115,13 @@
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 
+        <!-- Drop source registry management -->
+        <activity
+            android:name=".SourcesActivity"
+            android:label="@string/title_sources"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Exposes cached content as content:// URIs for "Open with…" / "Share" -->
         <provider
             android:name="androidx.core.content.FileProvider"

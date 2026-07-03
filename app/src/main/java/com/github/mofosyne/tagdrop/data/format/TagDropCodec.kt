@@ -173,6 +173,7 @@ object TagDropCodec {
     private const val K_DOMAIN      = 53  // core_meta_item only, Paper only — human-readable tagdrop://<domain>/<slug> name, falls back to slug (SPEC §7)
     private const val K_LOCATION_LABEL = 54  // core_meta_item only — human-readable, non-coordinate location description, e.g. "Tram 40" (SPEC §4.2)
     private const val K_PIXEL_ART   = 55  // core_meta_item only, Content only — author hint to render with no smoothing/nearest-neighbor scaling (SPEC §7)
+    private const val K_SOURCE_URL  = 56  // core_meta_item only, Content only — URL of a JSON drop-source registry listing nearby drops
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -820,7 +821,8 @@ object TagDropCodec {
                 title           = core.text(K_TITLE),
                 description     = core.text(K_DESCRIPTION),
                 createdAt       = core.uint(K_CREATED_AT),
-                pixelArt        = core.boolOrNull(K_PIXEL_ART) ?: false
+                pixelArt        = core.boolOrNull(K_PIXEL_ART) ?: false,
+                sourceUrl       = core.text(K_SOURCE_URL)
             )
         )
     }
@@ -964,7 +966,8 @@ object TagDropCodec {
         K_BULKY_COMPRESSED_BYTES to "bulky_meta_compressed_bytes", K_BULKY_SHA to "bulky_meta_sha256",
         K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
         K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at",
-        K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label", K_PIXEL_ART to "pixel_art"
+        K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label", K_PIXEL_ART to "pixel_art",
+        K_SOURCE_URL to "source_url"
     )
     private val FILE_ENTRY_KEY_NAMES = mapOf(
         KF_SLUG to "slug", KF_MIME to "mime_type", KF_FILE_ID to "file_id",

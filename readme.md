@@ -134,7 +134,7 @@ running from source.
 
 > ⚠ **Wire format v1 is a draft.** No real-world codes have been printed or distributed yet, so breaking wire-format changes may occur without a version bump. Once the first code is deployed the format freezes.
 
-**TagDrop v2.1** — wire format version 1 (see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
+**TagDrop v2.1** — wire format version 1 (draft, see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
 (`tagdrop:<base41>`) with content split into one or more sectors plus
 optional parity recovery, paper manifests with multi-file directories and
 relative-link navigation, geographic trails via `related` hints and located
@@ -142,6 +142,59 @@ content, ad-hoc collections, reply threading, an in-app scanner with a live
 scan board, NFC tag read/write, search and `#hashtag` filtering, full
 backup/restore, and AES-256-GCM encryption via key-code QR or passphrase
 (PBKDF2-SHA256).
+
+## Community conventions
+
+These are recommended conventions for placing TagDrop codes in the wild so they
+can be discovered and catalogued by others.
+
+### OpenStreetMap tagging
+
+If you embed a TagDrop code at a physical location (sticker, sign, USB dead
+drop, geocache, etc.), consider adding it to
+[OpenStreetMap](https://www.openstreetmap.org/) so others can find it:
+
+- For a USB dead drop: use `man_made=dead_drop` and add `tagdrop=<uri>` (the
+  full `tagdrop:…` URI of the manifest or entry-point code).
+- For a standalone sticker/printout: use `tourism=artwork` or another suitable
+  primary tag, again with `tagdrop=<uri>`.
+- For a geocache-style hide: `leisure=geocache` + `tagdrop=<uri>`.
+
+A future version of the app may query OSM for nodes with a `tagdrop=*` tag to
+show nearby drops on the map — tagging your drop now means it will appear
+automatically when that feature ships.
+
+### Dead Drops project
+
+[Dead Drops](https://deaddrops.com/) (Aram Bartholl, 2010) is the original
+public USB dead-drop project. If your TagDrop code is attached to or near a
+registered dead drop, consider:
+
+1. Listing the drop on deaddrops.com (if not already listed).
+2. Adding a `tagdrop=<uri>` field to the drop's deaddrops.com entry, if/when
+   the site adds support for that field. (We've reached out to suggest this —
+   see below.)
+
+We've contacted the deaddrops.com team to suggest adding a **TagDrop URI
+field** to their drop database, so the two communities can cross-reference
+each other without either app needing to scrape the other's data.
+
+### TagDrop community drop database
+
+The TagDrop project maintains a curated list of known drops at:
+
+```
+https://mofosyne.github.io/tagdrop/db/drops.json
+```
+
+To list your drop: open a pull request adding an entry to
+[`docs/db/drops.json`](docs/db/drops.json) in this repo. The entry needs the
+`cache_id` of your TagDrop code (visible in the app's inspect screen or the web
+generator), coordinates, and an optional hint.
+
+You can also publish your own drop list at any URL and distribute it as a
+`tagdrop:` hint QR — the app will prompt the finder to add it as a source when
+they scan the QR (see `source_url`, SPEC.md §17).
 
 ## Extra Readings
 

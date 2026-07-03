@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "label": "TagDrop Known Sources",
+  "updated": "2026-07-03",
+  "sources": [
+    {
+      "name": "TagDrop Community Drops",
+      "url": "https://mofosyne.github.io/tagdrop/db/drops.json",
+      "description": "Curated list of community-placed TagDrop codes worldwide. Submit a PR to add your drop.",
+      "maintainer": "TagDrop project"
+    },
+    {
+      "name": "TagDrop Demo Drops",
+      "url": "https://mofosyne.github.io/tagdrop/db/drops_demo.json",
+      "description": "Sample drops used for testing the app and web reader. Not real physical locations.",
+      "maintainer": "TagDrop project"
+    }
+  ]
+}

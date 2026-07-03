@@ -13,6 +13,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/action_sources"
+        android:title="@string/menu_drop_sources"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/action_backup"
         android:title="@string/action_backup"
         app:showAsAction="never" />

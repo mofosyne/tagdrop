@@ -227,4 +227,40 @@
     <string name="passphrase_unlock_once">Unlock once</string>
     <string name="passphrase_remember_key">Remember key</string>
     <string name="passphrase_wrong">Wrong passphrase — please try again</string>
+
+    <!-- Remote drop sources -->
+    <string name="title_sources">Remote Drop Sources</string>
+    <string name="menu_drop_sources">Remote Drop Sources</string>
+    <string name="sources_empty">No remote drop sources added yet.\nScan a TagDrop code with a source URL to add one.</string>
+    <string name="add_source_title">Add remote drop source?</string>
+    <string name="add_source_message">This code advertises a drop list at:\n\n%s\n\nAdd it as a remote source to see nearby drops on the map?</string>
+    <string name="add_source_confirm">Add</string>
+    <string name="source_refresh_all">Refresh all</string>
+    <string name="source_last_fetched">Last fetched: %s</string>
+    <string name="source_entry_count">%d drops</string>
+    <string name="source_never_fetched">Never fetched</string>
+    <string name="add_source_manually">Add source URL manually</string>
+    <string name="source_name_hint">Name (optional)</string>
+    <string name="source_refresh">Refresh</string>
+    <string name="source_toggle_map">Toggle map pins</string>
+    <string name="source_more_options">More options</string>
+    <string name="source_action_enable">Enable</string>
+    <string name="source_action_disable">Disable</string>
+    <string name="source_action_delete">Delete</string>
+    <string name="source_fetch_failed">Failed to fetch source</string>
+    <string name="source_fetch_some_failed">Some sources failed to fetch</string>
+    <string name="source_fetch_failed_label">Failed to fetch</string>
+    <string name="source_disabled_label">DISABLED</string>
+    <string name="source_reload_defaults">Reload default sources</string>
+    <string name="source_reload_defaults_done">Default sources added</string>
+    <string name="source_browse_title">Browse recommended sources</string>
+    <string name="source_browse_add">Add selected</string>
+    <string name="source_browse_failed">Could not fetch source directory</string>
+    <string name="source_browse_none">No sources found in directory</string>
+    <string name="source_browse_all_added">All recommended sources already added</string>
+    <string name="source_related_title">"%s" recommends</string>
+    <plurals name="source_browse_added">
+        <item quantity="one">%d source added (disabled by default)</item>
+        <item quantity="other">%d sources added (disabled by default)</item>
+    </plurals>
 </resources>
