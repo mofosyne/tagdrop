@@ -228,12 +228,12 @@
     <string name="passphrase_remember_key">Remember key</string>
     <string name="passphrase_wrong">Wrong passphrase — please try again</string>
 
-    <!-- Drop sources -->
-    <string name="title_sources">Drop Sources</string>
-    <string name="menu_drop_sources">Drop Sources</string>
-    <string name="sources_empty">No drop sources added yet.\nScan a TagDrop code with a source URL to add one.</string>
-    <string name="add_source_title">Add drop source?</string>
-    <string name="add_source_message">This code advertises a drop list at:\n\n%s\n\nAdd it as a source to see nearby drops on the map?</string>
+    <!-- Remote drop sources -->
+    <string name="title_sources">Remote Drop Sources</string>
+    <string name="menu_drop_sources">Remote Drop Sources</string>
+    <string name="sources_empty">No remote drop sources added yet.\nScan a TagDrop code with a source URL to add one.</string>
+    <string name="add_source_title">Add remote drop source?</string>
+    <string name="add_source_message">This code advertises a drop list at:\n\n%s\n\nAdd it as a remote source to see nearby drops on the map?</string>
     <string name="add_source_confirm">Add</string>
     <string name="source_refresh_all">Refresh all</string>
     <string name="source_last_fetched">Last fetched: %s</string>
