@@ -241,4 +241,12 @@
     <string name="source_never_fetched">Never fetched</string>
     <string name="add_source_manually">Add source URL manually</string>
     <string name="source_name_hint">Name (optional)</string>
+    <string name="source_refresh">Refresh</string>
+    <string name="source_toggle_map">Toggle map pins</string>
+    <string name="source_more_options">More options</string>
+    <string name="source_action_enable">Enable</string>
+    <string name="source_action_disable">Disable</string>
+    <string name="source_action_delete">Delete</string>
+    <string name="source_reload_defaults">Reload default sources</string>
+    <string name="source_reload_defaults_done">Default sources added</string>
 </resources>

@@ -7,4 +7,9 @@
         android:title="@string/source_refresh_all"
         app:showAsAction="never" />
 
+    <item
+        android:id="@+id/action_reload_defaults"
+        android:title="@string/source_reload_defaults"
+        app:showAsAction="never" />
+
 </menu>

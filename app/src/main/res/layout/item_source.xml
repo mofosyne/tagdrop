@@ -71,20 +71,35 @@
 
         </LinearLayout>
 
-        <androidx.appcompat.widget.SwitchCompat
-            android:id="@+id/switchSourceEnabled"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp" />
+        <ImageButton
+            android:id="@+id/buttonRefreshSource"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/source_refresh"
+            android:src="@drawable/ic_refresh"
+            android:scaleType="center"
+            android:padding="8dp" />
 
-        <Button
-            android:id="@+id/buttonDeleteSource"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:text="@string/button_delete"
-            android:textAllCaps="false" />
+        <ImageButton
+            android:id="@+id/buttonToggleMap"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/source_toggle_map"
+            android:src="@drawable/ic_map_pin"
+            android:scaleType="center"
+            android:padding="8dp" />
+
+        <ImageButton
+            android:id="@+id/buttonSourceMenu"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/source_more_options"
+            android:src="@android:drawable/ic_menu_more"
+            android:scaleType="center"
+            android:padding="8dp" />
 
     </LinearLayout>
 

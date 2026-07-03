@@ -13,6 +13,9 @@ interface DropSourceDao {
     @Query("SELECT * FROM drop_sources ORDER BY addedAt DESC")
     fun getAll(): LiveData<List<DropSource>>
 
+    @Query("SELECT * FROM drop_sources ORDER BY addedAt DESC")
+    suspend fun getAllOnce(): List<DropSource>
+
     @Query("SELECT * FROM drop_sources WHERE enabled = 1")
     suspend fun getEnabled(): List<DropSource>
 

@@ -8,6 +8,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.PopupMenu
+import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -37,8 +39,11 @@ class SourcesActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySourcesBinding
     private val adapter = SourceAdapter(
-        onToggle = { source -> toggleSource(source) },
-        onDelete = { source -> confirmDelete(source) }
+        onRefresh  = { source -> refreshSource(source) },
+        onToggle   = { source -> toggleSource(source) },
+        onEnable   = { source -> setEnabled(source, true) },
+        onDisable  = { source -> setEnabled(source, false) },
+        onDelete   = { source -> confirmDelete(source) }
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,15 +137,33 @@ class SourcesActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
-        R.id.action_refresh_all -> { refreshAll(); true }
+        R.id.action_refresh_all    -> { refreshAll(); true }
+        R.id.action_reload_defaults -> { reloadDefaults(); true }
         else -> super.onOptionsItemSelected(item)
     }
 
-    private fun toggleSource(source: DropSource) {
+    private fun refreshSource(source: DropSource) {
+        if (!source.enabled) return
         lifecycleScope.launch {
-            val updated = source.copy(enabled = !source.enabled)
-            AppDatabase.get(this@SourcesActivity).dropSourceDao().update(updated)
-            if (!updated.enabled) DropEntryCache.remove(source.id)
+            val db = AppDatabase.get(this@SourcesActivity)
+            val json = SourceFetcher.fetch(source.url) ?: return@launch
+            DropEntryCache.update(source.id, json.drops)
+            db.dropSourceDao().update(
+                source.copy(
+                    name          = json.label ?: source.name,
+                    lastFetchedAt = System.currentTimeMillis(),
+                    entryCount    = json.drops.size
+                )
+            )
+        }
+    }
+
+    private fun toggleSource(source: DropSource) = setEnabled(source, !source.enabled)
+
+    private fun setEnabled(source: DropSource, enabled: Boolean) {
+        lifecycleScope.launch {
+            AppDatabase.get(this@SourcesActivity).dropSourceDao().update(source.copy(enabled = enabled))
+            if (!enabled) DropEntryCache.remove(source.id)
         }
     }
 
@@ -162,11 +185,25 @@ class SourcesActivity : AppCompatActivity() {
         }
     }
 
+    private fun reloadDefaults() {
+        lifecycleScope.launch {
+            val db = AppDatabase.get(this@SourcesActivity)
+            val existing = db.dropSourceDao().getAllOnce().map { it.url }.toSet()
+            DEFAULT_SOURCES.forEach { source ->
+                if (source.url !in existing) {
+                    db.dropSourceDao().insert(source)
+                }
+            }
+            Toast.makeText(this@SourcesActivity,
+                R.string.source_reload_defaults_done, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun confirmDelete(source: DropSource) {
         AlertDialog.Builder(this)
             .setTitle(R.string.delete_confirm_title)
             .setMessage(getString(R.string.delete_confirm_message, source.name))
-            .setPositiveButton(R.string.button_delete) { _, _ ->
+            .setPositiveButton(R.string.source_action_delete) { _, _ ->
                 lifecycleScope.launch {
                     AppDatabase.get(this@SourcesActivity).dropSourceDao().delete(source)
                     DropEntryCache.remove(source.id)
@@ -179,8 +216,11 @@ class SourcesActivity : AppCompatActivity() {
     // ---- Adapter ----
 
     private class SourceAdapter(
-        private val onToggle: (DropSource) -> Unit,
-        private val onDelete: (DropSource) -> Unit
+        private val onRefresh : (DropSource) -> Unit,
+        private val onToggle  : (DropSource) -> Unit,
+        private val onEnable  : (DropSource) -> Unit,
+        private val onDisable : (DropSource) -> Unit,
+        private val onDelete  : (DropSource) -> Unit
     ) : RecyclerView.Adapter<SourceAdapter.ViewHolder>() {
 
         private var items: List<DropSource> = emptyList()
@@ -218,15 +258,48 @@ class SourcesActivity : AppCompatActivity() {
                 } else {
                     binding.root.context.getString(R.string.source_never_fetched)
                 }
-                binding.switchSourceEnabled.isChecked = source.enabled
-                binding.switchSourceEnabled.setOnCheckedChangeListener(null)
-                binding.switchSourceEnabled.setOnCheckedChangeListener { _, _ -> onToggle(source) }
-                binding.buttonDeleteSource.setOnClickListener { onDelete(source) }
+
+                // Refresh button — greyed out and non-interactive when disabled
+                binding.buttonRefreshSource.isEnabled = source.enabled
+                binding.buttonRefreshSource.alpha = if (source.enabled) 1f else 0.3f
+                binding.buttonRefreshSource.setOnClickListener { onRefresh(source) }
+
+                // Map toggle button — reflects enabled state visually
+                binding.buttonToggleMap.alpha = if (source.enabled) 1f else 0.5f
+                binding.buttonToggleMap.setOnClickListener { onToggle(source) }
+
+                // "..." overflow popup menu
+                binding.buttonSourceMenu.setOnClickListener { anchor ->
+                    val popup = PopupMenu(anchor.context, anchor)
+                    popup.menuInflater.inflate(R.menu.menu_source_item, popup.menu)
+                    popup.menu.findItem(R.id.action_source_enable)?.isVisible  = !source.enabled
+                    popup.menu.findItem(R.id.action_source_disable)?.isVisible = source.enabled
+                    popup.setOnMenuItemClickListener { item ->
+                        when (item.itemId) {
+                            R.id.action_source_enable  -> { onEnable(source);  true }
+                            R.id.action_source_disable -> { onDisable(source); true }
+                            R.id.action_source_delete  -> { onDelete(source);  true }
+                            else -> false
+                        }
+                    }
+                    popup.show()
+                }
             }
         }
 
         companion object {
             private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
         }
+    }
+
+    companion object {
+        private val DEFAULT_SOURCES = listOf(
+            DropSource(name = "TagDrop Community Drops",
+                       url  = "https://mofosyne.github.io/tagdrop/db/drops.json",
+                       enabled = false),
+            DropSource(name = "TagDrop Demo Drops",
+                       url  = "https://mofosyne.github.io/tagdrop/db/drops_demo.json",
+                       enabled = false)
+        )
     }
 }
