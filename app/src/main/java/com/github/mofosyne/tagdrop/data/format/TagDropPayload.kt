@@ -45,7 +45,8 @@ sealed class TagDropPayload {
         val title: String? = null,              // optional — short subject/caption, distinct from hint (SPEC §4.3, issue #35)
         val description: String? = null,        // optional — content teaser / message body, e.g. when an attachment occupies content (SPEC §4.3, issue #35)
         val createdAt: Long? = null,            // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
-        val pixelArt: Boolean = false           // optional — author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
+        val pixelArt: Boolean = false,          // optional — author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
+        val sourceUrl: String? = null           // optional — URL of a JSON drop-source registry listing nearby drops
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Content && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId?.contentHashCode() ?: 0

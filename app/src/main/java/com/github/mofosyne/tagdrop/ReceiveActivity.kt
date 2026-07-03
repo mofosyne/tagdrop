@@ -30,7 +30,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
+import com.github.mofosyne.tagdrop.data.DropEntryCache
+import com.github.mofosyne.tagdrop.data.SourceFetcher
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
+import com.github.mofosyne.tagdrop.data.db.DropSource
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
@@ -535,6 +538,31 @@ class ReceiveActivity : AppCompatActivity() {
             return
         }
 
+        // If the payload advertises a drop-source registry, offer to add it
+        state.sourceUrl?.let { url ->
+            val accepted = askAddSource(url, state.hint)
+            if (accepted) {
+                val name = state.hint ?: url
+                val db = AppDatabase.get(this)
+                val sourceId = db.dropSourceDao().insert(DropSource(name = name, url = url))
+                lifecycleScope.launch {
+                    val json = SourceFetcher.fetch(url)
+                    if (json != null) {
+                        DropEntryCache.update(sourceId, json.drops)
+                        db.dropSourceDao().update(
+                            DropSource(
+                                id             = sourceId,
+                                name           = json.label ?: name,
+                                url            = url,
+                                lastFetchedAt  = System.currentTimeMillis(),
+                                entryCount     = json.drops.size
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
         val cacheId = state.cacheId ?: return
         val blob = state.pendingOverrideBlob
 
@@ -666,6 +694,24 @@ class ReceiveActivity : AppCompatActivity() {
             toast(getString(R.string.awaiting_key))
             updateDisplay()
         }
+    }
+
+    /**
+     * Suspends while showing an AlertDialog asking the user to add a new drop source.
+     * Returns true if the user tapped Add, false otherwise.
+     */
+    private suspend fun askAddSource(url: String, hint: String?): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.add_source_title))
+                .setMessage(getString(R.string.add_source_message, url))
+                .setPositiveButton(getString(R.string.add_source_confirm)) { _, _ -> deferred.complete(true) }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> deferred.complete(false) }
+                .setOnCancelListener { deferred.complete(false) }
+                .show()
+        }
+        return deferred.await()
     }
 
     /**

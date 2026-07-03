@@ -27,7 +27,9 @@ import androidx.core.graphics.drawable.toDrawable
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
+import com.github.mofosyne.tagdrop.data.DropEntryCache
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
+import com.github.mofosyne.tagdrop.data.db.DropSource
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
@@ -65,6 +67,7 @@ class MapFragment : Fragment() {
     private val markerFolder = org.osmdroid.views.overlay.FolderOverlay()
     private var latestPapers: List<ScannedPaper> = emptyList()
     private var latestCaches: List<FoundCache> = emptyList()
+    private var latestSources: List<DropSource> = emptyList()
     private val markerInfos = mutableListOf<MarkerInfo>()
     private var labelsShown = false
 
@@ -135,6 +138,10 @@ class MapFragment : Fragment() {
         }
         db.cacheDao().getAllCaches().observe(viewLifecycleOwner) { caches ->
             latestCaches = caches
+            render()
+        }
+        db.dropSourceDao().getAll().observe(viewLifecycleOwner) { sources ->
+            latestSources = sources
             render()
         }
 
@@ -227,6 +234,35 @@ class MapFragment : Fragment() {
                 markerFolder.add(marker)
                 markerInfos += MarkerInfo(marker, "❓", r.hint)
             }
+        }
+
+        // Pins from drop-source registries — entries not yet scanned and not already pinned above.
+        val alreadyPinnedIds = latestCaches.mapTo(HashSet()) { it.cacheId }
+        for (entry in DropEntryCache.allEntries()) {
+            // Skip if already shown via a scanned cache pin, or status indicates removed
+            if (alreadyPinnedIds.contains(entry.id)) continue
+            if (entry.status == "removed") continue
+            val point = GeoPoint(entry.lat, entry.lng)
+            points += point
+            val label = entry.hint ?: entry.label ?: entry.id.take(8)
+            // Visual distinction by status: "broken" = grey pin, "working" = normal antenna icon
+            val icon = when (entry.status) {
+                "broken" -> "📵"
+                "unknown", null -> "📡"
+                else -> "📡"  // working
+            }
+            val marker = Marker(binding.map).apply {
+                position = point
+                title = label
+                snippet = entry.description
+                setOnMarkerClickListener { clickedMarker, _ ->
+                    if (clickedMarker.isInfoWindowShown) clickedMarker.closeInfoWindow()
+                    else clickedMarker.showInfoWindow()
+                    true
+                }
+            }
+            markerFolder.add(marker)
+            markerInfos += MarkerInfo(marker, icon, label)
         }
 
         labelsShown = binding.map.zoomLevelDouble >= LABEL_ZOOM_THRESHOLD
