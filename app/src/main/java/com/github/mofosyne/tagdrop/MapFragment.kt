@@ -236,9 +236,10 @@ class MapFragment : Fragment() {
             }
         }
 
-        // Pins from drop-source registries — entries not yet scanned and not already pinned above.
+        // Pins from drop-source registries — only enabled sources, entries not yet scanned.
+        val enabledSourceIds = latestSources.filter { it.enabled }.mapTo(HashSet()) { it.id }
         val alreadyPinnedIds = latestCaches.mapTo(HashSet()) { it.cacheId }
-        for (entry in DropEntryCache.allEntries()) {
+        for (entry in DropEntryCache.allEntries(enabledSourceIds)) {
             // Skip if already shown via a scanned cache pin, or status indicates removed
             if (alreadyPinnedIds.contains(entry.id)) continue
             if (entry.status == "removed") continue

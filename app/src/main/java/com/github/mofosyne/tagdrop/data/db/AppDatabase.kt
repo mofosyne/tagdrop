@@ -216,6 +216,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // Default sources seeded into every fresh install.
+        private val DEFAULT_SOURCES = listOf(
+            DropSource(name = "TagDrop Community Drops",
+                       url  = "https://mofosyne.github.io/tagdrop/db/drops.json"),
+            DropSource(name = "TagDrop Demo Drops",
+                       url  = "https://mofosyne.github.io/tagdrop/db/drops_demo.json",
+                       enabled = false)
+        )
+
+        private val SEED_CALLBACK = object : RoomDatabase.Callback() {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                super.onCreate(db)
+                val now = System.currentTimeMillis()
+                DEFAULT_SOURCES.forEach { src ->
+                    db.execSQL(
+                        "INSERT INTO drop_sources (name, url, enabled, addedAt, lastFetchedAt, entryCount) VALUES (?, ?, ?, ?, NULL, 0)",
+                        arrayOf(src.name, src.url, if (src.enabled) 1 else 0, now)
+                    )
+                }
+            }
+        }
+
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(
                 context.applicationContext,
@@ -223,6 +245,7 @@ abstract class AppDatabase : RoomDatabase() {
                 DB_NAME
             )
             .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21)
+            .addCallback(SEED_CALLBACK)
             .build().also { INSTANCE = it }
         }
 

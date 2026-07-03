@@ -15,5 +15,10 @@ object DropEntryCache {
         entries.remove(sourceId)
     }
 
+    /** All entries across all sources. */
     fun allEntries(): List<DropEntry> = entries.values.flatten()
+
+    /** Entries from the given subset of source IDs only (e.g. only enabled sources). */
+    fun allEntries(sourceIds: Set<Long>): List<DropEntry> =
+        entries.filterKeys { it in sourceIds }.values.flatten()
 }
