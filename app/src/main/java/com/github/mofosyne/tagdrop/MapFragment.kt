@@ -28,6 +28,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.DropEntryCache
+import com.github.mofosyne.tagdrop.data.SourceFetcher
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.DropSource
 import com.github.mofosyne.tagdrop.data.db.FoundCache
@@ -40,6 +41,7 @@ import com.github.mofosyne.tagdrop.ui.CollectionItem
 import com.github.mofosyne.tagdrop.util.LocationUtils
 import com.github.mofosyne.tagdrop.util.ThumbnailLoader
 import com.github.mofosyne.tagdrop.util.looksLikePixelArt
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapListener
@@ -143,6 +145,13 @@ class MapFragment : Fragment() {
         db.dropSourceDao().getAll().observe(viewLifecycleOwner) { sources ->
             latestSources = sources
             render()
+            fetchMissingSourceEntries(sources)
+        }
+
+        // Re-render whenever DropEntryCache is updated (fetch complete or source evicted).
+        // drop(1) skips the initial emission so we don't double-render on startup.
+        viewLifecycleOwner.lifecycleScope.launch {
+            DropEntryCache.changes.drop(1).collect { render() }
         }
 
         viewModel.mapFocusPoint.observe(viewLifecycleOwner) { point ->
@@ -246,16 +255,22 @@ class MapFragment : Fragment() {
             val point = GeoPoint(entry.lat, entry.lng)
             points += point
             val label = entry.hint ?: entry.id.take(8)
-            // Visual distinction by status: "broken" = grey pin, "working" = normal antenna icon
-            val icon = when (entry.status) {
-                "broken" -> "📵"
-                "unknown", null -> "📡"
-                else -> "📡"  // working
+            val icon = if (entry.status == "broken") "📵" else "📡"
+            // Snippet clarifies this is a remote hint not yet scanned, plus status if noteworthy
+            val statusNote = when (entry.status) {
+                "broken"  -> getString(R.string.source_pin_broken)
+                "working" -> getString(R.string.source_pin_working)
+                else      -> getString(R.string.source_pin_unknown)
             }
+            val snippetParts = listOfNotNull(
+                getString(R.string.source_pin_not_scanned),
+                statusNote,
+                entry.description
+            )
             val marker = Marker(binding.map).apply {
                 position = point
                 title = label
-                snippet = entry.description
+                snippet = snippetParts.joinToString(" · ")
                 setOnMarkerClickListener { clickedMarker, _ ->
                     if (clickedMarker.isInfoWindowShown) clickedMarker.closeInfoWindow()
                     else clickedMarker.showInfoWindow()
@@ -493,6 +508,29 @@ class MapFragment : Fragment() {
      * replace [icon] in the marker's icon slot — see [applyMarkerIcon].
      */
     private data class MarkerInfo(val marker: Marker, val icon: String?, val label: String, val thumbnailCache: FoundCache? = null)
+
+    /** Kicks off background fetches for any enabled sources that have no cached entries yet.
+     *  Uses the app-scoped coroutine so fetches survive fragment transitions. */
+    private fun fetchMissingSourceEntries(sources: List<DropSource>) {
+        val appScope = (requireContext().applicationContext as TagDropApplication).applicationScope
+        val db = AppDatabase.get(requireContext())
+        for (source in sources) {
+            if (!source.enabled) continue
+            if (DropEntryCache.hasEntries(source.id)) continue
+            appScope.launch {
+                val json = SourceFetcher.fetch(source.url) ?: return@launch
+                DropEntryCache.update(source.id, json.drops)
+                db.dropSourceDao().update(
+                    source.copy(
+                        name            = json.label ?: source.name,
+                        lastFetchedAt   = System.currentTimeMillis(),
+                        entryCount      = json.drops.size,
+                        lastFetchFailed = false
+                    )
+                )
+            }
+        }
+    }
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 

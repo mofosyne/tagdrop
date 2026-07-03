@@ -19,4 +19,4 @@ Every code carries a tagdrop: URI — a CBOR sequence (version, type, and payloa
 
 <b>Status</b>
 
-V2.1 — CBOR-sequence envelope encoding with content split into sectors plus optional parity recovery, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, reply threading, an in-app scanner with a live scan board, NFC tag read/write, search and #hashtag filtering, full backup/restore, and a Map tab for located finds.
+V2.4 — CBOR-sequence envelope encoding with content split into sectors plus optional parity recovery, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, reply threading, an in-app scanner with a live scan board, NFC tag read/write, search and #hashtag filtering, full backup/restore, a Map tab for located finds, and remote drop-source feeds that pre-populate the map with community drops before you scan them.
