@@ -44,7 +44,6 @@ class SourcesActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySourcesBinding
     private val adapter = SourceAdapter(
         onRefresh  = { source -> refreshSource(source) },
-        onToggle   = { source -> toggleSource(source) },
         onEnable   = { source -> setEnabled(source, true) },
         onDisable  = { source -> setEnabled(source, false) },
         onDelete   = { source -> confirmDelete(source) }
@@ -151,13 +150,20 @@ class SourcesActivity : AppCompatActivity() {
         if (!source.enabled) return
         lifecycleScope.launch {
             val db = AppDatabase.get(this@SourcesActivity)
-            val json = SourceFetcher.fetch(source.url) ?: return@launch
+            val json = SourceFetcher.fetch(source.url)
+            if (json == null) {
+                db.dropSourceDao().update(source.copy(lastFetchFailed = true))
+                Toast.makeText(this@SourcesActivity,
+                    R.string.source_fetch_failed, Toast.LENGTH_SHORT).show()
+                return@launch
+            }
             DropEntryCache.update(source.id, json.drops)
             db.dropSourceDao().update(
                 source.copy(
-                    name          = json.label ?: source.name,
-                    lastFetchedAt = System.currentTimeMillis(),
-                    entryCount    = json.drops.size
+                    name            = json.label ?: source.name,
+                    lastFetchedAt   = System.currentTimeMillis(),
+                    entryCount      = json.drops.size,
+                    lastFetchFailed = false
                 )
             )
             if (json.relatedSources.isNotEmpty()) {
@@ -168,8 +174,6 @@ class SourcesActivity : AppCompatActivity() {
             }
         }
     }
-
-    private fun toggleSource(source: DropSource) = setEnabled(source, !source.enabled)
 
     private fun setEnabled(source: DropSource, enabled: Boolean) {
         lifecycleScope.launch {
@@ -182,16 +186,27 @@ class SourcesActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val db = AppDatabase.get(this@SourcesActivity)
             val sources = db.dropSourceDao().getEnabled()
+            var anyFailed = false
             for (source in sources) {
-                val json = SourceFetcher.fetch(source.url) ?: continue
+                val json = SourceFetcher.fetch(source.url)
+                if (json == null) {
+                    db.dropSourceDao().update(source.copy(lastFetchFailed = true))
+                    anyFailed = true
+                    continue
+                }
                 DropEntryCache.update(source.id, json.drops)
                 db.dropSourceDao().update(
                     source.copy(
-                        name          = json.label ?: source.name,
-                        lastFetchedAt = System.currentTimeMillis(),
-                        entryCount    = json.drops.size
+                        name            = json.label ?: source.name,
+                        lastFetchedAt   = System.currentTimeMillis(),
+                        entryCount      = json.drops.size,
+                        lastFetchFailed = false
                     )
                 )
+            }
+            if (anyFailed) {
+                Toast.makeText(this@SourcesActivity,
+                    R.string.source_fetch_some_failed, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -303,7 +318,6 @@ class SourcesActivity : AppCompatActivity() {
 
     private class SourceAdapter(
         private val onRefresh : (DropSource) -> Unit,
-        private val onToggle  : (DropSource) -> Unit,
         private val onEnable  : (DropSource) -> Unit,
         private val onDisable : (DropSource) -> Unit,
         private val onDelete  : (DropSource) -> Unit
@@ -331,30 +345,41 @@ class SourcesActivity : AppCompatActivity() {
             RecyclerView.ViewHolder(binding.root) {
 
             fun bind(source: DropSource) {
+                val ctx = binding.root.context
+
                 binding.textSourceName.text = source.name
                 binding.textSourceUrl.text = source.url
-                binding.textSourceEntryCount.text = binding.root.context.getString(
+                binding.textSourceEntryCount.text = ctx.getString(
                     R.string.source_entry_count, source.entryCount
                 )
-                binding.textSourceLastFetched.text = if (source.lastFetchedAt != null) {
-                    binding.root.context.getString(
-                        R.string.source_last_fetched,
-                        dateFormat().format(Date(source.lastFetchedAt))
+                binding.textSourceLastFetched.text = when {
+                    source.lastFetchFailed -> ctx.getString(R.string.source_fetch_failed_label)
+                    source.lastFetchedAt != null -> ctx.getString(
+                        R.string.source_last_fetched, dateFormat().format(Date(source.lastFetchedAt))
                     )
-                } else {
-                    binding.root.context.getString(R.string.source_never_fetched)
+                    else -> ctx.getString(R.string.source_never_fetched)
                 }
 
-                // Refresh button — greyed out and non-interactive when disabled
+                // Grey out content area when disabled; only "..." stays fully visible
+                val contentAlpha = if (source.enabled) 1f else 0.4f
+                binding.textSourceName.alpha = contentAlpha
+                binding.textSourceUrl.alpha = contentAlpha
+                binding.textSourceEntryCount.alpha = contentAlpha
+                binding.textSourceLastFetched.alpha = contentAlpha
+                binding.textSourceDisabledLabel.visibility =
+                    if (source.enabled) View.GONE else View.VISIBLE
+
+                // Refresh button — inactive when source disabled
                 binding.buttonRefreshSource.isEnabled = source.enabled
-                binding.buttonRefreshSource.alpha = if (source.enabled) 1f else 0.3f
+                binding.buttonRefreshSource.alpha = if (source.enabled) 1f else 0.25f
                 binding.buttonRefreshSource.setOnClickListener { onRefresh(source) }
 
-                // Map toggle button — reflects enabled state visually
-                binding.buttonToggleMap.alpha = if (source.enabled) 1f else 0.5f
-                binding.buttonToggleMap.setOnClickListener { onToggle(source) }
+                // Map pin indicator — inactive when source disabled (display only, not a toggle)
+                binding.buttonToggleMap.isEnabled = source.enabled
+                binding.buttonToggleMap.alpha = if (source.enabled) 1f else 0.25f
+                binding.buttonToggleMap.setOnClickListener(null)
 
-                // "..." overflow popup menu
+                // "..." overflow popup — always active
                 binding.buttonSourceMenu.setOnClickListener { anchor ->
                     val popup = PopupMenu(anchor.context, anchor)
                     popup.menuInflater.inflate(R.menu.menu_source_item, popup.menu)

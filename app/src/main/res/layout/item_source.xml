@@ -69,6 +69,17 @@
 
             </LinearLayout>
 
+            <TextView
+                android:id="@+id/textSourceDisabledLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/source_disabled_label"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:textColor="#888888"
+                android:visibility="gone" />
+
         </LinearLayout>
 
         <ImageButton

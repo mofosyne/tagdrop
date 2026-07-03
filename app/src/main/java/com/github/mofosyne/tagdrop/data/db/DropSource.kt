@@ -11,5 +11,6 @@ data class DropSource(
     val enabled: Boolean = true,
     val addedAt: Long = System.currentTimeMillis(),
     val lastFetchedAt: Long? = null,
-    val entryCount: Int = 0
+    val entryCount: Int = 0,
+    val lastFetchFailed: Boolean = false
 )

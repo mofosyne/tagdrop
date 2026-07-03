@@ -247,6 +247,10 @@
     <string name="source_action_enable">Enable</string>
     <string name="source_action_disable">Disable</string>
     <string name="source_action_delete">Delete</string>
+    <string name="source_fetch_failed">Failed to fetch source</string>
+    <string name="source_fetch_some_failed">Some sources failed to fetch</string>
+    <string name="source_fetch_failed_label">Failed to fetch</string>
+    <string name="source_disabled_label">DISABLED</string>
     <string name="source_reload_defaults">Reload default sources</string>
     <string name="source_reload_defaults_done">Default sources added</string>
     <string name="source_browse_title">Browse recommended sources</string>
