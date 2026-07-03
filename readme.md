@@ -134,14 +134,15 @@ running from source.
 
 > ⚠ **Wire format v1 is a draft.** No real-world codes have been printed or distributed yet, so breaking wire-format changes may occur without a version bump. Once the first code is deployed the format freezes.
 
-**TagDrop v2.1** — wire format version 1 (draft, see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
+**TagDrop v2.4** — wire format version 1 (draft, see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
 (`tagdrop:<base41>`) with content split into one or more sectors plus
 optional parity recovery, paper manifests with multi-file directories and
 relative-link navigation, geographic trails via `related` hints and located
 content, ad-hoc collections, reply threading, an in-app scanner with a live
 scan board, NFC tag read/write, search and `#hashtag` filtering, full
-backup/restore, and AES-256-GCM encryption via key-code QR or passphrase
-(PBKDF2-SHA256).
+backup/restore, AES-256-GCM encryption via key-code QR or passphrase
+(PBKDF2-SHA256), and remote drop-source feeds (community drop registries
+whose entries appear as map pins before you scan them).
 
 ## Community conventions
 
@@ -192,9 +193,7 @@ To list your drop: open a pull request adding an entry to
 `cache_id` of your TagDrop code (visible in the app's inspect screen or the web
 generator), coordinates, and an optional hint.
 
-You can also publish your own drop list at any URL and distribute it as a
-`tagdrop:` hint QR — the app will prompt the finder to add it as a source when
-they scan the QR (see `source_url`, SPEC.md §17).
+You can also publish your own drop list at any URL. To subscribe to a feed in the app, open the **Sources** screen from the main menu → **Add source** and paste the URL. The app fetches the feed and shows its entries as 📡 pins on the map. You can also distribute a `tagdrop:` hint QR with a `source_url` field — the app will prompt the finder to add it as a source when they scan the QR (see SPEC.md §17). A curated directory of known community feeds is available via **Browse recommended sources** in the Sources screen.
 
 ## Extra Readings
 
