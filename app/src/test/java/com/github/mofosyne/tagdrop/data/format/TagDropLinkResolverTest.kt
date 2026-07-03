@@ -56,6 +56,7 @@ private class FakeKeyDao : KeyDao {
 
 private class FakeDropSourceDao : DropSourceDao {
     override fun getAll(): LiveData<List<DropSource>> = throw NotImplementedError()
+    override suspend fun getAllOnce(): List<DropSource> = emptyList()
     override suspend fun getEnabled(): List<DropSource> = emptyList()
     override suspend fun insert(source: DropSource): Long = 0L
     override suspend fun update(source: DropSource) {}
