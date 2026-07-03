@@ -244,7 +244,7 @@ class MapFragment : Fragment() {
             if (entry.status == "removed") continue
             val point = GeoPoint(entry.lat, entry.lng)
             points += point
-            val label = entry.hint ?: entry.label ?: entry.id.take(8)
+            val label = entry.hint ?: entry.id.take(8)
             // Visual distinction by status: "broken" = grey pin, "working" = normal antenna icon
             val icon = when (entry.status) {
                 "broken" -> "📵"
