@@ -19,7 +19,7 @@ Tap the camera button to open the scanner and point it at a TagDrop QR code. Sca
 - **Collections** groups everything you've found — single pages, papers, and ad-hoc trails — into cards you can revisit anytime, offline.
 - A home badge marks a collection's homepage file, when it has one, so you know which file to open first.
 - **History** is a log of every code you've scanned, newest first.
-- **Map** shows your located finds as pins, and hints toward related papers you haven't found yet nearby.
+- **Map** shows your located finds as pins, hints toward related papers you haven't found yet nearby, and 📡 pins from any drop-source feeds you've subscribed to — so you can see community drops before you've scanned them.
 - Use the search box on **Collections** or **History** to filter by title, filename, or hint, or tap a tag chip to filter by hashtag.
 
 ## Viewing what you scanned
@@ -37,6 +37,15 @@ Use **Create Paper** to build a multi-file paper — a manifest QR plus one QR p
 
 - Either screen lets you set a title and an optional passphrase, so the content stays encrypted until someone scans its key code.
 - For larger or more elaborate layouts, including domain names and parity recovery codes, use the web generator in the TagDrop repository on a computer.
+
+## Remote Drop Sources
+
+Open **Sources** from the main menu to subscribe to community drop feeds — JSON files that list known TagDrop drops by location. Once enabled, a feed's drops appear as 📡 pins on the Map tab before you've scanned them.
+
+- Tap **Add source** and paste a drops.json URL, or tap the **⋮** menu and choose **Browse recommended sources** to pick from the official TagDrop directory.
+- Each source can be enabled or disabled independently; disabled sources contribute no pins to the map.
+- Tap the refresh icon next to a source to pull its latest entries, or use **Refresh all** in the menu.
+- Fetching a source reveals your device's IP address to whoever hosts the file — only add sources you trust.
 
 ## Sharing & NFC
 
