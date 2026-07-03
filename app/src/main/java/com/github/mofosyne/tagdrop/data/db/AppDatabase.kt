@@ -216,10 +216,11 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // Default sources seeded into every fresh install.
+        // Default sources seeded into every fresh install — all disabled by default.
         private val DEFAULT_SOURCES = listOf(
             DropSource(name = "TagDrop Community Drops",
-                       url  = "https://mofosyne.github.io/tagdrop/db/drops.json"),
+                       url  = "https://mofosyne.github.io/tagdrop/db/drops.json",
+                       enabled = false),
             DropSource(name = "TagDrop Demo Drops",
                        url  = "https://mofosyne.github.io/tagdrop/db/drops_demo.json",
                        enabled = false)
