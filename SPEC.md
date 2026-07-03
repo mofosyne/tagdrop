@@ -1769,13 +1769,17 @@ Re-fetching is user-initiated or on a configurable schedule chosen by the user. 
     {
       "id": "a3f8b2c1d4e5f6a7",
       "lat": 51.5007,
-      "lon": -0.1246,
+      "lng": -0.1246,
       "hint": "Behind the loose brick on the north wall",
-      "label": "Shoreditch Wall Drop"
+      "description": "Pedestrian underpass, north face of the arch, eye level",
+      "status": "working",
+      "status_updated": "2026-07-03"
     }
   ]
 }
 ```
+
+Field names deliberately mirror the TagDrop wire format (§3) where they overlap — `hint` (key 3), `description` (key 40), `lat`/`lng` (keys 26/27) — so a hint QR scan already contains every entry field except `status` and `status_updated`. A future app feature could auto-generate a drops.json submission from a scanned hint QR with those two fields added by the submitter.
 
 Top-level fields:
 
@@ -1790,11 +1794,14 @@ Per-drop entry fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | string (required) | `cache_id` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). |
-| `lat` | number (required) | WGS84 latitude. |
-| `lon` | number (required) | WGS84 longitude. |
-| `hint` | string (opt) | Short human-readable location clue, e.g. `"Behind the loose brick"`. |
-| `label` | string (opt) | Name of the drop. |
+| `id` | string (required) | `cache_id` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). Matches wire format key 2. |
+| `lat` | number (required) | WGS84 latitude. Matches wire format key 26. |
+| `lng` | number (required) | WGS84 longitude. Matches wire format key 27. |
+| `hint` | string (opt) | Short human-readable location clue, e.g. `"Behind the loose brick"`. Matches wire format key 3. |
+| `description` | string (opt) | Longer location description, e.g. directions or context. Matches wire format key 40. |
+| `status` | string (opt) | Operational status: `"working"`, `"unknown"` (default), `"broken"`, or `"removed"`. `"removed"` drops are hidden from the map. No wire format equivalent — community-maintained mutable state, not encoded in the QR. |
+| `status_updated` | string (opt) | ISO 8601 date of the last status check, e.g. `"2026-07-03"`. No wire format equivalent. |
+| `drop_type` | string (opt) | Content type tag; default `"tagdrop"`. Reserved for future extensibility (e.g. listing non-TagDrop drops in a mixed source). |
 
 The `id` field is the join key between the source list and a locally scanned QR: when the finder scans the physical TagDrop code at that location, its `cache_id` matches `id`, and the app marks that pin as found on the map — no server round-trip needed.
 
