@@ -15,6 +15,8 @@ object DropEntryCache {
         entries.remove(sourceId)
     }
 
+    fun hasEntries(sourceId: Long): Boolean = entries.containsKey(sourceId)
+
     /** All entries across all sources. */
     fun allEntries(): List<DropEntry> = entries.values.flatten()
 

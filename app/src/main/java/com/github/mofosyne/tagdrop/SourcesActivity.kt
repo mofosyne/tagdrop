@@ -177,8 +177,24 @@ class SourcesActivity : AppCompatActivity() {
 
     private fun setEnabled(source: DropSource, enabled: Boolean) {
         lifecycleScope.launch {
-            AppDatabase.get(this@SourcesActivity).dropSourceDao().update(source.copy(enabled = enabled))
-            if (!enabled) DropEntryCache.remove(source.id)
+            val db = AppDatabase.get(this@SourcesActivity)
+            db.dropSourceDao().update(source.copy(enabled = enabled))
+            if (!enabled) {
+                DropEntryCache.remove(source.id)
+            } else if (!DropEntryCache.hasEntries(source.id)) {
+                // Cache was evicted when the source was disabled — re-fetch silently so pins appear
+                val json = SourceFetcher.fetch(source.url) ?: return@launch
+                DropEntryCache.update(source.id, json.drops)
+                db.dropSourceDao().update(
+                    source.copy(
+                        enabled         = true,
+                        name            = json.label ?: source.name,
+                        lastFetchedAt   = System.currentTimeMillis(),
+                        entryCount      = json.drops.size,
+                        lastFetchFailed = false
+                    )
+                )
+            }
         }
     }
 

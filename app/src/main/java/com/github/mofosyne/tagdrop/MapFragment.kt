@@ -246,16 +246,22 @@ class MapFragment : Fragment() {
             val point = GeoPoint(entry.lat, entry.lng)
             points += point
             val label = entry.hint ?: entry.id.take(8)
-            // Visual distinction by status: "broken" = grey pin, "working" = normal antenna icon
-            val icon = when (entry.status) {
-                "broken" -> "📵"
-                "unknown", null -> "📡"
-                else -> "📡"  // working
+            val icon = if (entry.status == "broken") "📵" else "📡"
+            // Snippet clarifies this is a remote hint not yet scanned, plus status if noteworthy
+            val statusNote = when (entry.status) {
+                "broken"  -> getString(R.string.source_pin_broken)
+                "working" -> getString(R.string.source_pin_working)
+                else      -> getString(R.string.source_pin_unknown)
             }
+            val snippetParts = listOfNotNull(
+                getString(R.string.source_pin_not_scanned),
+                statusNote,
+                entry.description
+            )
             val marker = Marker(binding.map).apply {
                 position = point
                 title = label
-                snippet = entry.description
+                snippet = snippetParts.joinToString(" · ")
                 setOnMarkerClickListener { clickedMarker, _ ->
                     if (clickedMarker.isInfoWindowShown) clickedMarker.closeInfoWindow()
                     else clickedMarker.showInfoWindow()

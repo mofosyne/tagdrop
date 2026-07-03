@@ -259,6 +259,10 @@
     <string name="source_browse_none">No sources found in directory</string>
     <string name="source_browse_all_added">All recommended sources already added</string>
     <string name="source_related_title">"%s" recommends</string>
+    <string name="source_pin_not_scanned">Not yet scanned</string>
+    <string name="source_pin_working">Working</string>
+    <string name="source_pin_broken">Reported broken</string>
+    <string name="source_pin_unknown">Status unknown</string>
     <plurals name="source_browse_added">
         <item quantity="one">%d source added (disabled by default)</item>
         <item quantity="other">%d sources added (disabled by default)</item>
