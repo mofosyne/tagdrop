@@ -213,6 +213,21 @@ abstract class AppDatabase : RoomDatabase() {
                         entryCount INTEGER NOT NULL DEFAULT 0
                     )"""
                 )
+                // Seed default sources for existing installs (disabled by default).
+                val now = System.currentTimeMillis()
+                seedDefaultSources(db, now)
+            }
+        }
+
+        private fun seedDefaultSources(db: SupportSQLiteDatabase, now: Long) {
+            listOf(
+                "TagDrop Community Drops" to "https://mofosyne.github.io/tagdrop/db/drops.json",
+                "TagDrop Demo Drops"      to "https://mofosyne.github.io/tagdrop/db/drops_demo.json"
+            ).forEach { (name, url) ->
+                db.execSQL(
+                    "INSERT INTO drop_sources (name, url, enabled, addedAt, lastFetchedAt, entryCount) VALUES (?, ?, 0, ?, NULL, 0)",
+                    arrayOf(name, url, now)
+                )
             }
         }
 
@@ -229,13 +244,7 @@ abstract class AppDatabase : RoomDatabase() {
         private val SEED_CALLBACK = object : RoomDatabase.Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 super.onCreate(db)
-                val now = System.currentTimeMillis()
-                DEFAULT_SOURCES.forEach { src ->
-                    db.execSQL(
-                        "INSERT INTO drop_sources (name, url, enabled, addedAt, lastFetchedAt, entryCount) VALUES (?, ?, ?, ?, NULL, 0)",
-                        arrayOf(src.name, src.url, if (src.enabled) 1 else 0, now)
-                    )
-                }
+                seedDefaultSources(db, System.currentTimeMillis())
             }
         }
 
