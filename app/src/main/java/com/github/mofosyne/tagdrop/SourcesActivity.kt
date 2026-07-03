@@ -146,15 +146,19 @@ class SourcesActivity : AppCompatActivity() {
         else -> super.onOptionsItemSelected(item)
     }
 
+    private val appScope get() = (application as TagDropApplication).applicationScope
+
     private fun refreshSource(source: DropSource) {
         if (!source.enabled) return
-        lifecycleScope.launch {
+        appScope.launch {
             val db = AppDatabase.get(this@SourcesActivity)
             val json = SourceFetcher.fetch(source.url)
             if (json == null) {
                 db.dropSourceDao().update(source.copy(lastFetchFailed = true))
-                Toast.makeText(this@SourcesActivity,
-                    R.string.source_fetch_failed, Toast.LENGTH_SHORT).show()
+                runOnUiThread {
+                    Toast.makeText(this@SourcesActivity,
+                        R.string.source_fetch_failed, Toast.LENGTH_SHORT).show()
+                }
                 return@launch
             }
             DropEntryCache.update(source.id, json.drops)
@@ -167,16 +171,20 @@ class SourcesActivity : AppCompatActivity() {
                 )
             )
             if (json.relatedSources.isNotEmpty()) {
-                showSourcePickerDialog(
-                    getString(R.string.source_related_title, json.label ?: source.name),
-                    json.relatedSources
-                )
+                runOnUiThread {
+                    lifecycleScope.launch {
+                        showSourcePickerDialog(
+                            getString(R.string.source_related_title, json.label ?: source.name),
+                            json.relatedSources
+                        )
+                    }
+                }
             }
         }
     }
 
     private fun setEnabled(source: DropSource, enabled: Boolean) {
-        lifecycleScope.launch {
+        appScope.launch {
             val db = AppDatabase.get(this@SourcesActivity)
             db.dropSourceDao().update(source.copy(enabled = enabled))
             if (!enabled) {
@@ -199,7 +207,7 @@ class SourcesActivity : AppCompatActivity() {
     }
 
     private fun refreshAll() {
-        lifecycleScope.launch {
+        appScope.launch {
             val db = AppDatabase.get(this@SourcesActivity)
             val sources = db.dropSourceDao().getEnabled()
             var anyFailed = false
@@ -221,8 +229,10 @@ class SourcesActivity : AppCompatActivity() {
                 )
             }
             if (anyFailed) {
-                Toast.makeText(this@SourcesActivity,
-                    R.string.source_fetch_some_failed, Toast.LENGTH_SHORT).show()
+                runOnUiThread {
+                    Toast.makeText(this@SourcesActivity,
+                        R.string.source_fetch_some_failed, Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }

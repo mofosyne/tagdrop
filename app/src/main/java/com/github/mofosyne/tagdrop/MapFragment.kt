@@ -28,6 +28,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.DropEntryCache
+import com.github.mofosyne.tagdrop.data.SourceFetcher
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.DropSource
 import com.github.mofosyne.tagdrop.data.db.FoundCache
@@ -144,6 +145,7 @@ class MapFragment : Fragment() {
         db.dropSourceDao().getAll().observe(viewLifecycleOwner) { sources ->
             latestSources = sources
             render()
+            fetchMissingSourceEntries(sources)
         }
 
         // Re-render whenever DropEntryCache is updated (fetch complete or source evicted).
@@ -506,6 +508,29 @@ class MapFragment : Fragment() {
      * replace [icon] in the marker's icon slot — see [applyMarkerIcon].
      */
     private data class MarkerInfo(val marker: Marker, val icon: String?, val label: String, val thumbnailCache: FoundCache? = null)
+
+    /** Kicks off background fetches for any enabled sources that have no cached entries yet.
+     *  Uses the app-scoped coroutine so fetches survive fragment transitions. */
+    private fun fetchMissingSourceEntries(sources: List<DropSource>) {
+        val appScope = (requireContext().applicationContext as TagDropApplication).applicationScope
+        val db = AppDatabase.get(requireContext())
+        for (source in sources) {
+            if (!source.enabled) continue
+            if (DropEntryCache.hasEntries(source.id)) continue
+            appScope.launch {
+                val json = SourceFetcher.fetch(source.url) ?: return@launch
+                DropEntryCache.update(source.id, json.drops)
+                db.dropSourceDao().update(
+                    source.copy(
+                        name            = json.label ?: source.name,
+                        lastFetchedAt   = System.currentTimeMillis(),
+                        entryCount      = json.drops.size,
+                        lastFetchFailed = false
+                    )
+                )
+            }
+        }
+    }
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
