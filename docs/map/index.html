@@ -190,8 +190,16 @@ const notice = document.getElementById('map-notice');
 function setNotice(text) { notice.innerHTML = text; notice.classList.remove('hidden'); }
 function clearNotice() { notice.classList.add('hidden'); }
 
-fetch('../db/drops.json')
-  .then(r => r.json())
+// drops.json is same-origin (relative URL), so CORS is not expected.
+// If fetch throws a TypeError it's either a network failure or a CORS block
+// (e.g. when opening the file directly from disk without a local server).
+const DROPS_URL = '../db/drops.json';
+
+fetch(DROPS_URL)
+  .then(r => {
+    if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { kind: 'http', status: r.status });
+    return r.json();
+  })
   .then(data => {
     const drops = (data.drops || []).filter(d => d.status !== 'removed');
     const countEl = document.getElementById('count');
@@ -225,9 +233,23 @@ fetch('../db/drops.json')
     if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
     else if (bounds.length === 1) map.setView(bounds[0], 14);
   })
-  .catch(() => {
-    document.getElementById('count').textContent = 'Could not load drops.json.';
-    setNotice('⚠️ Could not load drops — check your connection and try refreshing.');
+  .catch(err => {
+    const isCors = err instanceof TypeError;
+    const isHttp = err.kind === 'http';
+    let msg;
+    if (isCors) {
+      // TypeError from fetch = network failure or CORS block (file:// / cross-origin)
+      msg = `⚠️ Could not load <code>${DROPS_URL}</code> — `
+          + `possible CORS block (are you opening the file directly from disk?). `
+          + `Serve via a local HTTP server or visit the <a href="https://mofosyne.github.io/tagdrop/map/">live page</a>.`;
+    } else if (isHttp) {
+      msg = `⚠️ Could not load drops — server returned <strong>HTTP ${err.status}</strong>. Try refreshing.`;
+    } else {
+      msg = `⚠️ Could not load drops — check your connection and try refreshing.`;
+    }
+    document.getElementById('count').textContent = 'Failed to load drops.';
+    setNotice(msg);
+    console.error('drops.json fetch failed:', err);
   });
 
 function escHtml(s) {
