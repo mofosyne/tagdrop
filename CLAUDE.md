@@ -197,3 +197,20 @@ again or a concrete need emerges.
   text, never raw camera frames/bitmaps, so this would need a parallel
   capture pipeline (frame access, contour detection, homography warp,
   crop) built from scratch.
+- **NFC: auto-fallback to standard-record-readable tags when they'd fit
+  unsplit** (assessed: *medium usefulness, medium complexity — reasonable
+  to defer*; tracked in
+  [#58](https://github.com/mofosyne/tagdrop/issues/58)). Today
+  `WriteNfcTagActivity`'s "include standard record" option (added in #43)
+  is opt-in and off by default, so non-TagDrop phones can't read a tag
+  unless the user checks a box first. Making it the effective default for
+  content that fits one tag either way isn't just a checkbox flip, though:
+  `sectorsFittingTag()` currently refuses to split when a standard record
+  is requested, so it would need a genuine try-with-standard-record-first,
+  fall-back-to-TagDrop-only-and-split-if-needed order, decided only after
+  `onTagDiscovered()` measures the real tapped tag's capacity, plus
+  post-write UI feedback showing which mode actually got written. Useful
+  mainly for the "no app installed" case — and since this app is
+  F-Droid-distributed, the AAR's built-in fallback (Play Store redirect)
+  is already weak for its actual users — but most taps come from people
+  already in the ecosystem, so it's a nice-to-have, not core.

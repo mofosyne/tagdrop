@@ -35,6 +35,7 @@ class CreateActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCreateBinding
     private var lastUri: String = ""
     private var lastPayloadHint: String? = null
+    private var lastCacheId: String? = null
 
     private val mimeTypes = listOf("text/plain", "text/html", "text/markdown", "application/json", "image/svg+xml")
 
@@ -63,9 +64,10 @@ class CreateActivity : AppCompatActivity() {
             this, android.R.layout.simple_spinner_item, mimeTypes
         ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
 
-        binding.buttonGenerate.setOnClickListener { generate() }
-        binding.buttonShare.setOnClickListener    { shareUri() }
-        binding.buttonPrint.setOnClickListener    { printQr() }
+        binding.buttonGenerate.setOnClickListener  { generate() }
+        binding.buttonShare.setOnClickListener     { shareUri() }
+        binding.buttonPrint.setOnClickListener     { printQr() }
+        binding.buttonWriteNfc.setOnClickListener  { writeNfc() }
     }
 
     private fun generate() {
@@ -93,6 +95,7 @@ class CreateActivity : AppCompatActivity() {
             val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
             binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
             binding.textUri.text = uri
+            lastCacheId = idHex
             setResultsVisible(true)
             saveToMyDrops(idHex, hint, filename, mimeType, rawContent, icon)
         } catch (e: WriterException) {
@@ -132,6 +135,11 @@ class CreateActivity : AppCompatActivity() {
         ))
     }
 
+    private fun writeNfc() {
+        val cacheId = lastCacheId ?: return
+        startActivity(Intent(this, WriteNfcTagActivity::class.java).putExtra(WriteNfcTagActivity.EXTRA_CACHE_ID, cacheId))
+    }
+
     private fun printQr() {
         if (lastUri.isBlank()) return
         val printManager = getSystemService(PRINT_SERVICE) as PrintManager
@@ -169,10 +177,11 @@ class CreateActivity : AppCompatActivity() {
 
     private fun setResultsVisible(visible: Boolean) {
         val v = if (visible) View.VISIBLE else View.GONE
-        binding.imageQr.visibility     = v
+        binding.imageQr.visibility      = v
         binding.textCacheId.visibility  = v
         binding.buttonShare.visibility  = v
         binding.buttonPrint.visibility  = v
+        binding.buttonWriteNfc.visibility = v
         binding.textUri.visibility     = v
     }
 
