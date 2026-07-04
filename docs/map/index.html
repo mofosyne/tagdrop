@@ -6,9 +6,8 @@
 <title>Community Drops Map — TagDrop</title>
 <link rel="icon" href="../icon.png" type="image/png">
 
-<!-- Leaflet CSS -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<!-- Leaflet CSS (no SRI so unpkg redirects/updates don't break it) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 
 <style>
   *, *::before, *::after { box-sizing: border-box; }
@@ -168,11 +167,19 @@
   </p>
 </footer>
 
-<!-- Leaflet JS -->
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN2GqF0=" crossorigin=""></script>
+<!-- Leaflet JS (no SRI so unpkg redirects/updates don't break it) -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
 <script>
+const notice = document.getElementById('map-notice');
+function setNotice(text) { notice.innerHTML = text; notice.classList.remove('hidden'); }
+function clearNotice() { notice.classList.add('hidden'); }
+
+if (typeof L === 'undefined') {
+  setNotice('⚠️ Map library failed to load — check your internet connection and refresh.');
+  throw new Error('Leaflet not loaded');
+}
+
 const map = L.map('map').setView([20, 0], 2);
 
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -185,10 +192,6 @@ const icons = {
   broken:  L.divIcon({ className: '', html: '<span style="font-size:24px;line-height:1">📵</span>', iconSize: [28, 28], iconAnchor: [14, 24], popupAnchor: [0, -26] }),
   unknown: L.divIcon({ className: '', html: '<span style="font-size:24px;line-height:1">❓</span>', iconSize: [28, 28], iconAnchor: [14, 24], popupAnchor: [0, -26] }),
 };
-
-const notice = document.getElementById('map-notice');
-function setNotice(text) { notice.innerHTML = text; notice.classList.remove('hidden'); }
-function clearNotice() { notice.classList.add('hidden'); }
 
 // drops.json is same-origin (relative URL), so CORS is not expected.
 // If fetch throws a TypeError it's either a network failure or a CORS block
