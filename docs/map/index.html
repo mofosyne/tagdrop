@@ -207,7 +207,7 @@ fetch(DROPS_URL)
     const countEl = document.getElementById('count');
     if (drops.length === 0) {
       countEl.textContent = 'No drops listed yet — be the first to add one!';
-      setNotice('📭 No drops listed yet — be the first to <a href="#how-to-add" style="color:#2A3941;font-weight:600">add yours</a>!');
+      setNotice('📭 No drops listed yet — be the first to <a href="#how-to-add" style="color:#2A3941;font-weight:600">add yours</a>! &nbsp;·&nbsp; <a href="?demo" style="color:#2A3941">View demo drops</a>');
       return;
     }
     clearNotice();
