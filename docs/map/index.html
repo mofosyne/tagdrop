@@ -173,7 +173,7 @@
 <script>
 const notice = document.getElementById('map-notice');
 function setNotice(text) { notice.innerHTML = text; notice.classList.remove('hidden'); }
-function clearNotice() { notice.classList.add('hidden'); }
+function clearNotice() { if (!isDemo) notice.classList.add('hidden'); }
 
 if (typeof L === 'undefined') {
   setNotice('⚠️ Map library failed to load — check your internet connection and refresh.');
@@ -193,10 +193,9 @@ const icons = {
   unknown: L.divIcon({ className: '', html: '<span style="font-size:24px;line-height:1">❓</span>', iconSize: [28, 28], iconAnchor: [14, 24], popupAnchor: [0, -26] }),
 };
 
-// drops.json is same-origin (relative URL), so CORS is not expected.
-// If fetch throws a TypeError it's either a network failure or a CORS block
-// (e.g. when opening the file directly from disk without a local server).
-const DROPS_URL = '../db/drops.json';
+const isDemo = new URLSearchParams(location.search).has('demo');
+const DROPS_URL = isDemo ? '../db/drops_demo.json' : '../db/drops.json';
+if (isDemo) setNotice('🧪 Demo mode — showing sample drops. <a href="?" style="color:#2A3941;font-weight:600">Switch to live data</a>');
 
 fetch(DROPS_URL)
   .then(r => {
