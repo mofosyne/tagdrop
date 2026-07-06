@@ -11,6 +11,8 @@ import com.github.mofosyne.tagdrop.data.db.KeyDao
 import com.github.mofosyne.tagdrop.data.db.PaperDao
 import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.db.SignerDao
+import com.github.mofosyne.tagdrop.data.db.TrustedSigner
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -63,6 +65,12 @@ private class FakeDropSourceDao : DropSourceDao {
     override suspend fun delete(source: DropSource) {}
 }
 
+private class FakeSignerDao : SignerDao {
+    override suspend fun getBySignerId(signerIdHex: String): TrustedSigner? = null
+    override suspend fun insert(signer: TrustedSigner) {}
+    override suspend fun deleteAll() {}
+}
+
 private class FakeAppDatabase(
     val paperDaoFake: FakePaperDao = FakePaperDao(),
     val cacheDaoFake: FakeCacheDao = FakeCacheDao(),
@@ -71,6 +79,7 @@ private class FakeAppDatabase(
     override fun cacheDao(): CacheDao = cacheDaoFake
     override fun keyDao(): KeyDao = FakeKeyDao()
     override fun dropSourceDao(): DropSourceDao = FakeDropSourceDao()
+    override fun signerDao(): SignerDao = FakeSignerDao()
     override fun createInvalidationTracker(): InvalidationTracker = throw NotImplementedError()
     override fun clearAllTables() = throw NotImplementedError()
 }
