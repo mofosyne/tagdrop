@@ -125,6 +125,14 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 .reply-info strong { font-size: 0.95rem; }
 #contentReplyInfo { padding: 10px 16px; margin: 0; border-bottom: 1px solid #eee; }
 
+/* Verified Authorship badge (SPEC §10) */
+.sig-badge { font-size: 0.85rem; margin: -6px 0 12px; padding: 10px 16px;
+             border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 6px; }
+.sig-badge.hidden { display: none; }
+.sig-badge.verified { color: #1a7a1a; }
+.sig-badge.invalid  { color: #c00; font-weight: 600; }
+.sig-badge.pending  { color: #a06a00; }
+
 #fileList { list-style: none; margin: 0; padding: 0; }
 .file-item { display: flex; align-items: center; gap: 8px; padding: 8px 0;
              border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; }
@@ -280,6 +288,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
   <section id="paperSection" class="hidden">
     <div id="paperHeader"></div>
     <div id="paperReplyInfo" class="reply-info hidden"></div>
+    <div id="paperVerification" class="sig-badge hidden"></div>
     <div id="paperDescription" class="hidden"></div>
     <ul id="fileList"></ul>
     <div class="paper-actions">
@@ -293,6 +302,7 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
       <button id="btnBack" class="secondary">← Back</button>
     </div>
     <div id="contentReplyInfo" class="reply-info hidden"></div>
+    <div id="contentVerification" class="sig-badge hidden"></div>
     <div id="contentArea"></div>
   </section>
 </main>
@@ -582,6 +592,7 @@ async function splitReassembledStream(stream) {
     const { items: coreItems, trailing: afterCore } = cborDecodeSequencePrefix(stream, 1);
     const core = coreItems[0];
     if (!isCborMap(core)) return null;
+    const coreRaw = stream.slice(0, stream.length - afterCore.length);
     const bulkyCompression = core[K.BULKY_COMPRESSION] ?? 0;
     if (bulkyCompression !== 0) {
       const n = core[K.BULKY_COMPRESSED_BYTES];
@@ -589,17 +600,141 @@ async function splitReassembledStream(stream) {
       const bulkyRaw = afterCore.slice(0, n);
       const bulky = cborDecodeSequencePrefix(await zlibDecompress(bulkyRaw), 1).items[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, bulkyRaw, content: afterCore.slice(n) };
+      return { core, coreRaw, bulky, bulkyRaw, content: afterCore.slice(n) };
     } else {
       const { items: bulkyItems, trailing: afterBulky } = cborDecodeSequencePrefix(afterCore, 1);
       const bulky = bulkyItems[0];
       if (!isCborMap(bulky)) return null;
       const bulkyRaw = afterCore.slice(0, afterCore.length - afterBulky.length);
-      return { core, bulky, bulkyRaw, content: afterBulky };
+      return { core, coreRaw, bulky, bulkyRaw, content: afterBulky };
     }
   } catch (e) {
     return null;
   }
+}
+
+// ── Verified Authorship (SPEC §10) ───────────────────────────────────────
+// Real ML-DSA-44 verification via @noble/post-quantum, dynamically imported (same CDN-import
+// pattern as marked/zxing-wasm) so the reader stays a single self-contained file with no build
+// step — see CLAUDE.md. Wire-format-only until now; this is the first real crypto consumer.
+let mlDsaModulePromise;
+function loadMlDsa() {
+  if (!mlDsaModulePromise) mlDsaModulePromise = import('https://cdn.jsdelivr.net/npm/@noble/post-quantum@0.6.1/ml-dsa.js/+esm');
+  return mlDsaModulePromise;
+}
+
+// Minimal CBOR head-byte encoder — the reader is otherwise decode-only, but
+// stripTrailingKeys (below) needs to rewrite a map header's pair count.
+function writeHead(out, major, n) {
+  const m = major << 5;
+  if      (n <= 23)       { out.push(m | n); }
+  else if (n <= 0xFF)     { out.push(m | 24, n); }
+  else if (n <= 0xFFFF)   { out.push(m | 25, n >> 8, n & 0xFF); }
+  else { out.push(m | 26, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF); }
+}
+
+/**
+ * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with a
+ * trailing run of pairs whose key is in [trailingKeysToStrip] removed. Mirrors Kotlin
+ * MiniCbor.stripTrailingKeys — see its doc comment for why this operates on raw bytes rather
+ * than a decode-then-re-encode (CBOR field order here isn't sorted/canonical, and a semantic
+ * re-encode could silently reorder surviving fields, breaking the hash this feeds).
+ */
+function stripTrailingKeys(mapBytes, trailingKeysToStrip) {
+  let pos = 0;
+  function rb() { return mapBytes[pos++]; }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) return rb() * 256 + rb();
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function skipValue() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    if (major === 2 || major === 3) { pos += a; }
+    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
+    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
+    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
+    // major 0 (uint) and other major-7 simple values (true/false/null) carry no extra bytes.
+  }
+  const head = rb();
+  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
+  const count = readArg(head & 0x1F);
+  const headerLen = pos;
+
+  let survivingCount = 0, cutOffset = mapBytes.length, foundCut = false;
+  for (let i = 0; i < count; i++) {
+    const pairStart = pos;
+    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
+    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
+    skipValue();
+    if (!foundCut) {
+      if (trailingKeysToStrip.has(key)) { cutOffset = pairStart; foundCut = true; }
+      else survivingCount++;
+    }
+  }
+  if (!foundCut) return mapBytes;
+  const newHeader = [];
+  writeHead(newHeader, 5, survivingCount);
+  return concatBytes(new Uint8Array(newHeader), mapBytes.slice(headerLen, cutOffset));
+}
+
+/**
+ * SPEC §10's "signed message": the full (untruncated) SHA-256 of core_meta_item ||
+ * bulky_meta_item || content, with Verified Authorship's own keys (32-36) stripped back out
+ * first — i.e. the hash an *unsigned* version of [stream] would produce. Mirrors Kotlin
+ * TagDropCodec.signedMessageHash. Works whether [stream] is already signed (the common
+ * verification case) or was never signed (nothing to strip, so this is just sha256(stream)) —
+ * the same function serves both the generator's "hash the unsigned build, then sign" step and
+ * the reader's "recompute and verify" step. Returns null if [stream] isn't well-formed.
+ *
+ * The key sets are built inline (not module-level consts) to match the generator's copy of
+ * this function, which needs to for its own file's declaration order (see its comment) — kept
+ * identical in shape so the two stay easy to diff against each other.
+ */
+async function signedMessageHash(stream) {
+  const parts = await splitReassembledStream(stream);
+  if (!parts) return null;
+  const unsignedCore = stripTrailingKeys(parts.coreRaw, new Set([K.SIGNATURE_ALGORITHM, K.SIGNER_ID, K.SIGNER_LABEL]));
+  const bulkyLogicalRaw = (parts.core[K.BULKY_COMPRESSION] ?? 0) !== 0
+    ? await zlibDecompress(parts.bulkyRaw) : parts.bulkyRaw;
+  const unsignedBulky = stripTrailingKeys(bulkyLogicalRaw, new Set([K.SIGNATURE, K.SIGNER_PUBKEY]));
+  return sha256(concatBytes(unsignedCore, unsignedBulky, parts.content));
+}
+
+/** Caches a first-seen signer_pubkey under its signer_id (SPEC §10 "Key caching", TOFU). */
+async function cacheSignerPubkey(signerIdHex, pubkey, label) {
+  const existing = await dbGet('signers', signerIdHex);
+  await dbPut('signers', { id: signerIdHex, pubkey, label: label ?? (existing && existing.label) ?? null });
+}
+
+/**
+ * Verifies a decoded Content/Paper's Verified Authorship fields against [stream] (SPEC §10).
+ * Returns { status: 'unsigned' } if unsigned, { status: 'pending', signerId, signerLabel } if
+ * signed but no pubkey is available yet (embedded or cached) to check against, or
+ * { status: 'verified' | 'invalid', signerId, signerLabel } once checked. TOFU: an embedded
+ * signer_pubkey is cached under its signer_id the first time it's seen, so later codes from
+ * the same signer verify even when they omit it to save space.
+ */
+async function verifySignature(stream, fields) {
+  if (!fields.signatureAlgorithm) return { status: 'unsigned' };
+  if (fields.signatureAlgorithm !== 1) return { status: 'unsigned' }; // unrecognised algorithm — SPEC §3 forward-compat: ignore
+  const signerId = fields.signerId, signerLabel = fields.signerLabel;
+  let pubkey = fields.signerPubkey;
+  if (pubkey) {
+    await cacheSignerPubkey(signerId, pubkey, signerLabel);
+  } else if (signerId) {
+    const cached = await dbGet('signers', signerId);
+    if (cached) pubkey = cached.pubkey;
+  }
+  if (!pubkey || !fields.signature) return { status: 'pending', signerId, signerLabel };
+  const hash = await signedMessageHash(stream);
+  if (!hash) return { status: 'pending', signerId, signerLabel };
+  const { ml_dsa44 } = await loadMlDsa();
+  const ok = ml_dsa44.verify(fields.signature, hash, pubkey);
+  const cachedLabel = signerId ? (await dbGet('signers', signerId))?.label : null;
+  return { status: ok ? 'verified' : 'invalid', signerId, signerLabel: signerLabel || cachedLabel };
 }
 
 // ── CBOR debug ────────────────────────────────────────────────────────────
@@ -858,7 +993,15 @@ async function parsePaperStream(stream, partMeta) {
   const parts = await splitReassembledStream(stream);
   if (!parts) return null;
   if (!(await verifyBulkyMetaSha(parts, partMeta.sectorCount))) return null;
-  const computedHash = toHex((await sha256(stream)).slice(0, 8));
+  // root_hash must be computed the same way whether or not the paper ends up signed (SPEC
+  // §10: "identical whether or not keys 32-36 are subsequently added") — hashing the raw
+  // transmitted `stream` directly would fold the signature fields' bytes in, giving a
+  // DIFFERENT hash than the unsigned encoder computed for cache_id/part_meta. signedMessageHash
+  // strips those fields first, matching the generator's own computation. Mirrors Kotlin
+  // TagDropCodec.parsePaperStream.
+  const hash = await signedMessageHash(stream);
+  if (!hash) return null;
+  const computedHash = toHex(hash.slice(0, 8));
   if (partMeta.cacheId != null && partMeta.cacheId !== computedHash) return null;
   return paperFromParts(parts, computedHash);
 }
@@ -866,7 +1009,13 @@ async function parsePaperStream(stream, partMeta) {
 async function verifyBulkyMetaSha(parts, sectorCount) {
   const declared = parts.core[K.BULKY_SHA];
   if (declared == null) return sectorCount <= 1;
-  return bytesEqual(await sha256(parts.bulkyRaw), declared);
+  // bulky_meta_sha256 covers files/related only (see generator's buildPaperStream) — strip
+  // keys 33/34 back out before checking, since a signed paper's transmitted bulky_meta_item
+  // also carries the signature/signer_pubkey pairs.
+  const bulkyLogicalRaw = (parts.core[K.BULKY_COMPRESSION] ?? 0) !== 0
+    ? await zlibDecompress(parts.bulkyRaw) : parts.bulkyRaw;
+  const bulkyWithoutSignature = stripTrailingKeys(bulkyLogicalRaw, new Set([K.SIGNATURE, K.SIGNER_PUBKEY]));
+  return bytesEqual(await sha256(bulkyWithoutSignature), declared);
 }
 
 function paperFromParts(parts, rootHash) {
@@ -1072,15 +1221,18 @@ class SectorAssembler {
     const parsed = await parseContentStream(stream, meta);
     if (parsed.kind === 'Malformed') return { kind: 'Failed' };
     if (parsed.kind === 'HashMismatch') return { kind: 'HashMismatch' };
-    return this._contentState(group, parsed.content);
+    return this._contentState(group, parsed.content, stream);
   }
 
   /** Resolves a parsed Content into a ready/awaiting state: override (if a key matched) → cover → awaiting key. */
-  async _contentState(group, content) {
+  async _contentState(group, content, stream) {
+    // SPEC §10: the signature covers the transmitted stream regardless of whether an override
+    // blob is later decrypted — verify once here, against the raw bytes, not the decrypted view.
+    const verification = await verifySignature(stream, content);
     const override = group.resolvedOverride;
     if (override) {
       return readyContentState(content, override.hint ?? content.hint, override.filename ?? content.filename,
-        override.mimeType ?? content.mimeType, override.content ?? new Uint8Array(0), null, true);
+        override.mimeType ?? content.mimeType, override.content ?? new Uint8Array(0), null, true, false, verification);
     }
     // SPEC §5 step 5: try the cover/plain-content reading per content_compression.
     let cover;
@@ -1099,7 +1251,7 @@ class SectorAssembler {
     // leaves undeclared candidates indistinguishable from ordinary content.
     const declared = pendingBlob != null && (content.encryption === 1 || content.kdfAlg !== 0);
     return readyContentState(content, content.hint, content.filename, content.mimeType, cover,
-      pendingBlob, declared, declared);
+      pendingBlob, declared, declared, verification);
   }
 }
 
@@ -1108,7 +1260,7 @@ function isTerminalState(state) {
          state.kind === 'HashMismatch' || state.kind === 'Failed';
 }
 
-function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted, declared = false) {
+function readyContentState(content, hint, filename, mimeType, resolved, pendingBlob, wasEncrypted, declared = false, verification = { status: 'unsigned' }) {
   return {
     kind: 'ContentReady',
     cacheId: content.cacheId, hint, filename, mimeType, content: resolved,
@@ -1125,6 +1277,7 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     locationLabel: content.locationLabel,
     inReplyTo: content.inReplyTo, title: content.title, createdAt: content.createdAt,
     pixelArt: content.pixelArt,
+    verification,
   };
 }
 
@@ -1177,7 +1330,7 @@ let _db;
 async function getDb() {
   if (_db) return _db;
   return new Promise((res, rej) => {
-    const req = indexedDB.open('tagdrop-reader', 2);
+    const req = indexedDB.open('tagdrop-reader', 3);
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('caches'))
@@ -1186,6 +1339,11 @@ async function getDb() {
         d.createObjectStore('papers', { keyPath: 'rootHash' });
       if (!d.objectStoreNames.contains('keys'))
         d.createObjectStore('keys', { keyPath: 'id' });
+      // TOFU cache for Verified Authorship (SPEC §10): signer_id (hex) -> {pubkey, label},
+      // populated the first time a signed code embeds signer_pubkey (key 34); later codes
+      // from the same signer_id omit it and are verified against this cached copy.
+      if (!d.objectStoreNames.contains('signers'))
+        d.createObjectStore('signers', { keyPath: 'id' });
     };
     req.onsuccess = e => { _db = e.target.result; res(_db); };
     req.onerror = () => rej(req.error);
@@ -1220,10 +1378,11 @@ async function dbGetAll(store) {
 async function dbClear() {
   const d = await getDb();
   await new Promise((res, rej) => {
-    const tx = d.transaction(['caches', 'papers', 'keys'], 'readwrite');
+    const tx = d.transaction(['caches', 'papers', 'keys', 'signers'], 'readwrite');
     tx.objectStore('caches').clear();
     tx.objectStore('papers').clear();
     tx.objectStore('keys').clear();
+    tx.objectStore('signers').clear();
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
   });
@@ -1262,11 +1421,12 @@ async function completeSingle(cacheId, hint, filename, mimeType, content, opts =
     pendingOverrideBlob = null, pendingOverrideDeclared = false, pendingCompression = 0, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
     inReplyTo = null, title = null, createdAt = null, pixelArt = false,
+    verification = { status: 'unsigned' },
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
     pendingOverrideBlob, pendingOverrideDeclared, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
-    inReplyTo, title, createdAt, pixelArt,
+    inReplyTo, title, createdAt, pixelArt, verification,
   });
   const label = filename || hint || mimeType;
   await showContent(mimeType, content, label, cacheId, { icon, collectionLabel, collectionTag, collectionId });
@@ -1315,7 +1475,7 @@ async function handleContentReady(state) {
       { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
         collectionTag: state.collectionTag, icon: state.icon, wasEncrypted: true,
         inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
-        pixelArt: state.pixelArt }
+        pixelArt: state.pixelArt, verification: state.verification }
     );
     showMsg('🔓 Decrypted: ' + label, 'ok');
     return;
@@ -1329,7 +1489,7 @@ async function handleContentReady(state) {
       collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
-      pixelArt: state.pixelArt,
+      pixelArt: state.pixelArt, verification: state.verification,
     });
     return;
   }
@@ -1342,7 +1502,7 @@ async function handleContentReady(state) {
       pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
       inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
-      pixelArt: state.pixelArt }
+      pixelArt: state.pixelArt, verification: state.verification }
   );
   showMsg(state.pendingOverrideDeclared ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
 }
@@ -1385,7 +1545,8 @@ async function handleAwaitingKey(state) {
  */
 async function unlockWithPassphrase({
   hint, cacheId, blob, compression, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
-  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title, createdAt, pixelArt = false
+  collectionId, collectionLabel, collectionTag, icon, inReplyTo, title, createdAt, pixelArt = false,
+  verification = { status: 'unsigned' }
 }) {
   const saltHex = toHex(kdfSalt);
   const info = hint
@@ -1407,7 +1568,7 @@ async function unlockWithPassphrase({
       const label = await completeSingle(
         cacheId, override.hint ?? hint, override.filename ?? filename, override.mimeType ?? mimeType,
         override.content ?? new Uint8Array(0),
-        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title, createdAt, pixelArt }
+        { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title, createdAt, pixelArt, verification }
       );
       await unlockPending(derived);
       for (const r of await assembler.tryKey(derived)) await completeContentReady(r);
@@ -1421,7 +1582,7 @@ async function unlockWithPassphrase({
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
         pendingOverrideBlob: blob, pendingOverrideDeclared: true, pendingCompression: compression, wasEncrypted: true,
-        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt, pixelArt }
+        kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt, pixelArt, verification }
     );
     showMsg(wrongPassphrase
       ? 'Wrong passphrase. Loaded: ' + label + ' (🔒 still locked)'
@@ -1640,7 +1801,7 @@ async function handleState(state) {
 
     case 'PaperReady':
       hideAssemblyProgress();
-      await handlePaper(state.paper);
+      await handlePaper(state.paper, state.streamBytes);
       break;
 
     case 'AwaitingKey':
@@ -1664,8 +1825,9 @@ async function handleState(state) {
  *  Stores `lastScannedCbor` (the completing sector's raw envelope, set in handleScanned above)
  *  as this paper's `cbor` field rather than the reassembled stream, since describeCbor() expects
  *  a single four-item sector envelope, not the bare core/bulky/content concatenation. */
-async function handlePaper(paper) {
-  await dbPut('papers', { ...paper, cbor: lastScannedCbor, scannedAt: Date.now() });
+async function handlePaper(paper, streamBytes) {
+  const verification = await verifySignature(streamBytes, paper);
+  await dbPut('papers', { ...paper, cbor: lastScannedCbor, scannedAt: Date.now(), verification });
   activePaperHash = paper.rootHash;
   // SPEC §9: a paper manifest (and its related[] entries) may each carry their own
   // key_material for other content discovered along the way.
@@ -1805,6 +1967,32 @@ async function renderReplyInfo(el, { title, inReplyTo, selfId, createdAt } = {})
   el.classList.toggle('hidden', parts.length === 0);
 }
 
+/**
+ * Renders a Verified Authorship badge (SPEC §10) into [el] from a {status, signerId,
+ * signerLabel} verification result — 'unsigned' hides the badge entirely (the common case:
+ * most TagDrop codes aren't signed), 'verified'/'invalid'/'pending' each get a distinct color
+ * (see .sig-badge CSS) so a forged/stripped signature can't be mistaken for a good one at a
+ * glance. Trust model is TOFU (SPEC §10) — "verified" means "the same private key signed this
+ * as everything else cached under this signer_id," not a real-world identity.
+ */
+function renderVerificationBadge(el, verification) {
+  if (!verification || verification.status === 'unsigned') {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  const who = verification.signerLabel
+    ? escHtml(verification.signerLabel)
+    : (verification.signerId ? 'signer ' + escHtml(verification.signerId.slice(0, 8)) + '…' : 'unknown signer');
+  const text = {
+    verified: '🔏 Verified — signed by ' + who,
+    invalid:  '⚠️ Invalid signature — claims to be from ' + who + ' but does not verify',
+    pending:  '🔏 Signed by ' + who + ' — public key not yet seen, can\'t verify yet',
+  }[verification.status] || '';
+  el.className = 'sig-badge ' + verification.status;
+  el.textContent = text;
+}
+
 /** Opens a reply-nav target by kind/id (mirrors the .open-home/.open-file navigation
  *  pattern). 'paper' targets become the active paper, same as resolveNavLink; 'cache'
  *  targets go through showContent, or report not-yet-scanned if missing. */
@@ -1900,6 +2088,7 @@ async function renderPaper(rootHash) {
 
   await renderReplyInfo(document.getElementById('paperReplyInfo'),
     { title: paper.title, inReplyTo: paper.inReplyTo, selfId: paper.rootHash, createdAt: paper.createdAt });
+  renderVerificationBadge(document.getElementById('paperVerification'), paper.verification);
 
   const descEl = document.getElementById('paperDescription');
   if (paper.description) {
@@ -2210,6 +2399,7 @@ async function showContent(mimeType, content, title, cacheId, meta) {
   await renderReplyInfo(document.getElementById('contentReplyInfo'),
     { title: cached && cached.title, inReplyTo: cached && cached.inReplyTo, selfId: cacheId,
       createdAt: cached && cached.createdAt });
+  renderVerificationBadge(document.getElementById('contentVerification'), cached && cached.verification);
 
   if (mimeType.startsWith('text/html')) {
     renderHtmlInIframe(area, new TextDecoder().decode(content));

@@ -24,6 +24,27 @@ drift apart. There's currently no automated cross-check between them —
 verification has so far been manual (decode every URI in
 `tools/examples/index.html` and check version/type/fields match).
 
+**One deliberate exception as of the SPEC §10 signing work:** the web tools
+(generator + reader) do real ML-DSA-44 sign/verify via `@noble/post-quantum`
+(dynamically imported from a CDN, same pattern as qrcode/jsPDF/marked/
+zxing-wasm — no bundled dependency, still a single self-contained file);
+Kotlin only has the wire-format plumbing plus the `signedMessageHash`/
+`MiniCbor.stripTrailingKeys` hashing primitives, no PQC library wired in yet
+(needs e.g. BouncyCastle, a new Gradle dependency — bigger ask than a CDN
+import). If you add BouncyCastle-backed sign/verify to the Kotlin app,
+mirror the JS `signSectors`/`verifySignature` design: signing must build
+with a same-length **placeholder** signature first, not build unsigned and
+signed independently — adding ~3.7 KB of signature fields can itself push a
+payload from single- to multi-sector, and `content_sha256`/
+`bulky_meta_sha256`'s presence *and value* must stay identical whether or
+not signing happens (SPEC §10 "signing happens last and feeds back into
+nothing") — this exact class of bug (a field's value silently changing
+between an independently-built "unsigned" pass and the real signed build)
+was caught three times during development, once for each of `root_hash`/
+`content_sha256`-triggering-resplit/`bulky_meta_sha256`, only by actually
+running real ML-DSA-44 sign→verify round trips end to end, not by code
+review alone.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

@@ -312,4 +312,52 @@ class MiniCborTest {
         assertTrue(description.contains("20: \"slug-a\""))
         assertTrue(description.contains("21: \"text/html\""))
     }
+
+    // ── stripTrailingKeys (SPEC §10 "signing happens last") ─────────────────────
+
+    @Test fun stripTrailingKeysRemovesTrailingRun() {
+        val withTrailing = MiniCbor.encodeMap(listOf(3 to "hint", 4 to "text/plain", 32 to 1, 35 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val withoutTrailing = MiniCbor.encodeMap(listOf(3 to "hint", 4 to "text/plain"))
+        val stripped = MiniCbor.stripTrailingKeys(withTrailing, setOf(32, 33, 34, 35, 36))
+        assertArrayEquals(withoutTrailing, stripped)
+    }
+
+    @Test fun stripTrailingKeysNoOpWhenNoneOfTheKeysPresent() {
+        val cbor = MiniCbor.encodeMap(listOf(3 to "hint", 4 to "text/plain"))
+        val stripped = MiniCbor.stripTrailingKeys(cbor, setOf(32, 33, 34, 35, 36))
+        assertArrayEquals(cbor, stripped)
+    }
+
+    @Test fun stripTrailingKeysHandlesEmptyMap() {
+        val cbor = MiniCbor.encodeMap(emptyList())
+        val stripped = MiniCbor.stripTrailingKeys(cbor, setOf(32, 33, 34, 35, 36))
+        assertArrayEquals(cbor, stripped)
+    }
+
+    @Test fun stripTrailingKeysAllKeysStripped() {
+        val cbor = MiniCbor.encodeMap(listOf(32 to 1, 35 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val stripped = MiniCbor.stripTrailingKeys(cbor, setOf(32, 33, 34, 35, 36))
+        assertArrayEquals(MiniCbor.encodeMap(emptyList()), stripped)
+        assertTrue(MiniCbor.decodeMap(stripped).isEmpty())
+    }
+
+    @Test fun stripTrailingKeysOnlyDropsFromFirstMatchOnward() {
+        // Pathological/adversarial input where a stripped key is followed by a non-stripped
+        // one — not something an honest encoder produces, but stripTrailingKeys must still
+        // behave safely: everything from the first match onward is dropped, including the
+        // out-of-place survivor, rather than throwing or fabricating bytes.
+        val cbor = MiniCbor.encodeMap(listOf(3 to "hint", 32 to 1, 4 to "text/plain"))
+        val stripped = MiniCbor.stripTrailingKeys(cbor, setOf(32, 33, 34, 35, 36))
+        assertArrayEquals(MiniCbor.encodeMap(listOf(3 to "hint")), stripped)
+    }
+
+    @Test fun stripTrailingKeysHeaderCountShrinksAcrossByteWidthBoundary() {
+        // 24 pairs needs a 2-byte map header (argument 24 requires the 0x18 one-byte-length
+        // form); stripping down to 23 survivors must shrink the header back to its 1-byte form.
+        val pairs = (0 until 22).map { it to it } + listOf(32 to 1, 35 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
+        val cbor = MiniCbor.encodeMap(pairs)
+        val stripped = MiniCbor.stripTrailingKeys(cbor, setOf(32, 33, 34, 35, 36))
+        val expected = MiniCbor.encodeMap((0 until 22).map { it to it })
+        assertArrayEquals(expected, stripped)
+    }
 }

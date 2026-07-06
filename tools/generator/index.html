@@ -307,6 +307,19 @@
       </div>
     </div>
     <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="s-sign">
+          🔏 Sign with ML-DSA-44 (SPEC §10)
+          <small style="display:block;color:#888;margin-top:2px">Post-quantum signature proving this code came from the same private key as everything else signed under your signer ID — trust-on-first-use, like an SSH host key, not a real-world identity. Adds ~2.4–3.7 KB. Don't combine with "Encrypt" above — a signature is a persistent identity marker, the opposite of the deniability encryption is for (SPEC §10).</small>
+        </label>
+      </div>
+      <div id="s-signer-label-row">
+        <label>Signer label <small>(optional, shown to anyone who verifies this code)</small></label>
+        <input type="text" id="s-signer-label" placeholder="e.g. Alice's Trail">
+      </div>
+    </div>
+    <div class="row">
       <div>
         <label>Target sector size <small>(bytes per QR code, decoded)</small></label>
         <input type="number" id="s-sector-size" value="600" min="100" max="1300" step="50" style="width:8em">
@@ -848,22 +861,181 @@ async function splitReassembledStream(stream) {
     const { items: coreItems, trailing: afterCore } = cborDecodeSequencePrefix(stream, 1);
     const core = coreItems[0];
     if (!isCborMap(core)) return null;
+    const coreRaw = stream.slice(0, stream.length - afterCore.length);
     const bulkyCompression = core[K.BULKY_COMPRESSION] ?? 0;
     if (bulkyCompression !== 0) {
       const n = core[K.BULKY_COMPRESSED_BYTES];
       if (n == null || n > afterCore.length) return null;
-      const bulky = cborDecodeSequencePrefix(await zlibDecompress(afterCore.slice(0, n)), 1).items[0];
+      const bulkyRaw = afterCore.slice(0, n);
+      const bulky = cborDecodeSequencePrefix(await zlibDecompress(bulkyRaw), 1).items[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, content: afterCore.slice(n) };
+      return { core, coreRaw, bulky, bulkyRaw, content: afterCore.slice(n) };
     } else {
       const { items: bulkyItems, trailing: afterBulky } = cborDecodeSequencePrefix(afterCore, 1);
       const bulky = bulkyItems[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, content: afterBulky };
+      const bulkyRaw = afterCore.slice(0, afterCore.length - afterBulky.length);
+      return { core, coreRaw, bulky, bulkyRaw, content: afterBulky };
     }
   } catch (e) {
     return null;
   }
+}
+
+// ── Verified Authorship (SPEC §10) ───────────────────────────────────────
+// Real ML-DSA-44 signing via @noble/post-quantum, dynamically imported (same CDN-import
+// pattern as qrcode/jsPDF) so the generator stays a single self-contained file with no build
+// step — see CLAUDE.md. Wire-format-only until now; this is the first real crypto consumer.
+let mlDsaModulePromise;
+function loadMlDsa() {
+  if (!mlDsaModulePromise) mlDsaModulePromise = import('https://cdn.jsdelivr.net/npm/@noble/post-quantum@0.6.1/ml-dsa.js/+esm');
+  return mlDsaModulePromise;
+}
+
+/**
+ * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with a
+ * trailing run of pairs whose key is in [trailingKeysToStrip] removed. Mirrors Kotlin
+ * MiniCbor.stripTrailingKeys and the reader's copy — see either doc comment for why this
+ * operates on raw bytes rather than a decode-then-re-encode.
+ */
+function stripTrailingKeys(mapBytes, trailingKeysToStrip) {
+  let pos = 0;
+  function rb() { return mapBytes[pos++]; }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) return rb() * 256 + rb();
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function skipValue() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    if (major === 2 || major === 3) { pos += a; }
+    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
+    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
+    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
+  }
+  const head = rb();
+  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
+  const count = readArg(head & 0x1F);
+  const headerLen = pos;
+
+  let survivingCount = 0, cutOffset = mapBytes.length, foundCut = false;
+  for (let i = 0; i < count; i++) {
+    const pairStart = pos;
+    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
+    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
+    skipValue();
+    if (!foundCut) {
+      if (trailingKeysToStrip.has(key)) { cutOffset = pairStart; foundCut = true; }
+      else survivingCount++;
+    }
+  }
+  if (!foundCut) return mapBytes;
+  const newHeader = [];
+  writeHead(newHeader, 5, survivingCount);
+  return concatBytes(new Uint8Array(newHeader), mapBytes.slice(headerLen, cutOffset));
+}
+
+/**
+ * SPEC §10's "signed message": the full (untruncated) SHA-256 of core_meta_item ||
+ * bulky_meta_item || content, with Verified Authorship's own keys (32-36) stripped back out
+ * first. Mirrors Kotlin TagDropCodec.signedMessageHash and the reader's copy. Called here on
+ * an UNSIGNED build (nothing to strip, so this is just sha256(stream)) as the "hash the
+ * unsigned build, then sign" half of the encode-side flow — see signContentSectors below.
+ *
+ * The key sets are built inline (not module-level consts) because `K` — defined later in this
+ * file — isn't initialized yet when this function's own module-level code would otherwise run;
+ * by the time signedMessageHash is actually *called*, the whole script has finished loading.
+ */
+async function signedMessageHash(stream) {
+  const parts = await splitReassembledStream(stream);
+  if (!parts) return null;
+  const unsignedCore = stripTrailingKeys(parts.coreRaw, new Set([K.SIGNATURE_ALGORITHM, K.SIGNER_ID, K.SIGNER_LABEL]));
+  const bulkyLogicalRaw = (parts.core[K.BULKY_COMPRESSION] ?? 0) !== 0
+    ? await zlibDecompress(parts.bulkyRaw) : parts.bulkyRaw;
+  const unsignedBulky = stripTrailingKeys(bulkyLogicalRaw, new Set([K.SIGNATURE, K.SIGNER_PUBKEY]));
+  return sha256(concatBytes(unsignedCore, unsignedBulky, parts.content));
+}
+
+// A signing identity (ML-DSA-44 keypair + label) persisted in this browser's localStorage —
+// generated on first use, reused after that so signer_id stays stable across codes (SPEC §10's
+// TOFU model depends on a *consistent* signer_id, not a fresh one per code).
+const SIGNING_IDENTITY_STORAGE_KEY = 'tagdrop-signing-identity';
+
+function loadSigningIdentity() {
+  try {
+    const raw = localStorage.getItem(SIGNING_IDENTITY_STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return {
+      secretKey: hexToBytes(obj.secretKey), publicKey: hexToBytes(obj.publicKey),
+      signerId: hexToBytes(obj.signerId), label: obj.label || '',
+    };
+  } catch (e) { return null; }
+}
+
+function saveSigningIdentity(identity) {
+  localStorage.setItem(SIGNING_IDENTITY_STORAGE_KEY, JSON.stringify({
+    secretKey: toHex(identity.secretKey), publicKey: toHex(identity.publicKey),
+    signerId: toHex(identity.signerId), label: identity.label || '',
+  }));
+}
+
+/** Loads this browser's persisted signing identity, generating one on first use. */
+async function getOrCreateSigningIdentity(label) {
+  let identity = loadSigningIdentity();
+  if (!identity) {
+    const { ml_dsa44 } = await loadMlDsa();
+    const { secretKey, publicKey } = ml_dsa44.keygen();
+    const signerId = (await sha256(publicKey)).slice(0, 8);
+    identity = { secretKey, publicKey, signerId, label: label || '' };
+  } else if (label) {
+    identity = { ...identity, label };
+  }
+  saveSigningIdentity(identity);
+  return identity;
+}
+
+/**
+ * Sign-and-build. [buildFn] is a unary `(args) => Promise<Sector[]>` thunk — pass
+ * `a => createContentSectorsAutoSized(a, targetSectorBytes)` (or the Paper equivalent) so this
+ * stays agnostic to which builder/extra params the caller needs. Only [identity.publicKey] is
+ * included when [includePubkey] — SPEC §10's "Key caching": omit it on later codes once a
+ * verifier has already cached it.
+ *
+ * Builds with a same-length PLACEHOLDER signature first, rather than building unsigned and
+ * signed versions from two independent calls. That's not just an optimization: adding ~3.7 KB
+ * of signature fields can itself push a payload from single- to multi-sector, and
+ * createContentSectors only adds `content_sha256` once it's required for a multi-sector split
+ * (SPEC §3) — so an independently-built "unsigned" version can end up missing a field the real
+ * signed version needs, breaking SPEC §10's "signing happens last and feeds back into
+ * nothing" invariant (every other field, including content_sha256, MUST be identical whether
+ * or not signing happens). Building signed-with-a-placeholder first makes every sizing
+ * decision (sector count, content_sha256 inclusion) exactly what the final signed build will
+ * need; [signedMessageHash] then strips the placeholder's signature fields back out (same
+ * operation a verifier performs) to get the correct hash to sign. Swapping the placeholder for
+ * the real signature afterward can't change any sizing decision, since ML-DSA-44 signatures
+ * are fixed-length — same bytes in, same bytes out, everywhere except the signature itself.
+ */
+async function signSectors(buildFn, args, identity, includePubkey = true) {
+  const placeholderArgs = {
+    ...args,
+    signatureAlgorithm: 1,
+    signature: new Uint8Array(2420), // ML-DSA-44 signature length (SPEC §10) — value doesn't matter, only length
+    signerPubkey: includePubkey ? identity.publicKey : null,
+    signerId: identity.signerId,
+    signerLabel: identity.label || null,
+  };
+  const placeholderResult = await buildFn(placeholderArgs);
+  // createContentSectors(AutoSized) returns Sector[] directly; createPaper(AutoSized) returns
+  // { rootHash, sectors } — normalize so signSectors works with either builder.
+  const placeholderSectors = Array.isArray(placeholderResult) ? placeholderResult : placeholderResult.sectors;
+  const placeholderStream = concatBytes(...placeholderSectors.map(s => s.sectorBytes));
+  const hash = await signedMessageHash(placeholderStream);
+  const { ml_dsa44 } = await loadMlDsa();
+  const signature = ml_dsa44.sign(hash, identity.secretKey);
+  return buildFn({ ...placeholderArgs, signature });
 }
 
 /**
@@ -1234,7 +1406,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * directory.
  */
 async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt, step, signatureAlgorithm, signature, signerPubkey, signerId, signerLabel }) {
-  const bulky = [
+  const filesAndRelated = [
     [K.FILES, files.map(f => subMap([
       [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
       [KF.DESCRIPTION, f.description || null],
@@ -1248,6 +1420,12 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
       [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
       [KR.STEP, r.step ?? null],
     ]))],
+  ];
+  // bulky_meta_sha256 covers files/related ONLY, never keys 32-36 — see the matching comment
+  // in Kotlin TagDropCodec.buildPaperStream for why (its VALUE, not just its presence, must
+  // stay identical whether or not the paper ends up signed).
+  const bulkySha = await sha256(cborMap(filesAndRelated));
+  const bulky = [...filesAndRelated,
     [K.SIGNATURE, signature || null],
     [K.SIGNER_PUBKEY, signerPubkey || null],
   ];
@@ -1272,10 +1450,14 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
     [K.CREATED_AT, createdAt || null],
     [K.DOMAIN, domain || null],
     [K.STEP, step ?? null],
+    [K.BULKY_SHA, bulkySha],
+    // Verified Authorship (SPEC §10) fields MUST stay last — "signing happens last": a
+    // verifier reconstructs the unsigned message by trimming a trailing run of keys
+    // 32/35/36 off core_meta_item's raw bytes (see stripTrailingKeys), which only works
+    // if nothing else follows them.
     [K.SIGNATURE_ALGORITHM, signatureAlgorithm || null],
     [K.SIGNER_ID, signerId || null],
     [K.SIGNER_LABEL, signerLabel || null],
-    [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
 }
@@ -1288,8 +1470,17 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
  * into every sector.
  */
 async function createPaper(args) {
-  const stream = await buildPaperStream(args);
-  const rootHash = await sha256first8(stream);
+  // root_hash is computed over the UNSIGNED bytes first (SPEC §10: "signing happens last and
+  // feeds back into nothing" — cache_id/root_hash/content_sha256/bulky_meta_sha256 are
+  // identical whether or not keys 32-36 are subsequently added). Signature fields, if any,
+  // are folded into a second build afterward; root_hash itself never changes.
+  const { signatureAlgorithm, signature, signerPubkey, signerId, signerLabel, ...unsignedArgs } = args;
+  const unsignedStream = await buildPaperStream(unsignedArgs);
+  const rootHash = await sha256first8(unsignedStream);
+  const isSigned = signatureAlgorithm || signature || signerPubkey || signerId || signerLabel;
+  const stream = isSigned
+    ? await buildPaperStream({ ...unsignedArgs, signatureAlgorithm, signature, signerPubkey, signerId, signerLabel })
+    : unsignedStream;
   const maxSectorDataBytes = args.maxSectorDataBytes ?? Infinity;
   return { rootHash, sectors: sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes) };
 }
@@ -2123,6 +2314,11 @@ function buildSingleHeaderInfo(encodeArgs, encrypt) {
 // tab's fields via a delegated listener plus explicit calls after async uploads (see
 // bottom of file). Debounced and sequence-guarded since building/compressing the
 // content is async and can overlap with fast typing.
+//
+// Does NOT account for the "Sign with ML-DSA-44" checkbox (SPEC §10): running a real
+// keygen/sign on every keystroke would be slow, and this is a size estimate, not the actual
+// encode — generateSingle() below does the real signed build. This estimate under-counts
+// sectors by not including the ~2.4-3.7 KB a signature adds when that checkbox is on.
 let singleEstimateSeq = 0;
 const updateSingleEstimate = debounce(async () => {
   const seq = ++singleEstimateSeq;
@@ -2150,7 +2346,16 @@ async function generateSingle() {
   const { encodeArgs, targetSectorBytes, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType } = built;
 
   let sectors;
-  try { sectors = await createContentSectorsAutoSized(encodeArgs, targetSectorBytes); }
+  try {
+    const sign = document.getElementById('s-sign')?.checked;
+    if (sign) {
+      const label = document.getElementById('s-signer-label').value.trim() || null;
+      const identity = await getOrCreateSigningIdentity(label);
+      sectors = await signSectors(a => createContentSectorsAutoSized(a, targetSectorBytes), encodeArgs, identity);
+    } else {
+      sectors = await createContentSectorsAutoSized(encodeArgs, targetSectorBytes);
+    }
+  }
   catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
 
   if (sectors.length > 1) {
