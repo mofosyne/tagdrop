@@ -396,9 +396,15 @@
         <input type="text" id="p-set" placeholder="e.g. sunset-trail">
       </div>
     </div>
-    <div>
-      <label>Slug <small>(optional — this paper's address within the set)</small></label>
-      <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
+    <div class="row">
+      <div>
+        <label>Slug <small>(optional — this paper's address within the set)</small></label>
+        <input type="text" id="p-slug" placeholder="e.g. oak-tree  →  tagdrop://…/oak-tree">
+      </div>
+      <div>
+        <label>Step <small>(optional — 1-based position within the Set trail above, e.g. "3" for the third stop — SPEC §4.3)</small></label>
+        <input type="number" id="p-step" min="1" step="1" placeholder="e.g. 3">
+      </div>
     </div>
     <div>
       <label>Domain <small>(optional — human-readable name finders can type instead of the root hash, e.g. "helloworld"  →  tagdrop://helloworld; falls back to Slug above when absent — SPEC §7 "Domains". Avoid '@' — it's reserved syntax for marking a pinned root hash, e.g. tagdrop://helloworld@&lt;hash&gt;)</small></label>
@@ -815,6 +821,7 @@ const KEY_NAMES = {
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
   50: 'in_reply_to', 51: 'title', 52: 'created_at', 54: 'location_label', 55: 'pixel_art',
+  57: 'step',
 };
 
 function toHexDump(bytes) {
@@ -1001,13 +1008,14 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55 };
+             IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55,
+             STEP:57 };
 // Local keys for files[] sub-map entries (independent namespace, SPEC §3)
 const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
 // Local keys for related[] sub-map entries (independent namespace, SPEC §3)
-const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9, STEP:10 };
 const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
-const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key', [KR.STEP]:'step' };
 const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES):
@@ -1209,7 +1217,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt }) {
+async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt, step }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
@@ -1222,6 +1230,7 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
       [KR.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
       [KR.KEY_MATERIAL, r.keyMaterial || null],
       [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
+      [KR.STEP, r.step ?? null],
     ]))],
   ];
   const bulkyBytes = cborMap(bulky);
@@ -1244,6 +1253,7 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
     [K.TITLE, title || null],
     [K.CREATED_AT, createdAt || null],
     [K.DOMAIN, domain || null],
+    [K.STEP, step ?? null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);
@@ -2258,6 +2268,7 @@ function addRelatedEntry() {
     <div class="row">
       <div><label>Set <small>(optional)</small></label><input type="text" id="rset-${id}"></div>
       <div><label>Slug <small>(optional)</small></label><input type="text" id="rslug-${id}"></div>
+      <div><label>Step <small>(optional — 1-based position of that paper within the Set above, SPEC §4.3; give two entries the same Set+Step to describe a fork)</small></label><input type="number" id="rstep-${id}" min="1" step="1"></div>
     </div>
     <div class="row">
       <div><label>Latitude <small>(optional — for a placeholder map pin)</small></label><input type="text" id="rlat-${id}" placeholder="e.g. -33.8688"></div>
@@ -2292,6 +2303,8 @@ async function computePaperSectorPlan() {
   const slug        = document.getElementById('p-slug').value.trim() || null;
   const domain      = document.getElementById('p-domain').value.trim() || null;
   const description = document.getElementById('p-description').value.trim() || null;
+  const stepRaw     = parseInt(document.getElementById('p-step').value, 10);
+  const step        = Number.isFinite(stepRaw) ? stepRaw : null;
 
   // Collection/icon fields (SPEC §7) — optional. The same values are stamped onto the
   // Paper AND every file's Content QR below, so the finder's home screen can
@@ -2375,6 +2388,7 @@ async function computePaperSectorPlan() {
     const lat = parseFloat(document.getElementById('rlat-' + id)?.value.trim());
     const lng = parseFloat(document.getElementById('rlng-' + id)?.value.trim());
     const radiusM = parseFloat(document.getElementById('rradius-' + id)?.value.trim());
+    const stepRaw = parseInt(document.getElementById('rstep-' + id)?.value, 10);
     const hint = document.getElementById('rhint-' + id)?.value.trim() || '(hint)';
     let paperId, keyMaterial;
     try { paperId = hexToBytes(document.getElementById('rpaperid-' + id)?.value); }
@@ -2389,6 +2403,7 @@ async function computePaperSectorPlan() {
       lat: Number.isFinite(lat) ? lat : null,
       lng: Number.isFinite(lng) ? lng : null,
       radiusM: Number.isFinite(radiusM) ? radiusM : null,
+      step: Number.isFinite(stepRaw) ? stepRaw : null,
     };
   });
 
@@ -2400,7 +2415,7 @@ async function computePaperSectorPlan() {
       label, set, slug, domain, files: manifestFiles, related, description,
       collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-      inReplyTo, title, createdAt,
+      inReplyTo, title, createdAt, step,
     }, targetSectorBytes);
   }
   catch(e) { throw new Error(`Paper encoding failed: ${e.message}`); }
