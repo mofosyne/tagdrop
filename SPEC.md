@@ -173,6 +173,7 @@ TagDrop's wire format has four internal CBOR structures, all integer-keyed maps 
 | 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
 | 55 | `pixel_art` | bool (opt, default `false`) | `core_meta_item` (Content only) — render with nearest-neighbour scaling (no smoothing); see §7 "Pixel art" |
 | 56 | `source_url` | text (opt) | `core_meta_item` — URL of a drop-source registry JSON file; see §17 |
+| 57 | `step` | uint (opt) | `core_meta_item` (Paper only) — this paper's own absolute position within its `set` trail; see §4.3 "Trail steps and forks" |
 
 Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
 `chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
@@ -218,6 +219,7 @@ conflict, because CBOR map keys are scoped per-map.
 | 7 | `radius_m` | float64 (opt) | Circle-of-uncertainty radius in meters |
 | 8 | `key_material` | bytes (32, opt) | Decryption key for that paper's content (§9) |
 | 9 | `retain_key` | bool (opt, default `true`) | See §9 |
+| 10 | `step` | uint (opt) | Absolute position of the related paper within its `set` trail; see §4.3 "Trail steps and forks" |
 
 **`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
 1`.** Without it, an adversary who substitutes one sector of a multi-sector
@@ -254,7 +256,7 @@ Each element is a CBOR map using local keys **1** (`slug`), **2** (`mime_type`),
 
 ### Related paper sub-keys (elements of key 16)
 
-Each element is a CBOR map using local keys **1** (`hint`), **2** (`set`), **3** (`slug`), **4** (`paper_id`), **5** (`lat`), **6** (`lng`), **7** (`radius_m`), **8** (`key_material`), **9** (`retain_key`). These keys are local to the sub-map and independent of the top-level key space — see the `related[]` entry key table in §3.
+Each element is a CBOR map using local keys **1** (`hint`), **2** (`set`), **3** (`slug`), **4** (`paper_id`), **5** (`lat`), **6** (`lng`), **7** (`radius_m`), **8** (`key_material`), **9** (`retain_key`), **10** (`step`). These keys are local to the sub-map and independent of the top-level key space — see the `related[]` entry key table in §3.
 
 ---
 
@@ -433,16 +435,17 @@ core_meta_item {
   26: -33.8688,                  // lat — optional, author-declared location of this paper
   27: 151.2093,                  // lng — optional, author-declared location of this paper
   48: 25.0,                      // radius_m — optional, circle of uncertainty in meters
+  57: 3,                         // step — this paper is stop 3 of the "sunset-trail" set
 }
 bulky_meta_item {
-  15: [                         // files — directory of codes on this paper
-    {20: "index", 21: "text/html",    22: h'<file_id>', 41: "A poem to read"},
-    {20: "map",   21: "image/svg+xml", 22: h'<file_id>', 41: "A hand-drawn map"},
+  15: [                         // files — directory of codes on this paper (local keys, see §3)
+    {1: "index", 2: "text/html",    3: h'<file_id>', 4: "A poem to read"},
+    {1: "map",   2: "image/svg+xml", 3: h'<file_id>', 4: "A hand-drawn map"},
   ],
-  16: [                         // related — hints to other papers
-    {3: "Next stop: the red letterbox 200m north", 14: "letterbox",
-     23: h'<paper_id>', 26: -33.8688, 27: 151.2093, 48: 50.0},
-    {3: "Start of trail: town square notice board"},
+  16: [                         // related — hints to other papers (local keys, see §3)
+    {1: "Next stop: the red letterbox 200m north", 2: "sunset-trail", 3: "letterbox",
+     4: h'<paper_id>', 5: -33.8688, 6: 151.2093, 7: 50.0, 10: 4},
+    {1: "Start of trail: town square notice board", 2: "sunset-trail", 10: 1},
   ],
 }
 content: (empty)
@@ -494,6 +497,48 @@ related papers that haven't been scanned yet, helping the finder navigate
 toward them. Once that paper is scanned, its own `ScannedPaper` location
 (resolved from the device's live GPS fix and/or that paper's own declared
 location, per §4.2's priority rule) replaces the placeholder.
+
+**Trail steps and forks:** `step` (key 57 in `core_meta_item`; local key 10
+in a `related` entry) is an optional absolute ordinal — "this is stop N" —
+scoped by `set` (key 13 / local key 2), not globally: two papers' `step`
+values are only comparable when their `set` strings match. `step` is
+**1-based**: the first stop in a trail is `step: 1`, not `0` (unlike
+`sector_index`, §4.1, which is 0-based — the two counters are unrelated and
+deliberately don't share a convention). A paper declares its own position
+via its `core_meta_item`'s `step`; a `related` entry declares the position
+of the paper it points to, so a finder can see "stop 4 of the sunset-trail"
+before ever scanning stop 4. There is no declared trail length anywhere in
+the format — a decoder only knows about the `step` values it has actually
+seen mentioned (in a scanned paper's own `step`, or in a `related` entry
+pointing at one), so "stop 4" can be shown with confidence but "stop 4 of
+9" cannot unless every paper 1 through 9 happens to have been referenced
+somewhere; a decoder MUST NOT assume the highest `step` value it has seen
+is the trail's true last stop. Absolute numbering (rather than a relative
+"next"/"previous" offset) is still the right choice despite this: it keeps
+degrading gracefully when a stop is missing — a decoder can still place a
+newly-scanned paper at its correct position among whatever other steps it
+already knows about, gaps and all — and it doesn't require knowing your own
+position to interpret a pointer, unlike a relative offset, which breaks the
+moment one hop is scanned out of order or lost.
+
+A **fork** is just two or more `related` entries that share both the same
+`set` and the same `step` — the app presents all of them as alternative
+next stops rather than picking one. Entries that share a `step` but *not*
+the same `set` are not a fork; they're two unrelated trails that happen to
+cross at the same physical hub paper (e.g. a noticeboard that is stop 4 on
+"sunset-trail" and, separately, stop 2 on "history-trail"), and are shown as
+separate trails with separate progress. `step` is deliberately not required
+to be unique per `related[]` array for exactly this reason.
+
+**Missing-tag resilience:** because a trail is just a chain of `related`
+pointers, a single missing or destroyed stop can strand a finder who only
+ever listed the immediate next one. There's no protocol-level fix for
+this — the wire format has no notion of "skip" — so authors SHOULD list
+more than one stop ahead (e.g. both stop 5 and stop 6 from stop 4), or a
+link back to a known hub/index stop, giving a finder a way around a single
+gone-missing tag. This is authoring guidance, not a new mechanism: it's the
+same `related[]` array already used for the single-pointer case, just
+populated with an extra entry.
 
 **Navigation:** HTML files on the paper can link to other files using:
 ```html
@@ -1647,6 +1692,7 @@ Version history:
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 - Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
+- Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional 1-based absolute ordinal scoped by `set` (no declared trail length), letting a decoder show "stop N" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.
 
 ---
 
