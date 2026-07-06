@@ -501,15 +501,25 @@ location, per §4.2's priority rule) replaces the placeholder.
 **Trail steps and forks:** `step` (key 57 in `core_meta_item`; local key 10
 in a `related` entry) is an optional absolute ordinal — "this is stop N" —
 scoped by `set` (key 13 / local key 2), not globally: two papers' `step`
-values are only comparable when their `set` strings match. A paper declares
-its own position via its `core_meta_item`'s `step`; a `related` entry
-declares the position of the paper it points to, so a finder can see "stop 4
-of the sunset-trail" before ever scanning stop 4. Absolute numbering (rather
-than a relative "next"/"previous" offset) is deliberate: it keeps degrading
-gracefully when a stop is missing (a decoder can still show "stop 4 of 9"
-even with gaps) and doesn't require knowing your own position to interpret
-a pointer, unlike a relative offset which breaks the moment one hop is
-scanned out of order or lost.
+values are only comparable when their `set` strings match. `step` is
+**1-based**: the first stop in a trail is `step: 1`, not `0` (unlike
+`sector_index`, §4.1, which is 0-based — the two counters are unrelated and
+deliberately don't share a convention). A paper declares its own position
+via its `core_meta_item`'s `step`; a `related` entry declares the position
+of the paper it points to, so a finder can see "stop 4 of the sunset-trail"
+before ever scanning stop 4. There is no declared trail length anywhere in
+the format — a decoder only knows about the `step` values it has actually
+seen mentioned (in a scanned paper's own `step`, or in a `related` entry
+pointing at one), so "stop 4" can be shown with confidence but "stop 4 of
+9" cannot unless every paper 1 through 9 happens to have been referenced
+somewhere; a decoder MUST NOT assume the highest `step` value it has seen
+is the trail's true last stop. Absolute numbering (rather than a relative
+"next"/"previous" offset) is still the right choice despite this: it keeps
+degrading gracefully when a stop is missing — a decoder can still place a
+newly-scanned paper at its correct position among whatever other steps it
+already knows about, gaps and all — and it doesn't require knowing your own
+position to interpret a pointer, unlike a relative offset, which breaks the
+moment one hop is scanned out of order or lost.
 
 A **fork** is just two or more `related` entries that share both the same
 `set` and the same `step` — the app presents all of them as alternative
@@ -1682,7 +1692,7 @@ Version history:
 - ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 - Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
-- Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional absolute ordinal scoped by `set`, letting a decoder show "stop N of the trail" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.
+- Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional 1-based absolute ordinal scoped by `set` (no declared trail length), letting a decoder show "stop N" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.
 
 ---
 
