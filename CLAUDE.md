@@ -197,24 +197,50 @@ again or a concrete need emerges.
   text, never raw camera frames/bitmaps, so this would need a parallel
   capture pipeline (frame access, contour detection, homography warp,
   crop) built from scratch.
+- ~~**Willow-style deterministic tie-break for domain resolution**~~ —
+  **done.** [sneakerweb.org](https://sneakerweb.org)'s underlying **Willow**
+  protocol orders conflicting entries by newest timestamp, then greater hash
+  as a tie-break. SPEC.md's "Picking the closest match" (domain resolution,
+  §7) now uses the same rule as its second tier, between location proximity
+  (still first) and local scan-recency (still the last-resort fallback):
+  among candidates declaring `created_at` (key 52), prefer the newest, tied
+  by greater `root_hash`. Implemented in
+  `TagDropLinkResolver.pickClosestDomainMatch()` (Android only — the web
+  reader has no domain/collection browsing screen to apply this to, per the
+  homepage-convention note above). Required persisting `created_at` onto
+  `ScannedPaper` (it was already parsed from the wire format onto
+  `TagDropPayload.Paper` but never stored) — see `AppDatabase` migration
+  22→23. No SPEC.md wire-format change; this is a pure resolution-algorithm
+  refinement, since `created_at` already existed as an optional field.
 - **Sneakerweb-inspired collection merge/sync** (assessed: *interesting
-  research idea, not started*). [sneakerweb.org](https://sneakerweb.org) is a
-  kindred "physical-media-instead-of-network" project: a peer-to-peer web
-  publishing protocol with no DNS/registrars/hosts, where `.snk` site
-  bundles are traded over physical storage media ("sneakernet") and merged
-  via the **Willow** protocol (CRDT-style sync + forgery prevention).
-  TagDrop's Paper format already covers half of that idea (a multi-file
-  bundle with an `index` homepage convention, see above), but has no
-  merge/versioning story — a paper is an immutable, author-sealed snapshot,
-  with no way to reconcile two independently-updated copies of the same
-  collection later. If TagDrop ever wants *living*, updatable collections
-  instead of always publishing a new sealed paper, Willow's merge approach
-  is worth studying. Not queued as a feature — unclear how mergeable state
-  would interact with the current content-addressed `cache_id`/`sha256`
-  model, and it's a substantial new subsystem (versioning, conflict
-  resolution, forgery prevention) — but worth a revisit if a concrete need
-  for updatable/synced collections shows up. Given a shoutout in the
-  website's "Related Projects" section (`docs/index.html`).
+  research idea, not started*). Willow (the CRDT-style sync/forgery-
+  prevention protocol sneakerweb.org is built on) has a real merge/versioning
+  story that TagDrop's Paper format lacks entirely — a paper is an
+  immutable, author-sealed snapshot, with no way to reconcile two
+  independently-updated copies of the same collection later (the tie-break
+  above picks *between* snapshots, it doesn't merge them). If TagDrop ever
+  wants *living*, updatable collections instead of always publishing a new
+  sealed paper, Willow's merge approach is worth studying in full. Not
+  queued — unclear how mergeable state would interact with the current
+  content-addressed `cache_id`/`sha256` model, and it's a substantial new
+  subsystem (versioning, conflict resolution, forgery prevention) — but
+  worth a revisit if a concrete need for updatable/synced collections shows
+  up. Given a shoutout in the website's "Related Projects" section
+  (`docs/index.html`).
+- **Sneakerweb/Willow interop, one direction only** (assessed: *plausible,
+  long-term, not started*). Willow's live bidirectional sync (WGPS) doesn't
+  fit TagDrop at all — a printed QR/NFC code is a sealed, fire-and-forget
+  monologue with no return channel, unlike Willow's assumption that both
+  peers are reachable for a multi-round-trip negotiation. But a **one-way**
+  export is plausible: a TagDrop `Paper`'s `files[]` already look like a
+  restricted case of Willow `Entry`s (`slug`≈path, `sha256`≈payload_digest,
+  `created_at`≈timestamp), so the app could in principle export a scanned
+  collection as Willow entries/a `.snk`-like bundle for import into a real
+  Willow store — never the reverse, since there's no way to push a Willow
+  update back down onto an already-printed sticker. Not queued — no known
+  Willow-side import format to target yet, and it's unclear anyone
+  scanning TagDrop codes also runs Willow — but worth a revisit if that
+  changes.
 - **NFC: auto-fallback to standard-record-readable tags when they'd fit
   unsplit** (assessed: *medium usefulness, medium complexity — reasonable
   to defer*; tracked in

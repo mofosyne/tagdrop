@@ -90,7 +90,8 @@ class TagDropLinkResolver(private val db: AppDatabase) {
     /**
      * Resolves a navigation link. [deviceLat]/[deviceLng] are the device's current position
      * (if known) — used only to pick among several papers that claim the same domain name
-     * (SPEC §7 "Picking the closest match"); omitting them just falls back to recency.
+     * (SPEC §7 "Picking the closest match"); omitting them just falls back to `created_at`, then
+     * scan recency.
      */
     suspend fun resolve(uri: String, deviceLat: Double? = null, deviceLng: Double? = null): Resolution {
         return when {
@@ -153,10 +154,19 @@ class TagDropLinkResolver(private val db: AppDatabase) {
 
     /**
      * Finds scanned papers claiming [domainName] — via `domain`, falling back to `slug` when
-     * `domain` is absent (SPEC §7) — matched case-insensitively, and picks the closest one when
-     * more than one matches (domains are unilateral/uncoordinated, so collisions are expected,
-     * not an error): nearest by device position when both a position and at least one
-     * candidate's location are known, otherwise the most recently scanned candidate.
+     * `domain` is absent (SPEC §7) — matched case-insensitively, and picks one when more than one
+     * matches (domains are unilateral/uncoordinated, so collisions are expected, not an error):
+     *
+     * 1. Nearest by device position, when both a position and at least one candidate's location
+     *    are known.
+     * 2. Otherwise, among candidates that declare `created_at` (SPEC §3, key 52), the one with
+     *    the newest author-declared timestamp — a deterministic, Willow-style tie-break
+     *    (`created_at` first, `root_hash` as a stable secondary key) so two devices that scanned
+     *    the same candidates agree on the pick regardless of the order they scanned them in.
+     *    Skipped entirely if no candidate declares `created_at`.
+     * 3. Otherwise, the most recently *scanned* candidate — a purely local, device-specific
+     *    fallback signal, weaker than 2 because it reflects this device's discovery order, not
+     *    the content's actual authored freshness.
      */
     private suspend fun pickClosestDomainMatch(domainName: String, deviceLat: Double?, deviceLng: Double?): ScannedPaper? {
         val candidates = db.paperDao().getAllPapers().filter {
@@ -168,6 +178,10 @@ class TagDropLinkResolver(private val db: AppDatabase) {
             if (located.isNotEmpty()) {
                 return located.minByOrNull { haversineMeters(deviceLat, deviceLng, it.lat!!, it.lng!!) }
             }
+        }
+        val declaresCreatedAt = candidates.filter { it.createdAt != null }
+        if (declaresCreatedAt.isNotEmpty()) {
+            return declaresCreatedAt.maxWithOrNull(compareBy({ it.createdAt }, { it.rootHash }))
         }
         return candidates.maxByOrNull { it.scannedAt }
     }

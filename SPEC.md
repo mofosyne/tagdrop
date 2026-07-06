@@ -876,15 +876,27 @@ candidate, the app picks a single one using:
    a known location (declared, or resolved from a live GPS fix when it was
    scanned — §4.2's location/priority rules), pick the candidate nearest to
    the device.
-2. Otherwise — no device position, or no candidate has a location — pick
-   the most recently scanned candidate.
+2. Otherwise, among candidates that declare `created_at` (key 52), pick the
+   one with the newest author-declared timestamp, breaking ties by the
+   greater `root_hash` — a deterministic rule (borrowed from the
+   [Willow protocol](https://willowprotocol.org)'s entry-ordering: newest
+   timestamp wins, hash as a stable tie-break) so that two devices which
+   scanned the same set of candidates agree on the pick regardless of the
+   order they scanned them in. Skipped entirely if no candidate declares
+   `created_at`.
+3. Otherwise — no device position, no candidate location, and no candidate
+   declares `created_at` — pick the most recently *scanned* candidate.
 
-This favours "the one you're standing next to" when that's knowable, and
-"the one you saw most recently" otherwise, both better guesses than an
-arbitrary pick. If no known paper matches the name under either field, the
-app reports the domain as not found (with the requested `slug`, so the UI
-can still show what was being looked for) rather than treating it as
-invalid input — the name may simply not have been scanned yet. A future,
+This favours "the one you're standing next to" when that's knowable, then
+"the one the author most recently made" when that's declared, and "the one
+you personally saw most recently" as a last resort — each a better guess
+than an arbitrary pick, and each weaker than the one before it: rule 2 is
+still just an unverified, self-declared clock (like `created_at` always is,
+§3), and rule 3 reflects this device's own discovery order, not the
+content's actual freshness. If no known paper matches the name under either
+field, the app reports the domain as not found (with the requested `slug`,
+so the UI can still show what was being looked for) rather than treating it
+as invalid input — the name may simply not have been scanned yet. A future,
 backward-compatible refinement could prefer, among several candidates, the
 one whose §10 `signer_id` the device has already trusted under this domain
 — pinning *authority* over a name without giving up the name's

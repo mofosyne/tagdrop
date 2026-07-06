@@ -21,7 +21,8 @@ data class ScannedPaper(
     val icon: String? = null,            // optional emoji icon
     val createdByMe: Boolean = false,    // true if authored in-app (Create Paper), not scanned
     val inReplyTo: String? = null,       // hex-encoded cache_id/root_hash of the single parent this is replying to (SPEC §7)
-    val domain: String? = null           // optional human-readable tagdrop://<domain>/<slug> name; falls back to slug if absent (SPEC §7)
+    val domain: String? = null,          // optional human-readable tagdrop://<domain>/<slug> name; falls back to slug if absent (SPEC §7)
+    val createdAt: Long? = null          // author-declared Unix timestamp (seconds) this payload was authored, unverified (SPEC §3); distinct from scannedAt
 ) {
     override fun equals(other: Any?) = other is ScannedPaper && rootHash == other.rootHash
     override fun hashCode() = rootHash.hashCode()
