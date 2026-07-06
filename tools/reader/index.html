@@ -541,12 +541,13 @@ const K = {
   SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
-  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55
+  IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55,
+  STEP:57
 };
 // Local keys for files[] sub-map entries (independent namespace, SPEC §3)
 const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
 // Local keys for related[] sub-map entries (independent namespace, SPEC §3)
-const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9, STEP:10 };
 
 // CBOR-sequence envelope (SPEC §2):
 // tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
@@ -616,9 +617,10 @@ const KEY_NAMES = {
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
   48: 'radius_m', 49: 'prefer_declared_location',
   50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label', 55: 'pixel_art',
+  57: 'step',
 };
 const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
-const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key', [KR.STEP]:'step' };
 const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 function toHexDump(bytes) {
@@ -882,6 +884,7 @@ function paperFromParts(parts, rootHash) {
       radiusM:     entry[KR.RADIUS_M] ?? null,
       keyMaterial: entry[KR.KEY_MATERIAL] ?? null,
       retainKey:   entry[KR.RETAIN_KEY] !== false,
+      step:        entry[KR.STEP] ?? null,
     }];
   }) : [];
 
@@ -908,6 +911,7 @@ function paperFromParts(parts, rootHash) {
     title:           parts.core[K.TITLE] ?? null,
     createdAt:       parts.core[K.CREATED_AT] ?? null,
     domain:          parts.core[K.DOMAIN] ?? null,
+    step:            parts.core[K.STEP] ?? null,
   };
 }
 
@@ -1808,6 +1812,37 @@ async function openReplyTarget(kind, id) {
 // Slugs treated as a paper's homepage/landing page (see renderPaper below).
 const HOME_SLUGS = ['index', 'index.html', 'index.md'];
 
+// Google's documented `dir/?api=1` URL scheme (origin + destination + pipe-separated
+// waypoints) tops out around 25 total stops for the consumer maps.google.com UI.
+const GOOGLE_MAPS_MAX_WAYPOINTS = 25;
+
+/** Every locally-known (scanned) paper sharing `set` with this one, that has both a
+ *  `step` (SPEC §4.3) and a resolved location, ordered ascending by step. A paper
+ *  missing either is left out — there's no wire-format way to place it in the
+ *  sequence or on the map, so silently dropping it (rather than guessing) is the
+ *  only safe option. */
+async function collectTrailWaypoints(set) {
+  const papers = await dbGetAll('papers');
+  return papers
+    .filter(p => p.set === set && p.step != null && p.lat != null && p.lng != null)
+    .sort((a, b) => a.step - b.step);
+}
+
+/** Builds a Google Maps multi-stop walking-directions link from ordered waypoints
+ *  (SPEC §4.3's `step`). This draws a routed path along roads/paths between the
+ *  stops, not a straight line through the exact scanned coordinates — the
+ *  practical tradeoff for a link that opens directly in the Google Maps app with
+ *  no import step. */
+function googleMapsTrailUrl(waypoints) {
+  const points = waypoints.slice(0, GOOGLE_MAPS_MAX_WAYPOINTS).map(p => `${p.lat},${p.lng}`);
+  const params = new URLSearchParams({
+    api: '1', origin: points[0], destination: points[points.length - 1], travelmode: 'walking',
+  });
+  const middle = points.slice(1, -1);
+  if (middle.length) params.set('waypoints', middle.join('|'));
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
 async function renderPaper(rootHash) {
   const paper = await dbGet('papers', rootHash);
   if (!paper) return;
@@ -1835,6 +1870,17 @@ async function renderPaper(rootHash) {
   if (homeCache) {
     hdr += ' <button class="secondary open-home" data-id="' + escHtml(homeFile.fileId) +
       '" data-slug="' + escHtml(homeFile.slug) + '">🏠 Open homepage</button>';
+  }
+
+  // Trail steps (SPEC §4.3): once at least two locally-known papers in this `set` have
+  // both a `step` and a resolved location, offer a one-tap route through them in order.
+  if (paper.set) {
+    const waypoints = await collectTrailWaypoints(paper.set);
+    if (waypoints.length >= 2) {
+      const url = googleMapsTrailUrl(waypoints);
+      hdr += ' <button class="secondary open-trail-maps" data-url="' + escHtml(url) +
+        '">🧭 Open trail in Google Maps (' + waypoints.length + ' stops)</button>';
+    }
   }
   document.getElementById('paperHeader').innerHTML = hdr;
 
@@ -2331,10 +2377,14 @@ document.getElementById('fileList').addEventListener('click', async e => {
 });
 
 document.getElementById('paperHeader').addEventListener('click', async e => {
-  const btn = e.target.closest('.open-home');
-  if (!btn) return;
-  const cached = await dbGet('caches', btn.dataset.id);
-  if (cached) await showContent(cached.mimeType, cached.content, btn.dataset.slug, btn.dataset.id);
+  const homeBtn = e.target.closest('.open-home');
+  if (homeBtn) {
+    const cached = await dbGet('caches', homeBtn.dataset.id);
+    if (cached) await showContent(cached.mimeType, cached.content, homeBtn.dataset.slug, homeBtn.dataset.id);
+    return;
+  }
+  const trailBtn = e.target.closest('.open-trail-maps');
+  if (trailBtn) window.open(trailBtn.dataset.url, '_blank', 'noopener');
 });
 
 document.getElementById('paperReplyInfo').addEventListener('click', async e => {
