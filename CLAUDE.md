@@ -197,6 +197,24 @@ again or a concrete need emerges.
   text, never raw camera frames/bitmaps, so this would need a parallel
   capture pipeline (frame access, contour detection, homography warp,
   crop) built from scratch.
+- **Sneakerweb-inspired collection merge/sync** (assessed: *interesting
+  research idea, not started*). [sneakerweb.org](https://sneakerweb.org) is a
+  kindred "physical-media-instead-of-network" project: a peer-to-peer web
+  publishing protocol with no DNS/registrars/hosts, where `.snk` site
+  bundles are traded over physical storage media ("sneakernet") and merged
+  via the **Willow** protocol (CRDT-style sync + forgery prevention).
+  TagDrop's Paper format already covers half of that idea (a multi-file
+  bundle with an `index` homepage convention, see above), but has no
+  merge/versioning story — a paper is an immutable, author-sealed snapshot,
+  with no way to reconcile two independently-updated copies of the same
+  collection later. If TagDrop ever wants *living*, updatable collections
+  instead of always publishing a new sealed paper, Willow's merge approach
+  is worth studying. Not queued as a feature — unclear how mergeable state
+  would interact with the current content-addressed `cache_id`/`sha256`
+  model, and it's a substantial new subsystem (versioning, conflict
+  resolution, forgery prevention) — but worth a revisit if a concrete need
+  for updatable/synced collections shows up. Given a shoutout in the
+  website's "Related Projects" section (`docs/index.html`).
 - **NFC: auto-fallback to standard-record-readable tags when they'd fit
   unsplit** (assessed: *medium usefulness, medium complexity — reasonable
   to defer*; tracked in
