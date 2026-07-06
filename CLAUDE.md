@@ -197,6 +197,72 @@ again or a concrete need emerges.
   text, never raw camera frames/bitmaps, so this would need a parallel
   capture pipeline (frame access, contour detection, homography warp,
   crop) built from scratch.
+- ~~**Willow-style deterministic tie-break for domain resolution**~~ —
+  **done.** [sneakerweb.org](https://sneakerweb.org)'s underlying **Willow**
+  protocol orders conflicting entries by newest timestamp, then greater hash
+  as a tie-break. SPEC.md's "Picking the closest match" (domain resolution,
+  §7) now uses the same rule as its second tier, between location proximity
+  (still first) and local scan-recency (still the last-resort fallback):
+  among candidates declaring `created_at` (key 52), prefer the newest, tied
+  by greater `root_hash`. Implemented in
+  `TagDropLinkResolver.pickClosestDomainMatch()` (Android only — the web
+  reader has no domain/collection browsing screen to apply this to, per the
+  homepage-convention note above). Required persisting `created_at` onto
+  `ScannedPaper` (it was already parsed from the wire format onto
+  `TagDropPayload.Paper` but never stored) — see `AppDatabase` migration
+  22→23. No SPEC.md wire-format change; this is a pure resolution-algorithm
+  refinement, since `created_at` already existed as an optional field.
+- **Sneakerweb-inspired collection merge/sync** (assessed: *interesting
+  research idea, not started*). Willow (the CRDT-style sync/forgery-
+  prevention protocol sneakerweb.org is built on) has a real merge/versioning
+  story that TagDrop's Paper format lacks entirely — a paper is an
+  immutable, author-sealed snapshot, with no way to reconcile two
+  independently-updated copies of the same collection later (the tie-break
+  above picks *between* snapshots, it doesn't merge them). If TagDrop ever
+  wants *living*, updatable collections instead of always publishing a new
+  sealed paper, Willow's merge approach is worth studying in full. Not
+  queued — unclear how mergeable state would interact with the current
+  content-addressed `cache_id`/`sha256` model, and it's a substantial new
+  subsystem (versioning, conflict resolution, forgery prevention) — but
+  worth a revisit if a concrete need for updatable/synced collections shows
+  up. Given a shoutout in the website's "Related Projects" section
+  (`docs/index.html`).
+- **Sneakerweb/Willow interop, one direction only** (assessed: *plausible,
+  long-term, not started*). Willow's live bidirectional sync (WGPS) doesn't
+  fit TagDrop at all — a printed QR/NFC code is a sealed, fire-and-forget
+  monologue with no return channel, unlike Willow's assumption that both
+  peers are reachable for a multi-round-trip negotiation. But a **one-way**
+  export is plausible: a TagDrop `Paper`'s `files[]` already look like a
+  restricted case of Willow `Entry`s (`slug`≈path, `sha256`≈payload_digest,
+  `created_at`≈timestamp), so the app could in principle export a scanned
+  collection as Willow entries/a `.snk`-like bundle for import into a real
+  Willow store — never the reverse, since there's no way to push a Willow
+  update back down onto an already-printed sticker. Not queued — no known
+  Willow-side import format to target yet, and it's unclear anyone
+  scanning TagDrop codes also runs Willow — but worth a revisit if that
+  changes.
+  - **Signature scheme mismatch, assessed and rejected as a reason to
+    change TagDrop's own scheme.** Willow/Meadowcap authorizes entries with
+    Ed25519; TagDrop signs with ML-DSA-44 (post-quantum, SPEC §10) on
+    purpose — Ed25519 is smaller and has native platform support, but it's
+    exactly the scheme Shor's algorithm breaks outright and retroactively,
+    which matters far more for TagDrop's permanently-sealed printed
+    artifacts than for Willow's live, migratable store. Condition for
+    revisiting TagDrop's own scheme was "only if Willow's choice has
+    technical parity or superiority" — it doesn't, on the axis TagDrop
+    actually optimized for, so no change. If this interop is ever built,
+    the narrower option is adding Ed25519 *verification only* to the
+    reader, to check imported Willow entries' existing signatures, without
+    TagDrop ever signing anything with Ed25519 itself.
+  - **Outreach lead (not yet contacted):** Willow's protocol and
+    (apparently) sneakerweb are maintained by **Aljoscha Meyer** — Codeberg
+    `AljoschaMeyer` (org `worm-blossom`, e.g.
+    [willow_rs](https://codeberg.org/worm-blossom/willow_rs)), personal
+    site [aljoscha-meyer.de](https://aljoscha-meyer.de). No direct email
+    found yet (site fetch kept hitting transient API errors mid-session).
+    Mirrors the existing deaddrops.com outreach in readme.md ("Community
+    conventions" → "Dead Drops project") — once actually sent, document it
+    there the same way, not here.
 - **NFC: auto-fallback to standard-record-readable tags when they'd fit
   unsplit** (assessed: *medium usefulness, medium complexity — reasonable
   to defer*; tracked in

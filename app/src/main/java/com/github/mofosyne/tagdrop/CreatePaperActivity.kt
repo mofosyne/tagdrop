@@ -247,7 +247,8 @@ class CreatePaperActivity : AppCompatActivity() {
                     slug        = manifest.slug,
                     domain      = manifest.domain,
                     cborBytes   = TagDropCodec.paperStreamBytes(manifest),
-                    createdByMe = true
+                    createdByMe = true,
+                    createdAt   = manifest.createdAt
                 )
             )
             toast(getString(R.string.cache_saved))

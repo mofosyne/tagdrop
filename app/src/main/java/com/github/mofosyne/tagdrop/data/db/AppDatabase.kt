@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class, DropSource::class], version = 22, exportSchema = false)
+@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class, DropSource::class], version = 23, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cacheDao(): CacheDao
     abstract fun paperDao(): PaperDao
@@ -206,6 +206,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Author-declared created_at (SPEC §3, key 52), used as a deterministic
+                // tie-break when several scanned papers claim the same domain name (SPEC §7).
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN createdAt INTEGER")
+            }
+        }
+
         private val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -260,7 +268,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 DB_NAME
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
             .addCallback(SEED_CALLBACK)
             .build().also { INSTANCE = it }
         }

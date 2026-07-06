@@ -91,7 +91,8 @@ class TagDropLinkResolverTest {
         domain: String? = null,
         scannedAt: Long = 0L,
         lat: Double? = null,
-        lng: Double? = null
+        lng: Double? = null,
+        createdAt: Long? = null
     ): ScannedPaper {
         val (manifest, _) = TagDropCodec.createPaper(label = label, set = null, slug = slug, files = files, domain = domain)
         val paper = ScannedPaper(
@@ -103,6 +104,7 @@ class TagDropLinkResolverTest {
             domain = domain,
             lat = lat,
             lng = lng,
+            createdAt = createdAt,
             cborBytes = TagDropCodec.paperStreamBytes(manifest)
         )
         paperDao.papers[paper.rootHash] = paper
@@ -383,6 +385,43 @@ class TagDropLinkResolverTest {
         // Device position is known, but no candidate declares a location -- falls back to recency.
         val result = resolver.resolve("tagdrop://cafe", deviceLat = 10.0, deviceLng = 10.0)
         assertEquals(TagDropLinkResolver.Resolution.PaperFound(newer, null), result)
+    }
+
+    // ── created_at tie-break (SPEC §7 "Picking the closest match", Willow-style) ─
+
+    @Test fun multipleDomainClaimsPreferNewerCreatedAtOverScanRecency() = runBlocking {
+        // Scanned in the opposite order to createdAt -- the author-declared timestamp wins over
+        // this device's own scan-discovery order, which is only a weaker, last-resort signal.
+        storePaper(label = "Scanned Last, Authored First", domain = "cafe", scannedAt = 2L, createdAt = 100L)
+        val authoredNewer = storePaper(label = "Scanned First, Authored Last", domain = "cafe", scannedAt = 1L, createdAt = 200L)
+        val result = resolver.resolve("tagdrop://cafe")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(authoredNewer, null), result)
+    }
+
+    @Test fun multipleDomainClaimsCreatedAtTieBreaksByRootHash() = runBlocking {
+        // Equal created_at: the deterministic secondary key (greater root_hash) decides, not
+        // scan order, so two devices that scanned both candidates always agree on the pick.
+        val a = storePaper(label = "Candidate A", domain = "cafe", scannedAt = 1L, createdAt = 100L)
+        val b = storePaper(label = "Candidate B", domain = "cafe", scannedAt = 2L, createdAt = 100L)
+        val expected = if (a.rootHash > b.rootHash) a else b
+        val result = resolver.resolve("tagdrop://cafe")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(expected, null), result)
+    }
+
+    @Test fun multipleDomainClaimsLocationStillTakesPriorityOverCreatedAt() = runBlocking {
+        val near = storePaper(label = "Near Cafe", domain = "cafe", lat = 10.0, lng = 10.0, createdAt = 100L)
+        storePaper(label = "Far Cafe", domain = "cafe", lat = 50.0, lng = 50.0, createdAt = 200L)
+        val result = resolver.resolve("tagdrop://cafe", deviceLat = 10.1, deviceLng = 10.1)
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(near, null), result)
+    }
+
+    @Test fun multipleDomainClaimsIgnoreCandidatesWithoutCreatedAtWhenAtLeastOneDeclaresIt() = runBlocking {
+        // "Newer Cafe" was scanned more recently, but doesn't declare created_at, so it's
+        // skipped by rule 2 entirely -- the one candidate that does declare it wins.
+        storePaper(label = "Newer Scan, No created_at", domain = "cafe", scannedAt = 2L)
+        val declared = storePaper(label = "Older Scan, Declares created_at", domain = "cafe", scannedAt = 1L, createdAt = 50L)
+        val result = resolver.resolve("tagdrop://cafe")
+        assertEquals(TagDropLinkResolver.Resolution.PaperFound(declared, null), result)
     }
 
     // ── HOME_SLUGS convention ─────────────────────────────────────────────────
