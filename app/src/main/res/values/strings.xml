@@ -77,6 +77,10 @@
     <string name="lock_badge_desc">Hidden content not yet unlocked — scan its key code to reveal more</string>
     <string name="unlock_badge_desc">Content was encrypted — now unlocked with its key</string>
     <string name="home_badge_desc">This collection\'s homepage</string>
+    <string name="signature_verified_desc">Verified Authorship: signed by %1$s, signature checks out</string>
+    <string name="signature_invalid_desc">Verified Authorship: claims to be signed by %1$s but the signature does NOT verify</string>
+    <string name="signature_pending_desc">Verified Authorship: signed by %1$s, but the signer\'s public key hasn\'t been seen yet</string>
+    <string name="signature_unknown_signer">an unknown signer</string>
     <string name="thumbnail_desc">Image preview</string>
     <string name="delete_confirm_title">Delete item?</string>
     <string name="delete_confirm_message">Remove \"%1$s\" from this device? This cannot be undone.</string>
@@ -108,6 +112,8 @@
     <string name="hint_content">Content (text or HTML)</string>
     <string name="label_mime_type">MIME type</string>
     <string name="label_compression">Compress with DEFLATE (saves space for HTML/text)</string>
+    <string name="label_sign">Sign with Verified Authorship (ML-DSA-44)</string>
+    <string name="hint_signer_label">Signer name (optional)</string>
     <string name="button_generate">Generate QR Code</string>
     <string name="button_share_uri">Share URI</string>
     <string name="button_print">Print</string>

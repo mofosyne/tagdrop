@@ -9,9 +9,12 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
 import com.github.mofosyne.tagdrop.data.db.FoundCache
+import com.github.mofosyne.tagdrop.data.db.hasInvalidSignature
 import com.github.mofosyne.tagdrop.data.db.hasPendingOverride
+import com.github.mofosyne.tagdrop.data.db.hasPendingSignatureVerification
 import com.github.mofosyne.tagdrop.data.db.isOpenable
 import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
+import com.github.mofosyne.tagdrop.data.db.isVerifiedSigned
 import com.github.mofosyne.tagdrop.data.db.showsLockHint
 import com.github.mofosyne.tagdrop.data.format.TagDropLinkResolver
 import com.github.mofosyne.tagdrop.databinding.ItemPageBinding
@@ -112,6 +115,27 @@ class CollectionDetailAdapter(
             }
             binding.textHomeBadge.visibility =
                 if (homeName != null && homeName in TagDropLinkResolver.HOME_SLUGS) View.VISIBLE else View.GONE
+            when {
+                cacheForBadge?.isVerifiedSigned == true -> {
+                    binding.textSignatureBadge.visibility = View.VISIBLE
+                    binding.textSignatureBadge.text = "✅"
+                    binding.textSignatureBadge.contentDescription =
+                        ctx.getString(R.string.signature_verified_desc, cacheForBadge.signerLabel ?: ctx.getString(R.string.signature_unknown_signer))
+                }
+                cacheForBadge?.hasInvalidSignature == true -> {
+                    binding.textSignatureBadge.visibility = View.VISIBLE
+                    binding.textSignatureBadge.text = "⚠️"
+                    binding.textSignatureBadge.contentDescription =
+                        ctx.getString(R.string.signature_invalid_desc, cacheForBadge.signerLabel ?: ctx.getString(R.string.signature_unknown_signer))
+                }
+                cacheForBadge?.hasPendingSignatureVerification == true -> {
+                    binding.textSignatureBadge.visibility = View.VISIBLE
+                    binding.textSignatureBadge.text = "🔏"
+                    binding.textSignatureBadge.contentDescription =
+                        ctx.getString(R.string.signature_pending_desc, cacheForBadge.signerLabel ?: ctx.getString(R.string.signature_unknown_signer))
+                }
+                else -> binding.textSignatureBadge.visibility = View.GONE
+            }
             when (item) {
                 is PageItem.PaperFile -> {
                     binding.textTitle.text = item.slug
@@ -229,7 +253,8 @@ class CollectionDetailAdapter(
             return ca?.hasPendingOverride == cb?.hasPendingOverride &&
                 ca?.pendingOverrideDeclared == cb?.pendingOverrideDeclared &&
                 ca?.wasEncrypted == cb?.wasEncrypted &&
-                ca?.filename == cb?.filename
+                ca?.filename == cb?.filename &&
+                ca?.signatureStatus == cb?.signatureStatus
         }
 
         private fun PageItem.cacheOrNull(): FoundCache? = when (this) {

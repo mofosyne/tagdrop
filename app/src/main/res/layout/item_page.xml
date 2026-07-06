@@ -160,4 +160,17 @@
         android:visibility="gone"
         android:contentDescription="@string/unlock_badge_desc" />
 
+    <!-- SPEC §10 Verified Authorship: verified/invalid/pending, text+contentDescription set in
+         code since the three states show different glyphs. Offset clear of the lock/unlock badge
+         (top|end, no offset) and the home badge (36dp) since all three can show at once. -->
+    <TextView
+        android:id="@+id/textSignatureBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginEnd="72dp"
+        android:padding="6dp"
+        android:textSize="16sp"
+        android:visibility="gone" />
+
 </androidx.cardview.widget.CardView>

@@ -1482,14 +1482,17 @@ browser-local signing identity (an ML-DSA-44 keypair persisted in
 its `signer_id` (TOFU, key caching per below) in IndexedDB and showing a
 verified/invalid/pending badge. Paper signing is supported by the same
 codec functions but has no generator UI yet (Single File tab only so far).
-The Kotlin app only has the wire-format plumbing (`TagDropCodec`/
-`TagDropPayload`) plus the `signedMessageHash`/`MiniCbor.stripTrailingKeys`
-primitives the eventual verifier will need — it does not yet compute or
-verify an actual signature, since ML-DSA-44 isn't available in
-`java.security`/Android's crypto providers and needs a new dependency (e.g.
-[BouncyCastle](https://www.bouncycastle.org/)) not yet added. Readers that
-don't recognise keys 32–36 ignore them per §3's forward-compatibility rule
-and treat the code as unsigned.
+The Kotlin app also does real ML-DSA-44 sign/verify, via
+[BouncyCastle](https://www.bouncycastle.org/) (`bcprov-jdk18on`): `CreateActivity`
+can sign a Content code with a device-local signing identity (an ML-DSA-44
+keypair persisted in an `EncryptedSharedPreferences` file, generated on first
+use), and `ReceiveActivity` verifies any `signature_algorithm: 1` code it
+scans, caching each `signer_pubkey` under its `signer_id` (TOFU, key caching
+per below) in a Room table and showing a verified/invalid/pending badge.
+Paper signing is supported by the same codec functions but has no
+`CreatePaperActivity` UI yet, mirroring the web generator's own gap. Readers
+that don't recognise keys 32–36 ignore them per §3's forward-compatibility
+rule and treat the code as unsigned.
 
 **Why post-quantum, not ECDSA/Ed25519?** Shor's algorithm breaks the
 discrete-log and elliptic-curve problems outright — a future quantum
@@ -1711,7 +1714,7 @@ Version history:
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
 - Content-teaser `description` (key 40, both payload kinds) and per-file `description` (local key 4, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
-- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Real sign/verify implemented in the web tools via `@noble/post-quantum` (generator: Single File tab only; reader: any scanned code); Kotlin has the wire-format plumbing and hashing primitives but not yet a PQC library (§10, §15).
+- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Real sign/verify implemented in both reference codecs: the web tools via `@noble/post-quantum` (generator: Single File tab only; reader: any scanned code), and the Kotlin app via BouncyCastle (`CreateActivity`: Single-code screen only; `ReceiveActivity`: any scanned code) — neither `CreatePaperActivity` nor the generator's Paper Layout tab has signing UI yet, though the underlying codec functions support it (§10, §15).
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 - Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
 - Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional 1-based absolute ordinal scoped by `set` (no declared trail length), letting a decoder show "stop N" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.

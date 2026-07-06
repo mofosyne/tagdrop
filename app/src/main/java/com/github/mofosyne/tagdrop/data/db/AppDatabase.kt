@@ -7,12 +7,13 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class, DropSource::class], version = 23, exportSchema = false)
+@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class, DropSource::class, TrustedSigner::class], version = 24, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cacheDao(): CacheDao
     abstract fun paperDao(): PaperDao
     abstract fun keyDao(): KeyDao
     abstract fun dropSourceDao(): DropSourceDao
+    abstract fun signerDao(): SignerDao
 
     companion object {
         const val DB_NAME = "tagdrop.db"
@@ -214,6 +215,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Verified Authorship (SPEC §10): a TOFU cache of signer_id -> signer_pubkey
+                // (mirrors the web reader's IndexedDB 'signers' store), plus the verification
+                // result computed once at scan time and persisted alongside each cache/paper.
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS trusted_signers (
+                        signerIdHex TEXT NOT NULL PRIMARY KEY,
+                        publicKey BLOB NOT NULL,
+                        label TEXT,
+                        firstSeenAt INTEGER NOT NULL
+                    )"""
+                )
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN signatureStatus INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN signerIdHex TEXT")
+                db.execSQL("ALTER TABLE found_caches ADD COLUMN signerLabel TEXT")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN signatureStatus INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN signerIdHex TEXT")
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN signerLabel TEXT")
+            }
+        }
+
         private val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -268,7 +291,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 DB_NAME
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
             .addCallback(SEED_CALLBACK)
             .build().also { INSTANCE = it }
         }

@@ -20,6 +20,8 @@ zxingCore = "3.5.4"
 osmdroid = "6.1.20"
 commonmark = "0.28.0"
 androidsvg = "1.4"
+bouncycastle = "1.84"
+securityCrypto = "1.1.0"
 
 [libraries]
 androidx-activity = { group = "androidx.activity", name = "activity-ktx", version.ref = "activity" }
@@ -44,6 +46,8 @@ osmdroid-android = { group = "org.osmdroid", name = "osmdroid-android", version.
 commonmark = { group = "org.commonmark", name = "commonmark", version.ref = "commonmark" }
 commonmark-ext-gfm-tables = { group = "org.commonmark", name = "commonmark-ext-gfm-tables", version.ref = "commonmark" }
 androidsvg = { group = "com.caverock", name = "androidsvg-aar", version.ref = "androidsvg" }
+bouncycastle-bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

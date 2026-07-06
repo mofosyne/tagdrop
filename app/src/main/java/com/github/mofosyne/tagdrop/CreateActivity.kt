@@ -17,6 +17,8 @@ import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.signing.SigningIdentityStore
+import com.github.mofosyne.tagdrop.data.signing.signContentSectors
 import com.github.mofosyne.tagdrop.databinding.ActivityCreateBinding
 import com.github.mofosyne.tagdrop.util.QrUtils
 import com.google.zxing.WriterException
@@ -68,6 +70,9 @@ class CreateActivity : AppCompatActivity() {
         binding.buttonShare.setOnClickListener     { shareUri() }
         binding.buttonPrint.setOnClickListener     { printQr() }
         binding.buttonWriteNfc.setOnClickListener  { writeNfc() }
+        binding.checkSign.setOnCheckedChangeListener { _, checked ->
+            binding.layoutSignerLabel.visibility = if (checked) View.VISIBLE else View.GONE
+        }
     }
 
     private fun generate() {
@@ -79,11 +84,23 @@ class CreateActivity : AppCompatActivity() {
         val icon     = binding.editIcon.text?.toString()?.ifBlank { null }
         val mimeType = mimeTypes[binding.spinnerMime.selectedItemPosition]
         val compress = binding.checkCompress.isChecked
+        val sign     = binding.checkSign.isChecked
+        val signerLabel = binding.editSignerLabel.text?.toString()?.ifBlank { null }
 
         val rawContent = content.toByteArray(Charsets.UTF_8)
-        val sector = TagDropCodec.createContentSectors(hint, filename, mimeType,
-                          rawContent, compress, icon = icon,
-                          createdAt = System.currentTimeMillis() / 1000).first()
+        val createdAt = System.currentTimeMillis() / 1000
+        val sector = if (sign) {
+            val identity = SigningIdentityStore.getOrCreate(this, signerLabel)
+            signContentSectors(identity) { alg, sig, pubkey, signerId, label ->
+                TagDropCodec.createContentSectors(hint, filename, mimeType,
+                    rawContent, compress, icon = icon, createdAt = createdAt,
+                    signatureAlgorithm = alg, signature = sig,
+                    signerPubkey = pubkey, signerId = signerId, signerLabel = label)
+            }.first()
+        } else {
+            TagDropCodec.createContentSectors(hint, filename, mimeType,
+                rawContent, compress, icon = icon, createdAt = createdAt).first()
+        }
         val uri = TagDropCodec.encode(sector)
         lastUri = uri
         lastPayloadHint = hint ?: filename
