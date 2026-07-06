@@ -163,6 +163,7 @@ object TagDropCodec {
     private const val KR_RADIUS_M    = 7
     private const val KR_KEY_MATERIAL = 8
     private const val KR_RETAIN_KEY   = 9
+    private const val KR_STEP         = 10 // 1-based position of the related paper within its `set` trail (SPEC §4.3)
     private const val K_BULKY_COMPRESSED_BYTES = 46
     private const val K_BULKY_SHA              = 47
     private const val K_RADIUS_M               = 48  // circle-of-uncertainty radius in meters, wherever lat/lng appears
@@ -174,6 +175,7 @@ object TagDropCodec {
     private const val K_LOCATION_LABEL = 54  // core_meta_item only — human-readable, non-coordinate location description, e.g. "Tram 40" (SPEC §4.2)
     private const val K_PIXEL_ART   = 55  // core_meta_item only, Content only — author hint to render with no smoothing/nearest-neighbor scaling (SPEC §7)
     private const val K_SOURCE_URL  = 56  // core_meta_item only, Content only — URL of a JSON drop-source registry listing nearby drops
+    private const val K_STEP        = 57  // core_meta_item only, Paper only — 1-based position of this paper within its `set` trail (SPEC §4.3)
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -466,6 +468,7 @@ object TagDropCodec {
         title: String? = null,
         createdAt: Long? = null,
         domain: String? = null,
+        step: Int? = null,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val draft = TagDropPayload.Paper(
@@ -476,7 +479,7 @@ object TagDropCodec {
             keyMaterial = keyMaterial, retainKey = retainKey,
             lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
             locationLabel = locationLabel,
-            inReplyTo = inReplyTo, title = title, createdAt = createdAt, domain = domain
+            inReplyTo = inReplyTo, title = title, createdAt = createdAt, domain = domain, step = step
         )
         val stream = buildPaperStream(draft)
         val rootHash = sha256(stream).copyOf(8)
@@ -497,14 +500,15 @@ object TagDropCodec {
         inReplyTo: ByteArray? = null,
         title: String? = null,
         createdAt: Long? = null,
-        domain: String? = null
+        domain: String? = null,
+        step: Int? = null
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val first = createPaper(
             label, set, slug, files, related, description,
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title,
-            createdAt, domain,
+            createdAt, domain, step,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.second.first()).length <= DEFAULT_URI_LENGTH) return first
@@ -513,7 +517,7 @@ object TagDropCodec {
             collectionId, collectionLabel, collectionTag, icon,
             keyMaterial, retainKey,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title,
-            createdAt, domain,
+            createdAt, domain, step,
             maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
@@ -552,7 +556,8 @@ object TagDropCodec {
                     KR_LNG         to r.lng,
                     KR_RADIUS_M    to r.radiusM,
                     KR_KEY_MATERIAL to r.keyMaterial,
-                    KR_RETAIN_KEY  to false.takeIf { r.keyMaterial != null && !r.retainKey }
+                    KR_RETAIN_KEY  to false.takeIf { r.keyMaterial != null && !r.retainKey },
+                    KR_STEP        to r.step
                 ))
             }
         )
@@ -577,6 +582,7 @@ object TagDropCodec {
             K_IN_REPLY_TO to paper.inReplyTo,
             K_CREATED_AT to paper.createdAt,
             K_DOMAIN to paper.domain,
+            K_STEP to paper.step,
             K_BULKY_SHA to sha256(bulkyBytes)
         )
         val out = ByteArrayOutputStream()
@@ -892,7 +898,8 @@ object TagDropCodec {
                 lng         = em.doubleOrNull(KR_LNG),
                 radiusM     = em.doubleOrNull(KR_RADIUS_M),
                 keyMaterial = em.bytesOrNull(KR_KEY_MATERIAL),
-                retainKey   = em.boolOrNull(KR_RETAIN_KEY) ?: true
+                retainKey   = em.boolOrNull(KR_RETAIN_KEY) ?: true,
+                step        = em.uint(KR_STEP)?.toInt()
             )
         } ?: emptyList()
 
@@ -918,7 +925,8 @@ object TagDropCodec {
             inReplyTo       = parts.core.bytesOrNull(K_IN_REPLY_TO),
             title           = parts.core.text(K_TITLE),
             createdAt       = parts.core.uint(K_CREATED_AT),
-            domain          = parts.core.text(K_DOMAIN)
+            domain          = parts.core.text(K_DOMAIN),
+            step            = parts.core.uint(K_STEP)?.toInt()
         )
     }
 
@@ -967,7 +975,7 @@ object TagDropCodec {
         K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
         K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at",
         K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label", K_PIXEL_ART to "pixel_art",
-        K_SOURCE_URL to "source_url"
+        K_SOURCE_URL to "source_url", K_STEP to "step"
     )
     private val FILE_ENTRY_KEY_NAMES = mapOf(
         KF_SLUG to "slug", KF_MIME to "mime_type", KF_FILE_ID to "file_id",
@@ -976,7 +984,7 @@ object TagDropCodec {
     private val RELATED_ENTRY_KEY_NAMES = mapOf(
         KR_HINT to "hint", KR_SET to "set", KR_SLUG to "slug", KR_PAPER_ID to "paper_id",
         KR_LAT to "lat", KR_LNG to "lng", KR_RADIUS_M to "radius_m",
-        KR_KEY_MATERIAL to "key_material", KR_RETAIN_KEY to "retain_key"
+        KR_KEY_MATERIAL to "key_material", KR_RETAIN_KEY to "retain_key", KR_STEP to "step"
     )
     private val SUB_MAP_KEY_NAMES = mapOf(
         K_FILES to FILE_ENTRY_KEY_NAMES, K_RELATED to RELATED_ENTRY_KEY_NAMES

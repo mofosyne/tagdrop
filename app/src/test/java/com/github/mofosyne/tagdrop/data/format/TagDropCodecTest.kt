@@ -325,6 +325,33 @@ class TagDropCodecTest {
         assertNull(decoded.related[1].radiusM)
     }
 
+    @Test fun paperWithStepAndFork() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        // SPEC §4.3: two related entries sharing the same set+step are a fork — alternative
+        // next stops — not a collision. A third entry shares step with a *different* set,
+        // so it must NOT be treated as part of the same fork.
+        val related = listOf(
+            TagDropPayload.RelatedPaper("turn left for the pond", set = "sunset-trail", step = 4),
+            TagDropPayload.RelatedPaper("turn right for the meadow", set = "sunset-trail", step = 4),
+            TagDropPayload.RelatedPaper("history trail stop 2", set = "history-trail", step = 4)
+        )
+        val (_, sectors) = TagDropCodec.createPaper(
+            "Trail Stop 3 — Oak Tree", "sunset-trail", "oak-tree", files, related, step = 3
+        )
+
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        val decoded = state.paper
+        assertEquals(3, decoded.step)
+
+        val forkSiblings = decoded.related.filter { it.set == "sunset-trail" && it.step == 4 }
+        assertEquals(2, forkSiblings.size)
+        assertEquals("turn left for the pond", forkSiblings[0].hint)
+        assertEquals("turn right for the meadow", forkSiblings[1].hint)
+
+        val differentTrail = decoded.related.single { it.set == "history-trail" }
+        assertEquals(4, differentTrail.step)
+    }
+
     @Test fun paperWithTitleAndInReplyTo() {
         val parentId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
