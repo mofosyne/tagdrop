@@ -241,6 +241,28 @@ again or a concrete need emerges.
   Willow-side import format to target yet, and it's unclear anyone
   scanning TagDrop codes also runs Willow — but worth a revisit if that
   changes.
+  - **Signature scheme mismatch, assessed and rejected as a reason to
+    change TagDrop's own scheme.** Willow/Meadowcap authorizes entries with
+    Ed25519; TagDrop signs with ML-DSA-44 (post-quantum, SPEC §10) on
+    purpose — Ed25519 is smaller and has native platform support, but it's
+    exactly the scheme Shor's algorithm breaks outright and retroactively,
+    which matters far more for TagDrop's permanently-sealed printed
+    artifacts than for Willow's live, migratable store. Condition for
+    revisiting TagDrop's own scheme was "only if Willow's choice has
+    technical parity or superiority" — it doesn't, on the axis TagDrop
+    actually optimized for, so no change. If this interop is ever built,
+    the narrower option is adding Ed25519 *verification only* to the
+    reader, to check imported Willow entries' existing signatures, without
+    TagDrop ever signing anything with Ed25519 itself.
+  - **Outreach lead (not yet contacted):** Willow's protocol and
+    (apparently) sneakerweb are maintained by **Aljoscha Meyer** — Codeberg
+    `AljoschaMeyer` (org `worm-blossom`, e.g.
+    [willow_rs](https://codeberg.org/worm-blossom/willow_rs)), personal
+    site [aljoscha-meyer.de](https://aljoscha-meyer.de). No direct email
+    found yet (site fetch kept hitting transient API errors mid-session).
+    Mirrors the existing deaddrops.com outreach in readme.md ("Community
+    conventions" → "Dead Drops project") — once actually sent, document it
+    there the same way, not here.
 - **NFC: auto-fallback to standard-record-readable tags when they'd fit
   unsplit** (assessed: *medium usefulness, medium complexity — reasonable
   to defer*; tracked in
