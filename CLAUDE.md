@@ -36,9 +36,14 @@ not secret) and moved to another browser/computer, since `localStorage`
 alone doesn't survive that move (a fresh identity, with a different
 `signer_id`, would otherwise be generated there instead — breaking TOFU
 continuity with anyone who'd already cached the old one). The Kotlin app has
-no equivalent export/import yet — `SigningIdentityStore` is device-scoped
-only; add it there too if cross-device continuity for the Android identity
-is ever needed. The Kotlin app now also does real ML-DSA-44 sign/verify,
+the same export/import capability: `data/signing/SigningIdentityBackup.kt`'s
+`exportSigningIdentity()`/`importSigningIdentity()` use the identical JSON
+shape (same field names/hex encoding) as the web generator's, so a backup
+made in either implementation can in principle be read by the other; wired
+into `CreateActivity` via two buttons shown alongside the sign checkbox
+(SAF `CreateDocument`/`OpenDocument`, a passphrase `AlertDialog`, and a
+confirm dialog before overwriting a *different* existing identity). The Kotlin
+app now also does real ML-DSA-44 sign/verify,
 via BouncyCastle (`bcprov-jdk18on`, `org.bouncycastle.pqc.crypto.mldsa` —
 `data/signing/MLDSA44.kt`), so this is no longer an asymmetry between the two
 implementations. `data/signing/SigningIdentity.kt` persists the local signing

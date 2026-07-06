@@ -1,14 +1,19 @@
 package com.github.mofosyne.tagdrop
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.text.InputType
 import android.view.View
 import android.webkit.WebView
 import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -17,12 +22,18 @@ import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.signing.SigningIdentity
+import com.github.mofosyne.tagdrop.data.signing.SigningIdentityImport
 import com.github.mofosyne.tagdrop.data.signing.SigningIdentityStore
+import com.github.mofosyne.tagdrop.data.signing.exportSigningIdentity
+import com.github.mofosyne.tagdrop.data.signing.importSigningIdentity
 import com.github.mofosyne.tagdrop.data.signing.signContentSectors
 import com.github.mofosyne.tagdrop.databinding.ActivityCreateBinding
 import com.github.mofosyne.tagdrop.util.QrUtils
 import com.google.zxing.WriterException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Creates a TagDrop Single-code cache from typed or pasted content.
@@ -40,6 +51,17 @@ class CreateActivity : AppCompatActivity() {
     private var lastCacheId: String? = null
 
     private val mimeTypes = listOf("text/plain", "text/html", "text/markdown", "application/json", "image/svg+xml")
+
+    /** The identity backup JSON just built, awaiting a destination from [exportIdentitySaveLauncher]. */
+    private var pendingExportBytes: ByteArray? = null
+
+    private val exportIdentitySaveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) writeExportedIdentityToUri(uri)
+    }
+
+    private val importIdentityPickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) readIdentityFileForImport(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -71,8 +93,13 @@ class CreateActivity : AppCompatActivity() {
         binding.buttonPrint.setOnClickListener     { printQr() }
         binding.buttonWriteNfc.setOnClickListener  { writeNfc() }
         binding.checkSign.setOnCheckedChangeListener { _, checked ->
-            binding.layoutSignerLabel.visibility = if (checked) View.VISIBLE else View.GONE
+            val v = if (checked) View.VISIBLE else View.GONE
+            binding.layoutSignerLabel.visibility = v
+            binding.layoutIdentityButtons.visibility = v
+            binding.textIdentityNote.visibility = v
         }
+        binding.buttonExportIdentity.setOnClickListener { startExportIdentity() }
+        binding.buttonImportIdentity.setOnClickListener { importIdentityPickLauncher.launch(arrayOf("application/json", "*/*")) }
     }
 
     private fun generate() {
@@ -192,6 +219,92 @@ class CreateActivity : AppCompatActivity() {
         </body></html>
     """.trimIndent()
 
+    /** Exports this device's signing identity (creating one first if none exists yet) as a passphrase-protected backup file. */
+    private fun startExportIdentity() {
+        val signerLabel = binding.editSignerLabel.text?.toString()?.ifBlank { null }
+        val identity = SigningIdentityStore.getOrCreate(this, signerLabel)
+        askPassphrase(
+            getString(R.string.export_identity_passphrase_title),
+            getString(R.string.export_identity_passphrase_message)
+        ) { passphrase ->
+            if (passphrase.isNullOrBlank()) return@askPassphrase
+            pendingExportBytes = exportSigningIdentity(identity, passphrase)
+            exportIdentitySaveLauncher.launch("tagdrop-signing-identity-${identity.signerId.toHex()}.json")
+        }
+    }
+
+    private fun writeExportedIdentityToUri(uri: Uri) {
+        val bytes = pendingExportBytes ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { it.write(bytes) } }.isSuccess
+            }
+            toast(getString(if (ok) R.string.export_saved else R.string.export_failed))
+        }
+    }
+
+    private fun readIdentityFileForImport(uri: Uri) {
+        lifecycleScope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            }
+            if (bytes == null) { toast(getString(R.string.import_identity_malformed)); return@launch }
+            askPassphrase(
+                getString(R.string.import_identity_passphrase_title),
+                getString(R.string.import_identity_passphrase_message)
+            ) { passphrase ->
+                if (passphrase.isNullOrBlank()) return@askPassphrase
+                applyImportedIdentity(bytes, passphrase)
+            }
+        }
+    }
+
+    /** Validates a decrypted import before ever touching [SigningIdentityStore] — confirms first if it would replace a different existing identity. */
+    private fun applyImportedIdentity(bytes: ByteArray, passphrase: String) {
+        when (val result = importSigningIdentity(bytes, passphrase)) {
+            SigningIdentityImport.Malformed -> toast(getString(R.string.import_identity_malformed))
+            SigningIdentityImport.WrongPassphrase -> toast(getString(R.string.import_identity_wrong_passphrase))
+            SigningIdentityImport.Inconsistent -> toast(getString(R.string.import_identity_inconsistent))
+            is SigningIdentityImport.Ok -> {
+                val current = SigningIdentityStore.load(this)
+                if (current != null && !current.signerId.contentEquals(result.identity.signerId)) {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.import_identity_confirm_replace_title)
+                        .setMessage(getString(
+                            R.string.import_identity_confirm_replace_message,
+                            current.signerId.toHex().take(16), result.identity.signerId.toHex().take(16)
+                        ))
+                        .setPositiveButton(R.string.button_import_identity) { _, _ -> saveImportedIdentity(result.identity) }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                } else {
+                    saveImportedIdentity(result.identity)
+                }
+            }
+        }
+    }
+
+    private fun saveImportedIdentity(identity: SigningIdentity) {
+        SigningIdentityStore.save(this, identity)
+        binding.editSignerLabel.setText(identity.label ?: "")
+        toast(getString(R.string.import_identity_success, identity.signerId.toHex().take(16)))
+    }
+
+    /** Suspends nothing — just an AlertDialog+EditText passphrase prompt, calling [onEntered] with the typed text or null if cancelled. */
+    private fun askPassphrase(title: String, message: String, onEntered: (String?) -> Unit) {
+        val editText = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setView(editText)
+            .setPositiveButton(android.R.string.ok) { _, _ -> onEntered(editText.text?.toString()) }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> onEntered(null) }
+            .setOnCancelListener { onEntered(null) }
+            .show()
+    }
+
     private fun setResultsVisible(visible: Boolean) {
         val v = if (visible) View.VISIBLE else View.GONE
         binding.imageQr.visibility      = v
@@ -203,6 +316,8 @@ class CreateActivity : AppCompatActivity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 }
