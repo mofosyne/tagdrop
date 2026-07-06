@@ -58,6 +58,10 @@ import javax.crypto.spec.SecretKeySpec
  *                     appears), 49 prefer_declared_location, 54 location_label
  *                     (non-coordinate location description, e.g. "Tram 40"),
  *                     55 pixel_art (Content only — no-smoothing render hint)
+ *   Verified Authorship (SPEC §10): 32 signature_algorithm, 35 signer_id, 36 signer_label
+ *                     (core_meta_item); 33 signature, 34 signer_pubkey (bulky_meta_item).
+ *                     Wire-format fields only — this codec round-trips them opaquely but
+ *                     does not compute or verify ML-DSA-44 signatures itself.
  */
 object TagDropCodec {
 
@@ -66,6 +70,10 @@ object TagDropCodec {
 
     const val ENCRYPTION_NONE      = 0
     const val ENCRYPTION_AES256GCM = 1
+
+    /** `signature_algorithm` values (SPEC §10). Fields round-trip opaquely — no ML-DSA-44 sign/verify is implemented yet. */
+    const val SIGNATURE_ALG_NONE    = 0
+    const val SIGNATURE_ALG_MLDSA44 = 1
 
     /** parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5). */
     const val PARITY_XOR = 1
@@ -176,6 +184,13 @@ object TagDropCodec {
     private const val K_PIXEL_ART   = 55  // core_meta_item only, Content only — author hint to render with no smoothing/nearest-neighbor scaling (SPEC §7)
     private const val K_SOURCE_URL  = 56  // core_meta_item only, Content only — URL of a JSON drop-source registry listing nearby drops
     private const val K_STEP        = 57  // core_meta_item only, Paper only — 1-based position of this paper within its `set` trail (SPEC §4.3)
+
+    // Verified Authorship (SPEC §10) — wire-format fields only, not yet backed by real ML-DSA-44 sign/verify
+    private const val K_SIGNATURE_ALGORITHM = 32  // core_meta_item
+    private const val K_SIGNATURE           = 33  // bulky_meta_item
+    private const val K_SIGNER_PUBKEY       = 34  // bulky_meta_item
+    private const val K_SIGNER_ID           = 35  // core_meta_item
+    private const val K_SIGNER_LABEL        = 36  // core_meta_item
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -324,6 +339,10 @@ object TagDropCodec {
      * [pixelArt] declares this image content should render with no smoothing/nearest-neighbor
      * scaling rather than a renderer's default bilinear smoothing (SPEC §7, "Pixel art") — for
      * pixel art large enough that a renderer's own small-image heuristic wouldn't catch it.
+     *
+     * [signatureAlgorithm]/[signature]/[signerPubkey]/[signerId]/[signerLabel] are Verified
+     * Authorship fields (SPEC §10) — this function embeds them opaquely, exactly as given; it
+     * does not compute a signature itself (no ML-DSA-44 implementation exists yet).
      */
     fun createContentSectors(
         hint: String?, filename: String?, mimeType: String,
@@ -339,6 +358,8 @@ object TagDropCodec {
         title: String? = null, description: String? = null,
         createdAt: Long? = null,
         pixelArt: Boolean = false,
+        signatureAlgorithm: Int = SIGNATURE_ALG_NONE, signature: ByteArray? = null,
+        signerPubkey: ByteArray? = null, signerId: ByteArray? = null, signerLabel: String? = null,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): List<Sector> {
         val (compressedContent, compression) =
@@ -380,13 +401,20 @@ object TagDropCodec {
             K_LOCATION_LABEL to locationLabel,
             K_IN_REPLY_TO to inReplyTo,
             K_CREATED_AT to createdAt,
-            K_PIXEL_ART to true.takeIf { pixelArt }
+            K_PIXEL_ART to true.takeIf { pixelArt },
+            K_SIGNATURE_ALGORITHM to signatureAlgorithm.takeIf { it != SIGNATURE_ALG_NONE },
+            K_SIGNER_ID    to signerId,
+            K_SIGNER_LABEL to signerLabel
+        )
+        val bulky = listOf(
+            K_SIGNATURE     to signature,
+            K_SIGNER_PUBKEY to signerPubkey
         )
 
         // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
-        val single = buildStream(core(withSha = false), emptyList(), contentSlot)
+        val single = buildStream(core(withSha = false), bulky, contentSlot)
         val stream = if (single.size <= maxSectorDataBytes) single
-                     else buildStream(core(withSha = true), emptyList(), contentSlot)
+                     else buildStream(core(withSha = true), bulky, contentSlot)
         return sectorize(TYPE_CONTENT, cacheId, stream, maxSectorDataBytes)
     }
 
@@ -410,7 +438,9 @@ object TagDropCodec {
         inReplyTo: ByteArray? = null,
         title: String? = null, description: String? = null,
         createdAt: Long? = null,
-        pixelArt: Boolean = false
+        pixelArt: Boolean = false,
+        signatureAlgorithm: Int = SIGNATURE_ALG_NONE, signature: ByteArray? = null,
+        signerPubkey: ByteArray? = null, signerId: ByteArray? = null, signerLabel: String? = null
     ): List<Sector> {
         val first = createContentSectors(
             hint, filename, mimeType, rawContent, compress,
@@ -418,6 +448,7 @@ object TagDropCodec {
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title, description,
             createdAt, pixelArt,
+            signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.first()).length <= DEFAULT_URI_LENGTH) return first
@@ -427,6 +458,7 @@ object TagDropCodec {
             keyMaterial, retainKey, override, encryptionKey, declareEncryption,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title, description,
             createdAt, pixelArt,
+            signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
             maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
@@ -469,6 +501,8 @@ object TagDropCodec {
         createdAt: Long? = null,
         domain: String? = null,
         step: Int? = null,
+        signatureAlgorithm: Int = SIGNATURE_ALG_NONE, signature: ByteArray? = null,
+        signerPubkey: ByteArray? = null, signerId: ByteArray? = null, signerLabel: String? = null,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val draft = TagDropPayload.Paper(
@@ -479,7 +513,9 @@ object TagDropCodec {
             keyMaterial = keyMaterial, retainKey = retainKey,
             lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
             locationLabel = locationLabel,
-            inReplyTo = inReplyTo, title = title, createdAt = createdAt, domain = domain, step = step
+            inReplyTo = inReplyTo, title = title, createdAt = createdAt, domain = domain, step = step,
+            signatureAlgorithm = signatureAlgorithm, signature = signature,
+            signerPubkey = signerPubkey, signerId = signerId, signerLabel = signerLabel
         )
         val stream = buildPaperStream(draft)
         val rootHash = sha256(stream).copyOf(8)
@@ -501,7 +537,9 @@ object TagDropCodec {
         title: String? = null,
         createdAt: Long? = null,
         domain: String? = null,
-        step: Int? = null
+        step: Int? = null,
+        signatureAlgorithm: Int = SIGNATURE_ALG_NONE, signature: ByteArray? = null,
+        signerPubkey: ByteArray? = null, signerId: ByteArray? = null, signerLabel: String? = null
     ): Pair<TagDropPayload.Paper, List<Sector>> {
         val first = createPaper(
             label, set, slug, files, related, description,
@@ -509,6 +547,7 @@ object TagDropCodec {
             keyMaterial, retainKey,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title,
             createdAt, domain, step,
+            signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
             maxSectorDataBytes = Int.MAX_VALUE
         )
         if (encode(first.second.first()).length <= DEFAULT_URI_LENGTH) return first
@@ -518,6 +557,7 @@ object TagDropCodec {
             keyMaterial, retainKey,
             lat, lng, radiusM, preferDeclaredLocation, locationLabel, inReplyTo, title,
             createdAt, domain, step,
+            signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
             maxSectorDataBytes = DEFAULT_SECTOR_DATA_BYTES
         )
     }
@@ -559,7 +599,9 @@ object TagDropCodec {
                     KR_RETAIN_KEY  to false.takeIf { r.keyMaterial != null && !r.retainKey },
                     KR_STEP        to r.step
                 ))
-            }
+            },
+            K_SIGNATURE     to paper.signature,
+            K_SIGNER_PUBKEY to paper.signerPubkey
         )
         val bulkyBytes = MiniCbor.encodeMap(bulky)
         val core = listOf(
@@ -583,6 +625,9 @@ object TagDropCodec {
             K_CREATED_AT to paper.createdAt,
             K_DOMAIN to paper.domain,
             K_STEP to paper.step,
+            K_SIGNATURE_ALGORITHM to paper.signatureAlgorithm.takeIf { it != SIGNATURE_ALG_NONE },
+            K_SIGNER_ID    to paper.signerId,
+            K_SIGNER_LABEL to paper.signerLabel,
             K_BULKY_SHA to sha256(bulkyBytes)
         )
         val out = ByteArrayOutputStream()
@@ -828,7 +873,12 @@ object TagDropCodec {
                 description     = core.text(K_DESCRIPTION),
                 createdAt       = core.uint(K_CREATED_AT),
                 pixelArt        = core.boolOrNull(K_PIXEL_ART) ?: false,
-                sourceUrl       = core.text(K_SOURCE_URL)
+                sourceUrl       = core.text(K_SOURCE_URL),
+                signatureAlgorithm = core.uint(K_SIGNATURE_ALGORITHM)?.toInt() ?: SIGNATURE_ALG_NONE,
+                signature       = parts.bulky.bytesOrNull(K_SIGNATURE),
+                signerPubkey    = parts.bulky.bytesOrNull(K_SIGNER_PUBKEY),
+                signerId        = core.bytesOrNull(K_SIGNER_ID),
+                signerLabel     = core.text(K_SIGNER_LABEL)
             )
         )
     }
@@ -926,7 +976,12 @@ object TagDropCodec {
             title           = parts.core.text(K_TITLE),
             createdAt       = parts.core.uint(K_CREATED_AT),
             domain          = parts.core.text(K_DOMAIN),
-            step            = parts.core.uint(K_STEP)?.toInt()
+            step            = parts.core.uint(K_STEP)?.toInt(),
+            signatureAlgorithm = parts.core.uint(K_SIGNATURE_ALGORITHM)?.toInt() ?: SIGNATURE_ALG_NONE,
+            signature       = parts.bulky.bytesOrNull(K_SIGNATURE),
+            signerPubkey    = parts.bulky.bytesOrNull(K_SIGNER_PUBKEY),
+            signerId        = parts.core.bytesOrNull(K_SIGNER_ID),
+            signerLabel     = parts.core.text(K_SIGNER_LABEL)
         )
     }
 
@@ -975,7 +1030,9 @@ object TagDropCodec {
         K_RADIUS_M to "radius_m", K_PREFER_DECLARED_LOCATION to "prefer_declared_location",
         K_IN_REPLY_TO to "in_reply_to", K_TITLE to "title", K_CREATED_AT to "created_at",
         K_DOMAIN to "domain", K_LOCATION_LABEL to "location_label", K_PIXEL_ART to "pixel_art",
-        K_SOURCE_URL to "source_url", K_STEP to "step"
+        K_SOURCE_URL to "source_url", K_STEP to "step",
+        K_SIGNATURE_ALGORITHM to "signature_algorithm", K_SIGNATURE to "signature",
+        K_SIGNER_PUBKEY to "signer_pubkey", K_SIGNER_ID to "signer_id", K_SIGNER_LABEL to "signer_label"
     )
     private val FILE_ENTRY_KEY_NAMES = mapOf(
         KF_SLUG to "slug", KF_MIME to "mime_type", KF_FILE_ID to "file_id",

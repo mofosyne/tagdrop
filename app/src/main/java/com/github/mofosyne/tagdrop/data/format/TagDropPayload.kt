@@ -46,7 +46,12 @@ sealed class TagDropPayload {
         val description: String? = null,        // optional — content teaser / message body, e.g. when an attachment occupies content (SPEC §4.3, issue #35)
         val createdAt: Long? = null,            // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
         val pixelArt: Boolean = false,          // optional — author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
-        val sourceUrl: String? = null           // optional — URL of a JSON drop-source registry listing nearby drops
+        val sourceUrl: String? = null,          // optional — URL of a JSON drop-source registry listing nearby drops
+        val signatureAlgorithm: Int = 0,        // 0 = unsigned, 1 = ML-DSA-44 (SPEC §10) — wire-format field only, not yet verified by this app
+        val signature: ByteArray? = null,       // opaque signature bytes (SPEC §10)
+        val signerPubkey: ByteArray? = null,    // present only on the first signed code from a given signer_id (SPEC §10)
+        val signerId: ByteArray? = null,        // SHA-256(signerPubkey)[0:8] (SPEC §10)
+        val signerLabel: String? = null         // optional self-asserted human-readable signer name (SPEC §10)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Content && cacheId.contentEquals(other.cacheId)
         override fun hashCode() = cacheId?.contentHashCode() ?: 0
@@ -135,7 +140,12 @@ sealed class TagDropPayload {
         val title: String? = null,              // optional — short subject/caption, distinct from label (SPEC §4.3, issue #35)
         val createdAt: Long? = null,            // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
         val domain: String? = null,             // optional — human-readable name for tagdrop://<domain>/<slug> links; falls back to slug if absent (SPEC §7)
-        val step: Int? = null                   // optional — 1-based position of this paper within its `set` trail (SPEC §4.3)
+        val step: Int? = null,                  // optional — 1-based position of this paper within its `set` trail (SPEC §4.3)
+        val signatureAlgorithm: Int = 0,        // 0 = unsigned, 1 = ML-DSA-44 (SPEC §10) — wire-format field only, not yet verified by this app
+        val signature: ByteArray? = null,       // opaque signature bytes (SPEC §10)
+        val signerPubkey: ByteArray? = null,    // present only on the first signed code from a given signer_id (SPEC §10)
+        val signerId: ByteArray? = null,        // SHA-256(signerPubkey)[0:8] (SPEC §10)
+        val signerLabel: String? = null         // optional self-asserted human-readable signer name (SPEC §10)
     ) : TagDropPayload() {
         override fun equals(other: Any?) = other is Paper && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()

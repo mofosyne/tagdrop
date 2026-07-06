@@ -1470,12 +1470,17 @@ treasure hunts, paper backups) need no signature at all.
 | 35 | `signer_id` | bytes (8, opt) | `core_meta_item` |
 | 36 | `signer_label` | text (opt) | `core_meta_item` |
 
-**Implementation status:** specified for forward-compatibility, not yet
-implemented in either reference implementation (§15). ML-DSA-44 is not
-available in `java.security`/Android's crypto providers or in
-`SubtleCrypto` (Web Crypto), so adding it requires a new dependency in both
-— e.g. [BouncyCastle](https://www.bouncycastle.org/) for the Kotlin app, and
-a pure-JS PQC library (such as
+**Implementation status:** keys 32–36 are wired through both reference
+codecs' encode/decode paths (Kotlin `TagDropCodec`/`TagDropPayload`; the web
+generator's encode side and the reader's decode side) — an author-supplied
+`signature`/`signer_pubkey`/etc. round-trips opaquely, byte-for-byte, and
+costs zero bytes when absent. Neither implementation *computes or verifies*
+an actual ML-DSA-44 signature yet — there's no PQC library wired in on
+either side, so nothing currently produces or checks the bytes in these
+fields. ML-DSA-44 is not available in `java.security`/Android's crypto
+providers or in `SubtleCrypto` (Web Crypto), so adding real sign/verify
+requires a new dependency in both — e.g. [BouncyCastle](https://www.bouncycastle.org/)
+for the Kotlin app, and a pure-JS PQC library (such as
 [`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum))
 for the browser tools, which currently depend on nothing but a QR CDN
 script. Readers that don't recognise keys 32–36 ignore
@@ -1701,7 +1706,7 @@ Version history:
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
 - Content-teaser `description` (key 40, both payload kinds) and per-file `description` (local key 4, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
-- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
+- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Wire-format fields round-trip through both reference codecs; actual ML-DSA-44 sign/verify is not yet implemented in either (§10, §15).
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 - Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
 - Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional 1-based absolute ordinal scoped by `set` (no declared trail length), letting a decoder show "stop N" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.

@@ -88,7 +88,12 @@ class SectorAssembler {
             val description: String? = null,
             val createdAt: Long? = null,
             val pixelArt: Boolean = false,
-            val sourceUrl: String? = null
+            val sourceUrl: String? = null,
+            val signatureAlgorithm: Int = TagDropCodec.SIGNATURE_ALG_NONE,
+            val signature: ByteArray? = null,
+            val signerPubkey: ByteArray? = null,
+            val signerId: ByteArray? = null,
+            val signerLabel: String? = null
         ) : State()
 
         /** A Paper payload fully reassembled. [streamBytes] is the reassembled stream, stored as `ScannedPaper.cborBytes`. */
@@ -274,7 +279,12 @@ class SectorAssembler {
         description = content.description,
         createdAt = content.createdAt,
         pixelArt = content.pixelArt,
-        sourceUrl = content.sourceUrl
+        sourceUrl = content.sourceUrl,
+        signatureAlgorithm = content.signatureAlgorithm,
+        signature = content.signature,
+        signerPubkey = content.signerPubkey,
+        signerId = content.signerId,
+        signerLabel = content.signerLabel
     )
 
     /** Concatenates `sector_bytes` for indices `0..count-1` in order, or null if any is missing. */

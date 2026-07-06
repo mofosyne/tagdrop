@@ -815,6 +815,7 @@ const KEY_NAMES = {
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
+  32: 'signature_algorithm', 33: 'signature', 34: 'signer_pubkey', 35: 'signer_id', 36: 'signer_label',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
   40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
@@ -1009,7 +1010,10 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
              IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55,
-             STEP:57 };
+             STEP:57,
+             // Verified Authorship (SPEC §10) — wire-format fields only, not yet backed by
+             // real ML-DSA-44 sign/verify (no PQC dependency loaded by this tool yet).
+             SIGNATURE_ALGORITHM:32, SIGNATURE:33, SIGNER_PUBKEY:34, SIGNER_ID:35, SIGNER_LABEL:36 };
 // Local keys for files[] sub-map entries (independent namespace, SPEC §3)
 const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
 // Local keys for related[] sub-map entries (independent namespace, SPEC §3)
@@ -1101,6 +1105,10 @@ async function encryptOverrideMap(override, key, compression) {
  *   - `encryptionKey` (32-byte Uint8Array) — key-code mode, generates a separate key QR
  *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_alg/
  *     kdf_salt in the clear map so the reader knows to prompt for a passphrase
+ *
+ * `signatureAlgorithm`/`signature`/`signerPubkey`/`signerId`/`signerLabel` are Verified
+ * Authorship fields (SPEC §10) — embedded opaquely, exactly as given; this tool does not
+ * compute a signature itself (no ML-DSA-44 implementation is wired up yet).
  */
 async function createContentSectors({
   hint, filename, mimeType, rawBytes, compress,
@@ -1109,6 +1117,7 @@ async function createContentSectors({
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
   lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
   inReplyTo, title, createdAt, pixelArt = false,
+  signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
   maxSectorDataBytes = Infinity,
 }) {
   let compression = null, compressedContent = rawBytes;
@@ -1157,12 +1166,19 @@ async function createContentSectors({
       [K.TITLE, title || null],
       [K.CREATED_AT, createdAt || null],
       [K.PIXEL_ART, pixelArt ? true : null],
+      [K.SIGNATURE_ALGORITHM, signatureAlgorithm || null],
+      [K.SIGNER_ID, signerId || null],
+      [K.SIGNER_LABEL, signerLabel || null],
     ];
   }
+  const bulky = [
+    [K.SIGNATURE, signature || null],
+    [K.SIGNER_PUBKEY, signerPubkey || null],
+  ];
 
   // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
-  const single = buildStream(await core(false), [], contentSlot);
-  const stream = single.length <= maxSectorDataBytes ? single : buildStream(await core(true), [], contentSlot);
+  const single = buildStream(await core(false), bulky, contentSlot);
+  const stream = single.length <= maxSectorDataBytes ? single : buildStream(await core(true), bulky, contentSlot);
   return sectorize(TYPE_CONTENT, cacheId, stream, maxSectorDataBytes);
 }
 
@@ -1217,7 +1233,7 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
  * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
  * directory.
  */
-async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt, step }) {
+async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt, step, signatureAlgorithm, signature, signerPubkey, signerId, signerLabel }) {
   const bulky = [
     [K.FILES, files.map(f => subMap([
       [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
@@ -1232,6 +1248,8 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
       [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
       [KR.STEP, r.step ?? null],
     ]))],
+    [K.SIGNATURE, signature || null],
+    [K.SIGNER_PUBKEY, signerPubkey || null],
   ];
   const bulkyBytes = cborMap(bulky);
   const core = [
@@ -1254,6 +1272,9 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
     [K.CREATED_AT, createdAt || null],
     [K.DOMAIN, domain || null],
     [K.STEP, step ?? null],
+    [K.SIGNATURE_ALGORITHM, signatureAlgorithm || null],
+    [K.SIGNER_ID, signerId || null],
+    [K.SIGNER_LABEL, signerLabel || null],
     [K.BULKY_SHA, await sha256(bulkyBytes)],
   ];
   return concatBytes(cborMap(core), bulkyBytes);

@@ -542,7 +542,10 @@ const K = {
   BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
   RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
   IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55,
-  STEP:57
+  STEP:57,
+  // Verified Authorship (SPEC §10) — wire-format fields only, round-tripped opaquely;
+  // this tool does not compute or verify ML-DSA-44 signatures.
+  SIGNATURE_ALGORITHM:32, SIGNATURE:33, SIGNER_PUBKEY:34, SIGNER_ID:35, SIGNER_LABEL:36
 };
 // Local keys for files[] sub-map entries (independent namespace, SPEC §3)
 const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
@@ -611,6 +614,7 @@ const KEY_NAMES = {
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
+  32: 'signature_algorithm', 33: 'signature', 34: 'signer_pubkey', 35: 'signer_id', 36: 'signer_label',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
   40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
@@ -832,6 +836,11 @@ async function parseContentStream(stream, partMeta) {
       title:           core[K.TITLE] ?? null,
       createdAt:       core[K.CREATED_AT] ?? null,
       pixelArt:        core[K.PIXEL_ART] === true,
+      signatureAlgorithm: core[K.SIGNATURE_ALGORITHM] ?? 0,
+      signature:       parts.bulky[K.SIGNATURE] ?? null,
+      signerPubkey:    parts.bulky[K.SIGNER_PUBKEY] ?? null,
+      signerId:        core[K.SIGNER_ID] ? toHex(core[K.SIGNER_ID]) : null,
+      signerLabel:     core[K.SIGNER_LABEL] ?? null,
     },
   };
 }
@@ -912,6 +921,11 @@ function paperFromParts(parts, rootHash) {
     createdAt:       parts.core[K.CREATED_AT] ?? null,
     domain:          parts.core[K.DOMAIN] ?? null,
     step:            parts.core[K.STEP] ?? null,
+    signatureAlgorithm: parts.core[K.SIGNATURE_ALGORITHM] ?? 0,
+    signature:       parts.bulky[K.SIGNATURE] ?? null,
+    signerPubkey:    parts.bulky[K.SIGNER_PUBKEY] ?? null,
+    signerId:        parts.core[K.SIGNER_ID] ? toHex(parts.core[K.SIGNER_ID]) : null,
+    signerLabel:     parts.core[K.SIGNER_LABEL] ?? null,
   };
 }
 
