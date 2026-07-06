@@ -1477,7 +1477,11 @@ dynamically imported from a CDN like the generator's other optional
 dependencies (qrcode, jsPDF) — no build step, no bundled dependency: the
 generator's "Single File" tab can sign a Content code with a
 browser-local signing identity (an ML-DSA-44 keypair persisted in
-`localStorage`, generated on first use), and the reader verifies any
+`localStorage`, generated on first use) — exportable as a passphrase-
+protected backup file and re-importable in another browser/computer, since
+`localStorage` alone doesn't survive switching either (a new identity, and
+a new `signer_id`, would otherwise be generated there instead) — and the
+reader verifies any
 `signature_algorithm: 1` code it scans, caching each `signer_pubkey` under
 its `signer_id` (TOFU, key caching per below) in IndexedDB and showing a
 verified/invalid/pending badge. Paper signing is supported by the same

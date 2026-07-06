@@ -320,6 +320,21 @@
       </div>
     </div>
     <div class="row">
+      <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+        <button type="button" class="secondary" onclick="exportSigningIdentity()">⬇️ Export signing identity…</button>
+        <button type="button" class="secondary" onclick="document.getElementById('s-import-identity-file').click()">⬆️ Import signing identity…</button>
+        <input type="file" id="s-import-identity-file" accept=".json,application/json" style="display:none" onchange="importSigningIdentity(event)">
+        <small style="display:block;color:#888;width:100%">
+          This browser's signing identity (the ML-DSA-44 keypair behind <code>signer_id</code>) only lives in this
+          browser's local storage — a different computer, browser, or profile gets a brand-new identity, breaking
+          continuity with anyone who already trusts your old <code>signer_id</code>. Export makes a
+          passphrase-protected backup file you can move to another browser/computer and re-import there via
+          <strong>Import signing identity</strong> — <em>keep it like a password</em>: anyone with the file and its
+          passphrase can sign as you.
+        </small>
+      </div>
+    </div>
+    <div class="row">
       <div>
         <label>Target sector size <small>(bytes per QR code, decoded)</small></label>
         <input type="number" id="s-sector-size" value="600" min="100" max="1300" step="50" style="width:8em">
@@ -998,6 +1013,116 @@ async function getOrCreateSigningIdentity(label) {
 }
 
 /**
+ * Exports this browser's signing identity as a passphrase-protected backup file — a plain
+ * JSON sidecar, NOT a `tagdrop:` wire-format payload (it reuses SPEC §9's kdf_alg/kdf_salt/
+ * kdf_iters + nonce||ciphertext||tag shape for the encryption, but this file is never scanned
+ * as a QR code). `publicKey`/`signerId`/`label` are stored in the clear — they're not secret,
+ * since a signer_pubkey/signer_id pair is already visible in every signed code — only
+ * `secretKey` is passphrase-encrypted, since leaking it lets anyone forge signatures under
+ * this signer_id indefinitely.
+ */
+async function exportSigningIdentity() {
+  const label = document.getElementById('s-signer-label')?.value.trim() || null;
+  const identity = await getOrCreateSigningIdentity(label);
+  const passphrase = prompt(
+    "Choose a passphrase to protect this signing identity backup.\n\n" +
+    "Anyone with the file AND this passphrase can sign as you — pick something you'll " +
+    "remember, and keep both the file and passphrase safe (store them separately)."
+  );
+  if (!passphrase) return;
+
+  const kdfSalt = crypto.getRandomValues(new Uint8Array(16));
+  const kdfIters = 100000;
+  const key = await deriveKeyFromPassphrase(passphrase, kdfSalt, kdfIters);
+  const nonce = generateNonce();
+  const encryptedSecretKey = concatBytes(nonce, await encryptAesGcm(identity.secretKey, key, nonce));
+  const signerIdHex = toHex(identity.signerId);
+
+  const payload = {
+    format: 'tagdrop-signing-identity',
+    version: 1,
+    publicKey: toHex(identity.publicKey),
+    signerId: signerIdHex,
+    label: identity.label || null,
+    kdfAlg: 1,
+    kdfSalt: toHex(kdfSalt),
+    kdfIters,
+    encryptedSecretKey: toHex(encryptedSecretKey),
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tagdrop-signing-identity-${signerIdHex}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Imports a signing identity backup produced by [exportSigningIdentity], decrypting its
+ * `secretKey` with a user-entered passphrase and overwriting this browser's current identity
+ * (if any) — confirmed first when that identity differs, since replacing it is irreversible
+ * for whatever wasn't separately backed up.
+ */
+async function importSigningIdentity(event) {
+  const file = event.target.files?.[0];
+  event.target.value = ''; // allow re-selecting the same file later
+  if (!file) return;
+
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch (e) {
+    alert('That file is not valid JSON.');
+    return;
+  }
+  if (payload.format !== 'tagdrop-signing-identity' || payload.kdfAlg !== 1) {
+    alert('That file is not a TagDrop signing identity backup.');
+    return;
+  }
+
+  const passphrase = prompt('Enter the passphrase for this signing identity backup.');
+  if (!passphrase) return;
+
+  const kdfSalt = hexToBytes(payload.kdfSalt);
+  const key = await deriveKeyFromPassphrase(passphrase, kdfSalt, payload.kdfIters);
+  const encryptedSecretKey = hexToBytes(payload.encryptedSecretKey);
+  const nonce = encryptedSecretKey.slice(0, 12);
+  const ciphertextAndTag = encryptedSecretKey.slice(12);
+  const secretKey = await decryptAesGcm(ciphertextAndTag, key, nonce);
+  if (secretKey === null) {
+    alert('Wrong passphrase, or the file is corrupted.');
+    return;
+  }
+
+  const publicKey = hexToBytes(payload.publicKey);
+  const signerId = hexToBytes(payload.signerId);
+  // Sanity check: signerId must actually be sha256(publicKey)[0:8] — catches a hand-edited
+  // or mismatched file before it's used to sign anything under a false signer_id.
+  const expectedSignerId = (await sha256(publicKey)).slice(0, 8);
+  if (toHex(expectedSignerId) !== toHex(signerId)) {
+    alert("This file is internally inconsistent (signer_id doesn't match its public key) — refusing to import.");
+    return;
+  }
+
+  const current = loadSigningIdentity();
+  if (current && toHex(current.signerId) !== toHex(signerId)) {
+    const replace = confirm(
+      `This replaces your current signing identity (signer_id ${toHex(current.signerId).slice(0, 16)}…) ` +
+      `with the imported one (signer_id ${toHex(signerId).slice(0, 16)}…). Continue?`
+    );
+    if (!replace) return;
+  }
+
+  const label = payload.label || '';
+  saveSigningIdentity({ secretKey, publicKey, signerId, label });
+  const labelInput = document.getElementById('s-signer-label');
+  if (labelInput) labelInput.value = label;
+  alert('Signing identity imported. New codes signed in this browser will use signer_id ' + toHex(signerId).slice(0, 16) + '…');
+}
+
+/**
  * Sign-and-build. [buildFn] is a unary `(args) => Promise<Sector[]>` thunk — pass
  * `a => createContentSectorsAutoSized(a, targetSectorBytes)` (or the Paper equivalent) so this
  * stays agnostic to which builder/extra params the caller needs. Only [identity.publicKey] is
@@ -1238,6 +1363,17 @@ function randomCacheId() { return crypto.getRandomValues(new Uint8Array(8)); }
 async function encryptAesGcm(plaintext, key, nonce) {
   const cryptoKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
   return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cryptoKey, plaintext));
+}
+
+// AES-256-GCM decrypt; returns null (never throws) on a wrong key/corrupted ciphertext —
+// only used by importSigningIdentity() below, since the generator is otherwise encode-only.
+async function decryptAesGcm(ciphertextAndTag, key, nonce) {
+  try {
+    const cryptoKey = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, cryptoKey, ciphertextAndTag));
+  } catch (e) {
+    return null;
+  }
 }
 
 /**

@@ -27,7 +27,18 @@ verification has so far been manual (decode every URI in
 The web tools (generator + reader) do real ML-DSA-44 sign/verify via
 `@noble/post-quantum` (dynamically imported from a CDN, same pattern as
 qrcode/jsPDF/marked/zxing-wasm — no bundled dependency, still a single
-self-contained file). The Kotlin app now also does real ML-DSA-44 sign/verify,
+self-contained file). The generator's signing identity (keypair + label)
+lives in that browser's `localStorage` only, generated on first use —
+`exportSigningIdentity()`/`importSigningIdentity()` let it be backed up as a
+passphrase-protected JSON file (PBKDF2 + AES-256-GCM over just the secret
+key; `publicKey`/`signerId`/`label` are stored in the clear, since they're
+not secret) and moved to another browser/computer, since `localStorage`
+alone doesn't survive that move (a fresh identity, with a different
+`signer_id`, would otherwise be generated there instead — breaking TOFU
+continuity with anyone who'd already cached the old one). The Kotlin app has
+no equivalent export/import yet — `SigningIdentityStore` is device-scoped
+only; add it there too if cross-device continuity for the Android identity
+is ever needed. The Kotlin app now also does real ML-DSA-44 sign/verify,
 via BouncyCastle (`bcprov-jdk18on`, `org.bouncycastle.pqc.crypto.mldsa` —
 `data/signing/MLDSA44.kt`), so this is no longer an asymmetry between the two
 implementations. `data/signing/SigningIdentity.kt` persists the local signing
