@@ -5,6 +5,7 @@ import com.github.mofosyne.tagdrop.data.db.SignerDao
 import com.github.mofosyne.tagdrop.data.db.TrustedSigner
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
+import java.security.MessageDigest
 
 /** Result of verifying a Content/Paper's Verified Authorship fields (SPEC §10). */
 data class SignatureVerification(
@@ -35,6 +36,13 @@ suspend fun verifySignature(
     val signerIdHex = signerId?.toHex()
     var pubkey = signerPubkey
     if (pubkey != null && signerIdHex != null) {
+        // TOFU only holds if signer_id actually is sha256(signer_pubkey)[0:8] (SPEC §3) — an
+        // attacker who has merely SEEN someone's signer_id (visible on every one of their signed
+        // codes) could otherwise mint a new code under that same signer_id with their OWN
+        // pubkey/signature, and this cache would blindly overwrite the real signer's trusted key
+        // with the attacker's, both trusting the forgery and poisoning future genuine codes.
+        val expectedSignerId = MessageDigest.getInstance("SHA-256").digest(pubkey).copyOf(8)
+        if (!expectedSignerId.contentEquals(signerId)) return SignatureVerification(SignatureStatus.INVALID, signerIdHex, signerLabel)
         val existing = signerDao.getBySignerId(signerIdHex)
         signerDao.insert(TrustedSigner(signerIdHex, pubkey, signerLabel ?: existing?.label, System.currentTimeMillis()))
     } else if (signerIdHex != null) {

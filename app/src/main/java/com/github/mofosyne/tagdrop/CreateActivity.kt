@@ -116,34 +116,41 @@ class CreateActivity : AppCompatActivity() {
 
         val rawContent = content.toByteArray(Charsets.UTF_8)
         val createdAt = System.currentTimeMillis() / 1000
-        val sector = if (sign) {
-            val identity = SigningIdentityStore.getOrCreate(this, signerLabel)
-            signContentSectors(identity) { alg, sig, pubkey, signerId, label ->
-                TagDropCodec.createContentSectors(hint, filename, mimeType,
-                    rawContent, compress, icon = icon, createdAt = createdAt,
-                    signatureAlgorithm = alg, signature = sig,
-                    signerPubkey = pubkey, signerId = signerId, signerLabel = label)
-            }.first()
-        } else {
-            TagDropCodec.createContentSectors(hint, filename, mimeType,
-                rawContent, compress, icon = icon, createdAt = createdAt).first()
-        }
-        val uri = TagDropCodec.encode(sector)
-        lastUri = uri
-        lastPayloadHint = hint ?: filename
 
-        if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
+        // Keystore access (first-use MasterKey provisioning) and ML-DSA-44 keygen/signing can
+        // take well over 100ms — keep them off the UI thread so tapping Generate never freezes.
+        lifecycleScope.launch {
+            val sector = withContext(Dispatchers.IO) {
+                if (sign) {
+                    val identity = SigningIdentityStore.getOrCreate(this@CreateActivity, signerLabel)
+                    signContentSectors(identity) { alg, sig, pubkey, signerId, label ->
+                        TagDropCodec.createContentSectors(hint, filename, mimeType,
+                            rawContent, compress, icon = icon, createdAt = createdAt,
+                            signatureAlgorithm = alg, signature = sig,
+                            signerPubkey = pubkey, signerId = signerId, signerLabel = label)
+                    }.first()
+                } else {
+                    TagDropCodec.createContentSectors(hint, filename, mimeType,
+                        rawContent, compress, icon = icon, createdAt = createdAt).first()
+                }
+            }
+            val uri = TagDropCodec.encode(sector)
+            lastUri = uri
+            lastPayloadHint = hint ?: filename
 
-        try {
-            binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
-            val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
-            binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
-            binding.textUri.text = uri
-            lastCacheId = idHex
-            setResultsVisible(true)
-            saveToMyDrops(idHex, hint, filename, mimeType, rawContent, icon)
-        } catch (e: WriterException) {
-            toast(getString(R.string.qr_encode_error))
+            if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
+
+            try {
+                binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
+                val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
+                binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
+                binding.textUri.text = uri
+                lastCacheId = idHex
+                setResultsVisible(true)
+                saveToMyDrops(idHex, hint, filename, mimeType, rawContent, icon)
+            } catch (e: WriterException) {
+                toast(getString(R.string.qr_encode_error))
+            }
         }
     }
 
@@ -222,14 +229,20 @@ class CreateActivity : AppCompatActivity() {
     /** Exports this device's signing identity (creating one first if none exists yet) as a passphrase-protected backup file. */
     private fun startExportIdentity() {
         val signerLabel = binding.editSignerLabel.text?.toString()?.ifBlank { null }
-        val identity = SigningIdentityStore.getOrCreate(this, signerLabel)
-        askPassphrase(
-            getString(R.string.export_identity_passphrase_title),
-            getString(R.string.export_identity_passphrase_message)
-        ) { passphrase ->
-            if (passphrase.isNullOrBlank()) return@askPassphrase
-            pendingExportBytes = exportSigningIdentity(identity, passphrase)
-            exportIdentitySaveLauncher.launch("tagdrop-signing-identity-${identity.signerId.toHex()}.json")
+        lifecycleScope.launch {
+            // Keystore access (first-use MasterKey provisioning) and ML-DSA-44 keygen can take
+            // well over 100ms — keep off the UI thread, before the passphrase dialog even shows.
+            val identity = withContext(Dispatchers.IO) { SigningIdentityStore.getOrCreate(this@CreateActivity, signerLabel) }
+            askPassphrase(
+                getString(R.string.export_identity_passphrase_title),
+                getString(R.string.export_identity_passphrase_message)
+            ) { passphrase ->
+                if (passphrase.isNullOrBlank()) return@askPassphrase
+                lifecycleScope.launch {
+                    pendingExportBytes = withContext(Dispatchers.Default) { exportSigningIdentity(identity, passphrase) }
+                    exportIdentitySaveLauncher.launch("tagdrop-signing-identity-${identity.signerId.toHex()}.json")
+                }
+            }
         }
     }
 
@@ -254,19 +267,24 @@ class CreateActivity : AppCompatActivity() {
                 getString(R.string.import_identity_passphrase_message)
             ) { passphrase ->
                 if (passphrase.isNullOrBlank()) return@askPassphrase
-                applyImportedIdentity(bytes, passphrase)
+                lifecycleScope.launch {
+                    // PBKDF2 + AES-256-GCM decrypt — modest CPU work, kept off the UI thread for
+                    // the same reason as the export path's Keystore/keygen work.
+                    val result = withContext(Dispatchers.Default) { importSigningIdentity(bytes, passphrase) }
+                    applyImportedIdentity(result)
+                }
             }
         }
     }
 
     /** Validates a decrypted import before ever touching [SigningIdentityStore] — confirms first if it would replace a different existing identity. */
-    private fun applyImportedIdentity(bytes: ByteArray, passphrase: String) {
-        when (val result = importSigningIdentity(bytes, passphrase)) {
+    private suspend fun applyImportedIdentity(result: SigningIdentityImport) {
+        when (result) {
             SigningIdentityImport.Malformed -> toast(getString(R.string.import_identity_malformed))
             SigningIdentityImport.WrongPassphrase -> toast(getString(R.string.import_identity_wrong_passphrase))
             SigningIdentityImport.Inconsistent -> toast(getString(R.string.import_identity_inconsistent))
             is SigningIdentityImport.Ok -> {
-                val current = SigningIdentityStore.load(this)
+                val current = withContext(Dispatchers.IO) { SigningIdentityStore.load(this@CreateActivity) }
                 if (current != null && !current.signerId.contentEquals(result.identity.signerId)) {
                     AlertDialog.Builder(this)
                         .setTitle(R.string.import_identity_confirm_replace_title)
@@ -285,9 +303,11 @@ class CreateActivity : AppCompatActivity() {
     }
 
     private fun saveImportedIdentity(identity: SigningIdentity) {
-        SigningIdentityStore.save(this, identity)
-        binding.editSignerLabel.setText(identity.label ?: "")
-        toast(getString(R.string.import_identity_success, identity.signerId.toHex().take(16)))
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { SigningIdentityStore.save(this@CreateActivity, identity) }
+            binding.editSignerLabel.setText(identity.label ?: "")
+            toast(getString(R.string.import_identity_success, identity.signerId.toHex().take(16)))
+        }
     }
 
     /** Suspends nothing — just an AlertDialog+EditText passphrase prompt, calling [onEntered] with the typed text or null if cancelled. */

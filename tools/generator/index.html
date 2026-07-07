@@ -314,17 +314,19 @@
           <small style="display:block;color:#888;margin-top:2px">Post-quantum signature proving this code came from the same private key as everything else signed under your signer ID — trust-on-first-use, like an SSH host key, not a real-world identity. Adds ~2.4–3.7 KB. Don't combine with "Encrypt" above — a signature is a persistent identity marker, the opposite of the deniability encryption is for (SPEC §10).</small>
         </label>
       </div>
-      <div id="s-signer-label-row">
+      <div id="s-signer-label-row" style="display:none">
         <label>Signer label <small>(optional, shown to anyone who verifies this code)</small></label>
         <input type="text" id="s-signer-label" placeholder="e.g. Alice's Trail">
       </div>
     </div>
     <div class="row">
-      <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
-        <button type="button" class="secondary" onclick="exportSigningIdentity()">⬇️ Export signing identity…</button>
-        <button type="button" class="secondary" onclick="document.getElementById('s-import-identity-file').click()">⬆️ Import signing identity…</button>
-        <input type="file" id="s-import-identity-file" accept=".json,application/json" style="display:none" onchange="importSigningIdentity(event)">
-        <small style="display:block;color:#888;width:100%">
+      <div id="s-identity-section" style="display:none;flex-direction:column">
+        <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+          <button type="button" class="secondary" onclick="exportSigningIdentity()">⬇️ Export signing identity…</button>
+          <button type="button" class="secondary" onclick="document.getElementById('s-import-identity-file').click()">⬆️ Import signing identity…</button>
+          <input type="file" id="s-import-identity-file" accept=".json,application/json" style="display:none" onchange="importSigningIdentity(event)">
+        </div>
+        <small style="display:block;color:#888;margin-top:4px">
           This browser's signing identity (the ML-DSA-44 keypair behind <code>signer_id</code>) only lives in this
           browser's local storage — a different computer, browser, or profile gets a brand-new identity, breaking
           continuity with anyone who already trusts your old <code>signer_id</code>. Export makes a
@@ -3055,6 +3057,15 @@ function copyToClipboard(text) {
 document.getElementById('tab-paper').addEventListener('click', function once() {
   if (fileEntries.length === 0) addFileEntry();
   this.removeEventListener('click', once);
+});
+
+// Show the signer-label field and identity export/import controls only while "Sign" is
+// checked — otherwise every visitor sees identity-management controls whether or not they
+// ever plan to sign anything.
+document.getElementById('s-sign').addEventListener('change', function () {
+  const display = this.checked ? 'flex' : 'none';
+  document.getElementById('s-signer-label-row').style.display = this.checked ? 'block' : 'none';
+  document.getElementById('s-identity-section').style.display = display;
 });
 
 // When "Encrypt" is on, force-check "Compress", lock it, and show the key-mode selector.

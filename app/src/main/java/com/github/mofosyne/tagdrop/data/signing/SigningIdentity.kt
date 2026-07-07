@@ -48,9 +48,9 @@ object SigningIdentityStore {
 
     fun load(context: Context): SigningIdentity? {
         val p = prefs(context)
-        val secretKey = p.getString(KEY_SECRET_KEY, null)?.hexToBytes() ?: return null
-        val publicKey = p.getString(KEY_PUBLIC_KEY, null)?.hexToBytes() ?: return null
-        val signerId = p.getString(KEY_SIGNER_ID, null)?.hexToBytes() ?: return null
+        val secretKey = p.getString(KEY_SECRET_KEY, null)?.hexToBytesOrNull() ?: return null
+        val publicKey = p.getString(KEY_PUBLIC_KEY, null)?.hexToBytesOrNull() ?: return null
+        val signerId = p.getString(KEY_SIGNER_ID, null)?.hexToBytesOrNull() ?: return null
         return SigningIdentity(secretKey, publicKey, signerId, p.getString(KEY_LABEL, null))
     }
 
@@ -80,7 +80,19 @@ object SigningIdentityStore {
 
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
-    private fun String.hexToBytes() = ByteArray(length / 2) { i -> ((Character.digit(this[i * 2], 16) shl 4) + Character.digit(this[i * 2 + 1], 16)).toByte() }
+
+    /** Null (rather than silently-mangled bytes) on odd length or a non-hex character — a corrupted stored value should fail closed, not produce a wrong key. */
+    private fun String.hexToBytesOrNull(): ByteArray? {
+        if (isEmpty() || length % 2 != 0) return null
+        return runCatching {
+            ByteArray(length / 2) { i ->
+                val hi = Character.digit(this[i * 2], 16)
+                val lo = Character.digit(this[i * 2 + 1], 16)
+                if (hi < 0 || lo < 0) return null
+                ((hi shl 4) + lo).toByte()
+            }
+        }.getOrNull()
+    }
 }
 
 private fun concatSectorBytes(sectors: List<Sector>): ByteArray {

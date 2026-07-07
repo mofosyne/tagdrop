@@ -723,6 +723,13 @@ async function verifySignature(stream, fields) {
   const signerId = fields.signerId, signerLabel = fields.signerLabel;
   let pubkey = fields.signerPubkey;
   if (pubkey) {
+    // TOFU only holds if signer_id actually is sha256(signer_pubkey)[0:8] (SPEC §3) — an
+    // attacker who has merely SEEN someone's signer_id (visible on every one of their signed
+    // codes) could otherwise mint a new code under that same signer_id with their OWN
+    // pubkey/signature, and this cache would blindly overwrite the real signer's trusted key
+    // with the attacker's, both trusting the forgery and poisoning future genuine codes.
+    const expectedSignerId = toHex((await sha256(pubkey)).slice(0, 8));
+    if (expectedSignerId !== signerId) return { status: 'invalid', signerId, signerLabel };
     await cacheSignerPubkey(signerId, pubkey, signerLabel);
   } else if (signerId) {
     const cached = await dbGet('signers', signerId);
@@ -732,7 +739,11 @@ async function verifySignature(stream, fields) {
   const hash = await signedMessageHash(stream);
   if (!hash) return { status: 'pending', signerId, signerLabel };
   const { ml_dsa44 } = await loadMlDsa();
-  const ok = ml_dsa44.verify(fields.signature, hash, pubkey);
+  // noble's verify() throws on a malformed-length signature/pubkey rather than returning false —
+  // a corrupted or deliberately malformed scan must not crash the whole scan-completion pipeline.
+  let ok;
+  try { ok = ml_dsa44.verify(fields.signature, hash, pubkey); }
+  catch (e) { ok = false; }
   const cachedLabel = signerId ? (await dbGet('signers', signerId))?.label : null;
   return { status: ok ? 'verified' : 'invalid', signerId, signerLabel: signerLabel || cachedLabel };
 }
@@ -1164,7 +1175,7 @@ class SectorAssembler {
       const override = await tryDecryptOverrideMap(slot, keyMaterial, parsed.content.compression);
       if (!override) continue;
       group.resolvedOverride = override;
-      const state = await this._contentState(group, parsed.content);
+      const state = await this._contentState(group, parsed.content, stream);
       if (state.kind === 'ContentReady') {
         resolved.push(state);
         this.groups.delete(key);
@@ -1621,7 +1632,7 @@ async function completeContentReady(state) {
       pendingOverrideBlob: state.pendingOverrideBlob, pendingOverrideDeclared: state.pendingOverrideDeclared,
       pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
-      pixelArt: state.pixelArt }
+      pixelArt: state.pixelArt, verification: state.verification }
   );
   showMsg('🔓 Unlocked: ' + label, 'ok');
 }
@@ -1985,7 +1996,7 @@ function renderVerificationBadge(el, verification) {
     ? escHtml(verification.signerLabel)
     : (verification.signerId ? 'signer ' + escHtml(verification.signerId.slice(0, 8)) + '…' : 'unknown signer');
   const text = {
-    verified: '🔏 Verified — signed by ' + who,
+    verified: '✅ Verified — signed by ' + who,
     invalid:  '⚠️ Invalid signature — claims to be from ' + who + ' but does not verify',
     pending:  '🔏 Signed by ' + who + ' — public key not yet seen, can\'t verify yet',
   }[verification.status] || '';

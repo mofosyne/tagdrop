@@ -254,7 +254,9 @@ class CollectionDetailAdapter(
                 ca?.pendingOverrideDeclared == cb?.pendingOverrideDeclared &&
                 ca?.wasEncrypted == cb?.wasEncrypted &&
                 ca?.filename == cb?.filename &&
-                ca?.signatureStatus == cb?.signatureStatus
+                ca?.signatureStatus == cb?.signatureStatus &&
+                ca?.signerIdHex == cb?.signerIdHex &&
+                ca?.signerLabel == cb?.signerLabel
         }
 
         private fun PageItem.cacheOrNull(): FoundCache? = when (this) {
