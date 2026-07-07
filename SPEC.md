@@ -825,6 +825,58 @@ styling just by the Paper listing a `style.css` file alongside the
 `.md` files. Markdown files that don't belong to any scanned paper (standalone
 single-code scans) render without a stylesheet.
 
+### Active content containment (`text/html` / `text/markdown`)
+
+`text/html` and `text/markdown` are deliberately rendered as **live,
+script-executing HTML documents**, not escaped/displayed as text — this is a
+feature (interactive pages, not just static notes), but it means TagDrop's
+threat model must assume **any scanned code can run arbitrary attacker JS**,
+since anyone can encode anything into a QR code. Both reference
+implementations contain that the same way:
+
+- **No storage/DOM access.** Rendered content cannot read or write anything
+  belonging to the reader/app itself — not cached scans, not the local
+  signing identity (§10), not retained decryption keys (§9). Web: an
+  `<iframe sandbox="allow-scripts" srcdoc="...">` with **no**
+  `allow-same-origin` — per the HTML sandboxing model this forces the
+  document into an opaque, storage-less origin regardless of what real
+  origin the reader itself is served from. Android: the WebView exposes no
+  `addJavascriptInterface` bridge into app code, so scanned JS has no
+  programmatic path to the Room database or the Keystore-encrypted signing
+  key.
+- **No silent network egress.** A `sandbox` attribute alone does not stop
+  markup- or script-driven network loads (an `<img src="https://.../leak.gif">`
+  or a `fetch()` call still hits the real network from inside a sandboxed
+  frame) — scanned content could otherwise silently phone home on every
+  scan, turning a passive dead-drop into an active tracker of whoever finds
+  it (their IP, rough geolocation, and a scan timestamp, correlated back to
+  wherever the code was physically planted). Web: a Content-Security-Policy
+  meta tag is injected into the rendered document (`connect-src`, `img-src`
+  other than `data:`, `frame-src`, `media-src`, `object-src`, `font-src`,
+  `form-action` all `'none'`) before any of the scanned content's own
+  markup. Android: `WebSettings.blockNetworkLoads = true` refuses any
+  subresource fetch that isn't served locally by the app's own
+  `shouldInterceptRequest` handler (used for `tagdrop://` and same-paper
+  relative links).
+- **Explicit navigation still works, deliberately differently from silent
+  requests.** An author-authored page linking out to a normal website is a
+  reasonable, common case — unlike an automatic background request, a user
+  *tapping a link* is visible and consensual, so it's handed off to the
+  device's real, unsandboxed default browser (`Intent.ACTION_VIEW` on
+  Android; `window.open()` on the web, gated by the browser's own
+  popup-blocker since it only fires from a genuine click) rather than being
+  silently blocked or attempted in-place. The receiving side validates the
+  URL scheme is `http`/`https` before doing this — a `javascript:`/`data:`
+  URL smuggled through the same relay message must never reach `window.open`
+  or an `Intent`, since (unlike the sandboxed srcdoc origin) a window opened
+  this way starts out same-origin with the reader page itself.
+- **Not defended against: UI spoofing.** A scanned page can render anything
+  it wants within its own display area — a fake dialog, a fake login form,
+  a visual impersonation of the reader's own UI. Nothing above prevents
+  that; it's an accepted, inherent limit of "render arbitrary rich content"
+  as a feature, the same tradeoff any browser or app that displays untrusted
+  HTML makes.
+
 ### Sets and slugs
 
 Papers can belong to named **sets** (trails, networks, exhibitions). Within a set, each paper has a unique `slug`. This enables relative addressing:

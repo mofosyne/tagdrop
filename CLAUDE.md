@@ -183,6 +183,24 @@ not the priority for new authoring features. New paper-layout features
 should land in the web generator first; porting to the Android app is
 optional follow-up.
 
+## Active-content (`text/html`/`text/markdown`) containment
+
+Scanned `text/html`/`text/markdown` content renders as live, script-executing
+HTML on both platforms — full threat model and containment approach is in
+SPEC.md ("Active content containment"). In short: sandboxed/no-JS-bridge
+rendering already prevented scanned JS from reaching app storage or the
+signing identity; the containment work in this session closed the remaining
+gap, which was **silent network egress** (a scanned code could otherwise
+phone home on every scan via `<img>`/`fetch`/nested `<iframe>`, even with the
+existing sandbox/no-bridge protections) — fixed via a CSP injected into the
+web reader's rendered `srcdoc` and `WebSettings.blockNetworkLoads` in
+`ViewDataUriActivity.kt`. An explicit user-tapped link (as opposed to a
+silent/automatic request) is deliberately still allowed, just handed off to
+the real system browser (`Intent.ACTION_VIEW` / `window.open`) rather than
+rendered in-place or blocked outright, with scheme validation
+(`http`/`https` only) on the receiving end so a `javascript:`/`data:` URL
+can't be smuggled through that handoff.
+
 ## Branch/remote notes
 
 - The repo's default branch is `master`, not `main`.

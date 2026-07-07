@@ -2172,14 +2172,35 @@ async function findStylesheet(paper) {
 
 // ── Content rendering ─────────────────────────────────────────────────────
 // Renders an HTML document in a sandboxed iframe, with a postMessage relay for
-// tagdrop:// link clicks. sandbox="allow-scripts" (no allow-same-origin) so the
-// iframe cannot access parent storage or DOM — only postMessage works cross-sandbox.
+// tagdrop:// and external link clicks. sandbox="allow-scripts" (no allow-same-origin)
+// so the iframe cannot access parent storage or DOM — only postMessage works cross-sandbox.
+//
+// The sandbox attribute alone only restricts scripting privileges (storage/DOM access,
+// top navigation, popups, forms) — it does NOT stop markup- or script-driven network
+// loads (an <img src="https://evil.example/leak.gif">, a fetch() call, or a nested
+// <iframe src="https://...">  all still hit the real network from inside a sandboxed
+// frame). A CSP meta tag is injected as the first thing in <head> to actually close
+// that hole: inline script/style stay allowed (existing behavior), img-src is limited
+// to data: (self-contained inline images need no network fetch), and everything else
+// that could reach the network is 'none'.
 function renderHtmlInIframe(area, html) {
+  const csp =
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; ` +
+    `script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; ` +
+    `connect-src 'none'; frame-src 'none'; media-src 'none'; object-src 'none'; ` +
+    `font-src 'none'; form-action 'none'; base-uri 'none';">`;
+  html = html.includes('<head>') ? html.replace('<head>', '<head>' + csp) : csp + html;
+  // A silent, automatic network request (blocked above) is a different risk than an
+  // explicit, visible link tap — the latter is handed off to a real new browser tab
+  // (window.open, gated by the browser's own popup blocker on a genuine user gesture)
+  // rather than being blocked outright or left inert by the sandbox's navigation restriction.
   const relay =
     `<script>document.addEventListener('click',function(e){` +
-    `var a=e.target.closest('a');` +
-    `if(a&&a.href.startsWith('tagdrop://')){` +
+    `var a=e.target.closest('a');if(!a)return;` +
+    `if(a.href.startsWith('tagdrop://')){` +
     `e.preventDefault();window.parent.postMessage({type:'tagdrop-nav',uri:a.href},'*');}` +
+    `else if(a.href.startsWith('http://')||a.href.startsWith('https://')){` +
+    `e.preventDefault();window.parent.postMessage({type:'tagdrop-external-link',url:a.href},'*');}` +
     `});<\/script>`;
   html = html.includes('</head>') ? html.replace('</head>', relay + '</head>') : relay + html;
   const frame = document.createElement('iframe');
@@ -2483,10 +2504,23 @@ async function showContent(mimeType, content, title, cacheId, meta) {
 
 // ── postMessage from sandboxed iframe ─────────────────────────────────────
 window.addEventListener('message', async e => {
-  if (!e.data || e.data.type !== 'tagdrop-nav') return;
-  let parsed;
-  try { parsed = await parseUri(e.data.uri); } catch (err) { return; }
-  if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.host, parsed.slug);
+  if (!e.data) return;
+  if (e.data.type === 'tagdrop-nav') {
+    let parsed;
+    try { parsed = await parseUri(e.data.uri); } catch (err) { return; }
+    if (parsed && parsed.type === 'nav') await resolveNavLink(parsed.host, parsed.slug);
+    return;
+  }
+  if (e.data.type === 'tagdrop-external-link') {
+    // Re-check the scheme here too, not just in the injected relay script — the relay
+    // runs inside the sandboxed content itself, so a malicious page could in principle
+    // post this message type directly with an arbitrary string instead of a real link's
+    // .href. window.open() with a javascript:/data: URL would execute in a window that
+    // starts out same-origin with THIS page (unlike the sandboxed iframe itself), so only
+    // ever relay genuine http(s) URLs.
+    const url = String(e.data.url || '');
+    if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener,noreferrer');
+  }
 });
 
 // ── Assembly progress bar ─────────────────────────────────────────────────
