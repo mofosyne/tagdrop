@@ -206,6 +206,56 @@ object MiniCbor {
         return buf
     }
 
+    /**
+     * Re-encodes [mapBytes] (a definite-length CBOR map, major type 5, starting at its own
+     * head byte) with a trailing run of pairs whose key is in [trailingKeysToStrip] removed —
+     * SPEC §10's "signing happens last" convention for Verified Authorship: the encoder always
+     * writes keys 32/33/34/35/36 as the last pairs in `core_meta_item`/`bulky_meta_item`, so a
+     * verifier can reconstruct exactly what an unsigned payload's bytes would have been by
+     * trimming that trailing run and rewriting the map header's pair count.
+     *
+     * This operates on raw bytes rather than decoding to a map and re-encoding, because CBOR
+     * map field order here isn't sorted/canonical (see the field lists in TagDropCodec) and a
+     * semantic re-encode could silently reorder surviving fields — this must byte-for-byte
+     * match the original pre-signature stream, or SHA-256 over it won't match what was signed.
+     * If the input isn't honestly encoded (a stripped key reappears after a survivor, i.e. the
+     * trailing run is interrupted), only the pairs before the *first* stripped key are kept —
+     * this can only make the recomputed hash (and thus signature verification) fail closed on
+     * such input, never succeed on tampered content, since a genuine signer's own encoder never
+     * produces that shape.
+     *
+     * Returns [mapBytes] unchanged if none of [trailingKeysToStrip] are present.
+     */
+    fun stripTrailingKeys(mapBytes: ByteArray, trailingKeysToStrip: Set<Int>): ByteArray {
+        val stream = ByteArrayInputStream(mapBytes)
+        val head = readByte(stream)
+        require(head ushr 5 == 5) { "Expected CBOR map (major 5), got major ${head ushr 5}" }
+        val count = readArg(head and 0x1F, stream).toInt()
+        val headerLen = mapBytes.size - stream.available()
+
+        var survivingCount = 0
+        var cutOffset = mapBytes.size
+        var foundCut = false
+        repeat(count) {
+            val pairStart = mapBytes.size - stream.available()
+            val key = readValue(stream)
+            readValue(stream) // value bytes only need to be skipped, not interpreted
+            if (!foundCut) {
+                if (key is Long && key.toInt() in trailingKeysToStrip) {
+                    cutOffset = pairStart
+                    foundCut = true
+                } else {
+                    survivingCount++
+                }
+            }
+        }
+        if (!foundCut) return mapBytes
+        val out = ByteArrayOutputStream()
+        writeHead(out, 5, survivingCount.toLong())
+        out.write(mapBytes, headerLen, cutOffset - headerLen)
+        return out.toByteArray()
+    }
+
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /**

@@ -1,14 +1,19 @@
 package com.github.mofosyne.tagdrop
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.text.InputType
 import android.view.View
 import android.webkit.WebView
 import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -17,10 +22,18 @@ import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
+import com.github.mofosyne.tagdrop.data.signing.SigningIdentity
+import com.github.mofosyne.tagdrop.data.signing.SigningIdentityImport
+import com.github.mofosyne.tagdrop.data.signing.SigningIdentityStore
+import com.github.mofosyne.tagdrop.data.signing.exportSigningIdentity
+import com.github.mofosyne.tagdrop.data.signing.importSigningIdentity
+import com.github.mofosyne.tagdrop.data.signing.signContentSectors
 import com.github.mofosyne.tagdrop.databinding.ActivityCreateBinding
 import com.github.mofosyne.tagdrop.util.QrUtils
 import com.google.zxing.WriterException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Creates a TagDrop Single-code cache from typed or pasted content.
@@ -38,6 +51,17 @@ class CreateActivity : AppCompatActivity() {
     private var lastCacheId: String? = null
 
     private val mimeTypes = listOf("text/plain", "text/html", "text/markdown", "application/json", "image/svg+xml")
+
+    /** The identity backup JSON just built, awaiting a destination from [exportIdentitySaveLauncher]. */
+    private var pendingExportBytes: ByteArray? = null
+
+    private val exportIdentitySaveLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) writeExportedIdentityToUri(uri)
+    }
+
+    private val importIdentityPickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) readIdentityFileForImport(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -68,6 +92,14 @@ class CreateActivity : AppCompatActivity() {
         binding.buttonShare.setOnClickListener     { shareUri() }
         binding.buttonPrint.setOnClickListener     { printQr() }
         binding.buttonWriteNfc.setOnClickListener  { writeNfc() }
+        binding.checkSign.setOnCheckedChangeListener { _, checked ->
+            val v = if (checked) View.VISIBLE else View.GONE
+            binding.layoutSignerLabel.visibility = v
+            binding.layoutIdentityButtons.visibility = v
+            binding.textIdentityNote.visibility = v
+        }
+        binding.buttonExportIdentity.setOnClickListener { startExportIdentity() }
+        binding.buttonImportIdentity.setOnClickListener { importIdentityPickLauncher.launch(arrayOf("application/json", "*/*")) }
     }
 
     private fun generate() {
@@ -79,27 +111,46 @@ class CreateActivity : AppCompatActivity() {
         val icon     = binding.editIcon.text?.toString()?.ifBlank { null }
         val mimeType = mimeTypes[binding.spinnerMime.selectedItemPosition]
         val compress = binding.checkCompress.isChecked
+        val sign     = binding.checkSign.isChecked
+        val signerLabel = binding.editSignerLabel.text?.toString()?.ifBlank { null }
 
         val rawContent = content.toByteArray(Charsets.UTF_8)
-        val sector = TagDropCodec.createContentSectors(hint, filename, mimeType,
-                          rawContent, compress, icon = icon,
-                          createdAt = System.currentTimeMillis() / 1000).first()
-        val uri = TagDropCodec.encode(sector)
-        lastUri = uri
-        lastPayloadHint = hint ?: filename
+        val createdAt = System.currentTimeMillis() / 1000
 
-        if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
+        // Keystore access (first-use MasterKey provisioning) and ML-DSA-44 keygen/signing can
+        // take well over 100ms — keep them off the UI thread so tapping Generate never freezes.
+        lifecycleScope.launch {
+            val sector = withContext(Dispatchers.IO) {
+                if (sign) {
+                    val identity = SigningIdentityStore.getOrCreate(this@CreateActivity, signerLabel)
+                    signContentSectors(identity) { alg, sig, pubkey, signerId, label ->
+                        TagDropCodec.createContentSectors(hint, filename, mimeType,
+                            rawContent, compress, icon = icon, createdAt = createdAt,
+                            signatureAlgorithm = alg, signature = sig,
+                            signerPubkey = pubkey, signerId = signerId, signerLabel = label)
+                    }.first()
+                } else {
+                    TagDropCodec.createContentSectors(hint, filename, mimeType,
+                        rawContent, compress, icon = icon, createdAt = createdAt).first()
+                }
+            }
+            val uri = TagDropCodec.encode(sector)
+            lastUri = uri
+            lastPayloadHint = hint ?: filename
 
-        try {
-            binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
-            val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
-            binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
-            binding.textUri.text = uri
-            lastCacheId = idHex
-            setResultsVisible(true)
-            saveToMyDrops(idHex, hint, filename, mimeType, rawContent, icon)
-        } catch (e: WriterException) {
-            toast(getString(R.string.qr_encode_error))
+            if (uri.length > TagDropCodec.MAX_URI_LENGTH) toast(getString(R.string.qr_too_large, uri.length))
+
+            try {
+                binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
+                val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
+                binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
+                binding.textUri.text = uri
+                lastCacheId = idHex
+                setResultsVisible(true)
+                saveToMyDrops(idHex, hint, filename, mimeType, rawContent, icon)
+            } catch (e: WriterException) {
+                toast(getString(R.string.qr_encode_error))
+            }
         }
     }
 
@@ -175,6 +226,105 @@ class CreateActivity : AppCompatActivity() {
         </body></html>
     """.trimIndent()
 
+    /** Exports this device's signing identity (creating one first if none exists yet) as a passphrase-protected backup file. */
+    private fun startExportIdentity() {
+        val signerLabel = binding.editSignerLabel.text?.toString()?.ifBlank { null }
+        lifecycleScope.launch {
+            // Keystore access (first-use MasterKey provisioning) and ML-DSA-44 keygen can take
+            // well over 100ms — keep off the UI thread, before the passphrase dialog even shows.
+            val identity = withContext(Dispatchers.IO) { SigningIdentityStore.getOrCreate(this@CreateActivity, signerLabel) }
+            askPassphrase(
+                getString(R.string.export_identity_passphrase_title),
+                getString(R.string.export_identity_passphrase_message)
+            ) { passphrase ->
+                if (passphrase.isNullOrBlank()) return@askPassphrase
+                lifecycleScope.launch {
+                    pendingExportBytes = withContext(Dispatchers.Default) { exportSigningIdentity(identity, passphrase) }
+                    exportIdentitySaveLauncher.launch("tagdrop-signing-identity-${identity.signerId.toHex()}.json")
+                }
+            }
+        }
+    }
+
+    private fun writeExportedIdentityToUri(uri: Uri) {
+        val bytes = pendingExportBytes ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { it.write(bytes) } }.isSuccess
+            }
+            toast(getString(if (ok) R.string.export_saved else R.string.export_failed))
+        }
+    }
+
+    private fun readIdentityFileForImport(uri: Uri) {
+        lifecycleScope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            }
+            if (bytes == null) { toast(getString(R.string.import_identity_malformed)); return@launch }
+            askPassphrase(
+                getString(R.string.import_identity_passphrase_title),
+                getString(R.string.import_identity_passphrase_message)
+            ) { passphrase ->
+                if (passphrase.isNullOrBlank()) return@askPassphrase
+                lifecycleScope.launch {
+                    // PBKDF2 + AES-256-GCM decrypt — modest CPU work, kept off the UI thread for
+                    // the same reason as the export path's Keystore/keygen work.
+                    val result = withContext(Dispatchers.Default) { importSigningIdentity(bytes, passphrase) }
+                    applyImportedIdentity(result)
+                }
+            }
+        }
+    }
+
+    /** Validates a decrypted import before ever touching [SigningIdentityStore] — confirms first if it would replace a different existing identity. */
+    private suspend fun applyImportedIdentity(result: SigningIdentityImport) {
+        when (result) {
+            SigningIdentityImport.Malformed -> toast(getString(R.string.import_identity_malformed))
+            SigningIdentityImport.WrongPassphrase -> toast(getString(R.string.import_identity_wrong_passphrase))
+            SigningIdentityImport.Inconsistent -> toast(getString(R.string.import_identity_inconsistent))
+            is SigningIdentityImport.Ok -> {
+                val current = withContext(Dispatchers.IO) { SigningIdentityStore.load(this@CreateActivity) }
+                if (current != null && !current.signerId.contentEquals(result.identity.signerId)) {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.import_identity_confirm_replace_title)
+                        .setMessage(getString(
+                            R.string.import_identity_confirm_replace_message,
+                            current.signerId.toHex().take(16), result.identity.signerId.toHex().take(16)
+                        ))
+                        .setPositiveButton(R.string.button_import_identity) { _, _ -> saveImportedIdentity(result.identity) }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                } else {
+                    saveImportedIdentity(result.identity)
+                }
+            }
+        }
+    }
+
+    private fun saveImportedIdentity(identity: SigningIdentity) {
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { SigningIdentityStore.save(this@CreateActivity, identity) }
+            binding.editSignerLabel.setText(identity.label ?: "")
+            toast(getString(R.string.import_identity_success, identity.signerId.toHex().take(16)))
+        }
+    }
+
+    /** Suspends nothing — just an AlertDialog+EditText passphrase prompt, calling [onEntered] with the typed text or null if cancelled. */
+    private fun askPassphrase(title: String, message: String, onEntered: (String?) -> Unit) {
+        val editText = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setView(editText)
+            .setPositiveButton(android.R.string.ok) { _, _ -> onEntered(editText.text?.toString()) }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> onEntered(null) }
+            .setOnCancelListener { onEntered(null) }
+            .show()
+    }
+
     private fun setResultsVisible(visible: Boolean) {
         val v = if (visible) View.VISIBLE else View.GONE
         binding.imageQr.visibility      = v
@@ -186,6 +336,8 @@ class CreateActivity : AppCompatActivity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 }

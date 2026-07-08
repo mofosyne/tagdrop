@@ -31,7 +31,10 @@ data class FoundCache(
     val description: String? = null,             // optional content teaser / message body (SPEC §4.3, issue #35)
     val createdAt: Long? = null,                 // author-declared Unix timestamp (seconds) this payload was authored, unverified (SPEC §3); distinct from discoveredAt
     val pixelArt: Boolean = false,               // author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
-    val mimeTypeIsGuessed: Boolean = false       // true when mimeType was inferred from magic bytes / text heuristics, not declared by the author or paper manifest
+    val mimeTypeIsGuessed: Boolean = false,      // true when mimeType was inferred from magic bytes / text heuristics, not declared by the author or paper manifest
+    val signatureStatus: Int = SignatureStatus.NONE, // Verified Authorship result computed at scan time (SPEC §10)
+    val signerIdHex: String? = null,             // hex-encoded 8-byte signer_id, present whenever signatureStatus != NONE
+    val signerLabel: String? = null              // self-asserted human-readable signer name (SPEC §10), if any
 ) {
     override fun equals(other: Any?) = other is FoundCache && cacheId == other.cacheId
     override fun hashCode() = cacheId.hashCode()
@@ -61,3 +64,12 @@ val FoundCache.hasPendingPassphrase: Boolean get() = pendingOverrideBlob != null
  * [android.graphics.BitmapFactory] can't decode it (it's XML, not raster), but AndroidSVG can.
  */
 val FoundCache.isThumbnailEligible: Boolean get() = isOpenable && mimeType.startsWith("image/")
+
+/** True if this cache's Verified Authorship signature (SPEC §10) checked out against a known/cached signer_pubkey. */
+val FoundCache.isVerifiedSigned: Boolean get() = signatureStatus == SignatureStatus.VERIFIED
+
+/** True if this cache claims a signature that does NOT verify — tampered, or forged under a signer_id it doesn't belong to (SPEC §10). */
+val FoundCache.hasInvalidSignature: Boolean get() = signatureStatus == SignatureStatus.INVALID
+
+/** True if this cache is signed but its signer_pubkey hasn't been seen yet, so verification is on hold (SPEC §10 "Key caching"). */
+val FoundCache.hasPendingSignatureVerification: Boolean get() = signatureStatus == SignatureStatus.PENDING

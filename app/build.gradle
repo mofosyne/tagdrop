@@ -90,6 +90,16 @@ dependencies {
     // SVG rendering for image/svg+xml thumbnails (BitmapFactory can't decode XML)
     implementation libs.androidsvg
 
+    // ML-DSA-44 post-quantum signatures (SPEC §10) — not available in java.security/Android's
+    // own crypto providers, mirrors the web tools' @noble/post-quantum dependency.
+    implementation libs.bouncycastle.bcprov
+
+    // Keystore-wrapped at-rest storage for the local signing identity's private key (SPEC §10)
+    // — the first use of secure storage in this app (RetainedKey's AES keys are plain SQLite
+    // columns, an acceptable risk for a shared decryption secret but not for a personal signing
+    // identity: leaking it lets an attacker forge signatures under this signer_id indefinitely).
+    implementation libs.androidx.security.crypto
+
     androidTestImplementation libs.androidx.junit
     androidTestImplementation libs.androidx.espresso.core
     testImplementation libs.junit

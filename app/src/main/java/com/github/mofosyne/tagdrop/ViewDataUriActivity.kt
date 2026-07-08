@@ -110,6 +110,11 @@ class ViewDataUriActivity : AppCompatActivity() {
             builtInZoomControls = true
             displayZoomControls = false
             setSupportZoom(true)
+            // Scanned text/html content is untrusted and executes real JS (SPEC.md "Active
+            // content containment") — block it from silently phoning home via <img>/fetch/XHR/
+            // nested <iframe> etc. shouldOverrideUrlLoading below still lets an explicit user
+            // link tap escape to the real browser; this only blocks background resource loads.
+            blockNetworkLoads = true
         }
 
         binding.htmldisp.webViewClient = object : WebViewClient() {
@@ -117,12 +122,21 @@ class ViewDataUriActivity : AppCompatActivity() {
             /**
              * Navigation interception: tagdrop:// links and same-paper relative links
              * (resolved by the browser to https://<rootHash>.paper.tagdrop.invalid/...)
-             * clicked by the user. Resolved asynchronously; loads the target as a new page.
+             * clicked by the user resolve in-app. Any other absolute URL (a normal http(s)
+             * link in scanned content) is handed off to the device's default browser — an
+             * explicit, visible user tap is not the same risk as content silently phoning
+             * home, and content author probably intends a normal outbound link to work.
              */
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                if (!isTagDropUrl(request.url)) return false
-                handleNavigation(request.url.toString())
-                return true
+                if (isTagDropUrl(request.url)) {
+                    handleNavigation(request.url.toString())
+                    return true
+                }
+                if (request.url.scheme == "http" || request.url.scheme == "https") {
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, request.url)) }
+                    return true
+                }
+                return false
             }
 
             /**
@@ -131,7 +145,8 @@ class ViewDataUriActivity : AppCompatActivity() {
              *
              * Called on a background thread — resolves DB synchronously via runBlocking.
              * Returns null for unknown/unresolvable resources so the browser degrades
-             * gracefully (broken-image icon, silent audio failure).
+             * gracefully (broken-image icon, silent audio failure). Everything else falls
+             * through to the real network stack, which blockNetworkLoads above now refuses.
              */
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 if (!isTagDropUrl(request.url)) return null

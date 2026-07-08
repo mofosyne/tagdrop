@@ -24,6 +24,59 @@ drift apart. There's currently no automated cross-check between them —
 verification has so far been manual (decode every URI in
 `tools/examples/index.html` and check version/type/fields match).
 
+The web tools (generator + reader) do real ML-DSA-44 sign/verify via
+`@noble/post-quantum` (dynamically imported from a CDN, same pattern as
+qrcode/jsPDF/marked/zxing-wasm — no bundled dependency, still a single
+self-contained file). The generator's signing identity (keypair + label)
+lives in that browser's `localStorage` only, generated on first use —
+`exportSigningIdentity()`/`importSigningIdentity()` let it be backed up as a
+passphrase-protected JSON file (PBKDF2 + AES-256-GCM over just the secret
+key; `publicKey`/`signerId`/`label` are stored in the clear, since they're
+not secret) and moved to another browser/computer, since `localStorage`
+alone doesn't survive that move (a fresh identity, with a different
+`signer_id`, would otherwise be generated there instead — breaking TOFU
+continuity with anyone who'd already cached the old one). The Kotlin app has
+the same export/import capability: `data/signing/SigningIdentityBackup.kt`'s
+`exportSigningIdentity()`/`importSigningIdentity()` use the identical JSON
+shape (same field names/hex encoding) as the web generator's, so a backup
+made in either implementation can in principle be read by the other; wired
+into `CreateActivity` via two buttons shown alongside the sign checkbox
+(SAF `CreateDocument`/`OpenDocument`, a passphrase `AlertDialog`, and a
+confirm dialog before overwriting a *different* existing identity). The Kotlin
+app now also does real ML-DSA-44 sign/verify,
+via BouncyCastle (`bcprov-jdk18on`, `org.bouncycastle.pqc.crypto.mldsa` —
+`data/signing/MLDSA44.kt`), so this is no longer an asymmetry between the two
+implementations. `data/signing/SigningIdentity.kt` persists the local signing
+keypair in an `EncryptedSharedPreferences` file (Keystore-wrapped) and builds
+signed sectors; `data/signing/SignatureVerifier.kt` mirrors the JS reader's
+`verifySignature()`, caching first-seen `signer_pubkey`s in the
+`trusted_signers` Room table (`TrustedSigner`/`SignerDao`, TOFU). Both mirror
+the same `signSectors`/`verifySignature` design: signing must build with a
+same-length **placeholder** signature first, not build unsigned and signed
+independently — adding ~3.7 KB of signature fields can itself push a payload
+from single- to multi-sector, and `content_sha256`/`bulky_meta_sha256`'s
+presence *and value* must stay identical whether or not signing happens
+(SPEC §10 "signing happens last and feeds back into nothing") — this exact
+class of bug (a field's value silently changing between an independently-built
+"unsigned" pass and the real signed build) was caught three times during
+development, once for each of `root_hash`/`content_sha256`-triggering-resplit/
+`bulky_meta_sha256`, only by actually running real ML-DSA-44 sign→verify round
+trips end to end, not by code review alone — true again for the Kotlin port,
+verified via a standalone `kotlinc`+JUnit harness (this environment's Gradle
+wrapper can't download its own distribution, so Gradle-based `./gradlew test`
+hasn't been run here; a full Android Studio build is the remaining
+verification step).
+
+UI wiring: `CreateActivity`'s "Sign with Verified Authorship" checkbox signs
+single-code Content payloads; `ReceiveActivity` verifies every scanned
+Content/Paper's signature and persists the result
+(`signatureStatus`/`signerIdHex`/`signerLabel` on `FoundCache`/`ScannedPaper`);
+`CollectionDetailAdapter`/`item_page.xml` show a ✅/⚠️/🔏 badge for
+verified/invalid/pending. `CreatePaperActivity` does **not** yet have a
+signing checkbox — per "web generator first" above, paper-layout signing UI
+should land there before the Android app, and the web generator's Paper
+Layout tab doesn't have one yet either (only its Single File tab does).
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -129,6 +182,24 @@ available" scenarios, but
 not the priority for new authoring features. New paper-layout features
 should land in the web generator first; porting to the Android app is
 optional follow-up.
+
+## Active-content (`text/html`/`text/markdown`) containment
+
+Scanned `text/html`/`text/markdown` content renders as live, script-executing
+HTML on both platforms — full threat model and containment approach is in
+SPEC.md ("Active content containment"). In short: sandboxed/no-JS-bridge
+rendering already prevented scanned JS from reaching app storage or the
+signing identity; the containment work in this session closed the remaining
+gap, which was **silent network egress** (a scanned code could otherwise
+phone home on every scan via `<img>`/`fetch`/nested `<iframe>`, even with the
+existing sandbox/no-bridge protections) — fixed via a CSP injected into the
+web reader's rendered `srcdoc` and `WebSettings.blockNetworkLoads` in
+`ViewDataUriActivity.kt`. An explicit user-tapped link (as opposed to a
+silent/automatic request) is deliberately still allowed, just handed off to
+the real system browser (`Intent.ACTION_VIEW` / `window.open`) rather than
+rendered in-place or blocked outright, with scheme validation
+(`http`/`https` only) on the receiving end so a `javascript:`/`data:` URL
+can't be smuggled through that handoff.
 
 ## Branch/remote notes
 

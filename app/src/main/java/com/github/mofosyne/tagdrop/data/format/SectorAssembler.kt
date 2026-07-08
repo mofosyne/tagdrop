@@ -53,6 +53,7 @@ class SectorAssembler {
          * is a key this code carries for *other* content (SPEC §9), to be discovered by the caller.
          */
         data class ContentReady(
+            val streamBytes: ByteArray,
             val cacheId: ByteArray?,
             val hint: String?,
             val filename: String?,
@@ -88,7 +89,12 @@ class SectorAssembler {
             val description: String? = null,
             val createdAt: Long? = null,
             val pixelArt: Boolean = false,
-            val sourceUrl: String? = null
+            val sourceUrl: String? = null,
+            val signatureAlgorithm: Int = TagDropCodec.SIGNATURE_ALG_NONE,
+            val signature: ByteArray? = null,
+            val signerPubkey: ByteArray? = null,
+            val signerId: ByteArray? = null,
+            val signerLabel: String? = null
         ) : State()
 
         /** A Paper payload fully reassembled. [streamBytes] is the reassembled stream, stored as `ScannedPaper.cborBytes`. */
@@ -213,16 +219,16 @@ class SectorAssembler {
             else -> when (val parsed = TagDropCodec.parseContentStream(stream, meta)) {
                 is TagDropCodec.ContentParse.Malformed -> State.Failed
                 is TagDropCodec.ContentParse.HashMismatch -> State.HashMismatch
-                is TagDropCodec.ContentParse.Ok -> contentState(group, parsed.content)
+                is TagDropCodec.ContentParse.Ok -> contentState(group, parsed.content, stream)
             }
         }
     }
 
     /** Resolves a parsed Content into a ready/awaiting state: override (if a key matched) → cover → awaiting key. */
-    private fun contentState(group: Group, content: TagDropPayload.Content): State {
+    private fun contentState(group: Group, content: TagDropPayload.Content, stream: ByteArray): State {
         val override = group.resolvedOverride
         if (override != null) {
-            return readyState(content, override.hint ?: content.hint,
+            return readyState(stream, content, override.hint ?: content.hint,
                 override.filename ?: content.filename, override.mimeType ?: content.mimeType,
                 override.content ?: ByteArray(0), pendingBlob = null, wasEncrypted = true)
         }
@@ -238,14 +244,15 @@ class SectorAssembler {
         // leaves undeclared candidates indistinguishable from ordinary content.
         val declared = pendingBlob != null &&
             (content.encryption == TagDropCodec.ENCRYPTION_AES256GCM || content.kdfAlg != TagDropCodec.KDF_NONE)
-        return readyState(content, content.hint, content.filename, content.mimeType, cover,
+        return readyState(stream, content, content.hint, content.filename, content.mimeType, cover,
             pendingBlob = pendingBlob, wasEncrypted = declared, declared = declared)
     }
 
     private fun readyState(
-        content: TagDropPayload.Content, hint: String?, filename: String?, mimeType: String,
+        stream: ByteArray, content: TagDropPayload.Content, hint: String?, filename: String?, mimeType: String,
         resolved: ByteArray, pendingBlob: ByteArray?, wasEncrypted: Boolean, declared: Boolean = false
     ) = State.ContentReady(
+        streamBytes = stream,
         cacheId = content.cacheId,
         hint = hint,
         filename = filename,
@@ -274,7 +281,12 @@ class SectorAssembler {
         description = content.description,
         createdAt = content.createdAt,
         pixelArt = content.pixelArt,
-        sourceUrl = content.sourceUrl
+        sourceUrl = content.sourceUrl,
+        signatureAlgorithm = content.signatureAlgorithm,
+        signature = content.signature,
+        signerPubkey = content.signerPubkey,
+        signerId = content.signerId,
+        signerLabel = content.signerLabel
     )
 
     /** Concatenates `sector_bytes` for indices `0..count-1` in order, or null if any is missing. */

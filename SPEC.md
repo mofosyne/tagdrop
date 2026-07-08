@@ -825,6 +825,58 @@ styling just by the Paper listing a `style.css` file alongside the
 `.md` files. Markdown files that don't belong to any scanned paper (standalone
 single-code scans) render without a stylesheet.
 
+### Active content containment (`text/html` / `text/markdown`)
+
+`text/html` and `text/markdown` are deliberately rendered as **live,
+script-executing HTML documents**, not escaped/displayed as text — this is a
+feature (interactive pages, not just static notes), but it means TagDrop's
+threat model must assume **any scanned code can run arbitrary attacker JS**,
+since anyone can encode anything into a QR code. Both reference
+implementations contain that the same way:
+
+- **No storage/DOM access.** Rendered content cannot read or write anything
+  belonging to the reader/app itself — not cached scans, not the local
+  signing identity (§10), not retained decryption keys (§9). Web: an
+  `<iframe sandbox="allow-scripts" srcdoc="...">` with **no**
+  `allow-same-origin` — per the HTML sandboxing model this forces the
+  document into an opaque, storage-less origin regardless of what real
+  origin the reader itself is served from. Android: the WebView exposes no
+  `addJavascriptInterface` bridge into app code, so scanned JS has no
+  programmatic path to the Room database or the Keystore-encrypted signing
+  key.
+- **No silent network egress.** A `sandbox` attribute alone does not stop
+  markup- or script-driven network loads (an `<img src="https://.../leak.gif">`
+  or a `fetch()` call still hits the real network from inside a sandboxed
+  frame) — scanned content could otherwise silently phone home on every
+  scan, turning a passive dead-drop into an active tracker of whoever finds
+  it (their IP, rough geolocation, and a scan timestamp, correlated back to
+  wherever the code was physically planted). Web: a Content-Security-Policy
+  meta tag is injected into the rendered document (`connect-src`, `img-src`
+  other than `data:`, `frame-src`, `media-src`, `object-src`, `font-src`,
+  `form-action` all `'none'`) before any of the scanned content's own
+  markup. Android: `WebSettings.blockNetworkLoads = true` refuses any
+  subresource fetch that isn't served locally by the app's own
+  `shouldInterceptRequest` handler (used for `tagdrop://` and same-paper
+  relative links).
+- **Explicit navigation still works, deliberately differently from silent
+  requests.** An author-authored page linking out to a normal website is a
+  reasonable, common case — unlike an automatic background request, a user
+  *tapping a link* is visible and consensual, so it's handed off to the
+  device's real, unsandboxed default browser (`Intent.ACTION_VIEW` on
+  Android; `window.open()` on the web, gated by the browser's own
+  popup-blocker since it only fires from a genuine click) rather than being
+  silently blocked or attempted in-place. The receiving side validates the
+  URL scheme is `http`/`https` before doing this — a `javascript:`/`data:`
+  URL smuggled through the same relay message must never reach `window.open`
+  or an `Intent`, since (unlike the sandboxed srcdoc origin) a window opened
+  this way starts out same-origin with the reader page itself.
+- **Not defended against: UI spoofing.** A scanned page can render anything
+  it wants within its own display area — a fake dialog, a fake login form,
+  a visual impersonation of the reader's own UI. Nothing above prevents
+  that; it's an accepted, inherent limit of "render arbitrary rich content"
+  as a feature, the same tradeoff any browser or app that displays untrusted
+  HTML makes.
+
 ### Sets and slugs
 
 Papers can belong to named **sets** (trails, networks, exhibitions). Within a set, each paper has a unique `slug`. This enables relative addressing:
@@ -1470,16 +1522,33 @@ treasure hunts, paper backups) need no signature at all.
 | 35 | `signer_id` | bytes (8, opt) | `core_meta_item` |
 | 36 | `signer_label` | text (opt) | `core_meta_item` |
 
-**Implementation status:** specified for forward-compatibility, not yet
-implemented in either reference implementation (§15). ML-DSA-44 is not
-available in `java.security`/Android's crypto providers or in
-`SubtleCrypto` (Web Crypto), so adding it requires a new dependency in both
-— e.g. [BouncyCastle](https://www.bouncycastle.org/) for the Kotlin app, and
-a pure-JS PQC library (such as
-[`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum))
-for the browser tools, which currently depend on nothing but a QR CDN
-script. Readers that don't recognise keys 32–36 ignore
-them per §3's forward-compatibility rule and treat the code as unsigned.
+**Implementation status:** keys 32–36 are wired through both reference
+codecs' encode/decode paths. The web tools do real ML-DSA-44 sign/verify via
+[`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum),
+dynamically imported from a CDN like the generator's other optional
+dependencies (qrcode, jsPDF) — no build step, no bundled dependency: the
+generator's "Single File" tab can sign a Content code with a
+browser-local signing identity (an ML-DSA-44 keypair persisted in
+`localStorage`, generated on first use) — exportable as a passphrase-
+protected backup file and re-importable in another browser/computer, since
+`localStorage` alone doesn't survive switching either (a new identity, and
+a new `signer_id`, would otherwise be generated there instead) — and the
+reader verifies any
+`signature_algorithm: 1` code it scans, caching each `signer_pubkey` under
+its `signer_id` (TOFU, key caching per below) in IndexedDB and showing a
+verified/invalid/pending badge. Paper signing is supported by the same
+codec functions but has no generator UI yet (Single File tab only so far).
+The Kotlin app also does real ML-DSA-44 sign/verify, via
+[BouncyCastle](https://www.bouncycastle.org/) (`bcprov-jdk18on`): `CreateActivity`
+can sign a Content code with a device-local signing identity (an ML-DSA-44
+keypair persisted in an `EncryptedSharedPreferences` file, generated on first
+use), and `ReceiveActivity` verifies any `signature_algorithm: 1` code it
+scans, caching each `signer_pubkey` under its `signer_id` (TOFU, key caching
+per below) in a Room table and showing a verified/invalid/pending badge.
+Paper signing is supported by the same codec functions but has no
+`CreatePaperActivity` UI yet, mirroring the web generator's own gap. Readers
+that don't recognise keys 32–36 ignore them per §3's forward-compatibility
+rule and treat the code as unsigned.
 
 **Why post-quantum, not ECDSA/Ed25519?** Shor's algorithm breaks the
 discrete-log and elliptic-curve problems outright — a future quantum
@@ -1701,7 +1770,7 @@ Version history:
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
 - Content-teaser `description` (key 40, both payload kinds) and per-file `description` (local key 4, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
-- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Specified for forward-compatibility; not yet implemented in reference implementations.
+- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Real sign/verify implemented in both reference codecs: the web tools via `@noble/post-quantum` (generator: Single File tab only; reader: any scanned code), and the Kotlin app via BouncyCastle (`CreateActivity`: Single-code screen only; `ReceiveActivity`: any scanned code) — neither `CreatePaperActivity` nor the generator's Paper Layout tab has signing UI yet, though the underlying codec functions support it (§10, §15).
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 - Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
 - Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional 1-based absolute ordinal scoped by `set` (no declared trail length), letting a decoder show "stop N" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.

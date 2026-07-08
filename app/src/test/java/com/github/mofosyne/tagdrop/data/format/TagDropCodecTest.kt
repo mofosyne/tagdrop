@@ -95,6 +95,104 @@ class TagDropCodecTest {
         assertEquals(1_750_000_000L, state.createdAt)
     }
 
+    @Test fun contentWithSignatureFieldsRoundTrip() {
+        // SPEC §10 — wire-format round-trip only, no real ML-DSA-44 math involved here.
+        val signature = ByteArray(2420) { it.toByte() }
+        val signerPubkey = ByteArray(1312) { (it * 3).toByte() }
+        val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val sectors = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "signed content".toByteArray(),
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = signature, signerPubkey = signerPubkey,
+            signerId = signerId, signerLabel = "Alice's Trail"
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, state.signatureAlgorithm)
+        assertArrayEquals(signature, state.signature)
+        assertArrayEquals(signerPubkey, state.signerPubkey)
+        assertArrayEquals(signerId, state.signerId)
+        assertEquals("Alice's Trail", state.signerLabel)
+    }
+
+    @Test fun contentSignatureFieldsDefaultToUnsigned() {
+        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, state.signatureAlgorithm)
+        assertNull(state.signature)
+        assertNull(state.signerPubkey)
+        assertNull(state.signerId)
+        assertNull(state.signerLabel)
+        // Absent signature_algorithm costs zero bytes in core_meta_item (SPEC §10: "0 or absent").
+        assertFalse(coreOf(sectors.first()).containsKey(32))
+    }
+
+    @Test fun contentSignatureOmitsPubkeyOnSubsequentCodesFromSameSigner() {
+        // SPEC §10 "Key caching": signer_pubkey is only needed on the first signed code from a
+        // signer_id — later codes omit it and cost only signature + signer_id.
+        val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val sectors = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(),
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(2420), signerId = signerId
+        )
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, state.signatureAlgorithm)
+        assertNull(state.signerPubkey)
+        assertArrayEquals(signerId, state.signerId)
+    }
+
+    // ── signedMessageHash (SPEC §10) ─────────────────────────────────────────────
+
+    @Test fun signedMessageHashOfUnsignedStreamEqualsPlainSha256() {
+        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val stream = sectors.single().sectorBytes
+        val expected = java.security.MessageDigest.getInstance("SHA-256").digest(stream)
+        assertArrayEquals(expected, TagDropCodec.signedMessageHash(stream))
+    }
+
+    @Test fun signedMessageHashStripsSignatureFieldsBeforeHashing() {
+        val unsignedStream = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "signed content".toByteArray()
+        ).single().sectorBytes
+        val signedStream = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "signed content".toByteArray(),
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(2420) { it.toByte() },
+            signerPubkey = ByteArray(1312) { (it * 3).toByte() },
+            signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            signerLabel = "Alice's Trail"
+        ).single().sectorBytes
+        // The two streams differ (one carries a signature, the other doesn't) but the
+        // recomputed signed-message hash — what actually gets signed/verified — must match,
+        // since stripping keys 32-36 back out reconstructs the same unsigned bytes.
+        assertFalse(unsignedStream.contentEquals(signedStream))
+        assertArrayEquals(TagDropCodec.signedMessageHash(unsignedStream), TagDropCodec.signedMessageHash(signedStream))
+    }
+
+    @Test fun signedMessageHashChangesIfContentTampered() {
+        val stream = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "signed content".toByteArray(),
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(2420), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        ).single().sectorBytes
+        val tampered = stream.copyOf().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() }
+        assertFalse(TagDropCodec.signedMessageHash(stream).contentEquals(TagDropCodec.signedMessageHash(tampered)))
+    }
+
+    @Test fun signedMessageHashForPaperMatchesRootHashFirst8Bytes() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (paper, sectors) = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(2420), signerId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
+        )
+        val hash = TagDropCodec.signedMessageHash(sectors.single().sectorBytes)
+        assertNotNull(hash)
+        // SPEC §10: "computing root_hash and computing the signed message are one and the same
+        // SHA-256 call" — root_hash is just its first 8 bytes.
+        assertArrayEquals(paper.rootHash, hash!!.copyOf(8))
+    }
+
     @Test fun contentWithCompressionDecompressedOnAssembly() {
         val raw = "<html><body>test</body></html>".repeat(20).toByteArray()
         val sectors = TagDropCodec.createContentSectors(null, null, "text/html", raw, compress = true)
@@ -372,6 +470,92 @@ class TagDropCodecTest {
         )
         val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
         assertEquals(1_750_000_000L, state.paper.createdAt)
+    }
+
+    @Test fun paperWithSignatureFieldsRoundTrip() {
+        // SPEC §10 — wire-format round-trip only, no real ML-DSA-44 math involved here.
+        val signature = ByteArray(2420) { it.toByte() }
+        val signerPubkey = ByteArray(1312) { (it * 3).toByte() }
+        val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (paper, sectors) = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = signature, signerPubkey = signerPubkey,
+            signerId = signerId, signerLabel = "Alice's Trail"
+        )
+        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, paper.signatureAlgorithm)
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, state.paper.signatureAlgorithm)
+        assertArrayEquals(signature, state.paper.signature)
+        assertArrayEquals(signerPubkey, state.paper.signerPubkey)
+        assertArrayEquals(signerId, state.paper.signerId)
+        assertEquals("Alice's Trail", state.paper.signerLabel)
+    }
+
+    @Test fun paperRootHashIsIdenticalWhetherOrNotSigned() {
+        // SPEC §10: "signing happens last and feeds back into nothing — cache_id/root_hash/
+        // content_sha256/bulky_meta_sha256 are identical whether or not keys 32-36 are
+        // subsequently added." root_hash must NOT depend on whether the paper ends up signed.
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val unsigned = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files).first
+        val signed = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(2420), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        ).first
+        assertArrayEquals(unsigned.rootHash, signed.rootHash)
+    }
+
+    @Test fun paperBulkyMetaShaIsIdenticalWhetherOrNotSigned() {
+        // Same invariant as paperRootHashIsIdenticalWhetherOrNotSigned, but for
+        // bulky_meta_sha256 (key 47) specifically — it must cover files/related only, never
+        // the signature/signer_pubkey pairs that also live in bulky_meta_item, or its VALUE
+        // (not just whether keys 32-36 are present) would differ between builds.
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val unsignedSha = coreOf(TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files).second.first())[47]
+        val signedSha = coreOf(TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(2420), signerPubkey = ByteArray(1312), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        ).second.first())[47]
+        assertArrayEquals(unsignedSha as ByteArray, signedSha as ByteArray)
+    }
+
+    @Test fun paperMultiSectorSignedRoundTrip() {
+        // Regression test: signing a paper that needs multiple sectors once the ~3.7 KB of
+        // signature fields are added must still fully reassemble and verify-hash correctly —
+        // this is the exact shape that caught two real bugs during development (root_hash and
+        // bulky_meta_sha256 each accidentally depending on whether signing fields were present
+        // in the bytes they were computed over, not just declared-vs-absent).
+        val signature = ByteArray(2420) { it.toByte() }
+        val signerPubkey = ByteArray(1312) { (it * 3).toByte() }
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (paper, sectors) = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = signature, signerPubkey = signerPubkey, signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            maxSectorDataBytes = 200
+        )
+        assertTrue("expected multi-sector paper", sectors.size > 1)
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        assertArrayEquals(paper.rootHash, state.paper.rootHash)
+        val hash = TagDropCodec.signedMessageHash(sectors.map { it.sectorBytes }.reduce { a, b -> a + b })
+        assertNotNull(hash)
+        assertArrayEquals(paper.rootHash, hash!!.copyOf(8))
+    }
+
+    @Test fun paperSignatureFieldsDefaultToUnsigned() {
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val (paper, sectors) = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files)
+        assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, paper.signatureAlgorithm)
+        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, state.paper.signatureAlgorithm)
+        assertNull(state.paper.signature)
+        assertNull(state.paper.signerPubkey)
+        assertNull(state.paper.signerId)
+        assertNull(state.paper.signerLabel)
+        assertFalse(coreOf(sectors.first()).containsKey(32))
     }
 
     @Test fun paperRootHashIsContentAddressed() {

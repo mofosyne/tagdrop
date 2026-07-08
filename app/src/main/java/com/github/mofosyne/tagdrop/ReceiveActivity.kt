@@ -37,11 +37,13 @@ import com.github.mofosyne.tagdrop.data.db.DropSource
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
+import com.github.mofosyne.tagdrop.data.db.SignatureStatus
 import com.github.mofosyne.tagdrop.data.format.Sector
 import com.github.mofosyne.tagdrop.data.format.SectorAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.data.format.TagDropScan
+import com.github.mofosyne.tagdrop.data.signing.verifySignature
 import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
@@ -419,7 +421,9 @@ class ReceiveActivity : AppCompatActivity() {
             location?.first, location?.second, paper.locationLabel
         )
         lifecycleScope.launch {
-            AppDatabase.get(this@ReceiveActivity).paperDao().insert(
+            val db = AppDatabase.get(this@ReceiveActivity)
+            val verification = verifySignature(streamBytes, paper, db.signerDao())
+            db.paperDao().insert(
                 ScannedPaper(
                     rootHash        = paper.rootHash.toHex(),
                     scannedAt       = System.currentTimeMillis(),
@@ -437,7 +441,10 @@ class ReceiveActivity : AppCompatActivity() {
                     locationLabel   = resolved.locationLabel,
                     icon            = paper.icon,
                     inReplyTo       = paper.inReplyTo?.toHex(),
-                    createdAt       = paper.createdAt
+                    createdAt       = paper.createdAt,
+                    signatureStatus = verification.status,
+                    signerIdHex     = verification.signerIdHex,
+                    signerLabel     = verification.signerLabel
                 )
             )
             paper.keyMaterial?.let { handleDiscoveredKey(it, paper.retainKey, paper.label) }
@@ -474,7 +481,9 @@ class ReceiveActivity : AppCompatActivity() {
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
-        createdAt: Long? = null, pixelArt: Boolean = false, mimeTypeIsGuessed: Boolean = false
+        createdAt: Long? = null, pixelArt: Boolean = false, mimeTypeIsGuessed: Boolean = false,
+        signatureStatus: Int = SignatureStatus.NONE,
+        signerIdHex: String? = null, signerLabel: String? = null
     ) {
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(lat, lng, radiusM, preferDeclaredLocation, location?.first, location?.second, locationLabel)
@@ -509,7 +518,10 @@ class ReceiveActivity : AppCompatActivity() {
                     description         = description,
                     createdAt           = createdAt,
                     pixelArt            = pixelArt,
-                    mimeTypeIsGuessed   = mimeTypeIsGuessed
+                    mimeTypeIsGuessed   = mimeTypeIsGuessed,
+                    signatureStatus     = signatureStatus,
+                    signerIdHex         = signerIdHex,
+                    signerLabel         = signerLabel
                 )
             )
             if (paper != null) {
@@ -567,6 +579,12 @@ class ReceiveActivity : AppCompatActivity() {
         val cacheId = state.cacheId ?: return
         val blob = state.pendingOverrideBlob
 
+        val verification = verifySignature(
+            state.streamBytes, state.signatureAlgorithm, state.signature,
+            state.signerPubkey, state.signerId, state.signerLabel,
+            AppDatabase.get(this).signerDao()
+        )
+
         val override = blob?.let { b ->
             retainedKeys().firstNotNullOfOrNull { key ->
                 TagDropCodec.tryDecryptOverrideMap(b, key, state.pendingOverrideCompression)
@@ -584,7 +602,9 @@ class ReceiveActivity : AppCompatActivity() {
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
                 preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
                 inReplyTo = state.inReplyTo, title = state.title, description = state.description,
-                createdAt = state.createdAt, pixelArt = state.pixelArt
+                createdAt = state.createdAt, pixelArt = state.pixelArt,
+                signatureStatus = verification.status, signerIdHex = verification.signerIdHex,
+                signerLabel = verification.signerLabel
             )
             return
         }
@@ -599,7 +619,9 @@ class ReceiveActivity : AppCompatActivity() {
                 lat = state.lat, lng = state.lng, radiusM = state.radiusM,
                 preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
                 inReplyTo = state.inReplyTo, title = state.title, description = state.description,
-                createdAt = state.createdAt, pixelArt = state.pixelArt
+                createdAt = state.createdAt, pixelArt = state.pixelArt,
+                signatureStatus = verification.status, signerIdHex = verification.signerIdHex,
+                signerLabel = verification.signerLabel
             )
             return
         }
@@ -610,6 +632,8 @@ class ReceiveActivity : AppCompatActivity() {
             pendingOverrideBlob = blob, pendingOverrideDeclared = state.pendingOverrideDeclared,
             pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
+            signatureStatus = verification.status, signerIdHex = verification.signerIdHex,
+            signerLabel = verification.signerLabel,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation, locationLabel = state.locationLabel,
             inReplyTo = state.inReplyTo, title = state.title, description = state.description,
@@ -653,7 +677,8 @@ class ReceiveActivity : AppCompatActivity() {
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
         preferDeclaredLocation: Boolean = false, locationLabel: String? = null,
         inReplyTo: ByteArray? = null, title: String? = null, description: String? = null,
-        createdAt: Long? = null, pixelArt: Boolean = false
+        createdAt: Long? = null, pixelArt: Boolean = false,
+        signatureStatus: Int = SignatureStatus.NONE, signerIdHex: String? = null, signerLabel: String? = null
     ) {
         val result = askPassphrase(hint)
         if (result != null) {
@@ -674,7 +699,8 @@ class ReceiveActivity : AppCompatActivity() {
                     lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
                     locationLabel = locationLabel,
                     inReplyTo = inReplyTo, title = title, description = description,
-                    createdAt = createdAt, pixelArt = pixelArt
+                    createdAt = createdAt, pixelArt = pixelArt,
+                    signatureStatus = signatureStatus, signerIdHex = signerIdHex, signerLabel = signerLabel
                 )
                 return
             }
@@ -689,7 +715,8 @@ class ReceiveActivity : AppCompatActivity() {
                 lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
                 locationLabel = locationLabel,
                 inReplyTo = inReplyTo, title = title, description = description,
-                createdAt = createdAt, pixelArt = pixelArt
+                createdAt = createdAt, pixelArt = pixelArt,
+                signatureStatus = signatureStatus, signerIdHex = signerIdHex, signerLabel = signerLabel
             )
         } else {
             toast(getString(R.string.awaiting_key))
@@ -763,8 +790,13 @@ class ReceiveActivity : AppCompatActivity() {
         runCatching { assembler.tryKey(key) }.getOrDefault(emptyList()).forEach { completeContentReady(it) }
     }
 
-    private fun completeContentReady(state: SectorAssembler.State.ContentReady) {
+    private suspend fun completeContentReady(state: SectorAssembler.State.ContentReady) {
         val cacheId = state.cacheId ?: return
+        val verification = verifySignature(
+            state.streamBytes, state.signatureAlgorithm, state.signature,
+            state.signerPubkey, state.signerId, state.signerLabel,
+            AppDatabase.get(this).signerDao()
+        )
         completeSingle(
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
@@ -775,7 +807,9 @@ class ReceiveActivity : AppCompatActivity() {
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation,
             inReplyTo = state.inReplyTo, title = state.title, description = state.description,
-            createdAt = state.createdAt
+            createdAt = state.createdAt,
+            signatureStatus = verification.status, signerIdHex = verification.signerIdHex,
+            signerLabel = verification.signerLabel
         )
     }
 
