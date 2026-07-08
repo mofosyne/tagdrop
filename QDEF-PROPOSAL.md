@@ -83,6 +83,33 @@ This gives per-field forward compatibility: a future critical field doesn't
 require bumping the container `Version` byte, only choosing an even key
 number the current Record Type doesn't yet define.
 
+### 3.3 Conformance Levels
+
+QDEF is designed so a minimal, generic parser is genuinely minimal — no
+implementer has to bring a compression library or sector-reassembly logic
+just to support the *container*:
+
+- **Core QDEF parser (mandatory, all implementers):** verify magic/version,
+  walk the CBOR Sequence, read each Record's `map[0]` to route or skip it,
+  apply the even/odd rule (§3.2) to unrecognized keys. That's the entire
+  surface area — no compression, no multi-code state, no knowledge of any
+  specific Record Type's fields.
+- **Record-Type-specific handling (optional, per Record Type an implementer
+  chooses to support):** everything else — including whether a given
+  Record Type's payload happens to be compressed, or happens to require
+  reassembling several codes — is defined *by that Record Type*, not by
+  QDEF. An implementer who only cares about Wi-Fi provisioning (Type 100)
+  never has to read, understand, or link against whatever TagDrop's Type
+  900 or any other registered type does internally.
+
+This is deliberate, not incidental: keeping compression and multi-code
+splitting entirely out of core conformance (see §6) is what makes "write a
+QDEF parser for my own Record Type" a small, self-contained task instead of
+requiring every implementer to first solve reassembly and compression
+generically. Reference/example code for other implementers should reflect
+this split explicitly — a small core router, plus separate, independent
+Record Type handlers that each own their own complexity (or lack of it).
+
 ## 4. Record Type Registry (informative examples)
 
 ### Type `100`: Wi-Fi Provisioning
