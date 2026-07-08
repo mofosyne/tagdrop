@@ -136,7 +136,63 @@ implementation depends on it, and it doesn't need to exist for TagDrop to
 keep working exactly as it does today via its own `tagdrop:` URI and raw-CBOR
 NFC path.
 
-## 6. Open questions (not resolved by this draft)
+## 6. Compression and splitting across multiple tags/codes
+
+**QDEF itself defines neither.** Both stay entirely inside each Record
+Type's own payload definition — TagDrop's registration (§5) is the working
+example of why that's the right call, not a limitation to design around.
+
+**Why not build them into the container:**
+
+- *Compression:* §3.1's "Constrained Route" only works if a bare-metal
+  scanner can read `map[0]` at zero decode cost to decide whether a record
+  concerns it. If the CBOR Sequence itself were compressed, that scanner
+  would need a DEFLATE implementation just to *skip* a record it doesn't
+  recognize — directly against §6 of the manifesto ("No-Snobbery Rule").
+  Keeping compression a per-record-type concern — as TagDrop already does,
+  DEFLATE happening before sectorization, opaque to any wrapper — means a
+  parser that doesn't recognize Type 900 never touches a compressed byte.
+- *Splitting:* QDEF is deliberately scoped to one physical code's records
+  (§2). Reassembling a payload spread across multiple codes (ordering,
+  missing/duplicate sectors, parity, content-addressing instead of an
+  issued serial) is a much harder problem than routing, and it's exactly
+  what TagDrop's `part_meta` (SPEC.md §4.1) already solves — after multiple
+  rounds of hard-won correctness (see CLAUDE.md's notes on this exact class
+  of bug in the signing feature). A second, competing addressing scheme at
+  the QDEF layer risks two envelopes disagreeing about what "sector 2 of 4"
+  means.
+
+**Why this is also the only interop-safe answer for TagDrop specifically:**
+compression/splitting can't be relocated into an outer QDEF wrapper without
+breaking the ASCII `tagdrop:` URI path, which shares the *identical* CBOR
+Sequence and has no QDEF wrapper at all — Base41 encodes it directly
+(SPEC.md §2). So this logic has to keep living exactly where it lives
+today, inside the CBOR Sequence itself, for both paths to share one
+implementation. Under §5's registration, a multi-sector TagDrop payload
+becomes **N separate QDEF containers** (or N NDEF messages) — each holding
+one Type-900 Record whose value is one already-compressed, already-addressed
+TagDrop sector, byte-for-byte unchanged. QDEF performs no reassembly; it's
+purely per-code framing.
+
+**Cost of wrapping every sector:** ~5 bytes magic + a few bytes of map/tag
+framing (key 0, key 2) *per code*, on top of what SPEC.md §12's raw
+byte-mode QR path already gets for free today (that's the reason non-initial
+sectors go byte-mode unwrapped in the first place). QDEF framing should
+therefore stay **opt-in per code** — used only when a code genuinely needs
+to co-locate a TagDrop sector alongside an unrelated record (e.g. a Wi-Fi
+record on the same sticker) — not the default framing for ordinary
+multi-sector TagDrop content, where the existing unwrapped raw CBOR
+sequence remains cheaper and should stay the default.
+
+**If a future *non*-TagDrop record type wants to span multiple codes:** a
+real gap QDEF could optionally close generically, without TagDrop needing
+it — a reserved, opt-in key range (e.g. always keys 90/92/94 =
+`group_id`/`index`/`count`, regardless of Record Type) modeled directly on
+`part_meta`'s content-addressed pattern, so future record types don't
+reinvent sector addressing from scratch. Not required for TagDrop interop;
+listed as an open question below, not something to build now.
+
+## 7. Open questions (not resolved by this draft)
 
 - **Registry governance.** Who allocates Record Type IDs (100, 105, 900,
   ...) if this is meant to be shared across unrelated projects? No registry
@@ -152,3 +208,8 @@ NFC path.
   convention for the optical/QR case specifically, plus the even/odd
   criticality rule, which NDEF itself does not have (NDEF has no
   per-key criticality signal at all, only per-record TNF/Type).
+- **Generic multi-code spanning (§6).** Worth a reserved, opt-in
+  `group_id`/`index`/`count` key convention so record types other than
+  TagDrop don't reinvent sector addressing from scratch? Or is this
+  over-engineering for a need that hasn't shown up yet outside TagDrop —
+  defer until a second record type actually needs it?
