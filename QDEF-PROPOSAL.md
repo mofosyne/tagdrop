@@ -17,6 +17,20 @@ If this gains no traction outside this repo, it's still useful as a written
 target for "what would TagDrop's byte-mode path plug into, if a wider binary
 standard existed" — see §5.
 
+### When QDEF earns its place (a general rule, not a TagDrop exception)
+
+This isn't specific to TagDrop: **any** application that defines its own
+text/URI scheme (human-typable, clickable) should encode its envelope
+directly under that scheme, not wrap it in QDEF. The scheme prefix already
+does the recognition job QDEF's magic header exists for (§2) — wrapping
+would only add redundant bytes with nothing to show for them. QDEF earns
+its place on carriers with **no pre-existing dispatch**: plain byte-mode QR
+with no URI at all, or an NDEF payload with no app-specific MIME type
+already doing the routing. That's true for TagDrop's own byte-mode/NFC path
+(§5) and equally true for any other application considering the same
+tradeoff (§7's PGP-backup example, for instance) — a self-contained rule,
+not something argued case by case each time it comes up.
+
 ## 1. Abstract & Philosophy
 
 QDEF is a binary-first data exchange format for 2D barcodes and NFC tags. It
@@ -130,7 +144,17 @@ Type 2: {                    // Split
                               //   between independent encoders
   4: 1,                      // CRITICAL: this fragment's index
   6: 4,                      // CRITICAL: total fragment count in the group
-  8: h'<fragment bytes>'     // CRITICAL: this code's slice
+  8: h'<fragment bytes>',    // CRITICAL: this code's slice
+  9: 5821,                   // OPTIONAL: total_bytes of the reassembled
+                              //   whole — lets a decoder show progress or
+                              //   pre-size a buffer before all fragments
+                              //   have arrived
+  11: 1                      // OPTIONAL: parity_scheme — 0/absent = none,
+                              //   nonzero selects a registered forward-
+                              //   error-correction scheme so the group
+                              //   tolerates a missing/damaged code (see
+                              //   SPEC.md §4.1's `parity_scheme` for the
+                              //   design this is modeled on)
 }
 
 Type 3: {                    // Compress (DEFLATE)
@@ -144,6 +168,18 @@ Type 4: {                    // Encrypt (e.g. AES-GCM)
   4: h'<ciphertext+tag>'     // CRITICAL
 }
 ```
+
+`total_bytes`/`parity_scheme` are safely odd/OPTIONAL despite sounding like
+correctness-critical fields: reassembly only requires fragments `0` through
+`count − 1`; a parity fragment (index ≥ `count`, present only when
+`parity_scheme` is set) is pure bonus redundancy, useful for reconstructing
+one missing/damaged fragment but never required when all `count` real
+fragments already arrived. A decoder that doesn't understand
+`parity_scheme` can just ignore any fragment past `count` and still
+reassemble correctly in the all-present case — it only loses resilience,
+never correctness. (Mirrors SPEC.md §4.1: `parity_scheme` sectors sit at
+`sector_index ≥ sector_count`, strictly additive to the sectors a basic
+decoder already needs.)
 
 **Fixed nesting order**, when more than one is combined: `Split (outermost,
 if present) → Encrypt → Compress → plain inner Record`. Split must be
@@ -280,7 +316,49 @@ Not required for TagDrop interop (Type 900 keeps its own proven, signing-
 aware `part_meta`, unchanged) — this is purely for record types that don't
 already have their own answer.
 
-## 7. Open questions (not resolved by this draft)
+## 7. Worked example: a non-TagDrop adopter (PGP key backup)
+
+Illustrating §3.4 and §6 for an application that has nothing to do with
+TagDrop: an app that backs up a passphrase-protected OpenPGP secret key
+across a set of printed QR codes.
+
+This app has **no scheme of its own** to dispatch on — these codes are only
+ever scanned by its own app, never clicked or typed — so per "When QDEF
+earns its place" above, going through QDEF's byte-mode container (magic
+header included) is the right call, not redundant the way it would be for
+TagDrop's ASCII path.
+
+Registers one Record Type, say `950`, for the plain secret-key bytes:
+
+```
+Tag 950: {
+  0: 950,
+  2: h'<raw OpenPGP transferable secret key packet bytes>'  // CRITICAL
+}
+```
+
+Because the key material is sensitive and may not fit one code, the app
+composes it through two Wrapper Records, in the fixed order from §3.4 —
+`Split (outermost) → Encrypt → plain Type-950 Record` (no `Compress` layer
+here — key material is already high-entropy, DEFLATE wouldn't help):
+
+```
+authoring:  Type-950 Record  →  Encrypt Wrapper (Type 4)  →  Split Wrapper (Type 2)
+decoding:   Split Wrapper    →  Encrypt Wrapper           →  Type-950 Record
+            (per code)          (after reassembly)            (the real key)
+```
+
+Each of the 3 printed codes carries one Split-Wrapper Record (Type 2) with
+`parity_scheme` set — losing one code out of the set is recoverable, which
+matters far more for a one-off secret-key backup than for TagDrop's
+disposable content sectors. The app wrote **zero** reassembly, parity, or
+AES-GCM code of its own for the container format — all of it is the shared
+QDEF Wrapper resolver from §3.4, exercised through the *exact same*
+recursive "unwrap bytes → re-parse as a Record" step, regardless of what
+Type 950 turns out to mean. This is the concrete version of the "won't need
+to write the code for it" goal this whole mechanism is for.
+
+## 8. Open questions (not resolved by this draft)
 
 - **Registry governance.** Who allocates Record Type IDs (100, 105, 900,
   ...) if this is meant to be shared across unrelated projects? No registry
