@@ -110,6 +110,66 @@ generically. Reference/example code for other implementers should reflect
 this split explicitly — a small core router, plus separate, independent
 Record Type handlers that each own their own complexity (or lack of it).
 
+### 3.4 Wrapper Records (optional)
+
+A **Wrapper Record** is an ordinary Record — same routing, same even/odd
+rule — using a reserved low Type ID, whose payload is not application data
+but the *encoded bytes of another Record* (which may itself be a Wrapper
+Record, nested). Unwrapping and re-parsing the result as a Record is the
+entire mechanism: no new parsing concept beyond "run the Record parser
+again on these bytes."
+
+Reserved Wrapper Type IDs (placeholders, pending a real registry):
+
+```
+Type 2: {                    // Split
+  0: 2,
+  2: h'<group_id>',          // CRITICAL: content-addressed (e.g. a hash of
+                              //   the full reassembled bytes) — never an
+                              //   issued serial, so no coordination needed
+                              //   between independent encoders
+  4: 1,                      // CRITICAL: this fragment's index
+  6: 4,                      // CRITICAL: total fragment count in the group
+  8: h'<fragment bytes>'     // CRITICAL: this code's slice
+}
+
+Type 3: {                    // Compress (DEFLATE)
+  0: 3,
+  2: h'<deflate bytes>'      // CRITICAL
+}
+
+Type 4: {                    // Encrypt (e.g. AES-GCM)
+  0: 4,
+  2: h'<nonce>',             // CRITICAL
+  4: h'<ciphertext+tag>'     // CRITICAL
+}
+```
+
+**Fixed nesting order**, when more than one is combined: `Split (outermost,
+if present) → Encrypt → Compress → plain inner Record`. Split must be
+outermost — decompression/decryption need the complete byte string, which
+only exists after reassembly. Compress-before-encrypt is the only sound
+order between the other two (ciphertext doesn't compress).
+
+**Why a wrapper, not a reserved key range on the inner record itself** (an
+earlier idea for this same problem): wrapping avoids a cross-record
+correctness hazard a sibling/key-range approach doesn't. If spanning info
+were just extra keys inside, say, a Type 200 "Photo Fragment" record, a
+parser that recognizes Type 200 but not the spanning convention would
+happily treat one fragment as if it were the whole photo. A Wrapper Record
+can't be misread that way: its payload is opaque bytes, not a valid inner
+Record, so a parser that doesn't implement Type 2 just skips the entire
+record like any other unrecognized Type ID — it never sees anything to
+misinterpret. This is also what makes the mechanism *reusable*: reassembly/
+decompression/decryption are generic byte-in-byte-out operations, so one
+resolver, written once, works for every Record Type that opts in — no
+Record Type author writes any of this themselves.
+
+**Cost:** wrapper framing (CBOR map + a few keys) is added per code on top
+of the inner record, so this stays strictly opt-in — a Record Type with no
+need for it stays a plain, unwrapped Record, exactly as cheap as §4's
+examples.
+
 ## 4. Record Type Registry (informative examples)
 
 ### Type `100`: Wi-Fi Provisioning
@@ -211,13 +271,14 @@ record on the same sticker) — not the default framing for ordinary
 multi-sector TagDrop content, where the existing unwrapped raw CBOR
 sequence remains cheaper and should stay the default.
 
-**If a future *non*-TagDrop record type wants to span multiple codes:** a
-real gap QDEF could optionally close generically, without TagDrop needing
-it — a reserved, opt-in key range (e.g. always keys 90/92/94 =
-`group_id`/`index`/`count`, regardless of Record Type) modeled directly on
-`part_meta`'s content-addressed pattern, so future record types don't
-reinvent sector addressing from scratch. Not required for TagDrop interop;
-listed as an open question below, not something to build now.
+**If a future *non*-TagDrop record type wants splitting, compression, or
+encryption without writing any of it itself:** that's what §3.4's Wrapper
+Records are for — a generic, reusable resolver (reassemble / decompress /
+decrypt → re-parse as a Record) that any Record Type can opt into by simply
+being wrapped, with zero code written by that Record Type's own author.
+Not required for TagDrop interop (Type 900 keeps its own proven, signing-
+aware `part_meta`, unchanged) — this is purely for record types that don't
+already have their own answer.
 
 ## 7. Open questions (not resolved by this draft)
 
@@ -235,8 +296,12 @@ listed as an open question below, not something to build now.
   convention for the optical/QR case specifically, plus the even/odd
   criticality rule, which NDEF itself does not have (NDEF has no
   per-key criticality signal at all, only per-record TNF/Type).
-- **Generic multi-code spanning (§6).** Worth a reserved, opt-in
-  `group_id`/`index`/`count` key convention so record types other than
-  TagDrop don't reinvent sector addressing from scratch? Or is this
-  over-engineering for a need that hasn't shown up yet outside TagDrop —
-  defer until a second record type actually needs it?
+- **Wrapper Type registry (§3.4).** Same governance gap as ordinary Record
+  Types, now also for reserved Wrapper IDs (Split/Compress/Encrypt) — needs
+  the same "who allocates numbers" answer above, just for a smaller,
+  presumably QDEF-core-maintained range rather than open to any vendor.
+- **Enforcing nesting order (§3.4).** Is `Split → Encrypt → Compress` just
+  documented convention an encoder is trusted to follow, or should a
+  non-conformant order be independently detectable/rejectable by a
+  decoder? Leaning toward "trust the encoder" (matches QDEF's minimal-core
+  philosophy) but worth deciding explicitly rather than leaving implicit.
