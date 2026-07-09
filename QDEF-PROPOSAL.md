@@ -15,7 +15,7 @@ requirement and multiple unrelated actions might want to share one code.
 
 If this gains no traction outside this repo, it's still useful as a written
 target for "what would TagDrop's byte-mode path plug into, if a wider binary
-standard existed" — see §5.
+standard existed" — see §6.
 
 ### When QDEF earns its place (a general rule, not a TagDrop exception)
 
@@ -27,8 +27,8 @@ would only add redundant bytes with nothing to show for them. QDEF earns
 its place on carriers with **no pre-existing dispatch**: plain byte-mode QR
 with no URI at all, or an NDEF payload with no app-specific MIME type
 already doing the routing. That's true for TagDrop's own byte-mode/NFC path
-(§5) and equally true for any other application considering the same
-tradeoff (§7's PGP-backup example, for instance) — a self-contained rule,
+(§6) and equally true for any other application considering the same
+tradeoff (§8's PGP-backup example, for instance) — a self-contained rule,
 not something argued case by case each time it comes up.
 
 ## 1. Abstract & Philosophy
@@ -38,6 +38,10 @@ replaces rigid text schemas (`WIFI:S:...;;`, `BEGIN:VCARD`) with a
 multi-action, extensible CBOR payload, while staying parseable by both a
 modern smartphone and a deeply constrained embedded scanner (transit gate,
 POS terminal) with no semantic-tag-aware CBOR library.
+
+QDEF is deliberately two things, not one: a minimal **core format** (§3),
+plus a separate **standard library** (§4) of reusable building blocks built
+on top of it. Neither is optional to the design — see §4 for why.
 
 ## 2. Container Wire Format
 
@@ -117,14 +121,33 @@ just to support the *container*:
   900 or any other registered type does internally.
 
 This is deliberate, not incidental: keeping compression and multi-code
-splitting entirely out of core conformance (see §6) is what makes "write a
+splitting entirely out of core conformance (see §7) is what makes "write a
 QDEF parser for my own Record Type" a small, self-contained task instead of
 requiring every implementer to first solve reassembly and compression
 generically. Reference/example code for other implementers should reflect
 this split explicitly — a small core router, plus separate, independent
 Record Type handlers that each own their own complexity (or lack of it).
 
-### 3.4 Wrapper Records (optional)
+## 4. The QDEF Standard Library
+
+QDEF is a *format plus a standard library*, not just the format — the same
+relationship C-the-language has with libc. §3 defines a minimal core any
+conformant parser must implement, and says nothing about compression,
+splitting, encryption, or graceful degradation for scanners that don't
+understand a given Record Type. Those live here instead: a small, curated
+set of Record Types any application can pull in — writing no reassembly
+code, no cipher code, no fallback-routing code of its own — the same way
+nobody hand-rolls `malloc` just because C-the-language doesn't itself
+require libc to exist.
+
+**Reserved Type ID range:** `1`–`99` are reserved for this standard
+library, maintained alongside the QDEF spec itself. `100` and above are
+open for applications to register their own domain-specific Record Types
+(§5's Wi-Fi/Ticket examples, §6's TagDrop registration at `900`) — who
+governs *that* allocation is still open (§9), but at least the two
+registries are partitioned by construction and can't collide.
+
+### 4.1 Wrapper Records (optional)
 
 A **Wrapper Record** is an ordinary Record — same routing, same even/odd
 rule — using a reserved low Type ID, whose payload is not application data
@@ -203,10 +226,38 @@ Record Type author writes any of this themselves.
 
 **Cost:** wrapper framing (CBOR map + a few keys) is added per code on top
 of the inner record, so this stays strictly opt-in — a Record Type with no
-need for it stays a plain, unwrapped Record, exactly as cheap as §4's
+need for it stays a plain, unwrapped Record, exactly as cheap as §5's
 examples.
 
-## 4. Record Type Registry (informative examples)
+### 4.2 Fallback Hint (optional)
+
+Unlike §4.1, this is deliberately **not** a wrapper — a plain stdlib Record
+Type meant to sit as a *sibling* alongside real content records in the same
+CBOR Sequence, carrying a URI any generic tool can follow if it doesn't
+understand anything else in the container:
+
+```
+Type 5: {                          // Fallback Hint (stdlib)
+  0: 5,
+  2: "https://example.com/open-this",  // CRITICAL: a URI a generic tool
+                                        //   or browser can follow
+  1: "Open in TagDrop"                 // OPTIONAL: human-readable label
+}
+```
+
+This is what actually gives a QDEF container the "something useful happens
+even without the specific app" property — the same mechanism behind
+SPEC.md's own NDEF companion-record convention (a Well-Known URI/Text/MIME
+record placed at index 0 alongside TagDrop's own record, so a non-TagDrop
+NFC reader still gets something), formalized here as reusable stdlib
+infrastructure instead of an NFC-only, ad hoc convention, so it also
+reaches the byte-mode QR case NDEF's own URI record can't.
+
+It **must** stay a plain sibling record, never nested inside a Wrapper —
+its entire value is being visible to a parser that understands nothing
+else in the container, which a Wrapper's opaque payload would defeat.
+
+## 5. Record Type Registry (informative examples)
 
 ### Type `100`: Wi-Fi Provisioning
 
@@ -232,7 +283,7 @@ Tag 105: {
 }
 ```
 
-## 5. Registering TagDrop as a Record Type
+## 6. Registering TagDrop as a Record Type
 
 TagDrop's byte-mode payload (SPEC.md §2/§12) already *is* the four-item
 `version`/`type`/`part_meta`/`sector_bytes` CBOR Sequence used identically
@@ -259,10 +310,10 @@ implementation depends on it, and it doesn't need to exist for TagDrop to
 keep working exactly as it does today via its own `tagdrop:` URI and raw-CBOR
 NFC path.
 
-## 6. Compression and splitting across multiple tags/codes
+## 7. Compression and splitting across multiple tags/codes
 
 **QDEF itself defines neither.** Both stay entirely inside each Record
-Type's own payload definition — TagDrop's registration (§5) is the working
+Type's own payload definition — TagDrop's registration (§6) is the working
 example of why that's the right call, not a limitation to design around.
 
 **Why not build them into the container:**
@@ -271,10 +322,11 @@ example of why that's the right call, not a limitation to design around.
   scanner can read `map[0]` at zero decode cost to decide whether a record
   concerns it. If the CBOR Sequence itself were compressed, that scanner
   would need a DEFLATE implementation just to *skip* a record it doesn't
-  recognize — directly against §6 of the manifesto ("No-Snobbery Rule").
-  Keeping compression a per-record-type concern — as TagDrop already does,
-  DEFLATE happening before sectorization, opaque to any wrapper — means a
-  parser that doesn't recognize Type 900 never touches a compressed byte.
+  recognize — directly against the "No-Snobbery Rule" behind Hardware
+  Parity (§3.1). Keeping compression a per-record-type concern — as
+  TagDrop already does, DEFLATE happening before sectorization, opaque to
+  any wrapper — means a parser that doesn't recognize Type 900 never
+  touches a compressed byte.
 - *Splitting:* QDEF is deliberately scoped to one physical code's records
   (§2). Reassembling a payload spread across multiple codes (ordering,
   missing/duplicate sectors, parity, content-addressing instead of an
@@ -291,7 +343,7 @@ breaking the ASCII `tagdrop:` URI path, which shares the *identical* CBOR
 Sequence and has no QDEF wrapper at all — Base41 encodes it directly
 (SPEC.md §2). So this logic has to keep living exactly where it lives
 today, inside the CBOR Sequence itself, for both paths to share one
-implementation. Under §5's registration, a multi-sector TagDrop payload
+implementation. Under §6's registration, a multi-sector TagDrop payload
 becomes **N separate QDEF containers** (or N NDEF messages) — each holding
 one Type-900 Record whose value is one already-compressed, already-addressed
 TagDrop sector, byte-for-byte unchanged. QDEF performs no reassembly; it's
@@ -308,7 +360,7 @@ multi-sector TagDrop content, where the existing unwrapped raw CBOR
 sequence remains cheaper and should stay the default.
 
 **If a future *non*-TagDrop record type wants splitting, compression, or
-encryption without writing any of it itself:** that's what §3.4's Wrapper
+encryption without writing any of it itself:** that's what §4.1's Wrapper
 Records are for — a generic, reusable resolver (reassemble / decompress /
 decrypt → re-parse as a Record) that any Record Type can opt into by simply
 being wrapped, with zero code written by that Record Type's own author.
@@ -316,9 +368,9 @@ Not required for TagDrop interop (Type 900 keeps its own proven, signing-
 aware `part_meta`, unchanged) — this is purely for record types that don't
 already have their own answer.
 
-## 7. Worked example: a non-TagDrop adopter (PGP key backup)
+## 8. Worked example: a non-TagDrop adopter (PGP key backup)
 
-Illustrating §3.4 and §6 for an application that has nothing to do with
+Illustrating §4.1 and §7 for an application that has nothing to do with
 TagDrop: an app that backs up a passphrase-protected OpenPGP secret key
 across a set of printed QR codes.
 
@@ -338,7 +390,7 @@ Tag 950: {
 ```
 
 Because the key material is sensitive and may not fit one code, the app
-composes it through two Wrapper Records, in the fixed order from §3.4 —
+composes it through two Wrapper Records, in the fixed order from §4.1 —
 `Split (outermost) → Encrypt → plain Type-950 Record` (no `Compress` layer
 here — key material is already high-entropy, DEFLATE wouldn't help):
 
@@ -353,16 +405,21 @@ Each of the 3 printed codes carries one Split-Wrapper Record (Type 2) with
 matters far more for a one-off secret-key backup than for TagDrop's
 disposable content sectors. The app wrote **zero** reassembly, parity, or
 AES-GCM code of its own for the container format — all of it is the shared
-QDEF Wrapper resolver from §3.4, exercised through the *exact same*
+QDEF Wrapper resolver from §4.1, exercised through the *exact same*
 recursive "unwrap bytes → re-parse as a Record" step, regardless of what
 Type 950 turns out to mean. This is the concrete version of the "won't need
 to write the code for it" goal this whole mechanism is for.
 
-## 8. Open questions (not resolved by this draft)
+## 9. Open questions (not resolved by this draft)
 
-- **Registry governance.** Who allocates Record Type IDs (100, 105, 900,
-  ...) if this is meant to be shared across unrelated projects? No registry
-  exists yet — IDs above are illustrative placeholders only.
+- **Registry governance.** Who allocates application-specific Record Type
+  IDs (`100`, `105`, `900`, ...) if this is meant to be shared across
+  unrelated projects? No registry exists yet — IDs above are illustrative
+  placeholders only.
+- **Standard library governance.** Related but narrower (§4): who maintains
+  the reserved `1`–`99` range itself — additions like §4.1/§4.2 need some
+  process for becoming part of "the stdlib" rather than just another
+  vendor's Record Type squatting on a low number.
 - **Magic-header overhead for QR.** 5 bytes fixed cost matters for a
   single-record payload in a size-constrained QR version; is it worth
   gating on payload size (e.g. omit magic when embedded via a scheme that
@@ -374,11 +431,7 @@ to write the code for it" goal this whole mechanism is for.
   convention for the optical/QR case specifically, plus the even/odd
   criticality rule, which NDEF itself does not have (NDEF has no
   per-key criticality signal at all, only per-record TNF/Type).
-- **Wrapper Type registry (§3.4).** Same governance gap as ordinary Record
-  Types, now also for reserved Wrapper IDs (Split/Compress/Encrypt) — needs
-  the same "who allocates numbers" answer above, just for a smaller,
-  presumably QDEF-core-maintained range rather than open to any vendor.
-- **Enforcing nesting order (§3.4).** Is `Split → Encrypt → Compress` just
+- **Enforcing nesting order (§4.1).** Is `Split → Encrypt → Compress` just
   documented convention an encoder is trusted to follow, or should a
   non-conformant order be independently detectable/rejectable by a
   decoder? Leaning toward "trust the encoder" (matches QDEF's minimal-core
