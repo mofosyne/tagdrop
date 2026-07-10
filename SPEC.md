@@ -1,11 +1,22 @@
 # TagDrop Encoding Specification
 
-**Version:** 1  
-**Status:** Draft — version 1 has no real-world deployments yet (no printed
-or distributed codes), so it may still change incompatibly without a version
+**Version:** 2 (breaking redesign — see "Relationship to QDEF" below)
+**Status:** Draft — no real-world deployments yet (no printed or
+distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
 changes from then on require a version bump (§14). Feedback welcome via
 GitHub issues.
+
+**Relationship to QDEF:** TagDrop's envelope is built on the Record/Wrapper
+primitives defined by [QDEF](https://github.com/mofosyne/qdef)
+(`docs/QDEF-SPEC.md` there) — a general-purpose binary container for
+multi-action barcodes/NFC, developed alongside TagDrop but meant to be a
+reusable, TagDrop-independent standard. TagDrop registers four QDEF Record
+Types (§3) and uses QDEF's Split/Compress Wrapper Records (§5) instead of a
+bespoke sectoring/compression scheme. This is *not* the same as wrapping
+TagDrop's ASCII QR codes in QDEF's binary container — see §2's carrier
+table for why the `tagdrop:` URI path and the byte-mode/NFC path share the
+same Record bytes but differ in outer framing.
 
 ---
 
@@ -17,50 +28,44 @@ The format is designed to:
 
 - Fit rich content (HTML pages, images, audio snippets, plain text) into one or more standard QR codes
 - Support **geographic distribution**: chunks of a large payload can be placed at different physical locations, so finding all pieces is part of the experience
-- Be **future-proof**: versioned, binary-compact, with reserved fields for compression and future extensions
+- Be **future-proof**: versioned, binary-compact, with per-field forward compatibility (§3's even/odd criticality rule) instead of only whole-version compatibility
 - Remain **backward-compatible** with the legacy `data:` URI approach
-- Be **transport-agnostic**: the same CBOR sequence can be carried by QR codes, NFC NDEF tags, or other 2D barcode formats (Aztec, JABCode)
+- Be **transport-agnostic**: the same Record bytes can be carried by QR codes, NFC NDEF tags, or other 2D barcode formats (Aztec, JABCode)
 
 ---
 
-## 2. URI Scheme
+## 2. Wire Framing
 
-All TagDrop codes use the URI scheme `tagdrop:` so any QR scanner routes them to the app. The URI doubles as an intent deep-link on Android.
+Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or two **Records** (QDEF terminology — each Record is a flat CBOR map, routed by its own `0` key, per QDEF-SPEC.md §3). A code always carries a **Preview** Record; a payload with a body (§4) also carries either the complete **Body** Record (if it fits alongside Preview in one code) or one **Split-Wrapper**-wrapped Body fragment (§5, multi-code case).
 
-```
-tagdrop:<base41-cbor-sequence>
-```
+**Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
-`<base41-cbor-sequence>` is a **Base41** encoding of a short **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array or map). Every code — whether it stands alone or is one of several pieces of a larger payload — is a **sector**, carrying the same four-item envelope:
-
-```
-CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes)
-```
-
-Laid out as a sequence of four concatenated items:
-
-```
-+----------+----------+------------+---------------+
-| version  | type     | part_meta  | sector_bytes  |
-| (1 byte) | (1 byte) | (CBOR map) | (byte string) |
-+----------+----------+------------+---------------+
-```
-
-| Item | Type | Meaning |
+| Carrier | Framing | Why |
 |---|---|---|
-| `version` | uint | Format version. Currently `1`. |
-| `type` | uint | Payload kind — see table below. |
-| `part_meta` | map | Per-sector bookkeeping — addressing, position, parity. See §4.1. |
-| `sector_bytes` | bytes | This sector's slice of the reassembled stream. See §4. |
+| `tagdrop:` URI (QR alphanumeric mode) | `tagdrop:` + Base41(Record Sequence bytes) | The `tagdrop:` scheme itself is the dispatch signal — no QDEF magic header needed (QDEF-SPEC.md §1: "any application that already defines its own text/URI scheme should encode its envelope directly under that scheme, not wrap it in QDEF"). |
+| Byte-mode QR / other 2D barcode | QDEF magic + version (5 bytes) + Record Sequence bytes | No scheme, no prior dispatch signal exists — this is exactly the case QDEF's magic header earns its keep for. |
+| NFC NDEF | Record Sequence bytes only, as the payload of an `application/vnd.tagdrop` MIME record | NDEF's own MIME-type field is the dispatch signal, same reasoning as the URI case — carrying QDEF's magic header here would be redundant, matching QDEF-SPEC.md §2's own guidance for NFC. |
 
-| `type` | Payload |
-|---|---|
-| 0 | Content — a cache (file, page, snippet) of any size, one or more sectors |
-| 1 | Paper — directory of files on a physical paper, one or more sectors |
+This is the "near 1:1" property: an encoder builds the Record Sequence bytes once, then picks a framing based only on which carrier it's targeting — Base41-encode them, prefix them with the QDEF magic+version, or hand them to NDEF raw. Nothing about the Records' own structure changes per carrier.
 
-A small piece of content that fits in one code is simply a `type` 0 payload whose `part_meta` has `sector_count` 1 — there's no separate "Single" type. A Paper that needs only one code likewise has `sector_count` 1. Splitting across more codes never changes `type`, only `part_meta`'s sector fields — see §4.1 and §5.
+### 2.1 Record Types
 
-For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 major type 0, value packed into the initial byte). So `version` and `type` together still cost just **2 bytes**, same as every sector under the previous design.
+TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed). IDs are 64-bit CSPRNG values in QDEF's private-use tier (`0x10000`+, QDEF-SPEC.md §9), pending a real shared registry:
+
+| Type ID | Record | Contains |
+|---|---|---|
+| `11040522420225562824` | Content-Preview | Small, always-plain fields — identity, hint, location, collection, encryption/signing metadata. See §3.1. |
+| `16141970035994251452` | Content-Body | `content` bytes, plus the large signature fields. See §3.2. |
+| `11467060725844413781` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
+| `3662944544912906201` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
+
+A **key-only** code (§9, "Decryption keys") is a Content-Preview Record with no accompanying Body at all — carrying `key_material` but no content, exactly as today's key codes do; nothing about that case changes.
+
+### 2.2 Even/odd key criticality
+
+TagDrop's own Record fields (§3) are, in this version, **entirely odd-numbered (optional)** — every field defined below is safe for an old decoder to ignore if it doesn't recognize it, degrading gracefully rather than misinterpreting anything. Even key numbers are deliberately left unused in every TagDrop Record Type for now, reserved as headroom for a future field that genuinely needs must-understand-or-abort semantics (QDEF-SPEC.md §3.2's even/odd rule) — a real capability the old single-namespace, ignore-everything-unknown design didn't have (tracked as tagdrop#63, now resolved by adopting QDEF's rule directly instead of inventing an equivalent). Key `0` (the Type ID itself) is the one mandatory exception, per QDEF's own rule.
+
+For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 major type 0). Record Type IDs above are large by design (collision avoidance, §2.1) and cost more than the old 1-byte `version`/`type` pair — but they're paid once per code, same order of magnitude as before; see the QDEF byte-overhead discussion this project relayed back upstream (mofosyne/qdef PR #2) for the actual numbers.
 
 ### Navigation links (not QR payloads)
 
@@ -120,93 +125,150 @@ algorithm.
 
 ## 3. CBOR Map Keys
 
-TagDrop's wire format has four internal CBOR structures, all integer-keyed maps (or, for content, a structure built around one). Unknown keys must be ignored (forward compatibility).
+Each of TagDrop's four Record Types (§2.1) has its own independent key
+namespace — a field number means nothing outside the Record Type it's
+listed under (QDEF-SPEC.md §3.1). Per §2.2, every field below is odd
+(optional/ignorable); even numbers are unused, reserved headroom.
 
-- **`part_meta`** — one per sector, carried in the envelope alongside `sector_bytes` (§2, §4.1). Addressing and position: which content this sector belongs to, where it sits in the sequence, how many sectors to expect.
-- **`core_meta_item`** — the first item of the reassembled stream (§4.2). Always small and uncompressed: identity/preview fields, plus declarations describing the two items that follow.
-- **`bulky_meta_item`** — the second item of the reassembled stream. Whatever doesn't need to be in the early preview but isn't raw content: directories, related-paper hints, large fixed-size fields. May be compressed.
-- **content** — the third and last item: the actual bytes (a Content payload's cache; empty for a Paper, which has no content of its own). May be compressed, and may be a hidden encrypted override map (§9).
+### 3.1 Content-Preview (Type `11040522420225562824`)
 
-| Key | Field | Type | Valid in |
+Always plain, unwrapped, present on every code carrying this payload
+(§5.1). `cache_id` is the content-addressed identity used for
+dedup/caching across authors — see the note after this table for why it's
+scoped differently from Paper's `root_hash`.
+
+| Key | Field | Type | Notes |
 |---|---|---|---|
-| 2 | `cache_id` / `root_hash` | bytes (8, opt) | `part_meta` |
-| 3 | `hint` / `label` | text (opt) | `core_meta_item`; `related[]` (as `hint`) |
-| 4 | `mime_type` | text (opt) | `core_meta_item`; Content only |
-| 7 | `total_bytes` | uint | `part_meta` |
-| 8 | `content_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
-| 11 | `filename` | text (opt) | `core_meta_item`; Content only |
-| 12 | `content_compression` | uint (opt) | `core_meta_item` |
-| 13 | `set` | text (opt) | `core_meta_item` (Paper only) |
-| 14 | `slug` | text (opt) | `core_meta_item` (Paper only) |
-| 15 | `files` | array of `files[]` sub-maps | `bulky_meta_item`; Paper only |
-| 16 | `related` | array of `related[]` sub-maps | `bulky_meta_item`; Paper only |
-| 17 | `collection_id` | bytes (8, opt) | `core_meta_item` |
-| 18 | `collection_label` | text (opt) | `core_meta_item` |
-| 19 | `collection_tag` | text (opt) | `core_meta_item` |
-| 24 | `icon` | text (opt) | `core_meta_item` |
-| 26 | `lat` | float64 (opt) | `core_meta_item` (author-declared location of this payload) |
-| 27 | `lng` | float64 (opt) | `core_meta_item` — longitude, same scope as `lat` |
-| 28 | `encryption` | uint (opt) | `core_meta_item`; Content only |
-| 30 | `key_material` | bytes (32, opt) | `core_meta_item` |
-| 31 | `retain_key` | bool (opt, default `true`) | `core_meta_item` — see §9 |
-| 32 | `signature_algorithm` | uint (opt) | `core_meta_item` |
-| 33 | `signature` | bytes (2420, opt) | `bulky_meta_item` |
-| 34 | `signer_pubkey` | bytes (1312, opt) | `bulky_meta_item` |
-| 35 | `signer_id` | bytes (8, opt) | `core_meta_item` |
-| 36 | `signer_label` | text (opt) | `core_meta_item` |
-| 37 | `kdf_alg` | uint (opt) | `core_meta_item`; Content only |
-| 38 | `kdf_salt` | bytes (16, opt) | `core_meta_item`; Content only |
-| 39 | `kdf_iters` | uint (opt, default 100000) | `core_meta_item`; Content only |
-| 40 | `description` | text (opt) | `core_meta_item` |
-| 42 | `sector_index` | uint | `part_meta` |
-| 43 | `sector_count` | uint | `part_meta` |
-| 44 | `parity_scheme` | uint (opt) | `part_meta`; only on sectors at index ≥ `sector_count` |
-| 45 | `bulky_meta_compression` | uint (opt) | `core_meta_item` |
-| 46 | `bulky_meta_compressed_bytes` | uint (required iff key 45 present) | `core_meta_item` |
-| 47 | `bulky_meta_sha256` | bytes (32, required iff `sector_count > 1`) | `core_meta_item` |
-| 48 | `radius_m` | float64 (opt) | `core_meta_item` — circle-of-uncertainty radius in meters around `lat`/`lng` |
-| 49 | `prefer_declared_location` | bool (opt, default `false`) | `core_meta_item` only |
-| 50 | `in_reply_to` | bytes (8, opt) | `core_meta_item` — `cache_id`/`root_hash` of the single parent this is replying to (§7) |
-| 51 | `title` | text (opt) | `core_meta_item` |
-| 52 | `created_at` | uint (opt) | `core_meta_item` — author-declared Unix timestamp (seconds since epoch) this payload was authored; reflects the authoring device's clock, not independently verified |
-| 53 | `domain` | text (opt) | `core_meta_item`; Paper only — human-readable name for `tagdrop://<domain>/<slug>` links, see §7 "Domains" |
-| 54 | `location_label` | text (opt) | `core_meta_item` — human-readable, non-coordinate description of this payload's own location, e.g. "🚋 Tram 40"; see §4.2 |
-| 55 | `pixel_art` | bool (opt, default `false`) | `core_meta_item` (Content only) — render with nearest-neighbour scaling (no smoothing); see §7 "Pixel art" |
-| 56 | `source_url` | text (opt) | `core_meta_item` — URL of a drop-source registry JSON file; see §17 |
-| 57 | `step` | uint (opt) | `core_meta_item` (Paper only) — this paper's own absolute position within its `set` trail; see §4.3 "Trail steps and forks" |
+| 1 | `cache_id` | bytes (8, opt) | `SHA-256(content bytes)[0:8]` — absent for a key-only code (§9), which has no content to hash |
+| 3 | `hint` | text (opt) | |
+| 5 | `mime_type` | text (opt) | |
+| 7 | `filename` | text (opt) | |
+| 9 | `title` | text (opt) | |
+| 11 | `description` | text (opt) | |
+| 13 | `collection_id` | bytes (8, opt) | |
+| 15 | `collection_label` | text (opt) | |
+| 17 | `collection_tag` | text (opt) | |
+| 19 | `icon` | text (opt) | |
+| 21 | `pixel_art` | bool (opt, default `false`) | Render with nearest-neighbour scaling; see §7 "Pixel art" |
+| 23 | `lat` | float64 (opt) | Author-declared location; see §4.2 |
+| 25 | `lng` | float64 (opt) | Longitude, same scope as `lat` |
+| 27 | `radius_m` | float64 (opt) | Circle-of-uncertainty radius in meters |
+| 29 | `prefer_declared_location` | bool (opt, default `false`) | |
+| 31 | `location_label` | text (opt) | |
+| 33 | `key_material` | bytes (32, opt) | See §9 |
+| 35 | `retain_key` | bool (opt, default `true`) | See §9 |
+| 37 | `encryption` | uint (opt) | Non-binding hint; see §9 "Discovery, not declaration" |
+| 39 | `kdf_alg` | uint (opt) | See §9 |
+| 41 | `kdf_salt` | bytes (16, opt) | See §9 |
+| 43 | `kdf_iters` | uint (opt, default `100000`) | See §9 |
+| 45 | `signature_algorithm` | uint (opt) | See §10 |
+| 47 | `signer_id` | bytes (8, opt) | See §10 |
+| 49 | `signer_label` | text (opt) | See §10 |
+| 51 | `in_reply_to` | bytes (8, opt) | `cache_id`/`root_hash` of the single parent this replies to; see §7 |
+| 53 | `created_at` | uint (opt) | Author-declared Unix timestamp; not independently verified |
+| 55 | `source_url` | text (opt) | See §17 |
 
-Keys **1**, **6**, **9**, **10** are retired (formerly `version`-inside-payload,
-`chunk_count`, `chunk_index`, `chunk_data` — superseded by the envelope's
-`version` and by `part_meta`'s `sector_index`/`sector_count`; §14). Key **5**
-(`content`) no longer appears in `core_meta_item` or `bulky_meta_item`, but is
-reused with the same meaning inside the encrypted override map structure only
-(§9). Keys **20–23** and **41** are retired as global keys — they formerly named
-`files[]`/`related[]` sub-map fields, but those sub-maps now use their own
-independent local key namespaces (see below). Key 25 is reserved for a future
-small embedded image icon (raw bytes), as an alternative to the emoji `icon`
-field. Keys 28, 30, 31 are defined in §9 (Encryption); keys 32–36 in §10
-(Verified Authorship); keys 37–39 in §9 (Passphrase-based key derivation); keys
-26, 27, 48, 49, 54 in §4.2 (Declared location and priority); key 53 in §7
-(Domains); key 55 in §7 (Pixel art); key 56 in §17 (Drop Source Registry). Key
-29 is reserved and unused — see §9 for why an encrypted override map's nonce
-doesn't need its own clear field.
+### 3.2 Content-Body (Type `16141970035994251452`)
 
-**Sub-map local key namespaces:** `files[]` and `related[]` entries are CBOR
-maps with their own independent key ranges, separate from the top-level key
-space. The same integer may appear in both a top-level map and a sub-map without
-conflict, because CBOR map keys are scoped per-map.
+Optionally Compress-wrapped (QDEF-SPEC.md §4.1 Type 3) and/or
+Split-wrapped (§5) when it doesn't fit alongside Preview in one code.
 
-**`files[]` entry keys** (each element of the `files` array, key 15):
+| Key | Field | Type | Notes |
+|---|---|---|---|
+| 1 | `content` | bytes | The payload bytes — may be a hidden encrypted override map (see below) |
+| 3 | `signature` | bytes (2420, opt) | See §10 |
+| 5 | `signer_pubkey` | bytes (1312, opt) | See §10 |
+
+**Encrypted override map.** `content` may be a self-contained AES-256-GCM
+blob (§9) that, once decrypted, is itself a small CBOR map — its own
+independent local namespace, unrelated to Content-Preview's numbering —
+overlaying Content-Preview's same-purpose fields:
+
+| Key | Field | Type |
+|---|---|---|
+| 1 | `hint` | text (opt) |
+| 3 | `mime_type` | text (opt) |
+| 5 | `content` | bytes (opt) |
+| 7 | `filename` | text (opt) |
+
+`encryption` (Content-Preview key 37), if present and non-zero, is an
+optional hint that this is the case; its absence does NOT mean there's no
+hidden override map — see §9, "Discovery, not declaration." Content-Preview's
+own `hint`/`mime_type`/`filename`, if present, are the values shown before
+(or without) a matching override key.
+
+### 3.3 Paper-Preview (Type `11467060725844413781`)
+
+Always plain, unwrapped, present on every code carrying this payload
+(§5.1).
+
+| Key | Field | Type | Notes |
+|---|---|---|---|
+| 1 | `root_hash` | bytes (8) | `SHA-256(Preview canonical bytes \|\| Body canonical bytes)[0:8]` — see §4.3 for the exact formula and why this is scoped differently from Content's `cache_id` |
+| 3 | `hint` | text (opt) | |
+| 5 | `set` | text (opt) | |
+| 7 | `slug` | text (opt) | |
+| 9 | `domain` | text (opt) | See §7 "Domains" |
+| 11 | `step` | uint (opt) | This paper's absolute position within its `set` trail; see §4.3 "Trail steps and forks" |
+| 13 | `collection_id` | bytes (8, opt) | |
+| 15 | `collection_label` | text (opt) | |
+| 17 | `collection_tag` | text (opt) | |
+| 19 | `icon` | text (opt) | |
+| 21 | `lat` | float64 (opt) | |
+| 23 | `lng` | float64 (opt) | |
+| 25 | `radius_m` | float64 (opt) | |
+| 27 | `prefer_declared_location` | bool (opt, default `false`) | |
+| 29 | `location_label` | text (opt) | |
+| 31 | `signature_algorithm` | uint (opt) | See §10 |
+| 33 | `signer_id` | bytes (8, opt) | See §10 |
+| 35 | `signer_label` | text (opt) | See §10 |
+| 37 | `in_reply_to` | bytes (8, opt) | See §7 |
+| 39 | `created_at` | uint (opt) | |
+| 41 | `source_url` | text (opt) | See §17 |
+| 43 | `title` | text (opt) | |
+| 45 | `description` | text (opt) | |
+
+### 3.4 Paper-Body (Type `3662944544912906201`)
+
+Optionally Compress-wrapped and/or Split-wrapped, same as Content-Body. A
+Paper has no `content` of its own — its body is entirely directory data.
+
+| Key | Field | Type | Notes |
+|---|---|---|---|
+| 1 | `files` | bytes | `CBOR([...])`-encoded array of `files[]` sub-maps (below) — carried as a byte string, not a bare field-level array, per QDEF-SPEC.md §3.2's field-value-shape rule |
+| 3 | `related` | bytes | `CBOR([...])`-encoded array of `related[]` sub-maps (below), same reasoning |
+| 5 | `signature` | bytes (2420, opt) | See §10 |
+| 7 | `signer_pubkey` | bytes (1312, opt) | See §10 |
+
+**Why `cache_id` and `root_hash` are scoped differently, and neither is
+"replaced" by Split's `group_id`.** Content's `cache_id` is deliberately
+`SHA-256(content)` alone, not the whole Preview+Body — this is what lets
+two authors who drop the identical bytes under different
+hints/titles/collections dedup to the same `cache_id` (§4.4). Paper's
+`root_hash` covers everything (there's no bare "content" to isolate a
+Paper's identity to). QDEF's Split Wrapper, when used (§5), separately
+computes its own `group_id` — a content hash of the *wrapped Body Record's*
+bytes, verified by the decoder purely for reassembly integrity. `group_id`
+happens to have the same *scope* as `root_hash` for a multi-code Paper, but
+it is not the same field and must not be conflated in an implementation:
+`group_id` doesn't exist for single-code payloads (nothing to reassemble),
+while `cache_id`/`root_hash` are always present. `content_sha256`/
+`bulky_meta_sha256` — the old design's own multi-sector integrity
+hashes — are gone entirely, superseded by `group_id`'s mandatory
+decoder-side verification (QDEF-SPEC.md FINDINGS.md #5) whenever Split is
+actually in use.
+
+**`files[]` entry keys** (each element decoded from Paper-Body's `files`):
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
 | 1 | `slug` | text | URL-safe name for this file within the paper |
 | 2 | `mime_type` | text | MIME type of the file |
-| 3 | `file_id` | bytes (8) | `cache_id` of the file's root QR |
+| 3 | `file_id` | bytes (8) | `cache_id` of the file's root code |
 | 4 | `description` | text (opt) | Content teaser, e.g. "A poem to read" |
-| 5 | `pixel_art` | bool (opt, default `false`) | Render with nearest-neighbour scaling (no smoothing); see §7 "Pixel art" |
+| 5 | `pixel_art` | bool (opt, default `false`) | Render with nearest-neighbour scaling; see §7 "Pixel art" |
 
-**`related[]` entry keys** (each element of the `related` array, key 16):
+**`related[]` entry keys** (each element decoded from Paper-Body's `related`):
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
@@ -221,133 +283,60 @@ conflict, because CBOR map keys are scoped per-map.
 | 9 | `retain_key` | bool (opt, default `true`) | See §9 |
 | 10 | `step` | uint (opt) | Absolute position of the related paper within its `set` trail; see §4.3 "Trail steps and forks" |
 
-**`content_sha256`/`bulky_meta_sha256` are REQUIRED whenever `sector_count >
-1`.** Without it, an adversary who substitutes one sector of a multi-sector
-payload after the fact (e.g. replacing one sticker in a physical multi-code
-layout) goes undetected — see §5, which requires decoders to reject a
-multi-sector payload whose hash is missing rather than silently accepting
-unverified reassembled bytes. They remain OPTIONAL for `sector_count == 1`,
-where there's nothing to verify completeness of — a single code's own QR
-error correction already guards against incidental corruption within one
-code, so the bytes aren't worth taxing every simple code with. Decoders MUST
-verify either hash whenever present, regardless of `sector_count`.
-
-**`bulky_meta_compressed_bytes`** is the one explicit length field anywhere in
-the stream: `bulky_meta_item` sits *between* `core_meta_item` and content, so
-if it's compressed, a decoder needs to know exactly where its compressed
-bytes end and content begins. Uncompressed items need no such field — CBOR's
-self-delimiting structure already marks their end — and content, being last,
-simply runs to the end of `total_bytes` regardless of whether it's
-compressed.
-
-**Codes may carry a hidden, encrypted override map.** Once a Content
-payload's bytes are fully assembled, they may be a self-contained, encrypted
-**override map** — a small CBOR map using key numbers 3 (`hint`), 4
-(`mime_type`), 5 (`content`), and 11 (`filename`) — that overlays
-`core_meta_item`'s same-numbered fields once decrypted. `encryption` (key 28),
-if present and non-zero, is an optional hint that this is the case; its
-absence does NOT mean the code has no hidden override map — see §9,
-"Discovery, not declaration." `core_meta_item`'s own keys 3/4/11, if present,
-serve as the values shown before (or without) a matching key. See §9.
-
-### File entry sub-keys (elements of key 15)
-
-Each element is a CBOR map using local keys **1** (`slug`), **2** (`mime_type`), **3** (`file_id`), **4** (`description`), **5** (`pixel_art`). These keys are local to the sub-map and independent of the top-level key space — see the `files[]` entry key table in §3.
-
-### Related paper sub-keys (elements of key 16)
-
-Each element is a CBOR map using local keys **1** (`hint`), **2** (`set`), **3** (`slug`), **4** (`paper_id`), **5** (`lat`), **6** (`lng`), **7** (`radius_m`), **8** (`key_material`), **9** (`retain_key`), **10** (`step`). These keys are local to the sub-map and independent of the top-level key space — see the `related[]` entry key table in §3.
+These sub-map keys are unchanged from the pre-QDEF design — `files[]`/
+`related[]` already had their own independent local namespaces (CBOR map
+keys are scoped per-map); moving them one level deeper, into Paper-Body's
+byte-string-encoded `files`/`related` fields, doesn't affect their own
+numbering.
 
 ---
 
 ## 4. Payload Types
 
-### 4.1 Sectors and `part_meta`
+### 4.1 Preview and Body
 
-Every code is one **sector** of a payload. `part_meta` (§3) tells a decoder
-how this sector fits into the whole:
+Every payload (Content or Paper) is exactly one **Preview** Record plus, if
+it has one, one **Body** Record (§2.1, §3). Preview is always small, always
+plain (never Compress- or Split-wrapped), and — per §5.1 — repeated on
+every physical code that carries this payload, so a single isolated scan
+always identifies what it found and shows a usable preview, regardless of
+whether the Body has been fully reassembled yet. Body carries whatever
+doesn't need to be in that early preview: `content` (Content) or
+`files[]`/`related[]` (Paper), plus the large signature fields — optionally
+Compress-wrapped (QDEF-SPEC.md §4.1 Type 3), and Split-wrapped (§5) when it
+doesn't fit alongside Preview in one code.
 
-```
-part_meta map {
-  2: h'<8 bytes>',  // cache_id / root_hash — identifies the payload this sector belongs to
-  42: 0,            // sector_index — 0-based
-  43: 1,            // sector_count — how many data sectors carry the payload
-  7: <n>,           // total_bytes — length of the full reassembled stream
-}
-```
+This replaces the old design's single three-part `core_meta_item ||
+bulky_meta_item || content` stream and its bespoke `part_meta` sectoring —
+Preview/Body are two separate QDEF Records with their own Type IDs (§2.1)
+rather than concatenated items inside one bespoke envelope, and multi-code
+spanning is QDEF's generic Split Wrapper (§5) rather than a TagDrop-specific
+`sector_index`/`sector_count` scheme. A payload that fits in one code is
+just a code carrying both Records, unwrapped — there's no separate
+"single-sector" shape to special-case, mirroring the old design's own
+"no separate Single type" principle, just one layer up.
 
-A payload that fits in one code is `sector_count: 1`, `sector_index: 0` —
-the common case, at a cost of a few extra bytes in `part_meta` over a
-hypothetical single-map design (see §4.2 for what those bytes buy). A
-payload spanning several codes uses `sector_index` 0 through
-`sector_count − 1`, one per sector, each carrying a slice of `sector_bytes`
-(every sector but the last is the same length). `cache_id`/`root_hash` is
-identical across every sector of the same payload — exactly as today's
-Chunk already carries `cache_id` in the clear on every fragment — so a
-single isolated sector scan identifies which payload it belongs to without
-needing any other sector decoded first. It's the one `part_meta` field that
-may be omitted: a key-only code (§9, "Decryption keys") carries no content of
-its own to identify, so it typically has no `cache_id` either.
+### 4.2 Preview fields
 
-**Parity sectors:** a sector at `sector_index ≥ sector_count` is recovery
-data, not payload data — see §5's redundancy scheme. It carries
-`parity_scheme` (key 44) so a decoder that wants to use it can, while any
-decoder that doesn't recognise the index range safely ignores it (the same
-forward-compatibility rule §5 already required for chunk indices).
-
-Reassembly (§5): concatenate `sector_bytes` from sectors `0` through
-`sector_count − 1` in order. The result is the **reassembled stream** — see
-§4.2.
-
-### 4.2 The Reassembled Stream
-
-The reassembled stream (§4.1) is a CBOR Sequence of two maps followed by raw
-bytes:
-
-```
-CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
-```
-
-Laid out as a sequence of three concatenated parts:
-
-```
-+----------------+---------------------+-------------------------+
-| core_meta_item | bulky_meta_item     | content                 |
-| plain CBOR map | CBOR map            | raw or compressed bytes |
-| (always small) | (may be compressed) | (empty for Paper)       |
-+----------------+---------------------+-------------------------+
-```
-
-**`core_meta_item`** is always plain CBOR (never compressed) and always
-small — by authoring convention, meant to fit in the first sector or two. It
-carries the preview-tier fields — `hint`/`label`, `title`, `mime_type`,
-`filename`, `set`/`slug`, `description`, collection fields, `icon`, declared
-location (`lat`/`lng`/`radius_m`/`prefer_declared_location`/`location_label`),
-`key_material`/`retain_key`, kdf fields, the small signature fields, `in_reply_to` — plus
-declarations about what follows: `bulky_meta_compression`, `bulky_meta_compressed_bytes`
-(only present when key 45 is, since uncompressed `bulky_meta_item` keeps the
-free self-delimiting boundary — §3), `bulky_meta_sha256`,
-`content_compression`, `content_sha256`.
-
-**Declared location and priority:** `core_meta_item` may carry `lat`/`lng`
-(keys 26/27) — the *author's declared* coordinates for this Content's or
-Paper's own physical placement, useful when the scanning device lacks a GPS
-lock, or simply to record where the code was placed regardless of whether it
-does. This is distinct from a `related` entry's `lat`/`lng` (§4.3), which
-hints at a *different*, not-yet-scanned paper's location rather than this
-payload's own. An optional `radius_m` (key 48, float64) gives a
-circle-of-uncertainty radius in meters around the point — valid wherever
-`lat`/`lng` appears, whether at `core_meta_item` level or inside a `related`
-entry. By default, a live GPS fix at scan time takes priority over the
-declared location when both are available — the declared location is only a
-fallback for when GPS is unavailable. Setting `prefer_declared_location`
-(key 49, bool, default `false`) flips that priority so the declared
-coordinates win even when a live GPS fix is available, for placements where
-the author's coordinates are known to be more reliable than whatever fix the
-scanning device manages (e.g. deep indoors, under tree cover, in a
-basement). Implementations are expected to resolve and store only the single
-effective `(lat, lng, radius_m)` triple after applying this priority, not
-both candidate locations.
+**Declared location and priority:** Preview may carry `lat`/`lng` — the
+*author's declared* coordinates for this Content's or Paper's own physical
+placement, useful when the scanning device lacks a GPS lock, or simply to
+record where the code was placed regardless of whether it does. This is
+distinct from a `related` entry's `lat`/`lng` (§4.3), which hints at a
+*different*, not-yet-scanned paper's location rather than this payload's
+own. An optional `radius_m` (float64) gives a circle-of-uncertainty radius
+in meters around the point — valid wherever `lat`/`lng` appears, whether at
+Preview level or inside a `related` entry. By default, a live GPS fix at
+scan time takes priority over the declared location when both are
+available — the declared location is only a fallback for when GPS is
+unavailable. Setting `prefer_declared_location` (bool, default `false`)
+flips that priority so the declared coordinates win even when a live GPS
+fix is available, for placements where the author's coordinates are known
+to be more reliable than whatever fix the scanning device manages (e.g.
+deep indoors, under tree cover, in a basement). Implementations are
+expected to resolve and store only the single effective `(lat, lng,
+radius_m)` triple after applying this priority, not both candidate
+locations.
 
 **Explicit no fixed point.** Some drops have no single coordinate worth
 recording at all — e.g. an item mailed to a recipient whose address the
@@ -389,123 +378,114 @@ meaning. May be compressed per `bulky_meta_compression` (§8); if so,
 `bulky_meta_compressed_bytes` marks exactly where it ends and content
 begins (§3).
 
-**content** is the actual bytes: a Content payload's cache (raw or
-compressed per `content_compression`), or nothing at all for a Paper, which
-has no content of its own. Content never needs a declared length, compressed
-or not — it's always last, so its length is simply whatever remains once
-`total_bytes` worth of sectors are all in. For a Content payload, it may also
-be a hidden encrypted override map instead of plain content — see §9; this
-doesn't extend to Paper, whose content slot stays empty either way (`root_hash`
-is always content-addressed, with no random-`cache_id`-style exception).
+**Body's `content`** is the actual bytes (Content-Body key 1): a Content
+payload's cache (raw or Compress-wrapped), or absent entirely for a Paper,
+which has no content of its own — Paper-Body only ever carries `files`/
+`related`. For a Content payload, `content` may also be a hidden encrypted
+override map instead of plain content — see §9; this doesn't extend to
+Paper, whose Body never carries anything content-shaped (`root_hash` is
+always content-addressed over the whole Preview+Body, with no
+random-`cache_id`-style exception).
 
-Example — a Content payload, one sector:
+Example — a Content payload, single code:
 
 ```
-envelope: version=1, type=0
-part_meta { 2: h'<cache_id>', 42: 0, 43: 1, 7: <n> }
-
-core_meta_item {
+Content-Preview {
   3: "under the bridge",     // hint
-  4: "text/html",            // mime_type
-  11: "poem.html",           // filename
-  17: h'<8 random bytes>',   // collection_id — optional, see §7 Collections
-  18: "Spring Sticker Hunt", // collection_label — optional, see §7 Collections
-  19: "springtrail2026",     // collection_tag — optional, see §7 Collections
-  24: "🌳",                   // icon — optional, see §7 Icons
+  5: "text/html",            // mime_type
+  7: "poem.html",            // filename
+  13: h'<8 random bytes>',   // collection_id — optional, see §7 Collections
+  15: "Spring Sticker Hunt", // collection_label — optional, see §7 Collections
+  17: "springtrail2026",     // collection_tag — optional, see §7 Collections
+  19: "🌳",                   // icon — optional, see §7 Icons
+  1: h'<cache_id>',          // = SHA-256(content)[0:8], §4.4
 }
-bulky_meta_item {}
-content: h'<page bytes, raw or compressed per content_compression>'
+Content-Body {
+  1: h'<page bytes, raw or Compress-wrapped>',
+}
 ```
 
-Example — a Paper, one sector:
+Example — a Paper, single code:
 
 ```
-envelope: version=1, type=1
-part_meta { 2: h'<root_hash>', 42: 0, 43: 1, 7: <n> }
-
-core_meta_item {
-  3: "Trail Stop 3 — Oak Tree", // label
-  40: "Day 2 of the sunset trail: a poem and a hand-drawn map", // description
-  13: "sunset-trail",           // set
-  14: "oak-tree",               // slug
-  17: h'<8 random bytes>',      // collection_id — optional, see §7 Collections
-  18: "Spring Sticker Hunt",    // collection_label — optional, see §7 Collections
-  19: "springtrail2026",        // collection_tag — optional, see §7 Collections
-  24: "🌳",                      // icon — optional, see §7 Icons
-  26: -33.8688,                  // lat — optional, author-declared location of this paper
-  27: 151.2093,                  // lng — optional, author-declared location of this paper
-  48: 25.0,                      // radius_m — optional, circle of uncertainty in meters
-  57: 3,                         // step — this paper is stop 3 of the "sunset-trail" set
+Paper-Preview {
+  3: "Trail Stop 3 — Oak Tree",  // hint
+  45: "Day 2 of the sunset trail: a poem and a hand-drawn map", // description
+  5: "sunset-trail",             // set
+  7: "oak-tree",                 // slug
+  13: h'<8 random bytes>',       // collection_id — optional, see §7 Collections
+  15: "Spring Sticker Hunt",     // collection_label — optional, see §7 Collections
+  17: "springtrail2026",         // collection_tag — optional, see §7 Collections
+  19: "🌳",                       // icon — optional, see §7 Icons
+  21: -33.8688,                   // lat — optional, author-declared location of this paper
+  23: 151.2093,                   // lng — optional, author-declared location of this paper
+  25: 25.0,                       // radius_m — optional, circle of uncertainty in meters
+  11: 3,                          // step — this paper is stop 3 of the "sunset-trail" set
+  1: h'<root_hash>',              // §4.4
 }
-bulky_meta_item {
-  15: [                         // files — directory of codes on this paper (local keys, see §3)
+Paper-Body {
+  1: h'<CBOR([                   // files — directory of codes on this paper (local keys, see §3)
     {1: "index", 2: "text/html",    3: h'<file_id>', 4: "A poem to read"},
     {1: "map",   2: "image/svg+xml", 3: h'<file_id>', 4: "A hand-drawn map"},
-  ],
-  16: [                         // related — hints to other papers (local keys, see §3)
+  ])>',
+  3: h'<CBOR([                   // related — hints to other papers (local keys, see §3)
     {1: "Next stop: the red letterbox 200m north", 2: "sunset-trail", 3: "letterbox",
      4: h'<paper_id>', 5: -33.8688, 6: 151.2093, 7: 50.0, 10: 4},
     {1: "Start of trail: town square notice board", 2: "sunset-trail", 10: 1},
-  ],
+  ])>',
 }
-content: (empty)
 ```
 
-A payload too large for one sector splits `core_meta_item || bulky_meta_item
-|| content` across several sectors purely by byte position — a decoder
-reassembles first (§4.1), then parses the three reassembled items. There is
-no longer a separate "manifest code": `sector_count` directly equals the
-number of physical codes needed, and any sector — not just the first — can
-be scanned in any order or session (§5).
+A payload too large for one code Split-wraps its Body Record (§5) —
+Preview stays whole and unwrapped, repeated on every code in the group, and
+any code (not just a "first" one) can be scanned in any order or session.
 
-### 4.3 Paper (`type` = 1)
+### 4.3 Paper (Paper-Preview / Paper-Body)
 
 A Paper is the **directory payload** for a physical paper (A4 sheet, sticker
 board, poster). Think of it as a floppy disk's FAT: it lists every file on
 the paper and can point toward related papers at other locations. Its
-`core_meta_item`/`bulky_meta_item` shape is shown in §4.2 above; `content` is
-always empty.
+Preview/Body shape is shown in §4.2 above; Paper-Body never carries a
+`content`-shaped field.
 
-**`label` vs. `description` vs. `title` (issue #35):** `label` (key 3) is
-the paper's *name or location* — "Trail Stop 3 — Oak Tree" tells you where
-you are, not what's on it (the same key is called `hint` for a Content
-payload instead — same field, different name by convention, §4.2).
-`description` (key 40, optional — originally Paper-only, now valid for
-Content too) is a content teaser or message body: for a Paper, the same
-role `hint` plays for a Content payload, but shown once the directory is
-already being browsed rather than as a "should I look for this" decision;
-for a Content payload, free text alongside the cache's own bytes, or —
-when the content slot is occupied by an attachment instead — standing in
-as the message itself (see Postcards below). A per-file `description`
-(local key 4, optional, in each `files[]` entry alongside `slug`/`mime_type`)
-plays the analogous role for an individual file, e.g. "A poem to read" or
-"A hand-drawn map" — letting a finder choose among files they can already
-see listed, before scanning each one's own code. `title` (key 51,
-optional, valid for both payload kinds) is a short subject/caption,
-deliberately kept separate from `label`/`hint` so a caption never has to
-share a field with "where this is" or "should I look for this". All three
-fields are optional; omitting them just means the directory or preview
-shows filenames/MIME types with no caption or teaser.
+**`hint` vs. `description` vs. `title` (issue #35):** `hint` is the paper's
+*name or location* — "Trail Stop 3 — Oak Tree" tells you where you are, not
+what's on it (the same field name is used for a Content payload's own
+teaser too — same field, same meaning, just describing a different kind of
+payload, §4.2). `description` (optional, valid for both Record kinds) is a
+content teaser or message body: for a Paper, the same role `hint` plays for
+a Content payload, but shown once the directory is already being browsed
+rather than as a "should I look for this" decision; for a Content payload,
+free text alongside the cache's own bytes, or — when the content slot is
+occupied by an attachment instead — standing in as the message itself (see
+Postcards below). A per-file `description` (local key 4, optional, in each
+`files[]` entry alongside `slug`/`mime_type`) plays the analogous role for
+an individual file, e.g. "A poem to read" or "A hand-drawn map" — letting a
+finder choose among files they can already see listed, before scanning
+each one's own code. `title` (optional, valid for both payload kinds) is a
+short subject/caption, deliberately kept separate from `hint` so a caption
+never has to share a field with "where this is" or "should I look for
+this". All three fields are optional; omitting them just means the
+directory or preview shows filenames/MIME types with no caption or teaser.
 
-**Located related papers:** A `related` entry (key 16) may include `lat`/`lng`
-(keys 26/27) — the approximate coordinates of that related paper, if the
-author knows them — and an optional `radius_m` (key 48) circle-of-uncertainty
-radius in meters around that point, the same field and semantics as the
-core-level declared location (§4.2). The app shows these as a "❓" placeholder
-pin (plus an uncertainty circle when `radius_m` is set) on the map for
-related papers that haven't been scanned yet, helping the finder navigate
-toward them. Once that paper is scanned, its own `ScannedPaper` location
-(resolved from the device's live GPS fix and/or that paper's own declared
-location, per §4.2's priority rule) replaces the placeholder.
+**Located related papers:** A `related` entry (local key 5/6) may include
+`lat`/`lng` — the approximate coordinates of that related paper, if the
+author knows them — and an optional `radius_m` (local key 7)
+circle-of-uncertainty radius in meters around that point, the same field
+and semantics as Preview-level declared location (§4.2). The app shows
+these as a "❓" placeholder pin (plus an uncertainty circle when `radius_m`
+is set) on the map for related papers that haven't been scanned yet,
+helping the finder navigate toward them. Once that paper is scanned, its
+own `ScannedPaper` location (resolved from the device's live GPS fix
+and/or that paper's own declared location, per §4.2's priority rule)
+replaces the placeholder.
 
-**Trail steps and forks:** `step` (key 57 in `core_meta_item`; local key 10
-in a `related` entry) is an optional absolute ordinal — "this is stop N" —
-scoped by `set` (key 13 / local key 2), not globally: two papers' `step`
-values are only comparable when their `set` strings match. `step` is
-**1-based**: the first stop in a trail is `step: 1`, not `0` (unlike
-`sector_index`, §4.1, which is 0-based — the two counters are unrelated and
-deliberately don't share a convention). A paper declares its own position
-via its `core_meta_item`'s `step`; a `related` entry declares the position
+**Trail steps and forks:** `step` (Paper-Preview key 11; local key 10 in a
+`related` entry) is an optional absolute ordinal — "this is stop N" —
+scoped by `set`, not globally: two papers' `step` values are only
+comparable when their `set` strings match. `step` is **1-based**: the
+first stop in a trail is `step: 1`, not `0`. A paper declares its own
+position via its own Preview's `step`; a `related` entry declares the position
 of the paper it points to, so a finder can see "stop 4 of the sunset-trail"
 before ever scanning stop 4. There is no declared trail length anywhere in
 the format — a decoder only knows about the `step` values it has actually
@@ -558,124 +538,161 @@ not a different shape.
 
 TagDrop uses **content-addressed identifiers** — the same content always gets the same ID, regardless of who created it or where it was found.
 
-**File IDs (`cache_id`):**
+**File IDs (`cache_id`, Content-Preview key 1):**
 ```
 cache_id = SHA-256(uncompressed content)[0:8]
 ```
 Two payloads encoding the same content bytes will have the same `cache_id`,
-regardless of `core_meta_item`/`bulky_meta_item`. This enables deduplication
-across multiple papers and payloads made by different authors. As before,
-`cache_id` MUST be random instead, when a hidden override map might be
-present (§9).
+regardless of Preview's other fields (`hint`/`title`/collection fields/etc.)
+— this enables deduplication across multiple papers and payloads made by
+different authors. `content` here means Content-Body's own `content` field
+(key 1), decompressed if it was Compress-wrapped — never the compressed or
+Split-fragmented wire bytes, so the same logical content always produces
+the same `cache_id` regardless of which DEFLATE implementation, level, or
+Split chunking happened to carry it. `cache_id` lives in a *different*
+Record (Content-Preview) than the bytes it's computed over (Content-Body),
+so — unlike `root_hash` below — there's no self-reference to worry about.
+As before, `cache_id` MUST be random instead, when a hidden override map
+might be present (§9).
 
-**Paper root hashes:**
+**Paper root hashes (`root_hash`, Paper-Preview key 1):**
 ```
-root_hash = SHA-256(core_meta_item || bulky_meta_item || content)[0:8]
+root_hash = SHA-256(Preview' || Body')[0:8]
 ```
-computed over the **logical** (decompressed) bytes of all three — never the
-compressed wire bytes, mirroring exactly why `cache_id` above is defined over
-uncompressed content: the same logical payload must always produce the same
-root hash, regardless of which DEFLATE implementation or level happened to
-encode it onto the wire. `bulky_meta_item` is hashed with keys 32–36 (§10's
-signature fields) absent, whether or not the paper ends up signed — a fixed
-convention, not a chicken-and-egg dance: unlike the single-map design this
-replaces, `root_hash` lives in `part_meta` (§4.1), *outside* the structure
-it's computed over, so there's no self-reference and no placeholder/re-encode
-pass needed. Compute it once, then copy the same value into every sector's
-`part_meta`. For a Paper, `content` is always empty, so in practice
-`root_hash` is over `core_meta_item || bulky_meta_item` alone. The root hash
-is the paper's permanent, immutable address. Because paper is inherently
-immutable (you can't update a sticker), this is fine — a new revision gets a
-new root hash.
+where `Preview'` is Paper-Preview's own canonical CBOR bytes with key 1
+(`root_hash` itself) omitted, and `Body'` is Paper-Body's own canonical CBOR
+bytes with the signature fields (keys 5/7, §10) omitted whether or not the
+paper ends up signed. Both use the **logical** (decompressed) bytes if
+Body was Compress-wrapped — never the compressed or Split-fragmented wire
+bytes, mirroring exactly why `cache_id` above is defined over uncompressed
+content.
+
+**This is a genuine self-reference, unlike `cache_id`, and MUST be handled
+with the same placeholder-then-strip discipline §10 already uses for
+signatures — not built as two independently-produced passes.** Unlike the
+old single-map design, where `root_hash` lived in `part_meta`, *outside*
+the structure it was computed over, moving `root_hash` into Preview itself
+(so a single scan of Preview alone always yields a payload's identity, §4.1)
+means Preview's own encoded bytes now depend on a hash computed *over*
+Preview. The fix is identical in kind to what §10 already requires for
+`signature`: build Preview with key 1 omitted (not zero-filled — simply
+absent, since removing a field never changes any other field's encoded
+position, unlike a same-length-placeholder trick), compute
+`SHA-256(Preview' || Body')`, then encode the final Preview with `root_hash`
+now included. Nothing else about Preview's encoding may depend on
+`root_hash`'s presence (e.g. no field whose own bytes shift meaning based
+on whether key 1 exists) — this is exactly the "signing must feed back into
+nothing else" property §10 already established for signature fields, now
+also required of `root_hash`. For a Paper, Body never carries `content`, so
+in practice `Body'` is `files`/`related` (and signature fields, if present
+and stripped) alone. The root hash is the paper's permanent, immutable
+address. Because a paper is inherently immutable (you can't update a
+sticker), this is fine — a new revision gets a new root hash.
 
 **Three-level hierarchy:**
 
 ```
-Paper (root_hash)
-  └─ Files (cache_id)
-       └─ Sectors (cache_id/root_hash carried in part_meta on every sector)
+Paper (root_hash, Paper-Preview key 1)
+  └─ Files (cache_id, Content-Preview key 1)
+       └─ Codes (Preview repeated on every code carrying a payload, §5.1)
 ```
 
 ---
 
 ## 5. Multi-Code Assembly Protocol
 
-1. **Scan sectors** in any order, any session. Each sector's `part_meta`
-   (§4.1) gives `cache_id`/`root_hash`, `sector_index`, `sector_count`, and
-   `total_bytes` — identical across every sector of the same payload, so the
-   app can match a newly-scanned sector to a pending payload (or start a new
-   one) regardless of which sector arrives first.
-2. Track which `sector_index` values (`0` through `sector_count − 1`) have
-   been collected for that payload, independently of any sector at index
-   `≥ sector_count` (parity — see below).
-3. When all of `0..sector_count-1` are collected: concatenate their
-   `sector_bytes` in ascending `sector_index` order → the reassembled stream
-   (§4.2).
-4. Parse `core_meta_item` (plain CBOR, from the front of the stream). Parse
-   `bulky_meta_item` next: if `bulky_meta_compression` is absent, CBOR's
-   self-delimiting structure marks its end; if present, read exactly
-   `bulky_meta_compressed_bytes` and decompress. If `sector_count > 1`,
-   `bulky_meta_sha256` is REQUIRED (§3) — reject the payload as malformed if
-   it's absent — and verify `SHA-256(bulky_meta_item bytes as transmitted) ==
-   bulky_meta_sha256`, rejecting on mismatch; for `sector_count == 1`, verify
-   it only if present. Whatever remains is `content`.
-5. If `content` is ≥ 28 bytes, try AES-256-GCM decryption as
-   `nonce(12) || ciphertext || tag(16)` (§9) against every known
-   `key_material`. If one authenticates, decompress the plaintext if
-   `content_compression != 0` and CBOR-decode it as the override map (§9) —
-   merge it onto `core_meta_item` (override map's keys win) to get the final
-   `hint`/`mime_type`/`content`/`filename`. Otherwise: if `sector_count > 1`,
-   `content_sha256` is REQUIRED (§3) — reject the payload as malformed if
-   it's absent — and verify `SHA-256(content as transmitted) ==
-   content_sha256`, rejecting on mismatch; for `sector_count == 1`, verify it
-   only if present. Then decompress `content` if `content_compression != 0`;
-   `core_meta_item`'s fields are final as-is.
-6. Deliver MIME-typed content to the viewer (Content payloads), or render the
+Splitting and reassembly are QDEF's generic mechanism (QDEF-SPEC.md §4.1's
+Split Wrapper), not a TagDrop-specific scheme — this section states how
+TagDrop uses it, not a new protocol.
+
+### 5.1 What goes on which code
+
+- **Preview is always whole and unwrapped**, and — for a multi-code
+  payload — MUST be repeated identically on **every** code in the group,
+  not just a "first" one. This is what makes cross-code correlation work
+  with no extra field: a decoder scanning any single code already has
+  Preview's `cache_id`/`root_hash` (§4.4) and therefore already knows which
+  payload group this code belongs to and can show a usable preview,
+  regardless of scan order or how much of Body has arrived. (This is a
+  strict improvement over the old design, where only a sector actually
+  carrying `core_meta_item` — usually, but not reliably, sector 0 — gave a
+  usable preview.) The byte cost is the same kind of small, deliberate
+  overhead the old `part_meta` already accepted on every sector for a
+  similar reason.
+- **Body travels alone or Split-wrapped.** If Body fits on the same code as
+  Preview, that code carries both Records (a plain two-item CBOR Sequence).
+  If not, Body is Split-wrapped (QDEF-SPEC.md §4.1 Type 2) into `count`
+  fragments, and each of those codes carries Preview plus one fragment.
+  `group_id` is a content hash of the fully reassembled, unwrapped Body
+  Record's bytes — decoders MUST verify it after reassembly (QDEF-SPEC.md
+  FINDINGS.md #5) and reject a mismatch, exactly as the old design required
+  for `content_sha256`/`bulky_meta_sha256`, which `group_id` supersedes.
+
+### 5.2 Reassembly
+
+1. **Scan codes** in any order, any session. Each code's Preview identifies
+   the payload (§4.4, §5.1) regardless of which code arrives first.
+2. If a code's second Record is a plain Body (not Split-wrapped), Body is
+   already complete — skip to step 4.
+3. Otherwise, track Split fragments by `group_id` until all `count` are
+   collected (QDEF-SPEC.md §4.1's fixed `chunkLen = ceil(total_bytes/count)`
+   chunking rule), independently of any fragment at index `≥ count`
+   (parity — see below). When complete, reassemble and verify `group_id` as
+   required above.
+4. Content: Body's `content` may be a hidden encrypted override map — if
+   `content` is ≥ 28 bytes, try AES-256-GCM decryption as `nonce(12) ||
+   ciphertext || tag(16)` (§9) against every known `key_material`. If one
+   authenticates, CBOR-decode the plaintext as the override map (§9) —
+   merge it onto Preview (override map's keys win) to get the final
+   `hint`/`mime_type`/`content`/`filename`. Otherwise, Preview's fields are
+   final as-is.
+5. Deliver MIME-typed content to the viewer (Content payloads), or render the
    directory (Paper payloads, §4.3).
 
-**Redundancy / erasure coding (issue #37):** A sector at `sector_index ==
-sector_count` carries a `parity_scheme` (key 44). For `parity_scheme = 1`,
-its `sector_bytes` is the byte-wise XOR of every data sector's `sector_bytes`
-(`sector_index` `0` through `sector_count − 1`), each zero-padded to the
-length of the longest data sector before XOR-ing. If exactly one data sector
-is missing, reconstruct it: XOR the parity sector against every *other* data
-sector the app already holds, then truncate the result using `total_bytes`
-to discard any padding on a reconstructed final sector. Verify the
-reconstructed stream the same way as a fully-scanned one (steps 4–5's hash
-checks) before treating it as good — if verification fails (e.g. the parity
-sector itself was the one that was corrupted), discard the attempt and fall
-back to waiting for the real missing sector. Exactly one parity sector is
-defined for `parity_scheme = 1` — it recovers from exactly one lost sector;
-additional copies of the same parity sector would be redundant, not
-additional protection. `parity_scheme` values `2` and up are reserved for
-future schemes tolerating more than one loss (e.g. Reed-Solomon over
-GF(256)) — not yet defined; until one is, authors needing more than
-single-loss protection should fall back to physical redundancy (duplicate a
+**Redundancy / erasure coding (issue #37):** for `parity_scheme = 1`
+(QDEF-SPEC.md §4.1), a parity fragment's bytes are the byte-wise XOR of
+every data fragment (index `0` through `count − 1`), each zero-padded to
+the length of the longest data fragment before XOR-ing. If exactly one data
+fragment is missing, reconstruct it: XOR the parity fragment against every
+*other* data fragment already held, then truncate using `total_bytes` to
+discard any padding on a reconstructed final fragment. Verify the
+reconstructed Body against `group_id` (§5.1) before treating it as good —
+if verification fails (e.g. the parity fragment itself was the one that was
+corrupted), discard the attempt and fall back to waiting for the real
+missing fragment. Exactly one parity fragment recovers from exactly one
+lost fragment; additional copies of the same parity fragment would be
+redundant, not additional protection. `parity_scheme` values `2` and up are
+reserved for future schemes tolerating more than one loss (e.g.
+Reed-Solomon over GF(256)) — not yet defined; until one is, authors needing
+more than single-loss protection should fall back to physical redundancy
+(duplicate a
 sticker) as before.
 
-**Resumability (issue #14):** Because assembly only needs the `part_meta` and
-`sector_bytes` stored from each sector, a partially-collected payload can be
-saved to a database and resumed later. Every sector carries
-`cache_id`/`root_hash` so the app can match newly-scanned sectors to a
-pending payload.
+**Resumability (issue #14):** Because assembly only needs each code's
+Preview and whatever Split fragment it carries, a partially-collected
+payload can be saved to a database and resumed later. Every code carries
+Preview (§5.1), so the app can match newly-scanned codes to a pending
+payload by `cache_id`/`root_hash` regardless of scan order.
 
-**Geographic distribution:** Each sector is an independent, self-contained
-code. Sectors can be placed at geographically separate locations (along a
+**Geographic distribution:** Each code is an independent, self-contained
+scan. Codes can be placed at geographically separate locations (along a
 trail, in different rooms, across a city). The finder accumulates them over
-time. `core_meta_item`'s `hint`/`label` can describe the treasure hunt as
-soon as any sector carrying it has been scanned.
+time. Because Preview is required on every code (§5.1, a stronger guarantee
+than the old design's "usually sector 0"), its `hint` can describe the
+treasure hunt as soon as *any* code has been scanned — not just a lucky
+first one.
 
-**Sector-index forward compatibility (issue #37):** Step 3 above only ever
-reads `sector_index` values `0` through `sector_count − 1` — reference
+**Fragment-index forward compatibility (issue #37):** Step 3 above only
+ever reads fragment index values `0` through `count − 1` — reference
 implementations (§15) build the reassembled byte array by indexing exactly
-that range, never by iterating "every sector seen so far." This is the
-mechanism the redundancy scheme above relies on: a sector at any other index
-(`≥ sector_count`) is already, by construction, ignored by anything that
+that range, never by iterating "every fragment seen so far." This is the
+mechanism the redundancy scheme above relies on: a fragment at any other
+index (`≥ count`) is already, by construction, ignored by anything that
 isn't specifically looking for parity at that index, with no explicit
 discriminator needed beyond the index itself. Reusing an index *within*
-`0..sector_count-1` for anything other than that exact data sector would not
-be safe — that range is reserved for the data sectors, in that order, with no
-exceptions.
+`0..count-1` for anything other than that exact data fragment would not be
+safe — that range is reserved for the data fragments, in that order, with
+no exceptions.
 
 ---
 
@@ -1173,20 +1190,17 @@ smoothing, or never smoothing) still decodes the content correctly.
 
 ## 8. Compression
 
-| `content_compression`/`bulky_meta_compression` value | Algorithm |
-|---|---|
-| 0 (or absent) | None |
-| 1 | DEFLATE, zlib-wrapped (RFC 1950) |
-| 2–255 | Reserved |
-
-Compression is per-item, not whole-stream: `content_compression` (key 12)
-governs `content`; `bulky_meta_compression` (key 45) governs
-`bulky_meta_item`. They're independent — a payload may compress one, both,
-or neither. `core_meta_item` is never compressed (§4.2), since it must stay
-cheaply parseable before a decoder knows anything else about the payload.
-`content_sha256`/`bulky_meta_sha256` (§3) are each over their own bytes
-**as transmitted** — compressed, if that item is compressed — so integrity
-can be verified before decompression.
+Compression is QDEF's Compress Wrapper (QDEF-SPEC.md §4.1 Type 3,
+DEFLATE, zlib-wrapped RFC 1950), applied to a Body Record's encoded bytes
+as a whole when an author chooses to — not a TagDrop-specific field.
+Preview is never wrapped (§4.1), since it must stay cheaply parseable
+before a decoder knows anything else about the payload. There is no longer
+a separate `content_compression`/`bulky_meta_compression` split, and no
+explicit compressed-length field — a Wrapper Record's payload is a
+definite-length CBOR byte string, already self-delimiting regardless of
+what's inside it (QDEF-SPEC.md §3.2), which is what let the old design's
+`bulky_meta_compressed_bytes` field (the one explicit length field
+anywhere in the old stream) be dropped entirely.
 
 DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively doubling QR capacity for textual content.
 
@@ -1194,16 +1208,16 @@ DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively
 
 ## 9. Encryption
 
-A Content payload's `hint` (3), `mime_type` (4), `content` (5), and
-`filename` (11) — `hint`/`mime_type`/`filename` living in `core_meta_item`,
-`content` being the reassembled stream's own third item (§4.2) — may
-optionally be shadowed by a hidden, encrypted **override map**, independently
-of compression (§8). Unlike most of this format, the override map's presence
+A Content payload's `hint`, `mime_type`, and `filename` (Content-Preview
+keys 3/5/7), plus `content` (Content-Body key 1, §4.1) — may optionally be
+shadowed by a hidden, encrypted **override map**, independently of
+compression (§8). Unlike most of this format, the override map's presence
 is **never required to be declared** — see "Discovery, not declaration"
 below. A code with no declared `encryption` and an unremarkable
-`core_meta_item`/`content` can still be carrying one. This mechanism is
-Content-only: a Paper's `content` slot stays empty and is always
-content-addressed via `root_hash` (§4.4), with no override-map exception.
+Content-Preview/`content` can still be carrying one. This mechanism is
+Content-only: a Paper's Body never carries anything content-shaped and is
+always content-addressed via `root_hash` (§4.4), with no override-map
+exception.
 
 | `encryption` value | Algorithm |
 |---|---|
@@ -1211,39 +1225,38 @@ content-addressed via `root_hash` (§4.4), with no override-map exception.
 | 1 | AES-256-GCM |
 | 2–255 | Reserved |
 
-`encryption` (key 28) is an **optional hint**, not a precondition: a code MAY
-set it to `1` to advertise "scan a key to unlock more" (e.g. for a "🔒
-Locked" badge in the UI). Its absence does NOT mean the code has no hidden
-override map.
+`encryption` (Content-Preview key 37) is an **optional hint**, not a
+precondition: a code MAY set it to `1` to advertise "scan a key to unlock
+more" (e.g. for a "🔒 Locked" badge in the UI). Its absence does NOT mean
+the code has no hidden override map.
 
 | Key | Field | Type | Lives in |
 |---|---|---|---|
-| 28 | `encryption` | uint (opt) | `core_meta_item`; Content only |
-| 30 | `key_material` | bytes (32, opt) | `core_meta_item` (Content or Paper), or a `related` entry (key 16) |
-| 31 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
+| 37 | `encryption` | uint (opt) | Content-Preview only |
+| 33 | `key_material` | bytes (32, opt) | Content-Preview or Paper-Preview, or a `related` entry (local key 8) |
+| 35 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
 
-Key 29 is reserved and unused: the GCM nonce travels embedded in the override
-map's ciphertext itself (below), so a separate `core_meta_item` `nonce` field
-would only add bulk and a second (always-matching, or suspiciously-not) value
-to cross-check — without it, there's simply nothing nonce-shaped in
-`core_meta_item` at all.
+The GCM nonce travels embedded in the override map's ciphertext itself
+(below), so there's simply nothing nonce-shaped in Content-Preview at all —
+a separate clear-text nonce field would only add bulk and a second
+(always-matching, or suspiciously-not) value to cross-check.
 
 ### Encrypted override map
 
-A hidden **override map** is a CBOR map using the same key numbers as
-`core_meta_item`'s preview fields, plus `content`'s own key — 3 (`hint`), 4
-(`mime_type`), 5 (`content`), 11 (`filename`):
+A hidden **override map** is a small CBOR map with its own independent
+local key namespace (§3.2) — 1 (`hint`), 3 (`mime_type`), 5 (`content`), 7
+(`filename`):
 
 ```
 override map {
-  3: "treasure map",          // hint — optional
-  4: "image/png",              // mime_type
+  1: "treasure map",          // hint — optional
+  3: "image/png",              // mime_type
   5: h'<real content bytes>',  // content
-  11: "map.png",               // filename — optional
+  7: "map.png",                // filename — optional
 }
 ```
 
-Its CBOR bytes are compressed (§8, if `content_compression != 0`) and then
+Its CBOR bytes are compressed (§8, if wrapped) and then
 AES-256-GCM-encrypted (see below) to a single **self-contained blob**:
 
 ```
