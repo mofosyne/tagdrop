@@ -1,8 +1,31 @@
-# QDEF — Quick Data Exchange Format (Draft Proposal)
+# QDEF — Quick Data Exchange Format (superseded by mofosyne/qdef)
 
-**Status: Draft / exploratory. Not part of tagdrop's own wire format.**
+**Status: Historical draft. Design work has moved to
+[`mofosyne/qdef`](https://github.com/mofosyne/qdef) — see
+[`docs/QDEF-SPEC.md`](https://github.com/mofosyne/qdef/blob/main/docs/QDEF-SPEC.md)
+there for the current, prototype-validated spec. This file is kept for
+history (it's where the design originated) but is no longer updated; treat
+the real repo as authoritative for anything that conflicts with what's
+below.**
 
-This document is **not** SPEC.md. It's a separate, independent proposal for a
+**TagDrop's registration:** per the real spec's §6/§9 guidance (register in
+the `0x10000+` private-use-random tier until registry governance exists,
+rather than squatting a low "common vocabulary" number with no allocation
+authority behind it), TagDrop's Record Type ID is:
+
+```
+839270583634770504
+```
+
+Generated with a CSPRNG (`secrets.randbits(64)` — not a hand-picked number),
+per the collision-avoidance-by-sheer-size reasoning §9 gives for that tier
+(same idea as a UUID). Not yet wired into either codec (Kotlin or browser
+JS) — nothing in TagDrop currently needs QDEF registration to function; this
+is recorded now so a future PR that does wire it in has a settled ID to use
+rather than picking one ad hoc at implementation time.
+
+This document is **not** SPEC.md and was never part of tagdrop's own wire
+format. It's a record of a separate, independent proposal for a
 general-purpose *binary* multi-action barcode/NFC container — the kind of
 thing NDEF already is for radio taps, but aimed at optical (QR/Data
 Matrix/Aztec) byte-mode payloads, which have no equivalent today. TagDrop's
@@ -12,10 +35,6 @@ TagDrop's primary QR/NFC path. QDEF targets a different case: **raw
 byte-mode** payloads (already used today for TagDrop's non-initial sectors
 and NFC NDEF records, per SPEC.md §12), where there's no URI/typability
 requirement and multiple unrelated actions might want to share one code.
-
-If this gains no traction outside this repo, it's still useful as a written
-target for "what would TagDrop's byte-mode path plug into, if a wider binary
-standard existed" — see §6.
 
 ### When QDEF earns its place (a general rule, not a TagDrop exception)
 
