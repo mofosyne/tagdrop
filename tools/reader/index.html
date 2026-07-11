@@ -359,13 +359,23 @@ function cborDecodeSequencePrefix(bytes, n) {
     if (info === 24) return rb();
     if (info === 25) { return rb() * 256 + rb(); }
     if (info === 26) { let n2 = 0; for (let i = 0; i < 4; i++) n2 = n2 * 256 + rb(); return n2; }
-    if (info === 27) { return rbs(8); } // float64: 8 raw bytes, decoded in readVal
+    if (info === 27) { return rbs(8); } // 8 raw bytes: float64 (major 7) or uint64 (major 0), decoded in readVal
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
   function readVal() {
     const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
     switch (major) {
-      case 0: return a;
+      case 0: {
+        // 8-byte argument (info 27): a full uint64 — e.g. a QDEF Record Type ID
+        // (SPEC.md §2.1). BigInt when it doesn't fit a JS Number losslessly,
+        // plain Number otherwise (so ordinary small fields stay `===`-comparable).
+        if (a instanceof Uint8Array) {
+          let n = 0n;
+          for (const byte of a) n = (n << 8n) | BigInt(byte);
+          return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n;
+        }
+        return a;
+      }
       case 2: return rbs(a);
       case 3: return new TextDecoder().decode(rbs(a));
       case 4: return Array.from({length: a}, readVal);
@@ -481,33 +491,42 @@ const OVERRIDE_BLOB_MIN_BYTES = 28;
 
 /**
  * Tries `key` against `blob` as nonce(12) || ciphertext || tag(16) (SPEC §9). Returns the
- * decoded override map ({hint, mimeType, content, filename}, each possibly null) on
+ * decoded override map ({hint, mimeType, content, filename}, each possibly null — its own
+ * local key namespace per SPEC.md §3.2: 1=hint, 3=mime_type, 5=content, 7=filename) on
  * success, or null if `blob` is too short, `key` doesn't authenticate it, or the
  * plaintext doesn't decode as a CBOR map — any of which just means this candidate
  * doesn't apply here ("discovery, not declaration").
+ *
+ * The map's CBOR bytes may have been DEFLATE-compressed before encryption (SPEC §9
+ * "compress first, then encrypt") with nothing declaring which — the GCM tag has already
+ * authenticated the key by this point, so try the plaintext as-is first, then inflated.
+ * The two can't be confused: zlib's header byte (0x78) isn't a CBOR map head, and a CBOR
+ * map head isn't a valid zlib header.
  */
-async function tryDecryptOverrideMap(blob, key, compression) {
+async function tryDecryptOverrideMap(blob, key) {
   if (blob.length < OVERRIDE_BLOB_MIN_BYTES) return null;
   const nonce = blob.slice(0, 12);
   const ciphertextAndTag = blob.slice(12);
   const plaintext = await decryptAesGcm(ciphertextAndTag, key, nonce);
   if (plaintext === null) return null;
-  let cbor = plaintext;
-  if (compression === 1) {
-    try { cbor = await zlibDecompress(plaintext); } catch (e) { return null; }
+  for (const inflate of [false, true]) {
+    let cbor = plaintext;
+    if (inflate) {
+      try { cbor = await zlibDecompress(plaintext); } catch (e) { continue; }
+    }
+    try {
+      const { items, trailing } = cborDecodeSequencePrefix(cbor, 1);
+      const map = items[0];
+      if (!isCborMap(map) || trailing.length > 0) continue;
+      return {
+        hint:     map[1] ?? null,
+        mimeType: map[3] ?? null,
+        content:  map[5] ?? null,
+        filename: map[7] ?? null,
+      };
+    } catch (e) { continue; }
   }
-  let map;
-  try {
-    const decoded = cborDecodeSequencePrefix(cbor, 1).items[0];
-    if (!decoded || typeof decoded !== 'object' || decoded instanceof Uint8Array || Array.isArray(decoded)) return null;
-    map = decoded;
-  } catch (e) { return null; }
-  return {
-    hint:     map[K.HINT] ?? null,
-    mimeType: map[K.MIME] ?? null,
-    content:  map[K.CONTENT] ?? null,
-    filename: map[K.FILENAME] ?? null,
-  };
+  return null;
 }
 
 /**
@@ -562,11 +581,76 @@ const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
 // Local keys for related[] sub-map entries (independent namespace, SPEC §3)
 const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9, STEP:10 };
 
-// CBOR-sequence envelope (SPEC §2):
+// Old CBOR-sequence envelope — Paper-only for now:
 // tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
-// Every code — standalone or one of several pieces — is a "sector" (SPEC §4.1).
+// Paper hasn't been ported to the new QDEF Preview/Body Record shape yet (the generator's
+// Paper Layout tab still emits this envelope for the manifest); Content codes are QDEF
+// Records only — an old-envelope Content sector is no longer accepted (SPEC.md's version
+// policy: v1 is a draft with no deployed content, so this break needs no version bump).
 const VERSION = 1;
 const TYPE_CONTENT = 0, TYPE_PAPER = 1;
+
+// ── QDEF Records (SPEC.md §2) ─────────────────────────────────────────────
+// A new-format code is a CBOR Sequence of Records — flat CBOR maps with a Record
+// Type ID at key 0. TagDrop's own Type IDs are 64-bit values in QDEF's private-use
+// tier (decoded as BigInt); Split/Compress are QDEF's small well-known Wrapper types.
+const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
+const TYPE_CONTENT_PREVIEW = 11040522420225562824n;
+const TYPE_CONTENT_BODY = 16141970035994251452n;
+// Paper-Preview (11467060725844413781) / Paper-Body (3662944544912906201) are assigned in
+// SPEC.md §2.1 but not emitted by any encoder yet — a code carrying one decodes as
+// 'invalid' here until the Paper port lands.
+
+// Content-Preview's field keys (SPEC.md §3.1) — all odd (optional tier) except type-ID 0.
+const PK = {
+  CACHE_ID:1, HINT:3, MIME:5, FILENAME:7, TITLE:9, DESCRIPTION:11,
+  COLLECTION_ID:13, COLLECTION_LABEL:15, COLLECTION_TAG:17, ICON:19,
+  PIXEL_ART:21, LAT:23, LNG:25, RADIUS_M:27, PREFER_DECLARED_LOCATION:29, LOCATION_LABEL:31,
+  KEY_MATERIAL:33, RETAIN_KEY:35, ENCRYPTION:37,
+  KDF_ALG:39, KDF_SALT:41, KDF_ITERS:43,
+  SIGNATURE_ALGORITHM:45, SIGNER_ID:47, SIGNER_LABEL:49,
+  IN_REPLY_TO:51, CREATED_AT:53, SOURCE_URL:55,
+};
+// Content-Body's field keys (SPEC.md §3.2).
+const BK = { CONTENT:1, SIGNATURE:3, SIGNER_PUBKEY:5 };
+// QDEF Split Wrapper (Type 2) / Compress Wrapper (Type 3) field keys.
+const SK = { GROUP_ID:2, INDEX:4, COUNT:6, DATA:8, TOTAL:9, PARITY:11 };
+const CK = { PAYLOAD:2 };
+
+// Known-key sets for the even/odd criticality rule below.
+const KNOWN_KEYS = {
+  CONTENT_PREVIEW: new Set([0, ...Object.values(PK)]),
+  CONTENT_BODY:    new Set([0, ...Object.values(BK)]),
+  SPLIT:           new Set([0, ...Object.values(SK)]),
+  COMPRESS:        new Set([0, ...Object.values(CK)]),
+};
+
+// SPEC.md §2.2 even/odd criticality: an unrecognised EVEN key means this decoder can't
+// safely use the record (critical semantics it doesn't understand) — reject it; an
+// unrecognised ODD key is optional and silently ignored.
+function checkRecordKeys(record, known) {
+  for (const k of Object.keys(record).map(Number)) {
+    if (!known.has(k) && k % 2 === 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Decodes one QDEF Record (a CBOR map with a Type ID at key 0) from the head of `bytes`.
+ * Returns { record, raw, trailing } — `raw` is the record's own exact byte range (what
+ * signature/group hashes are computed over), `trailing` whatever follows in the sequence —
+ * or null if the head of `bytes` isn't a well-formed Record.
+ */
+function decodeRecordPrefix(bytes) {
+  try {
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 1);
+    const record = items[0];
+    if (!isCborMap(record) || record[0] == null) return null;
+    return { record, raw: bytes.slice(0, bytes.length - trailing.length), trailing };
+  } catch (e) {
+    return null;
+  }
+}
 
 // SPEC §7 pixel_art: images this small or smaller are assumed pixel art even when the
 // author didn't declare the flag — mirrors the Android app's looksLikePixelArt() heuristic.
@@ -703,6 +787,67 @@ async function signedMessageHash(stream) {
   return sha256(concatBytes(unsignedCore, unsignedBulky, parts.content));
 }
 
+/**
+ * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with
+ * every pair whose key is in [keysToStrip] removed, regardless of position — unlike
+ * stripTrailingKeys above, which assumes the stripped keys form a trailing run. New-format
+ * Records encode their keys in ascending numeric order (SPEC.md §2.2), so a higher-numbered
+ * field (e.g. `source_url`, key 55) can legitimately sort after the signature fields
+ * (45/47/49) — the trailing-run assumption doesn't hold, so this walks and keeps every
+ * surviving pair by its own byte range instead of truncating a suffix. Mirrors the
+ * generator's stripKeys.
+ */
+function stripKeys(mapBytes, keysToStrip) {
+  let pos = 0;
+  function rb() { return mapBytes[pos++]; }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) return rb() * 256 + rb();
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function skipValue() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    if (major === 2 || major === 3) { pos += a; }
+    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
+    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
+    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
+  }
+  const head = rb();
+  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
+  const count = readArg(head & 0x1F);
+
+  const survivors = [];
+  for (let i = 0; i < count; i++) {
+    const pairStart = pos;
+    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
+    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
+    skipValue();
+    if (!keysToStrip.has(key)) survivors.push(mapBytes.slice(pairStart, pos));
+  }
+  const newHeader = [];
+  writeHead(newHeader, 5, survivors.length);
+  return concatBytes(new Uint8Array(newHeader), ...survivors);
+}
+
+const CONTENT_PREVIEW_SIGNATURE_KEYS = new Set([PK.SIGNATURE_ALGORITHM, PK.SIGNER_ID, PK.SIGNER_LABEL]);
+const CONTENT_BODY_SIGNATURE_KEYS = new Set([BK.SIGNATURE, BK.SIGNER_PUBKEY]);
+
+/**
+ * SPEC.md §10's "signed message" for a new-format Content payload:
+ * SHA-256(Preview' || Body'), with §10's own fields stripped from each. [bodyRaw] MUST be
+ * the logical (post-unwrap, pre-Compress/Split) Body Record bytes — never the transmitted
+ * wire form — so the signature is independent of how the payload was wrapped in transit.
+ * Mirrors the generator's contentSignedMessageHash.
+ */
+function contentSignedMessageHash(previewRaw, bodyRaw) {
+  const unsignedPreview = stripKeys(previewRaw, CONTENT_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = bodyRaw ? stripKeys(bodyRaw, CONTENT_BODY_SIGNATURE_KEYS) : new Uint8Array(0);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
+}
+
 /** Caches a first-seen signer_pubkey under its signer_id (SPEC §10 "Key caching", TOFU). */
 async function cacheSignerPubkey(signerIdHex, pubkey, label) {
   const existing = await dbGet('signers', signerIdHex);
@@ -710,20 +855,23 @@ async function cacheSignerPubkey(signerIdHex, pubkey, label) {
 }
 
 /**
- * Verifies a decoded Content/Paper's Verified Authorship fields against [stream] (SPEC §10).
+ * Verifies a decoded payload's Verified Authorship fields (SPEC §10). [computeHash] supplies
+ * the format-specific signed-message hash — see verifySignature (old-envelope Paper) and
+ * verifyContentSignature (new-format Content) below; everything else (TOFU key caching,
+ * signer_id binding, the ML-DSA-44 check itself) is format-independent and shared here.
  * Returns { status: 'unsigned' } if unsigned, { status: 'pending', signerId, signerLabel } if
  * signed but no pubkey is available yet (embedded or cached) to check against, or
  * { status: 'verified' | 'invalid', signerId, signerLabel } once checked. TOFU: an embedded
  * signer_pubkey is cached under its signer_id the first time it's seen, so later codes from
  * the same signer verify even when they omit it to save space.
  */
-async function verifySignature(stream, fields) {
+async function verifySignatureCommon(fields, computeHash) {
   if (!fields.signatureAlgorithm) return { status: 'unsigned' };
-  if (fields.signatureAlgorithm !== 1) return { status: 'unsigned' }; // unrecognised algorithm — SPEC §3 forward-compat: ignore
+  if (fields.signatureAlgorithm !== 1) return { status: 'unsigned' }; // unrecognised algorithm — forward-compat: ignore
   const signerId = fields.signerId, signerLabel = fields.signerLabel;
   let pubkey = fields.signerPubkey;
   if (pubkey) {
-    // TOFU only holds if signer_id actually is sha256(signer_pubkey)[0:8] (SPEC §3) — an
+    // TOFU only holds if signer_id actually is sha256(signer_pubkey)[0:8] (SPEC §10) — an
     // attacker who has merely SEEN someone's signer_id (visible on every one of their signed
     // codes) could otherwise mint a new code under that same signer_id with their OWN
     // pubkey/signature, and this cache would blindly overwrite the real signer's trusted key
@@ -736,7 +884,7 @@ async function verifySignature(stream, fields) {
     if (cached) pubkey = cached.pubkey;
   }
   if (!pubkey || !fields.signature) return { status: 'pending', signerId, signerLabel };
-  const hash = await signedMessageHash(stream);
+  const hash = await computeHash();
   if (!hash) return { status: 'pending', signerId, signerLabel };
   const { ml_dsa44 } = await loadMlDsa();
   // noble's verify() throws on a malformed-length signature/pubkey rather than returning false —
@@ -746,6 +894,16 @@ async function verifySignature(stream, fields) {
   catch (e) { ok = false; }
   const cachedLabel = signerId ? (await dbGet('signers', signerId))?.label : null;
   return { status: ok ? 'verified' : 'invalid', signerId, signerLabel: signerLabel || cachedLabel };
+}
+
+/** Old-envelope (Paper) verification — signed message is signedMessageHash(stream) above. */
+async function verifySignature(stream, fields) {
+  return verifySignatureCommon(fields, () => signedMessageHash(stream));
+}
+
+/** New-format Content verification — signed message is SHA-256(Preview' || Body') (§10). */
+async function verifyContentSignature(previewRaw, bodyRaw, fields) {
+  return verifySignatureCommon(fields, () => contentSignedMessageHash(previewRaw, bodyRaw));
 }
 
 // ── CBOR debug ────────────────────────────────────────────────────────────
@@ -773,15 +931,70 @@ const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE
 const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key', [KR.STEP]:'step' };
 const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
+// New-format (QDEF Record) field-name tables — keyed by String(typeId) since TagDrop's
+// Type IDs decode as BigInt, which can't be a plain object key.
+const RECORD_TYPE_INFO = new Map([
+  [String(TYPE_CONTENT_PREVIEW), { name: 'Content-Preview', keyNames: {
+    0:'type_id', [PK.CACHE_ID]:'cache_id', [PK.HINT]:'hint', [PK.MIME]:'mime_type',
+    [PK.FILENAME]:'filename', [PK.TITLE]:'title', [PK.DESCRIPTION]:'description',
+    [PK.COLLECTION_ID]:'collection_id', [PK.COLLECTION_LABEL]:'collection_label',
+    [PK.COLLECTION_TAG]:'collection_tag', [PK.ICON]:'icon', [PK.PIXEL_ART]:'pixel_art',
+    [PK.LAT]:'lat', [PK.LNG]:'lng', [PK.RADIUS_M]:'radius_m',
+    [PK.PREFER_DECLARED_LOCATION]:'prefer_declared_location', [PK.LOCATION_LABEL]:'location_label',
+    [PK.KEY_MATERIAL]:'key_material', [PK.RETAIN_KEY]:'retain_key', [PK.ENCRYPTION]:'encryption',
+    [PK.KDF_ALG]:'kdf_alg', [PK.KDF_SALT]:'kdf_salt', [PK.KDF_ITERS]:'kdf_iters',
+    [PK.SIGNATURE_ALGORITHM]:'signature_algorithm', [PK.SIGNER_ID]:'signer_id',
+    [PK.SIGNER_LABEL]:'signer_label', [PK.IN_REPLY_TO]:'in_reply_to',
+    [PK.CREATED_AT]:'created_at', [PK.SOURCE_URL]:'source_url',
+  } }],
+  [String(TYPE_CONTENT_BODY), { name: 'Content-Body', keyNames: {
+    0:'type_id', [BK.CONTENT]:'content', [BK.SIGNATURE]:'signature', [BK.SIGNER_PUBKEY]:'signer_pubkey',
+  } }],
+  [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
+    0:'type_id', [SK.GROUP_ID]:'group_id', [SK.INDEX]:'index', [SK.COUNT]:'count',
+    [SK.DATA]:'data', [SK.TOTAL]:'total_bytes', [SK.PARITY]:'parity',
+  } }],
+  [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {
+    0:'type_id', [CK.PAYLOAD]:'compressed_payload',
+  } }],
+]);
+
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }
 
-/** Pretty-prints a raw TagDrop sector CBOR sequence: hex dump, the four-item envelope
- *  (SPEC §2) with part_meta broken out by field name, and — for a complete single-sector
- *  payload — the core_meta_item/bulky_meta_item/content split of its reassembled stream. */
+/** New-format half of describeCbor below: walks a QDEF Record Sequence, naming each
+ *  Record's type and fields per RECORD_TYPE_INFO. */
+function describeRecords(bytes) {
+  let out = '';
+  let rest = bytes;
+  let n = 0;
+  while (rest.length > 0) {
+    const decoded = decodeRecordPrefix(rest);
+    if (!decoded) {
+      out += 'trailing bytes (not a Record): ' + toHexDump(rest) + '\n';
+      break;
+    }
+    const info = RECORD_TYPE_INFO.get(String(decoded.record[0]));
+    out += 'Record ' + (++n) + ': ' + (info ? info.name : 'unknown type ' + decoded.record[0]) +
+      ' (' + decoded.raw.length + ' bytes)\n';
+    out += describeMap(decoded.record, 1, info ? info.keyNames : {});
+    out += '\n';
+    rest = decoded.trailing;
+  }
+  return out;
+}
+
+/** Pretty-prints raw TagDrop code bytes: hex dump, then — dispatched on the first CBOR
+ *  item's major type, same rule as sectorScanResult — either the new QDEF Record
+ *  Sequence breakdown or the old four-item envelope (SPEC §2) with part_meta broken out
+ *  by field name (and, for a complete single-sector payload, the
+ *  core_meta_item/bulky_meta_item/content split of its reassembled stream). */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  if (bytes.length > 0 && (bytes[0] >> 5) === 5) {
+    return out + describeRecords(bytes);
+  }
   try {
     const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
     if (items.length < 4) throw new Error('Expected version, type, part_meta, sector_bytes — got ' + items.length + ' item(s)');
@@ -876,10 +1089,75 @@ function decodeSector(bytes) {
   }
 }
 
-/** Wraps decodeSector's result (or failure) in the shape handleScanned()'s switch expects. */
+/**
+ * Parses a Content-Preview Record's fields (SPEC.md §3.1) into the id/hex conventions this
+ * reader's IndexedDB/UI layer uses (cacheId/inReplyTo/collectionId hex, signerId hex).
+ * `description` (key 11) and `source_url` (key 55) are parsed but not yet surfaced anywhere.
+ */
+function parsePreviewFields(record) {
+  return {
+    cacheId:         record[PK.CACHE_ID] ? toHex(record[PK.CACHE_ID]) : null,
+    hint:            record[PK.HINT] ?? null,
+    mimeType:        record[PK.MIME] ?? '',
+    filename:        record[PK.FILENAME] ?? null,
+    title:           record[PK.TITLE] ?? null,
+    description:     record[PK.DESCRIPTION] ?? null,
+    collectionId:    record[PK.COLLECTION_ID] ? toHex(record[PK.COLLECTION_ID]) : null,
+    collectionLabel: record[PK.COLLECTION_LABEL] ?? null,
+    collectionTag:   record[PK.COLLECTION_TAG] ?? null,
+    icon:            record[PK.ICON] ?? null,
+    pixelArt:        record[PK.PIXEL_ART] === true,
+    lat:             record[PK.LAT] ?? null,
+    lng:             record[PK.LNG] ?? null,
+    radiusM:         record[PK.RADIUS_M] ?? null,
+    preferDeclaredLocation: record[PK.PREFER_DECLARED_LOCATION] === true,
+    locationLabel:   record[PK.LOCATION_LABEL] ?? null,
+    keyMaterial:     record[PK.KEY_MATERIAL] ?? null,
+    retainKey:       record[PK.RETAIN_KEY] !== false,
+    encryption:      record[PK.ENCRYPTION] ?? 0,
+    kdfAlg:          record[PK.KDF_ALG] ?? 0,
+    kdfSalt:         record[PK.KDF_SALT] ?? null,
+    kdfIters:        record[PK.KDF_ITERS] ?? 100000,
+    signatureAlgorithm: record[PK.SIGNATURE_ALGORITHM] ?? 0,
+    signerId:        record[PK.SIGNER_ID] ? toHex(record[PK.SIGNER_ID]) : null,
+    signerLabel:     record[PK.SIGNER_LABEL] ?? null,
+    inReplyTo:       record[PK.IN_REPLY_TO] ? toHex(record[PK.IN_REPLY_TO]) : null,
+    createdAt:       record[PK.CREATED_AT] ?? null,
+    sourceUrl:       record[PK.SOURCE_URL] ?? null,
+  };
+}
+
+/**
+ * Decodes a new-format code: a Content-Preview Record, optionally followed by one more
+ * Record — the Body itself, a Compress Wrapper around it, or one Split fragment of it
+ * (SPEC.md §2, §5.1). Returns { type: 'record', preview, previewRaw, second, cbor } or
+ * { type: 'invalid' }. Trailing bytes after the second Record are tolerated, never an
+ * error (forward-compat: may be a further stacked Record this decoder doesn't know).
+ */
+function recordScanResult(bytes) {
+  const first = decodeRecordPrefix(bytes);
+  if (!first || first.record[0] !== TYPE_CONTENT_PREVIEW) return { type: 'invalid' };
+  if (!checkRecordKeys(first.record, KNOWN_KEYS.CONTENT_PREVIEW)) return { type: 'invalid' };
+  let second = null;
+  if (first.trailing.length > 0) {
+    second = decodeRecordPrefix(first.trailing);
+    if (!second) return { type: 'invalid' };
+  }
+  return { type: 'record', preview: parsePreviewFields(first.record), previewRaw: first.raw, second, cbor: bytes };
+}
+
+/**
+ * Dispatches raw scanned/decoded bytes to the right wire format (shared by parseUri()'s
+ * Base41 text path and parseScannedBytes()'s binary/byte-mode QR path): a CBOR map head
+ * (major type 5) is a new-format QDEF Record Sequence; a CBOR uint head (major type 0,
+ * the version item) is the old four-item envelope, accepted for Paper only — old-envelope
+ * Content is no longer readable (see the version-policy note at TYPE_CONTENT above).
+ */
 function sectorScanResult(bytes) {
+  if (bytes.length > 0 && (bytes[0] >> 5) === 5) return recordScanResult(bytes);
   const sector = decodeSector(bytes);
-  return sector ? { type: 'sector', sector, cbor: bytes } : { type: 'invalid' };
+  if (!sector || sector.type !== TYPE_PAPER) return { type: 'invalid' };
+  return { type: 'sector', sector, cbor: bytes };
 }
 
 // ── TagDrop URI parser ────────────────────────────────────────────────────
@@ -929,66 +1207,6 @@ function concatBytes(...arrays) {
   let off = 0;
   for (const a of arrays) { out.set(a, off); off += a.length; }
   return out;
-}
-
-/**
- * Parses a reassembled Content stream into its fields (SPEC §4.2, §5). Verifies
- * `content_sha256` over the content slot as transmitted — the transmission-integrity
- * check, independent of any later override decryption (§9). Required whenever
- * `partMeta.sectorCount > 1` (SPEC §3): without it, a decoder has no way to detect a
- * substituted/forged sector during reassembly, so a multi-sector stream missing it is
- * rejected as malformed rather than silently trusted. `partMeta.cacheId` becomes the
- * Content's id (null for a key-only code). Cover/override resolution is the caller's job
- * (see SectorAssembler). Mirrors Kotlin TagDropCodec.parseContentStream. Returns
- * { kind: 'Ok', content } | { kind: 'HashMismatch' } | { kind: 'Malformed' }.
- */
-async function parseContentStream(stream, partMeta) {
-  const parts = await splitReassembledStream(stream);
-  if (!parts) return { kind: 'Malformed' };
-  const core = parts.core;
-  const slot = parts.content;
-  const declaredSha = core[K.CONTENT_SHA];
-  if (declaredSha == null) {
-    if (partMeta.sectorCount > 1) return { kind: 'Malformed' };
-  } else if (!bytesEqual(await sha256(slot), declaredSha)) {
-    return { kind: 'HashMismatch' };
-  }
-  return {
-    kind: 'Ok',
-    content: {
-      cacheId:         partMeta.cacheId,
-      hint:            core[K.HINT] ?? null,
-      filename:        core[K.FILENAME] ?? null,
-      mimeType:        core[K.MIME] ?? '',
-      compression:     core[K.COMPRESSION] ?? 0,
-      content:         slot,
-      overrideBlob:    slot.length >= OVERRIDE_BLOB_MIN_BYTES ? slot : null,
-      encryption:      core[K.ENCRYPTION] ?? 0,
-      keyMaterial:     core[K.KEY_MATERIAL] ?? null,
-      retainKey:       core[K.RETAIN_KEY] !== false,
-      collectionId:    core[K.COLLECTION_ID] ? toHex(core[K.COLLECTION_ID]) : null,
-      collectionLabel: core[K.COLLECTION_LABEL] ?? null,
-      collectionTag:   core[K.COLLECTION_TAG] ?? null,
-      icon:            core[K.ICON] ?? null,
-      kdfAlg:          core[K.KDF_ALG] ?? 0,
-      kdfSalt:         core[K.KDF_SALT] ?? null,
-      kdfIters:        core[K.KDF_ITERS] ?? 100000,
-      lat:             core[K.LAT] ?? null,
-      lng:             core[K.LNG] ?? null,
-      radiusM:         core[K.RADIUS_M] ?? null,
-      preferDeclaredLocation: core[K.PREFER_DECLARED_LOCATION] === true,
-      locationLabel:   core[K.LOCATION_LABEL] ?? null,
-      inReplyTo:       core[K.IN_REPLY_TO] ? toHex(core[K.IN_REPLY_TO]) : null,
-      title:           core[K.TITLE] ?? null,
-      createdAt:       core[K.CREATED_AT] ?? null,
-      pixelArt:        core[K.PIXEL_ART] === true,
-      signatureAlgorithm: core[K.SIGNATURE_ALGORITHM] ?? 0,
-      signature:       parts.bulky[K.SIGNATURE] ?? null,
-      signerPubkey:    parts.bulky[K.SIGNER_PUBKEY] ?? null,
-      signerId:        core[K.SIGNER_ID] ? toHex(core[K.SIGNER_ID]) : null,
-      signerLabel:     core[K.SIGNER_LABEL] ?? null,
-    },
-  };
 }
 
 /** Parses a reassembled Paper stream (SPEC §4.2, §4.3), using partMeta's root_hash as the
@@ -1090,22 +1308,19 @@ function paperFromParts(parts, rootHash) {
 }
 
 // ── Sector assembly (SPEC §5) ─────────────────────────────────────────────
-// JS port of Kotlin SectorAssembler. Tracks several payloads concurrently, keyed by
-// (type, cache_id/root_hash): sectors from different payloads can be interleaved in any
-// order, any session (SPEC §4.1, §5), and each is matched to its own group as it arrives.
-// A single-sector payload (the common case) completes on its first add(). Multi-sector
-// payloads accumulate until every sector_index 0..sector_count-1 is in; an optional XOR
-// parity sector (SPEC §5) can reconstruct one missing data sector.
+// Two assemblers, one per wire format, sharing the same state shapes so handleState()
+// downstream doesn't care which produced them:
+//   SectorAssembler — old four-item envelope, Paper manifests only (see TYPE_CONTENT note).
+//   RecordAssembler — new QDEF Record codes, Content payloads (Preview + Split fragments).
 //
 // State shapes (mirror the Kotlin sealed class):
 //   { kind: 'Idle' }
 //   { kind: 'Collecting', received, total, type, cacheId, hint, missingIndices }
 //   { kind: 'ContentReady', cacheId, hint, filename, mimeType, content, collectionId,
 //     collectionLabel, collectionTag, icon, keyMaterial, retainKey, pendingOverrideBlob,
-//     pendingOverrideCompression, kdfAlg, kdfSalt, kdfIters, wasEncrypted,
-//     lat, lng, radiusM, preferDeclaredLocation, locationLabel }
+//     kdfAlg, kdfSalt, kdfIters, wasEncrypted, lat, lng, radiusM,
+//     preferDeclaredLocation, locationLabel }
 //   { kind: 'PaperReady', paper, streamBytes }
-//   { kind: 'AwaitingKey', cacheId, hint, contentSlot, compression, kdfAlg, kdfSalt, kdfIters }
 //   { kind: 'HashMismatch' }
 //   { kind: 'Failed' }
 class SectorAssembler {
@@ -1123,7 +1338,7 @@ class SectorAssembler {
     const key = this._key(sector);
     let group = this.groups.get(key);
     if (!group) {
-      group = { type: sector.type, meta: null, data: new Map(), parity: null, resolvedOverride: null };
+      group = { type: sector.type, meta: null, data: new Map(), parity: null };
       this.groups.set(key, group);
     }
     group.meta = sector.partMeta;
@@ -1138,51 +1353,8 @@ class SectorAssembler {
     return state;
   }
 
-  /** State of the most-recently-touched group, for status display; Idle if none pending. */
-  async currentState() {
-    if (!this.lastGroupKey) return { kind: 'Idle' };
-    const group = this.groups.get(this.lastGroupKey);
-    return group ? this._computeState(group) : { kind: 'Idle' };
-  }
-
-  /** True while any payload is still being collected (or awaiting a key). */
+  /** True while any payload is still being collected. */
   get hasPending() { return this.groups.size > 0; }
-
-  /** True if cacheIdHex names a fully-collected Content group still sitting in AwaitingKey
-   *  (used by the paper directory's "needs key" label — a non-terminal group stays tracked
-   *  until a key resolves it or reset() is called). */
-  isAwaitingKey(cacheIdHex) {
-    const group = this.groups.get(TYPE_CONTENT + ':' + cacheIdHex);
-    return !!(group && group.meta && group.data.size === group.meta.sectorCount);
-  }
-
-  /**
-   * Tries keyMaterial against every fully-collected Content group still awaiting a key
-   * (SPEC §9, "discovery, not declaration"): if it decrypts the content slot as an override
-   * map, that group resolves and is returned (and dropped from tracking). A non-matching key
-   * changes nothing.
-   */
-  async tryKey(keyMaterial) {
-    const resolved = [];
-    for (const [key, group] of [...this.groups]) {
-      if (group.type !== TYPE_CONTENT || group.resolvedOverride || !group.meta) continue;
-      const stream = reassembleSectors(group.data, group.meta.sectorCount);
-      if (!stream) continue;
-      const parsed = await parseContentStream(stream, group.meta);
-      if (parsed.kind !== 'Ok') continue;
-      const slot = parsed.content.content;
-      if (slot.length < OVERRIDE_BLOB_MIN_BYTES) continue;
-      const override = await tryDecryptOverrideMap(slot, keyMaterial, parsed.content.compression);
-      if (!override) continue;
-      group.resolvedOverride = override;
-      const state = await this._contentState(group, parsed.content, stream);
-      if (state.kind === 'ContentReady') {
-        resolved.push(state);
-        this.groups.delete(key);
-      }
-    }
-    return resolved;
-  }
 
   reset() {
     this.groups.clear();
@@ -1221,47 +1393,203 @@ class SectorAssembler {
     };
   }
 
-  /** Reassembles data and parses it into a terminal/awaiting state per group's type. */
+  /** Reassembles data and parses it (Paper is the only type this assembler still handles). */
   async _finish(group, data, meta, count) {
     const stream = reassembleSectors(data, count);
     if (!stream) return { kind: 'Failed' };
-    if (group.type === TYPE_PAPER) {
-      const paper = await parsePaperStream(stream, meta);
-      return paper ? { kind: 'PaperReady', paper, streamBytes: stream } : { kind: 'Failed' };
-    }
-    const parsed = await parseContentStream(stream, meta);
-    if (parsed.kind === 'Malformed') return { kind: 'Failed' };
-    if (parsed.kind === 'HashMismatch') return { kind: 'HashMismatch' };
-    return this._contentState(group, parsed.content, stream);
+    const paper = await parsePaperStream(stream, meta);
+    return paper ? { kind: 'PaperReady', paper, streamBytes: stream } : { kind: 'Failed' };
+  }
+}
+
+// ── QDEF Record assembly (SPEC.md §5) ─────────────────────────────────────
+// New-format counterpart to SectorAssembler above, for Content codes. Every code in a
+// multi-code group carries the identical Preview Record plus one Split fragment of the
+// (possibly Compress-wrapped) Body; groups are keyed by the Split Wrapper's group_id —
+// SHA-256(wrapped Body)[0:8] — which doubles as the reassembly integrity check, replacing
+// the old content_sha256. A single-code payload (no Split) completes on its first add().
+class RecordAssembler {
+  constructor() {
+    this.groups = new Map();
   }
 
-  /** Resolves a parsed Content into a ready/awaiting state: override (if a key matched) → cover → awaiting key. */
-  async _contentState(group, content, stream) {
-    // SPEC §10: the signature covers the transmitted stream regardless of whether an override
-    // blob is later decrypted — verify once here, against the raw bytes, not the decrypted view.
-    const verification = await verifySignature(stream, content);
-    const override = group.resolvedOverride;
-    if (override) {
-      return readyContentState(content, override.hint ?? content.hint, override.filename ?? content.filename,
-        override.mimeType ?? content.mimeType, override.content ?? new Uint8Array(0), null, true, false, verification);
+  /** Adds a scanned {preview, previewRaw, second} code and returns its group's state. */
+  async add(scan) {
+    const { preview, previewRaw, second } = scan;
+
+    // No second Record (key-only code) or an unwrapped/Compress-wrapped Body: single-code
+    // payload, complete right away.
+    if (!second || second.record[0] !== TYPE_SPLIT) {
+      return this._finishBody(preview, previewRaw, second ? second.raw : null, null);
     }
-    // SPEC §5 step 5: try the cover/plain-content reading per content_compression.
-    let cover;
-    try { cover = content.compression === 1 ? await zlibDecompress(content.content) : content.content; }
-    catch (e) { cover = undefined; }
-    if (cover === undefined) {
-      return {
-        kind: 'AwaitingKey', cacheId: content.cacheId, hint: content.hint,
-        contentSlot: content.content, compression: content.compression,
-        kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
-      };
+
+    const frag = second.record;
+    if (!checkRecordKeys(frag, KNOWN_KEYS.SPLIT)) return { kind: 'Failed' };
+    const groupId = frag[SK.GROUP_ID], index = frag[SK.INDEX] ?? 0, count = frag[SK.COUNT] ?? 1;
+    const data = frag[SK.DATA], total = frag[SK.TOTAL];
+    if (!(groupId instanceof Uint8Array) || !(data instanceof Uint8Array) || count < 1 || total == null) {
+      return { kind: 'Failed' };
+    }
+    const key = toHex(groupId);
+    let group = this.groups.get(key);
+    if (!group) {
+      group = { groupId, count, total, data: new Map(), parity: null, resolvedOverride: null };
+      this.groups.set(key, group);
+    }
+    // Preview repeats identically on every code (SPEC §5.1) — keep the latest scan's copy.
+    group.preview = preview;
+    group.previewRaw = previewRaw;
+    // A parity fragment sits at index == count (SPEC §5's redundancy scheme).
+    if (index >= count) group.parity = data;
+    else group.data.set(index, data);
+
+    const state = await this._computeState(group);
+    if (isTerminalState(state)) this.groups.delete(key);
+    return state;
+  }
+
+  /** True while any payload is still being collected. */
+  get hasPending() { return this.groups.size > 0; }
+
+  /**
+   * Tries keyMaterial against every fully-collected group whose Body decrypts as an
+   * override map (SPEC §9, "discovery, not declaration"). Resolved groups are returned
+   * as ContentReady states and dropped from tracking; a non-matching key changes nothing.
+   */
+  async tryKey(keyMaterial) {
+    const resolved = [];
+    for (const [key, group] of [...this.groups]) {
+      if (group.resolvedOverride) continue;
+      const wrapped = this._reassemble(group);
+      if (!wrapped) continue;
+      const bodyParts = await this._unwrapBody(wrapped);
+      if (!bodyParts) continue;
+      const slot = bodyParts.body[BK.CONTENT];
+      if (!(slot instanceof Uint8Array) || slot.length < OVERRIDE_BLOB_MIN_BYTES) continue;
+      const override = await tryDecryptOverrideMap(slot, keyMaterial);
+      if (!override) continue;
+      group.resolvedOverride = override;
+      const state = await this._contentState(group.preview, group.previewRaw, bodyParts, override);
+      if (state.kind === 'ContentReady') {
+        resolved.push(state);
+        this.groups.delete(key);
+      }
+    }
+    return resolved;
+  }
+
+  reset() {
+    this.groups.clear();
+  }
+
+  /** Concatenated fragment data for a complete group (with XOR parity reconstruction of a
+   *  single missing fragment, SPEC §5), or null while fragments are still missing. */
+  _reassemble(group) {
+    const missing = [];
+    for (let i = 0; i < group.count; i++) if (!group.data.has(i)) missing.push(i);
+    let data = group.data;
+    if (missing.length === 1 && group.parity) {
+      const chunkLen = Math.ceil(group.total / group.count);
+      const x = group.parity.slice();
+      for (const [i, bytes] of group.data) {
+        for (let k = 0; k < bytes.length && k < x.length; k++) x[k] = x[k] ^ bytes[k];
+      }
+      const idx = missing[0];
+      const realLen = (idx === group.count - 1) ? group.total - (group.count - 1) * chunkLen : chunkLen;
+      if (realLen < 0 || realLen > x.length) return null;
+      data = new Map(group.data);
+      data.set(idx, x.slice(0, realLen));
+    } else if (missing.length > 0) {
+      return null;
+    }
+    const parts = [];
+    for (let i = 0; i < group.count; i++) parts.push(data.get(i));
+    const out = concatBytes(...parts);
+    return out.length === group.total ? out : null;
+  }
+
+  async _computeState(group) {
+    const wrapped = this._reassemble(group);
+    if (wrapped) {
+      // group_id is SHA-256(wrapped Body)[0:8] (SPEC §5.1) — the reassembly integrity
+      // check over the bytes exactly as transmitted (after compression AND encryption).
+      if (!bytesEqual((await sha256(wrapped)).slice(0, 8), group.groupId)) {
+        return { kind: 'HashMismatch' };
+      }
+      return this._finishBody(group.preview, group.previewRaw, wrapped, group.resolvedOverride);
+    }
+    const missing = [];
+    for (let i = 0; i < group.count; i++) if (!group.data.has(i)) missing.push(i);
+    return {
+      kind: 'Collecting', received: group.data.size, total: group.count, type: 'record',
+      cacheId: group.preview.cacheId, hint: group.preview.hint, missingIndices: missing,
+    };
+  }
+
+  /** Unwraps a (possibly Compress-wrapped) Body byte sequence into its Body Record,
+   *  returning { body, bodyRaw } — bodyRaw being the LOGICAL Record bytes SPEC §10's
+   *  signature formula covers — or null if malformed. */
+  async _unwrapBody(bodyWireBytes) {
+    let cur = decodeRecordPrefix(bodyWireBytes);
+    if (!cur) return null;
+    if (cur.record[0] === TYPE_COMPRESS) {
+      if (!checkRecordKeys(cur.record, KNOWN_KEYS.COMPRESS)) return null;
+      const payload = cur.record[CK.PAYLOAD];
+      if (!(payload instanceof Uint8Array)) return null;
+      let inflated;
+      try { inflated = await zlibDecompress(payload); } catch (e) { return null; }
+      cur = decodeRecordPrefix(inflated);
+      if (!cur) return null;
+    }
+    if (cur.record[0] !== TYPE_CONTENT_BODY) return null;
+    if (!checkRecordKeys(cur.record, KNOWN_KEYS.CONTENT_BODY)) return null;
+    return { body: cur.record, bodyRaw: cur.raw };
+  }
+
+  /** Completes a payload whose full (wire-form) Body bytes are in hand — or a key-only
+   *  code with no Body at all (bodyWireBytes null). */
+  async _finishBody(preview, previewRaw, bodyWireBytes, resolvedOverride) {
+    if (bodyWireBytes == null) {
+      // Key-only code (SPEC §9): Preview only. Empty content + no mimeType is the shape
+      // handleContentReady() recognises as "just a key, nothing to cache".
+      const verification = await verifyContentSignature(previewRaw, null, preview);
+      return readyContentState(
+        { ...preview, content: new Uint8Array(0) },
+        preview.hint, preview.filename, preview.mimeType, new Uint8Array(0),
+        null, false, false, verification);
+    }
+    const bodyParts = await this._unwrapBody(bodyWireBytes);
+    if (!bodyParts) return { kind: 'Failed' };
+    return this._contentState(preview, previewRaw, bodyParts, resolvedOverride);
+  }
+
+  /** Resolves a decoded Preview+Body into a ContentReady state: override (if a key already
+   *  matched) or the plain/cover reading with any candidate blob kept pending. */
+  async _contentState(preview, previewRaw, bodyParts, resolvedOverride) {
+    const { body, bodyRaw } = bodyParts;
+    const slot = body[BK.CONTENT] instanceof Uint8Array ? body[BK.CONTENT] : new Uint8Array(0);
+    const content = {
+      ...preview,
+      content: slot,
+      overrideBlob: slot.length >= OVERRIDE_BLOB_MIN_BYTES ? slot : null,
+      signature: body[BK.SIGNATURE] ?? null,
+      signerPubkey: body[BK.SIGNER_PUBKEY] ?? null,
+    };
+    // SPEC §10: the signature covers the logical Preview'||Body' regardless of whether an
+    // override blob is later decrypted — verify once, against the raw Records, not the
+    // decrypted view.
+    const verification = await verifyContentSignature(previewRaw, bodyRaw, content);
+    if (resolvedOverride) {
+      return readyContentState(content, resolvedOverride.hint ?? content.hint,
+        resolvedOverride.filename ?? content.filename, resolvedOverride.mimeType ?? content.mimeType,
+        resolvedOverride.content ?? new Uint8Array(0), null, true, false, verification);
     }
     const pendingBlob = content.overrideBlob;
     // Only treat the candidate blob as a UI-worthy "locked" hint if the author actually
     // declared it (cosmetic `encryption` field or a passphrase KDF) — SPEC §9 deliberately
     // leaves undeclared candidates indistinguishable from ordinary content.
     const declared = pendingBlob != null && (content.encryption === 1 || content.kdfAlg !== 0);
-    return readyContentState(content, content.hint, content.filename, content.mimeType, cover,
+    return readyContentState(content, content.hint, content.filename, content.mimeType, slot,
       pendingBlob, declared, declared, verification);
   }
 }
@@ -1280,7 +1608,6 @@ function readyContentState(content, hint, filename, mimeType, resolved, pendingB
     keyMaterial: content.keyMaterial, retainKey: content.retainKey,
     pendingOverrideBlob: pendingBlob,
     pendingOverrideDeclared: declared,
-    pendingOverrideCompression: pendingBlob != null ? content.compression : 0,
     kdfAlg: content.kdfAlg, kdfSalt: content.kdfSalt, kdfIters: content.kdfIters,
     wasEncrypted,
     lat: content.lat, lng: content.lng, radiusM: content.radiusM,
@@ -1401,7 +1728,8 @@ async function dbClear() {
 
 // ── Sector-driven assembly & key resolution (SPEC §5, §9) ────────────────
 // In-memory only — multi-sector payloads must be scanned in one session.
-const assembler = new SectorAssembler();
+const assembler = new SectorAssembler();        // old envelope: Paper manifests
+const recordAssembler = new RecordAssembler();  // QDEF Records: Content payloads
 
 /** All `key_material` (SPEC §9) retained from previous discoveries, available to try against new ciphertext. */
 async function retainedKeys() {
@@ -1429,14 +1757,14 @@ async function candidateKeys(kdfSalt) {
 async function completeSingle(cacheId, hint, filename, mimeType, content, opts = {}) {
   const {
     collectionId = null, collectionLabel = null, collectionTag = null, icon = null,
-    pendingOverrideBlob = null, pendingOverrideDeclared = false, pendingCompression = 0, wasEncrypted = false,
+    pendingOverrideBlob = null, pendingOverrideDeclared = false, wasEncrypted = false,
     kdfAlg = 0, kdfSalt = null, kdfIters = 100000,
     inReplyTo = null, title = null, createdAt = null, pixelArt = false,
     verification = { status: 'unsigned' },
   } = opts;
   await dbPut('caches', {
     cacheId, hint, filename, mimeType, content,
-    pendingOverrideBlob, pendingOverrideDeclared, pendingCompression, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
+    pendingOverrideBlob, pendingOverrideDeclared, wasEncrypted, kdfAlg, kdfSalt, kdfIters,
     inReplyTo, title, createdAt, pixelArt, verification,
   });
   const label = filename || hint || mimeType;
@@ -1474,7 +1802,7 @@ async function handleContentReady(state) {
   let override = null;
   if (blob) {
     for (const key of await candidateKeys(state.kdfAlg === 1 ? state.kdfSalt : null)) {
-      override = await tryDecryptOverrideMap(blob, key, state.pendingOverrideCompression);
+      override = await tryDecryptOverrideMap(blob, key);
       if (override) break;
     }
   }
@@ -1494,7 +1822,7 @@ async function handleContentReady(state) {
 
   if (blob && state.kdfAlg === 1 && state.kdfSalt) {
     await unlockWithPassphrase({
-      hint: state.hint, cacheId, blob, compression: state.pendingOverrideCompression,
+      hint: state.hint, cacheId, blob,
       kdfSalt: state.kdfSalt, kdfIters: state.kdfIters, fallbackContent: state.content,
       filename: state.filename, mimeType: state.mimeType,
       collectionId: state.collectionId, collectionLabel: state.collectionLabel,
@@ -1510,40 +1838,11 @@ async function handleContentReady(state) {
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: blob, pendingOverrideDeclared: state.pendingOverrideDeclared,
-      pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, kdfAlg: state.kdfAlg, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
       inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
       pixelArt: state.pixelArt, verification: state.verification }
   );
   showMsg(state.pendingOverrideDeclared ? 'Loaded: ' + label + ' (🔒 hidden content not yet unlocked)' : 'Loaded: ' + label, 'ok');
-}
-
-/**
- * A Content payload assembled but its content slot can't be read as plain content (SPEC §9):
- * try every retained/session key via the assembler (which may resolve a *different* group than
- * this one — "discovery, not declaration"), then a passphrase-derived key if the code declares
- * one. If nothing unlocks it, it stays in the assembler (uncached) and reports "still locked".
- */
-async function handleAwaitingKey(state) {
-  for (const key of await candidateKeys(state.kdfAlg === 1 ? state.kdfSalt : null)) {
-    const resolved = await assembler.tryKey(key);
-    if (resolved.length > 0) {
-      for (const r of resolved) await completeContentReady(r);
-      return;
-    }
-  }
-  if (state.kdfAlg === 1 && state.kdfSalt && state.cacheId) {
-    await unlockWithPassphrase({
-      hint: state.hint, cacheId: state.cacheId, blob: state.contentSlot,
-      compression: state.compression, kdfSalt: state.kdfSalt, kdfIters: state.kdfIters,
-      fallbackContent: null, filename: null, mimeType: '',
-      collectionId: null, collectionLabel: null, collectionTag: null, icon: null,
-      inReplyTo: null, title: null, createdAt: null,
-    });
-    return;
-  }
-  showMsg('🔒 All sectors assembled, but still locked — scan the key code to unlock.', 'info');
-  if (activePaperHash) await renderPaper(activePaperHash);
 }
 
 /**
@@ -1555,7 +1854,7 @@ async function handleAwaitingKey(state) {
  * unless there's nothing to show, in which case the code stays locked.
  */
 async function unlockWithPassphrase({
-  hint, cacheId, blob, compression, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
+  hint, cacheId, blob, kdfSalt, kdfIters, fallbackContent, filename, mimeType,
   collectionId, collectionLabel, collectionTag, icon, inReplyTo, title, createdAt, pixelArt = false,
   verification = { status: 'unsigned' }
 }) {
@@ -1567,7 +1866,7 @@ async function unlockWithPassphrase({
   let wrongPassphrase = false;
   if (result) {
     const derived = await deriveKeyFromPassphrase(result.passphrase, kdfSalt, kdfIters || 100000);
-    const override = await tryDecryptOverrideMap(blob, derived, compression);
+    const override = await tryDecryptOverrideMap(blob, derived);
     if (override) {
       if (result.sessionOnly) sessionPassphraseKeys.set(saltHex, derived);
       if (result.store) {
@@ -1582,7 +1881,7 @@ async function unlockWithPassphrase({
         { collectionId, collectionLabel, collectionTag, icon, wasEncrypted: true, inReplyTo, title, createdAt, pixelArt, verification }
       );
       await unlockPending(derived);
-      for (const r of await assembler.tryKey(derived)) await completeContentReady(r);
+      for (const r of await recordAssembler.tryKey(derived)) await completeContentReady(r);
       showMsg('🔓 Passphrase accepted: ' + label, 'ok');
       return;
     }
@@ -1592,7 +1891,7 @@ async function unlockWithPassphrase({
     const label = await completeSingle(
       cacheId, hint, filename, mimeType, fallbackContent,
       { collectionId, collectionLabel, collectionTag, icon,
-        pendingOverrideBlob: blob, pendingOverrideDeclared: true, pendingCompression: compression, wasEncrypted: true,
+        pendingOverrideBlob: blob, pendingOverrideDeclared: true, wasEncrypted: true,
         kdfAlg: 1, kdfSalt, kdfIters, inReplyTo, title, createdAt, pixelArt, verification }
     );
     showMsg(wrongPassphrase
@@ -1617,12 +1916,12 @@ async function handleDiscoveredKey(keyMaterial, retainKey, hint) {
     await dbPut('keys', { id: toHex(keyMaterial), keyMaterial, hint });
   }
   const unlockedCount = await unlockPending(keyMaterial);
-  const resolved = await assembler.tryKey(keyMaterial);
+  const resolved = await recordAssembler.tryKey(keyMaterial);
   for (const state of resolved) await completeContentReady(state);
   return unlockedCount + resolved.length;
 }
 
-/** Bridges an assembler.tryKey()-resolved group into storage+display, with its own unlock message. */
+/** Bridges a recordAssembler.tryKey()-resolved group into storage+display, with its own unlock message. */
 async function completeContentReady(state) {
   if (!state.cacheId) return;
   const label = await completeSingle(
@@ -1630,7 +1929,6 @@ async function completeContentReady(state) {
     { collectionId: state.collectionId, collectionLabel: state.collectionLabel,
       collectionTag: state.collectionTag, icon: state.icon,
       pendingOverrideBlob: state.pendingOverrideBlob, pendingOverrideDeclared: state.pendingOverrideDeclared,
-      pendingCompression: state.pendingOverrideCompression,
       wasEncrypted: state.wasEncrypted, inReplyTo: state.inReplyTo, title: state.title, createdAt: state.createdAt,
       pixelArt: state.pixelArt, verification: state.verification }
   );
@@ -1646,10 +1944,10 @@ async function unlockPending(key) {
   let unlocked = 0;
   for (const cached of await dbGetAll('caches')) {
     if (!cached.pendingOverrideBlob) continue;
-    const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, key, cached.pendingCompression);
+    const override = await tryDecryptOverrideMap(cached.pendingOverrideBlob, key);
     if (!override) continue;
     const merged = mergeOverride(cached, override, cached.content);
-    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingOverrideDeclared: false, pendingCompression: 0, wasEncrypted: true });
+    await dbPut('caches', { ...cached, ...merged, pendingOverrideBlob: null, pendingOverrideDeclared: false, wasEncrypted: true });
     unlocked++;
     showMsg('🔓 Unlocked: ' + (merged.filename || merged.hint || merged.mimeType), 'ok');
   }
@@ -1780,6 +2078,15 @@ async function handleScanned(rawBytes) {
       break;
     }
 
+    case 'record': {
+      lastScannedCbor = parsed.cbor;
+      lastScannedTitle = parsed.preview.cacheId || '(no cache_id)';
+      updateCborButton();
+      const state = await recordAssembler.add(parsed);
+      await handleState(state);
+      break;
+    }
+
     case 'nav':
       await resolveNavLink(parsed.host, parsed.slug);
       break;
@@ -1813,11 +2120,6 @@ async function handleState(state) {
     case 'PaperReady':
       hideAssemblyProgress();
       await handlePaper(state.paper, state.streamBytes);
-      break;
-
-    case 'AwaitingKey':
-      hideAssemblyProgress();
-      await handleAwaitingKey(state);
       break;
 
     case 'HashMismatch':
@@ -2129,11 +2431,10 @@ async function renderPaper(rootHash) {
         '<button class="secondary open-file" data-id="' + escHtml(f.fileId) + '" data-slug="' + escHtml(f.slug) + '">Open</button>' +
         descHtml;
     } else {
-      const label = assembler.isAwaitingKey(f.fileId) ? '🔒 needs key' : 'not scanned';
       li.innerHTML =
         '<span class="slug">' + escHtml(f.slug) + '</span>' +
         '<span class="mime">' + escHtml(f.mimeType) + '</span>' +
-        '<span class="missing-label">' + label + '</span>' +
+        '<span class="missing-label">not scanned</span>' +
         descHtml;
     }
     list.appendChild(li);
@@ -2663,6 +2964,7 @@ document.getElementById('btnClear').onclick = async () => {
   if (!confirm('Clear all cached TagDrop content from this browser?')) return;
   await dbClear();
   assembler.reset();
+  recordAssembler.reset();
   hideAssemblyProgress();
   activePaperHash = null;
   document.getElementById('paperSection').classList.add('hidden');

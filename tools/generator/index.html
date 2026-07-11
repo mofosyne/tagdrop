@@ -2927,7 +2927,7 @@ async function computePaperSectorPlan() {
       // For text MIMEs, pass a decoded string so the QR library uses text/alphanumeric mode
       // (more compact, readable by stock scanners). For binary MIMEs, pass raw bytes → byte mode.
       const qrPayload = isTextMime(fmime) ? new TextDecoder().decode(rawBytes) : rawBytes;
-      encodedFiles.push({ slug: fslug, mimeType: fmime, fileId, sectors: null, description: fdesc, pixelArt: fpixelart, rawQrPayload: qrPayload });
+      encodedFiles.push({ slug: fslug, mimeType: fmime, fileId, codes: null, description: fdesc, pixelArt: fpixelart, rawQrPayload: qrPayload });
       continue;
     }
 
@@ -2937,11 +2937,15 @@ async function computePaperSectorPlan() {
     const fileArgs = {
       hint: null, filename: fslug, mimeType: fmime, rawBytes, compress: fcompr,
       collectionId, collectionLabel, collectionTag, icon, pixelArt: fpixelart,
+      // Parity is baked into createContentSectors' Split now (only takes effect when a
+      // file actually splits) — read here rather than at render time, matching the
+      // Single File tab's buildSingleEncodeArgs.
+      parity: document.getElementById('p-add-parity')?.checked ?? false,
     };
-    let sectors;
-    try { sectors = await createContentSectorsAutoSized(fileArgs, targetSectorBytes); }
+    let fileResult;
+    try { fileResult = await createContentSectorsAutoSized(fileArgs, targetSectorBytes); }
     catch (e) { throw new Error(`Encoding file "${fslug}" failed: ${e.message}`); }
-    encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: sectors[0].partMeta.cacheId, sectors, description: fdesc });
+    encodedFiles.push({ slug: fslug, mimeType: fmime, fileId: fileResult.cacheId, codes: fileResult.codes, description: fdesc });
   }
 
   // Build related list
@@ -2995,7 +2999,7 @@ const updatePaperEstimate = debounce(async () => {
   if (!el) return;
   try {
     const plan = await computePaperSectorPlan();
-    const total = plan.encodedFiles.reduce((sum, f) => sum + (f.sectors ? f.sectors.length : 1), 0) + plan.paper.sectors.length;
+    const total = plan.encodedFiles.reduce((sum, f) => sum + (f.codes ? f.codes.length : 1), 0) + plan.paper.sectors.length;
     if (seq === paperEstimateSeq) showEstimate(el, describeQrCountEstimate(total), false);
   } catch (e) {
     if (seq === paperEstimateSeq) showEstimate(el, e.message, true);
@@ -3109,53 +3113,40 @@ async function generatePaper() {
       continue;
     }
 
-    const fCount = f.sectors.length;
-    if (fCount > 1) {
-      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.sectors[0].partMeta.totalBytes} bytes
-        — split into ${fCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
+    // Parity, when requested, is already baked into f.codes as a trailing isParity
+    // code (createContentSectors' Split Wrapper) — no separate post-hoc parity step.
+    const fDataCount = f.codes.filter(c => !c.isParity).length;
+    if (fDataCount > 1) {
+      msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" is ${f.codes[0].totalBytes} bytes
+        — split into ${fDataCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
     }
-    for (const sector of f.sectors) {
-      const enc = encodeSector(sector);
-      const qrData = (fCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
-      const fLabel = fCount > 1 ? `${f.slug} — sector ${sector.partMeta.sectorIndex + 1}/${fCount}` : f.slug;
-      const fSub = fCount > 1
+    for (const code of f.codes) {
+      const enc = encodeCode(code);
+      const qrData = (fDataCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
+      const idSuffix = code.isParity ? 'parity' : `sector${code.index + 1}`;
+      const fLabel = code.isParity ? `${f.slug} — parity`
+        : (fDataCount > 1 ? `${f.slug} — sector ${code.index + 1}/${fDataCount}` : f.slug);
+      const fSub = fDataCount > 1
         ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
         : f.mimeType;
-      const fId = fCount > 1 ? `${fIdHex}-sector${sector.partMeta.sectorIndex + 1}` : fIdHex;
-      const fItem = makeQrItem(fLabel, fSub, fId, enc.uri, sector.partMeta.sectorIndex === 0 ? homeBadge : null, qrData);
+      const fId = fDataCount > 1 ? `${fIdHex}-${idSuffix}` : fIdHex;
+      const fItem = code.isParity
+        ? makeQrItem(fLabel, fSub, fId, enc.uri, 'parity', qrData, 'parity')
+        : makeQrItem(fLabel, fSub, fId, enc.uri, code.index === 0 ? homeBadge : null, qrData);
       grid.appendChild(fItem.div);
-      if (fCount === 1 && enc.uri.length > MAX_URI_LENGTH)
+      if (fDataCount === 1 && enc.uri.length > MAX_URI_LENGTH)
         msgs.innerHTML += `<div class="warn">"${escHtml(f.slug)}" URI is ${enc.uri.length} chars — try enabling compression.</div>`;
       try {
         await renderQr(fItem.qrDiv, qrData);
         paperBulkItems.push({
-          filename: `tagdrop-${slugifyForFilename(f.slug + (fCount > 1 ? `-sector${sector.partMeta.sectorIndex + 1}` : ''))}-${fIdHex}.png`,
+          filename: `tagdrop-${slugifyForFilename(f.slug + (fDataCount > 1 ? `-${idSuffix}` : ''))}-${fIdHex}.png`,
           qrData,
-          caption: fCount > 1 ? `${f.slug} sector ${sector.partMeta.sectorIndex + 1}/${fCount}` : `${f.slug} (${f.mimeType})`,
+          caption: code.isParity ? `${f.slug} (parity)`
+            : (fDataCount > 1 ? `${f.slug} sector ${code.index + 1}/${fDataCount}` : `${f.slug} (${f.mimeType})`),
         });
       } catch(e) {
         fItem.div.querySelector('.action-row')?.remove();
-        fItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed${fCount > 1 ? ` for sector ${sector.partMeta.sectorIndex + 1}` : ' — content too large for a single QR code'}.</div>`);
-      }
-    }
-    if (fCount > 1 && addParity) {
-      const parity = paritySector(f.sectors);
-      const enc = encodeSector(parity);
-      const qrData = useBinarySectors ? enc.raw : enc.uri;
-      const pSub = useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`;
-      const pId = `${fIdHex}-parity`;
-      const pItem = makeQrItem(`${f.slug} — parity`, pSub, pId, enc.uri, 'parity', qrData, 'parity');
-      grid.appendChild(pItem.div);
-      try {
-        await renderQr(pItem.qrDiv, qrData);
-        paperBulkItems.push({
-          filename: `tagdrop-${slugifyForFilename(f.slug + '-parity')}-${fIdHex}.png`,
-          qrData,
-          caption: `${f.slug} (parity)`,
-        });
-      } catch(e) {
-        pItem.div.querySelector('.action-row')?.remove();
-        pItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed for parity sector.</div>`);
+        fItem.div.insertAdjacentHTML('beforeend', `<div class="err">Render failed${code.isParity ? ' for parity sector' : (fDataCount > 1 ? ` for sector ${code.index + 1}` : ' — content too large for a single QR code')}.</div>`);
       }
     }
   }
