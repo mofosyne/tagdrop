@@ -100,6 +100,10 @@ function cborValue(out, v) {
   else if (typeof v === 'string') {
     const b = Buffer.from(v, 'utf8');
     writeHead(out, 3, b.length); b.forEach(x => out.push(x));
+  } else if (v && v.__map) {
+    const pairs = v.pairs.filter(([, x]) => x !== null && x !== undefined);
+    writeHead(out, 5, pairs.length);
+    pairs.forEach(([k, x]) => { writeHead(out, 0, k); cborValue(out, x); });
   } else if (Array.isArray(v)) {
     writeHead(out, 4, v.length); v.forEach(item => cborValue(out, item));
   } else if (typeof v === 'object') {
@@ -569,6 +573,23 @@ async function testMultiCode(label, { hint, filename, mimeType, rawBytes, compre
 // ── Paper QDEF Record encode (SPEC §3.3-§3.4) ────────────────────────────
 const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([1, 31, 33, 35]);
 const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]);
+// Paper files[]/related[] entry keys (SPEC §3.4 — int-keyed sub-maps)
+const KF = { SLUG: 1, MIME: 2, FILE_ID: 3, DESCRIPTION: 4, PIXEL_ART: 5 };
+
+// CBOR byte string wrapping a CBOR array (SPEC §3.4 field-value-shape rule)
+function cborArrayBytes(items) {
+  const inner = [];
+  writeHead(inner, 4, items.length);
+  items.forEach(item => cborValue(inner, item));
+  const innerBytes = new Uint8Array(inner);
+  const out = [];
+  writeHead(out, 2, innerBytes.length);
+  innerBytes.forEach(b => out.push(b));
+  return new Uint8Array(out);
+}
+
+// Nested map (inside an array value)
+function subMap(pairs) { return { __map: true, pairs }; }
 
 function buildPaperPreview(f) {
   return cborRecord(TYPE_PAPER_PREVIEW, {
@@ -632,7 +653,11 @@ async function createPaper({ hint, files, related, collectionId, maxCodeDataByte
   let preview = buildPaperPreview({
     rootHash: rootHashPlaceholder, hint, collectionId, files: files.length,
   });
-  const bodyPlainBytes = buildPaperBody({ files, related });
+  // Encode files[] as byte string of int-keyed sub-maps (SPEC §3.4)
+  const filesCbor = cborArrayBytes(files.map(f => subMap([
+    [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.sha256],
+  ])));
+  const bodyPlainBytes = buildPaperBody({ files: filesCbor, related: undefined });
   const bodyPlain = cborDecodeSequencePrefix(bodyPlainBytes, 1).items[0];
   const bodyForWire = await compressWrap(bodyPlainBytes);
 
@@ -721,7 +746,7 @@ async function testPaperSingleCode(label, opts, width) {
     const decodedCodes = [{ raw: rawBytes }];
     const assembled = await assemblePaper(decodedCodes);
     if (toHex(assembled.rootHash) !== toHex(result.rootHash)) return bad(label, 'rootHash mismatch');
-    if (!cborEqual(assembled.bodyPlain[PBK.FILES], result.bodyPlain[PBK.FILES])) return bad(label, 'files mismatch');
+    if (!bytesEqual(assembled.bodyPlain[PBK.FILES], result.bodyPlain[PBK.FILES])) return bad(label, 'files mismatch');
     ok(`${label} (URI ${uri.length} chars, ${width}px, text-mode QR)`);
   } catch (e) { bad(label, e.message); }
 }
@@ -747,7 +772,7 @@ async function testPaperMultiCode(label, opts, width) {
   try {
     const assembled = await assemblePaper(decodedCodes);
     if (toHex(assembled.rootHash) !== toHex(result.rootHash)) return bad(label, 'rootHash mismatch');
-    if (!cborEqual(assembled.bodyPlain[PBK.FILES], result.bodyPlain[PBK.FILES])) return bad(label, 'files mismatch');
+    if (!bytesEqual(assembled.bodyPlain[PBK.FILES], result.bodyPlain[PBK.FILES])) return bad(label, 'files mismatch');
     ok(`${label} assembly + rootHash check`);
   } catch (e) { bad(label, e.message); }
 }

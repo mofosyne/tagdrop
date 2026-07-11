@@ -1610,6 +1610,9 @@ class RecordAssembler {
       if (!bytesEqual((await sha256(wrapped)).slice(0, 8), group.groupId)) {
         return { kind: 'HashMismatch' };
       }
+      if (group.kind === 'paper') {
+        return this._finishPaper(group.preview, group.previewRaw, wrapped);
+      }
       return this._finishBody(group.preview, group.previewRaw, wrapped, group.resolvedOverride);
     }
     const missing = [];
@@ -1721,8 +1724,8 @@ class RecordAssembler {
     const filesRaw = body[PBK.FILES];
     const files = (filesRaw instanceof Uint8Array) ? (() => {
       try {
-        const arr = cborDecodeSequencePrefix(filesRaw, 1);
-        return (Array.isArray(arr) ? arr[0] : []).flatMap(entry => {
+        const { items } = cborDecodeSequencePrefix(filesRaw, 1);
+        return (Array.isArray(items[0]) ? items[0] : []).flatMap(entry => {
           if (!isCborMap(entry)) return [];
           const slug = entry[KF.SLUG], mimeType = entry[KF.MIME], fileId = entry[KF.FILE_ID];
           if (!slug || !mimeType || !fileId) return [];
@@ -1735,8 +1738,8 @@ class RecordAssembler {
     const relatedRaw = body[PBK.RELATED];
     const related = (relatedRaw instanceof Uint8Array) ? (() => {
       try {
-        const arr = cborDecodeSequencePrefix(relatedRaw, 1);
-        return (Array.isArray(arr) ? arr[0] : []).flatMap(entry => {
+        const { items } = cborDecodeSequencePrefix(relatedRaw, 1);
+        return (Array.isArray(items[0]) ? items[0] : []).flatMap(entry => {
           if (!isCborMap(entry)) return [];
           const hint = entry[KR.HINT];
           if (!hint) return [];

@@ -347,6 +347,13 @@ function cborBytesItem(bytes) {
   return new Uint8Array(out);
 }
 
+function cborArrayBytes(items) {
+  const inner = [];
+  writeHead(inner, 4, items.length);
+  items.forEach(item => cborValue(inner, item));
+  return cborBytesItem(new Uint8Array(inner));
+}
+
 function concatBytes(...arrays) {
   const total = arrays.reduce((s, a) => s + a.length, 0);
   const out = new Uint8Array(total);
@@ -1237,12 +1244,12 @@ async function createPaper({ label, set, slug, domain, files, related, descripti
   maxSectorDataBytes = Infinity }) {
 
   // Encode files[] and related[] as CBOR byte strings (SPEC §3.4 — field-value-shape rule).
-  const filesCbor = cborMap(files.map(f => subMap([
+  const filesCbor = cborArrayBytes(files.map(f => subMap([
     [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
     [KF.DESCRIPTION, f.description || null],
     [KF.PIXEL_ART, f.pixelArt || null],
   ])));
-  const relatedCbor = cborMap(related.map(r => subMap([
+  const relatedCbor = cborArrayBytes(related.map(r => subMap([
     [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null],
     [KR.PAPER_ID, r.paperId || null],
     [KR.LAT, r.lat != null ? cfloat(r.lat) : null],
