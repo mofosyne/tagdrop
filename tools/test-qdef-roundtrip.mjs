@@ -333,11 +333,35 @@ function buildContentPreview(f) {
     1: f.cacheId,
     3: f.hint,
     5: f.mimeType,
+    33: f.keyMaterial,
+    35: f.retainKey,
     37: f.encryption,
     45: f.signatureAlgorithm,
     47: f.signerId,
     49: f.signerLabel,
   });
+}
+
+// SPEC.md §2.2 / QDEF-SPEC.md §3.2: even/odd key criticality. TagDrop's own
+// fields are all odd today (§2.2) — nothing here is exercised by ordinary
+// encode/decode of a current-version payload — so this needs its own
+// explicit test rather than falling out of the existing round-trips.
+const KNOWN_KEYS = {
+  CONTENT_PREVIEW: new Set([1, 3, 5, 33, 35, 37, 45, 47, 49]),
+  CONTENT_BODY: new Set([1, 3, 5]),
+  PAPER_PREVIEW: new Set([1, 3, 5, 7, 31, 33, 35]),
+  PAPER_BODY: new Set([1, 3, 5, 7]),
+};
+
+function assertKnownKeys(record, knownKeys, label) {
+  for (const keyStr of Object.keys(record)) {
+    const key = Number(keyStr);
+    if (key === 0 || knownKeys.has(key)) continue;
+    if (key % 2 === 0) {
+      throw new Error(`${label}: unrecognized CRITICAL (even) key ${key} - must abort this Record (QDEF-SPEC.md S3.2)`);
+    }
+    // unrecognized odd key: silently ignored, no action
+  }
 }
 
 function buildContentBody(f) {
@@ -409,8 +433,15 @@ function buildContentPayload({ hint, mimeType, content, maxBodyBytes = 900, spli
   return fragments.map((frag) => Buffer.concat([preview, frag]));
 }
 
+function encodedPreviewBytesFor(typeId, knownKeys, record) {
+  const fields = {};
+  for (const k of knownKeys) if (record[k] !== undefined) fields[k] = record[k];
+  return encodeRecordWithTypeId(typeId, fields);
+}
+
 function decodeContentPayload(codes) {
   let preview;
+  let previewBytesForComparison;
   const fragmentRecords = [];
   let plainBodyBytes = null;
 
@@ -419,6 +450,15 @@ function decodeContentPayload(codes) {
     assert.equal(items.length, 2, 'each code must carry exactly Preview + one Body-shaped Record');
     const [previewRecord, second] = items;
     assert.equal(previewRecord[0], TYPE.CONTENT_PREVIEW, 'first Record must be Content-Preview');
+    assertKnownKeys(previewRecord, KNOWN_KEYS.CONTENT_PREVIEW, 'Content-Preview');
+
+    // SPEC.md §5.1: Preview MUST be identical on every code in a group —
+    // verify by re-encoding, not just "a Preview was present."
+    const thisPreviewBytes = encodedPreviewBytesFor(TYPE.CONTENT_PREVIEW, KNOWN_KEYS.CONTENT_PREVIEW, previewRecord);
+    if (previewBytesForComparison) {
+      assert.ok(thisPreviewBytes.equals(previewBytesForComparison), 'Preview must be byte-identical on every code in the group');
+    }
+    previewBytesForComparison = thisPreviewBytes;
     preview = previewRecord;
 
     if (second[0] === TYPE.SPLIT) {
@@ -441,6 +481,7 @@ function decodeContentPayload(codes) {
       ? decodeRecord(inflateRawSync(secondRecord[2])).value
       : secondRecord;
   }
+  assertKnownKeys(body, KNOWN_KEYS.CONTENT_BODY, 'Content-Body');
 
   return { preview, body };
 }
@@ -527,6 +568,7 @@ function buildPaperPayload({ hint, set, slug, files, related, maxBodyBytes = 900
 
 function decodePaperPayload(codes) {
   let preview;
+  let previewBytesForComparison;
   const fragmentRecords = [];
   let secondRecord = null;
 
@@ -535,7 +577,15 @@ function decodePaperPayload(codes) {
     assert.equal(items.length, 2, 'each code must carry exactly Preview + one Body-shaped Record');
     const [previewRecord, second] = items;
     assert.equal(previewRecord[0], TYPE.PAPER_PREVIEW, 'first Record must be Paper-Preview');
+    assertKnownKeys(previewRecord, KNOWN_KEYS.PAPER_PREVIEW, 'Paper-Preview');
+
+    const thisPreviewBytes = encodedPreviewBytesFor(TYPE.PAPER_PREVIEW, KNOWN_KEYS.PAPER_PREVIEW, previewRecord);
+    if (previewBytesForComparison) {
+      assert.ok(thisPreviewBytes.equals(previewBytesForComparison), 'Preview must be byte-identical on every code in the group');
+    }
+    previewBytesForComparison = thisPreviewBytes;
     preview = previewRecord;
+
     if (second[0] === TYPE.SPLIT) fragmentRecords.push(second);
     else secondRecord = second;
   }
@@ -550,6 +600,7 @@ function decodePaperPayload(codes) {
       ? decodeRecord(inflateRawSync(secondRecord[2])).value
       : secondRecord;
   }
+  assertKnownKeys(body, KNOWN_KEYS.PAPER_BODY, 'Paper-Body');
 
   // Verify root_hash independently of however this payload happened to be
   // carried (single code, or Split/Compress-wrapped across several) — same
@@ -674,6 +725,110 @@ function testEncryptedContent() {
   return { name: 'encrypted-content-override-map', codes: codes.map((c) => c.toString('hex')) };
 }
 
+function testTamperedFragmentDetected() {
+  // The actual security property SPEC.md §3 states group_id exists for:
+  // "an adversary who substitutes one sector of a multi-sector payload
+  // after the fact... goes undetected [without this check]." Every prior
+  // Split test only ever exercised a *missing* fragment (recovered via
+  // parity) — never a *present but corrupted* one, which is the real
+  // threat the hash check, not the parity check, is what defends against.
+  const bigContent = Buffer.from('y'.repeat(5000), 'utf8');
+  const codes = buildContentPayload({
+    hint: 'tamper test', mimeType: 'text/plain', content: bigContent,
+    maxBodyBytes: 10, compress: true,
+  });
+  assert.ok(codes.length > 2, 'need at least two data fragments plus parity to isolate one non-parity fragment');
+
+  const code = codes[1];
+  const previewItem = decodeItem(code, 0);
+  const rawPreviewBytes = code.subarray(0, previewItem.next);
+  const fragmentItem = decodeItem(code, previewItem.next);
+  const fragmentRecord = fragmentItem.value;
+  assert.equal(fragmentRecord[0], TYPE.SPLIT);
+
+  // Flip one bit in the fragment's data, leaving its declared group_id (key
+  // 2) field untouched — the tamper must be caught by recomputing the hash
+  // from the actual reassembled bytes, not by comparing declared fields.
+  const tamperedFragmentBytes = Buffer.from(fragmentRecord[8]);
+  tamperedFragmentBytes[0] ^= 0xff;
+  const tamperedFragmentRecordBytes = encodeRecordWithTypeId(TYPE.SPLIT, {
+    2: fragmentRecord[2], 4: fragmentRecord[4], 6: fragmentRecord[6],
+    8: tamperedFragmentBytes, 9: fragmentRecord[9], 11: fragmentRecord[11],
+  });
+  const tamperedCode = Buffer.concat([rawPreviewBytes, tamperedFragmentRecordBytes]);
+  const tamperedCodes = codes.map((c, i) => (i === 1 ? tamperedCode : c));
+
+  assert.throws(
+    () => decodeContentPayload(tamperedCodes),
+    /group_id/,
+    'a tampered (not missing) fragment must be caught by group_id verification, not silently reassembled'
+  );
+
+  return { name: 'tampered-fragment-detected-via-group-id' };
+}
+
+function testTamperedPaperRootHashDetected() {
+  const files = encodeArray([encodeRecord({ 1: 'index', 2: 'text/html', 3: randomBytes(8) })]);
+  const related = encodeArray([]);
+  const codes = buildPaperPayload({ hint: 'Tamper Test Paper', set: 'x', slug: 'y', files, related });
+  assert.equal(codes.length, 1);
+
+  const previewItem = decodeItem(codes[0], 0);
+  const rawPreviewBytes = codes[0].subarray(0, previewItem.next);
+  const bodyItem = decodeItem(codes[0], previewItem.next);
+  const bodyRecord = bodyItem.value;
+
+  const tamperedFiles = encodeArray([encodeRecord({ 1: 'index-RENAMED', 2: 'text/html', 3: randomBytes(8) })]);
+  const tamperedBodyBytes = encodeRecordWithTypeId(TYPE.PAPER_BODY, { 1: tamperedFiles, 3: bodyRecord[3] });
+  const tamperedCode = Buffer.concat([rawPreviewBytes, tamperedBodyBytes]);
+
+  assert.throws(
+    () => decodePaperPayload([tamperedCode]),
+    /root_hash/,
+    'a Body tampered after root_hash was computed must be caught on decode, not silently accepted'
+  );
+
+  return { name: 'tampered-paper-root-hash-detected' };
+}
+
+function testKeyOnlyCode() {
+  // SPEC.md §9 "Decryption keys": a Content-Preview carrying key_material
+  // but no Body at all — a code can be just a key, with nothing of its own
+  // to identify (no cache_id) or display.
+  const keyMaterial = randomBytes(32);
+  const code = buildContentPreview({ keyMaterial, retainKey: false });
+
+  const items = decodeSequence(code);
+  assert.equal(items.length, 1, 'a key-only code carries Preview alone, no Body Record');
+  assert.equal(items[0][0], TYPE.CONTENT_PREVIEW);
+  assert.ok(items[0][33].equals(keyMaterial));
+  assert.equal(items[0][35], false, 'retain_key must round-trip as a real boolean, not a truthy placeholder');
+  assert.equal(items[0][1], undefined, 'a key-only code has no cache_id — nothing of its own to identify');
+
+  return { name: 'key-only-code', codes: [code.toString('hex')] };
+}
+
+function testEvenOddCriticality() {
+  // SPEC.md §2.2 / QDEF-SPEC.md §3.2. Nothing in this file's own field set
+  // exercises this — every TagDrop key defined today is odd — so this
+  // synthesizes a "future" field of each parity to prove the mechanism
+  // itself, not just TagDrop's current (all-odd) usage of it.
+  const withUnknownOdd = encodeRecordWithTypeId(TYPE.CONTENT_PREVIEW, { 1: randomBytes(8), 3: 'hi', 101: 'a future optional field' });
+  const decodedOdd = decodeRecord(withUnknownOdd).value;
+  assertKnownKeys(decodedOdd, KNOWN_KEYS.CONTENT_PREVIEW, 'Content-Preview'); // must not throw
+  assert.equal(decodedOdd[3], 'hi', 'known fields must stay readable alongside an unrecognized odd key');
+
+  const withUnknownEven = encodeRecordWithTypeId(TYPE.CONTENT_PREVIEW, { 1: randomBytes(8), 3: 'hi', 100: 'a future critical field' });
+  const decodedEven = decodeRecord(withUnknownEven).value;
+  assert.throws(
+    () => assertKnownKeys(decodedEven, KNOWN_KEYS.CONTENT_PREVIEW, 'Content-Preview'),
+    /CRITICAL \(even\) key 100/,
+    'an unrecognized even key must abort processing this Record'
+  );
+
+  return { name: 'even-odd-criticality' };
+}
+
 function main() {
   const results = [];
   console.log('QDEF-redesign round-trip prototype (SPEC.md v2)\n');
@@ -685,6 +840,10 @@ function main() {
     testEncryptedContent,
     testSingleCodePaper,
     testMultiCodePaper,
+    testTamperedFragmentDetected,
+    testTamperedPaperRootHashDetected,
+    testKeyOnlyCode,
+    testEvenOddCriticality,
   ]) {
     const label = test.name;
     try {
