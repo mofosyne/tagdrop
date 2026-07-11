@@ -680,6 +680,28 @@ const KEY_NAMES = {
   57: 'step',
 };
 
+// New-format (QDEF Record) field-name tables — keyed by String(typeId) since TagDrop's
+// Type IDs decode as BigInt, which can't be a plain object key. Mirrors ../reader/index.html.
+const RECORD_TYPE_INFO = new Map([
+  [String(TYPE_CONTENT_PREVIEW), { name: 'Content-Preview', keyNames: {
+    0:'type_id', 1:'cache_id', 3:'hint', 5:'mime_type', 7:'filename', 9:'title', 11:'description',
+    13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon', 21:'pixel_art',
+    23:'lat', 25:'lng', 27:'radius_m', 29:'prefer_declared_location', 31:'location_label',
+    33:'key_material', 35:'retain_key', 37:'encryption', 39:'kdf_alg', 41:'kdf_salt', 43:'kdf_iters',
+    45:'signature_algorithm', 47:'signer_id', 49:'signer_label',
+    51:'in_reply_to', 53:'created_at', 55:'source_url',
+  } }],
+  [String(TYPE_CONTENT_BODY), { name: 'Content-Body', keyNames: {
+    0:'type_id', 1:'content', 3:'signature', 5:'signer_pubkey',
+  } }],
+  [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
+    0:'type_id', 2:'group_id', 4:'index', 6:'count', 8:'data', 9:'total_bytes', 11:'parity',
+  } }],
+  [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {
+    0:'type_id', 2:'compressed_payload',
+  } }],
+]);
+
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }
@@ -688,6 +710,34 @@ function toHexDump(bytes) {
 // (plain object) rather than a uint/string/bytes/array/null/bool/float64.
 function isCborMap(v) {
   return v !== null && typeof v === 'object' && !(v instanceof Uint8Array) && !Array.isArray(v);
+}
+
+/** New-format half of describeCbor below: walks a QDEF Record Sequence, naming each
+ *  Record's type and fields per RECORD_TYPE_INFO. Mirrors ../reader/index.html. */
+function describeRecords(bytes) {
+  let out = '';
+  let rest = bytes;
+  let n = 0;
+  while (rest.length > 0) {
+    let record, raw, trailing;
+    try {
+      const decoded = cborDecodeSequencePrefix(rest, 1);
+      record = decoded.items[0];
+      trailing = decoded.trailing;
+      raw = rest.slice(0, rest.length - trailing.length);
+    } catch (e) { record = null; }
+    if (!isCborMap(record) || record[0] == null) {
+      out += 'trailing bytes (not a Record): ' + toHexDump(rest) + '\n';
+      break;
+    }
+    const info = RECORD_TYPE_INFO.get(String(record[0]));
+    out += 'Record ' + (++n) + ': ' + (info ? info.name : 'unknown type ' + record[0]) +
+      ' (' + raw.length + ' bytes)\n';
+    out += describeMap(record, 1, info ? info.keyNames : {});
+    out += '\n';
+    rest = trailing;
+  }
+  return out;
 }
 
 /**
@@ -724,14 +774,17 @@ async function splitReassembledStream(stream) {
 }
 
 /**
- * Pretty-prints a raw TagDrop sector CBOR sequence for the 🔍 Inspect CBOR debug view: a
- * hex dump, the four-item envelope (SPEC §2) with part_meta broken out by field name, and
- * — for a complete single-sector payload — the core_meta_item/bulky_meta_item/content
- * split of its reassembled stream (§4.2). Mirrors Kotlin TagDropCodec.describeCbor /
- * ../generator/index.html's debug view.
+ * Pretty-prints raw TagDrop code bytes for the 🔍 Inspect CBOR debug view: a hex dump,
+ * then — dispatched on the first CBOR item's major type — either the new QDEF Record
+ * Sequence breakdown or the old four-item envelope (SPEC §2, Paper manifests) with
+ * part_meta broken out by field name and, for a complete single-sector payload, the
+ * core_meta_item/bulky_meta_item/content split of its reassembled stream.
  */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  if (bytes.length > 0 && (bytes[0] >> 5) === 5) {
+    return out + describeRecords(bytes);
+  }
   try {
     const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
     if (items.length < 4) throw new Error('Expected version, type, part_meta, sector_bytes — got ' + items.length + ' item(s)');

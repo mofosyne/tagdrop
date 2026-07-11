@@ -732,6 +732,10 @@ function stripTrailingKeys(mapBytes, trailingKeysToStrip) {
     if (info === 24) return rb();
     if (info === 25) return rb() * 256 + rb();
     if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    // 8-byte argument: a uint64, or a float64's raw payload (major 7) — either way,
+    // consume the 8 bytes here so skipValue needs no float special case. Without this,
+    // any map containing a float64 value (e.g. related[]'s lat/lng) threw mid-skip.
+    if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
   function skipValue() {
@@ -739,8 +743,8 @@ function stripTrailingKeys(mapBytes, trailingKeysToStrip) {
     if (major === 2 || major === 3) { pos += a; }
     else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
     else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
-    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
-    // major 0 (uint) and other major-7 simple values (true/false/null) carry no extra bytes.
+    // major 0/1/7 carry no payload beyond the argument readArg already consumed
+    // (including a float64's 8 bytes, per readArg's info-27 case above).
   }
   const head = rb();
   if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
@@ -805,6 +809,9 @@ function stripKeys(mapBytes, keysToStrip) {
     if (info === 24) return rb();
     if (info === 25) return rb() * 256 + rb();
     if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    // 8-byte argument: a uint64, or a float64's raw payload (major 7) — either way,
+    // consume the 8 bytes here so skipValue needs no float special case (a separate
+    // `pos += 8` for floats on top of this would double-skip).
     if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
@@ -813,7 +820,8 @@ function stripKeys(mapBytes, keysToStrip) {
     if (major === 2 || major === 3) { pos += a; }
     else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
     else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
-    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
+    // major 0/1/7 carry no payload beyond the argument readArg already consumed
+    // (including a float64's 8 bytes, per readArg's info-27 case above).
   }
   const head = rb();
   if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
