@@ -321,6 +321,7 @@ const PPK = {
   SIGNATURE_ALGORITHM: 31, SIGNER_ID: 33, SIGNER_LABEL: 35,
   IN_REPLY_TO: 37, CREATED_AT: 39, SOURCE_URL: 41,
   TITLE: 43, DESCRIPTION: 45,
+  KEY_MATERIAL: 47, RETAIN_KEY: 49,
 };
 // Paper-Body keys (SPEC §3.4)
 const PBK = { FILES: 1, RELATED: 3, SIGNATURE: 5, SIGNER_PUBKEY: 7 };
@@ -602,6 +603,7 @@ function buildPaperPreview(f) {
     31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
     37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
     43: f.title, 45: f.description,
+    47: f.keyMaterial, 49: f.retainKey,
   });
 }
 function buildPaperBody(f) {

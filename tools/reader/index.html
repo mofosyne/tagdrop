@@ -623,6 +623,7 @@ const PPK = {
   LAT:21, LNG:23, RADIUS_M:25, PREFER_DECLARED_LOCATION:27, LOCATION_LABEL:29,
   SIGNATURE_ALGORITHM:31, SIGNER_ID:33, SIGNER_LABEL:35,
   IN_REPLY_TO:37, CREATED_AT:39, SOURCE_URL:41, TITLE:43, DESCRIPTION:45,
+  KEY_MATERIAL:47, RETAIN_KEY:49,
 };
 // Paper-Body's field keys (SPEC.md §3.4).
 const PBK = { FILES:1, RELATED:3, SIGNATURE:5, SIGNER_PUBKEY:7 };
@@ -1205,6 +1206,8 @@ function parsePaperPreviewFields(record) {
     sourceUrl:       record[PPK.SOURCE_URL] ?? null,
     title:           record[PPK.TITLE] ?? null,
     description:     record[PPK.DESCRIPTION] ?? null,
+    keyMaterial:     record[PPK.KEY_MATERIAL] ?? null,
+    retainKey:       record[PPK.RETAIN_KEY] !== false,
   };
 }
 
@@ -1786,6 +1789,8 @@ class RecordAssembler {
       signerLabel:     preview.signerLabel ?? null,
       signature:       body[PBK.SIGNATURE] ?? null,
       signerPubkey:    body[PBK.SIGNER_PUBKEY] ?? null,
+      keyMaterial:     preview.keyMaterial ?? null,
+      retainKey:       preview.retainKey !== false,
       verification,
     };
     return { kind: 'PaperReady', paper, streamBytes: null };

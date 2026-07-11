@@ -809,6 +809,7 @@ function buildPaperPreview(f) {
     31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
     37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
     43: f.title, 45: f.description,
+    47: f.keyMaterial, 49: f.retainKey,
   });
 }
 function buildPaperBody(f) {
@@ -1927,6 +1928,8 @@ async function createPaper({ label, set, slug, domain, files, related, descripti
     lat, lng, radiusM, preferDeclaredLocation, locationLabel,
     inReplyTo, title, createdAt,
     signatureAlgorithm, signerId, signerLabel,
+    keyMaterial: keyMaterial || undefined,
+    retainKey: (keyMaterial && !retainKey) ? false : undefined,
   });
   const bodyPlain = buildPaperBody({ files: filesCbor, related: relatedCbor, signature, signerPubkey });
 
@@ -1941,6 +1944,8 @@ async function createPaper({ label, set, slug, domain, files, related, descripti
     lat, lng, radiusM, preferDeclaredLocation, locationLabel,
     inReplyTo, title, createdAt,
     signatureAlgorithm, signerId, signerLabel,
+    keyMaterial: keyMaterial || undefined,
+    retainKey: (keyMaterial && !retainKey) ? false : undefined,
   });
 
   // Compress/split the Body for wire (same pattern as createContentSectors).

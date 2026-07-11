@@ -227,6 +227,8 @@ Always plain, unwrapped, present on every code carrying this payload
 | 41 | `source_url` | text (opt) | See §17 |
 | 43 | `title` | text (opt) | |
 | 45 | `description` | text (opt) | |
+| 47 | `key_material` | bytes (32, opt) | Decryption key for other content (§9) — **Note: uses key 47 here, not key 33 as on Content-Preview.** Paper-Preview's key 33 is `signer_id` (§10), so `key_material`/`retain_key` occupy the next available odd slots (47/49) to avoid collision. See §9 for the full encryption design. |
+| 49 | `retain_key` | bool (opt, default `true`) | Whether the app should remember `key_material` across sessions (§9) |
 
 ### 3.4 Paper-Body (Type `3662944544912906201`)
 
@@ -1240,8 +1242,20 @@ the code has no hidden override map.
 | Key | Field | Type | Lives in |
 |---|---|---|---|
 | 37 | `encryption` | uint (opt) | Content-Preview only |
-| 33 | `key_material` | bytes (32, opt) | Content-Preview or Paper-Preview, or a `related` entry (local key 8) |
+| 33 | `key_material` | bytes (32, opt) | Content-Preview (key 33) or a `related` entry (local key 8) |
 | 35 | `retain_key` | bool (opt, default `true`) | wherever `key_material` appears |
+
+**Paper-Preview note:** Paper-Preview's key 33 is `signer_id` (§10), not
+`key_material`. To avoid collision, Paper-Preview uses key 47 for
+`key_material` and key 49 for `retain_key` (see §3.3). The semantics are
+identical — the same "try this key against everything cached" design
+applies — only the key numbers differ. This is because Content-Preview and
+Paper-Preview have independent key namespaces (CBOR map keys are scoped
+per-map), so key 33 in one record type does not conflict with key 33 in
+another; the different numbering is a consequence of Paper-Preview
+allocating keys 31/33/35 for its own signing fields (`signature_algorithm`/
+`signer_id`/`signer_label`), which Content-Preview places at 45/47/49
+instead.
 
 The GCM nonce travels embedded in the override map's ciphertext itself
 (below), so there's simply nothing nonce-shaped in Content-Preview at all —
@@ -1358,7 +1372,8 @@ used directly with no passphrase or key-derivation step. It can appear:
 
 - in any payload's Preview, Content or Paper, as a top-level field — "this
   code also carries a key for other content," independent of whatever
-  `content` (if any) the code itself carries; or
+  `content` (if any) the code itself carries (Content-Preview key 33,
+  Paper-Preview key 47 — see note in the table above); or
 - on an element of a Paper's `related` array (local key 8, §3.4) —
   "scanning this paper reveals a key for the related paper," for trails
   meant to be discovered in sequence.
