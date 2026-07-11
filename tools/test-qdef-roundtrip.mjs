@@ -21,7 +21,7 @@
  *   node test-qdef-roundtrip.mjs
  */
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -333,6 +333,7 @@ function buildContentPreview(f) {
     1: f.cacheId,
     3: f.hint,
     5: f.mimeType,
+    37: f.encryption,
     45: f.signatureAlgorithm,
     47: f.signerId,
     49: f.signerLabel,
@@ -499,6 +500,69 @@ function testMultiCodeContentSplitCompressParity() {
   };
 }
 
+// ── General Paper builder/decoder, mirroring buildContentPayload/decodeContentPayload ──
+
+function buildPaperPayload({ hint, set, slug, files, related, maxBodyBytes = 900, split = false, compress = false }) {
+  const bodyNoSig = buildPaperBody({ files, related });
+  const bodyForWire = compress ? compressWrap(bodyNoSig) : bodyNoSig;
+
+  // root_hash placeholder-then-strip discipline (SPEC.md §4.4/§10): hash
+  // Preview' (no root_hash) || Body' (logical, pre-compression, no sig
+  // fields — none present yet in this prototype's Paper builder anyway),
+  // THEN fill root_hash into the real Preview.
+  const previewNoHash = buildPaperPreview({ hint, set, slug });
+  const rootHash = sha256(Buffer.concat([previewNoHash, bodyNoSig])).subarray(0, 8);
+  const preview = buildPaperPreview({ rootHash, hint, set, slug });
+
+  const needsSplit = split || bodyForWire.length > maxBodyBytes;
+  if (!needsSplit) {
+    return [Buffer.concat([preview, bodyForWire])];
+  }
+
+  const fragmentCount = Math.ceil(bodyForWire.length / maxBodyBytes);
+  const groupId = sha256(bodyForWire).subarray(0, 8);
+  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, true);
+  return fragments.map((frag) => Buffer.concat([preview, frag]));
+}
+
+function decodePaperPayload(codes) {
+  let preview;
+  const fragmentRecords = [];
+  let secondRecord = null;
+
+  for (const code of codes) {
+    const items = decodeSequence(code);
+    assert.equal(items.length, 2, 'each code must carry exactly Preview + one Body-shaped Record');
+    const [previewRecord, second] = items;
+    assert.equal(previewRecord[0], TYPE.PAPER_PREVIEW, 'first Record must be Paper-Preview');
+    preview = previewRecord;
+    if (second[0] === TYPE.SPLIT) fragmentRecords.push(second);
+    else secondRecord = second;
+  }
+
+  let body;
+  if (fragmentRecords.length > 0) {
+    const groupId = fragmentRecords[0][2];
+    const reassembled = reassembleSplit(fragmentRecords, groupId);
+    body = resolveNonSplitWrapperStack(reassembled);
+  } else {
+    body = secondRecord[0] === TYPE.COMPRESS
+      ? decodeRecord(inflateRawSync(secondRecord[2])).value
+      : secondRecord;
+  }
+
+  // Verify root_hash independently of however this payload happened to be
+  // carried (single code, or Split/Compress-wrapped across several) — same
+  // recomputation the placeholder-then-strip discipline requires at build
+  // time, now run in reverse.
+  const previewNoHash = buildPaperPreview({ hint: preview[3], set: preview[5], slug: preview[7] });
+  const bodyNoSig = buildPaperBody({ files: body[1], related: body[3] });
+  const recomputedRootHash = sha256(Buffer.concat([previewNoHash, bodyNoSig])).subarray(0, 8);
+  assert.ok(preview[1].equals(recomputedRootHash), "root_hash must match the recomputed Preview'||Body' hash");
+
+  return { preview, body };
+}
+
 function testSingleCodePaper() {
   const files = encodeArray([
     encodeRecord({ 1: 'index', 2: 'text/html', 3: randomBytes(8) }),
@@ -506,31 +570,122 @@ function testSingleCodePaper() {
   ]);
   const related = encodeArray([encodeRecord({ 1: 'Next stop: the red letterbox', 2: 'sunset-trail', 10: 4 })]);
 
-  // root_hash placeholder-then-strip discipline (SPEC.md §4.4/§10)
-  const bodyNoSig = buildPaperBody({ files, related });
-  const previewNoHashNoSig = buildPaperPreview({ hint: 'Trail Stop 3', set: 'sunset-trail', slug: 'oak-tree' });
-  const rootHash = sha256(Buffer.concat([previewNoHashNoSig, bodyNoSig])).subarray(0, 8);
+  const codes = buildPaperPayload({ hint: 'Trail Stop 3', set: 'sunset-trail', slug: 'oak-tree', files, related });
+  assert.equal(codes.length, 1, 'small paper must fit one code');
 
-  const preview = buildPaperPreview({ rootHash, hint: 'Trail Stop 3', set: 'sunset-trail', slug: 'oak-tree' });
-  const body = bodyNoSig;
-  const codes = [Buffer.concat([preview, body])];
-
-  const items = decodeSequence(codes[0]);
-  assert.equal(items[0][0], TYPE.PAPER_PREVIEW);
-  assert.equal(items[1][0], TYPE.PAPER_BODY);
-  assert.ok(items[0][1].equals(rootHash));
-  const decodedFiles = decodeItem(items[1][1], 0).value;
+  const { preview, body } = decodePaperPayload(codes);
+  assert.equal(preview[3], 'Trail Stop 3');
+  const decodedFiles = decodeItem(body[1], 0).value;
   assert.equal(decodedFiles.length, 2);
   assert.equal(decodedFiles[0][1], 'index');
 
-  return { name: 'single-code-paper', rootHash: rootHash.toString('hex'), codes: codes.map((c) => c.toString('hex')) };
+  return { name: 'single-code-paper', rootHash: preview[1].toString('hex'), codes: codes.map((c) => c.toString('hex')) };
+}
+
+function testMultiCodePaper() {
+  const files = encodeArray(
+    Array.from({ length: 60 }, (_, i) =>
+      encodeRecord({ 1: `file-${i}`, 2: 'text/plain', 3: randomBytes(8), 4: `Teaser for file ${i}` }))
+  );
+  const related = encodeArray([
+    encodeRecord({ 1: 'Next stop: the red letterbox', 2: 'sunset-trail', 10: 4 }),
+    encodeRecord({ 1: 'Start of trail: town square', 2: 'sunset-trail', 10: 1 }),
+  ]);
+
+  const codes = buildPaperPayload({
+    hint: 'Trail Stop 3 — the big one', set: 'sunset-trail', slug: 'oak-tree',
+    files, related, maxBodyBytes: 900, compress: true,
+  });
+  assert.ok(codes.length > 1, '60 files must not fit one code even compressed');
+
+  // Preview repeated on every code (SPEC.md §5.1) — verify identically, not just "present"
+  const previews = codes.map((c) => decodeSequence(c)[0]);
+  const firstPreviewBytes = encodeRecordWithTypeId(TYPE.PAPER_PREVIEW, { 1: previews[0][1], 3: previews[0][3], 5: previews[0][5], 7: previews[0][7] });
+  for (const p of previews.slice(1)) {
+    const pBytes = encodeRecordWithTypeId(TYPE.PAPER_PREVIEW, { 1: p[1], 3: p[3], 5: p[5], 7: p[7] });
+    assert.ok(pBytes.equals(firstPreviewBytes), 'Preview must be byte-identical on every code in the group');
+  }
+
+  const { preview, body } = decodePaperPayload(codes);
+  assert.equal(preview[3], 'Trail Stop 3 — the big one');
+  const decodedFiles = decodeItem(body[1], 0).value;
+  assert.equal(decodedFiles.length, 60);
+  assert.equal(decodedFiles[59][1], 'file-59');
+
+  return { name: 'multi-code-paper', codeCount: codes.length, rootHash: preview[1].toString('hex'), codes: codes.map((c) => c.toString('hex')) };
+}
+
+function testEncryptedContent() {
+  // SPEC.md §9: a hidden, encrypted override map, discovered by trial
+  // decryption — never declared, never assumed absent from an `encryption`
+  // hint. Real AES-256-GCM here (unlike signing's mock bytes), since
+  // Node's crypto module makes that free — no reason to fake this one.
+  const keyMaterial = randomBytes(32);
+  const realContent = Buffer.from('the real secret map location');
+  const overrideMap = encodeRecord({ 1: 'treasure map', 3: 'image/png', 5: realContent, 7: 'map.png' });
+  const compressedOverride = deflateRawSync(overrideMap);
+
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', keyMaterial, nonce);
+  const ciphertext = Buffer.concat([cipher.update(compressedOverride), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const blob = Buffer.concat([nonce, ciphertext, tag]);
+
+  // cache_id MUST be random, not content-addressed, whenever a hidden
+  // override map might be present (§4.4/§9) — using the cover story's own
+  // hash here would leak whether the "real" content matches a known
+  // cache_id, defeating the whole point.
+  const cacheId = randomBytes(8);
+  const coverHint = 'just a locked note';
+  const preview = buildContentPreview({ cacheId, hint: coverHint, mimeType: 'text/plain', encryption: 1 });
+  const body = buildContentBody({ content: blob });
+  const codes = [Buffer.concat([preview, body])];
+
+  // Cover story is what's visible without the key.
+  const items = decodeSequence(codes[0]);
+  assert.equal(items[0][3], coverHint, 'cover hint must be visible with no key present');
+
+  // Trial decryption (§9 "Discovery, not declaration") — try the candidate
+  // blob against a known key_material; a wrong key must fail the GCM
+  // authentication tag, not silently produce garbage plaintext.
+  const candidateBlob = items[1][1];
+  const candidateNonce = candidateBlob.subarray(0, 12);
+  const rest = candidateBlob.subarray(12);
+  const candidateTag = rest.subarray(rest.length - 16);
+  const candidateCiphertext = rest.subarray(0, rest.length - 16);
+
+  const wrongKey = randomBytes(32);
+  assert.throws(() => {
+    const wrongDecipher = createDecipheriv('aes-256-gcm', wrongKey, candidateNonce);
+    wrongDecipher.setAuthTag(candidateTag);
+    Buffer.concat([wrongDecipher.update(candidateCiphertext), wrongDecipher.final()]);
+  }, /auth/i, 'a wrong key_material MUST fail GCM authentication, not silently decrypt to garbage');
+
+  const decipher = createDecipheriv('aes-256-gcm', keyMaterial, candidateNonce);
+  decipher.setAuthTag(candidateTag);
+  const decompressed = inflateRawSync(Buffer.concat([decipher.update(candidateCiphertext), decipher.final()]));
+  const overrideDecoded = decodeRecord(decompressed).value;
+
+  assert.equal(overrideDecoded[1], 'treasure map');
+  assert.equal(overrideDecoded[3], 'image/png');
+  assert.ok(overrideDecoded[5].equals(realContent), 'override map content must survive compress+encrypt+decrypt+decompress exactly');
+  assert.equal(overrideDecoded[7], 'map.png');
+
+  return { name: 'encrypted-content-override-map', codes: codes.map((c) => c.toString('hex')) };
 }
 
 function main() {
   const results = [];
   console.log('QDEF-redesign round-trip prototype (SPEC.md v2)\n');
 
-  for (const test of [testSingleCodeContent, testSingleCodeSignedContent, testMultiCodeContentSplitCompressParity, testSingleCodePaper]) {
+  for (const test of [
+    testSingleCodeContent,
+    testSingleCodeSignedContent,
+    testMultiCodeContentSplitCompressParity,
+    testEncryptedContent,
+    testSingleCodePaper,
+    testMultiCodePaper,
+  ]) {
     const label = test.name;
     try {
       const result = test();
