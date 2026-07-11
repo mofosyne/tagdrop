@@ -683,15 +683,18 @@ function cborBytesItem(bytes) {
   return new Uint8Array(out);
 }
 
-// A CBOR byte string (major type 2) wrapping a CBOR array (major type 4).
-// Used for Paper-Body's files/related fields (SPEC §3.4 — field-value-shape
-// rule: sub-maps live inside a byte-string-encoded CBOR array, not bare at
-// the Record level).
+// The raw major-4 CBOR array encoding of `items` — used for Paper-Body's
+// files/related fields (SPEC §3.4 — field-value-shape rule: sub-maps live
+// inside a byte-string-encoded CBOR array, not bare at the Record level).
+// Returns the array's bytes UNWRAPPED: this becomes a map field's *value* via
+// cborFieldMap's own cborValue(out, v) call, whose Uint8Array branch already
+// wraps any Uint8Array as a byte string — wrapping here too (e.g. via
+// cborBytesItem) would double that header and corrupt files/related on decode.
 function cborArrayBytes(items) {
   const inner = [];
   writeHead(inner, 4, items.length);
   items.forEach(item => cborValue(inner, item));
-  return cborBytesItem(new Uint8Array(inner));
+  return new Uint8Array(inner);
 }
 
 function concatBytes(...arrays) {

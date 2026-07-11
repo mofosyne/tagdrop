@@ -1793,7 +1793,7 @@ class RecordAssembler {
       retainKey:       preview.retainKey !== false,
       verification,
     };
-    return { kind: 'PaperReady', paper, streamBytes: null };
+    return { kind: 'PaperReady', paper, streamBytes: null, verification };
   }
 }
 

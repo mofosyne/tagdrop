@@ -577,16 +577,16 @@ const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]);
 // Paper files[]/related[] entry keys (SPEC §3.4 — int-keyed sub-maps)
 const KF = { SLUG: 1, MIME: 2, FILE_ID: 3, DESCRIPTION: 4, PIXEL_ART: 5 };
 
-// CBOR byte string wrapping a CBOR array (SPEC §3.4 field-value-shape rule)
+// The raw major-4 CBOR array encoding of `items` (SPEC §3.4 field-value-shape
+// rule: files/related travel as a byte string wrapping this array) — returned
+// UNWRAPPED, since this becomes a map field's *value* via cborFieldMap's own
+// cborValue(out, v), whose Uint8Array branch already wraps any Uint8Array as
+// a byte string; wrapping here too would double that header.
 function cborArrayBytes(items) {
   const inner = [];
   writeHead(inner, 4, items.length);
   items.forEach(item => cborValue(inner, item));
-  const innerBytes = new Uint8Array(inner);
-  const out = [];
-  writeHead(out, 2, innerBytes.length);
-  innerBytes.forEach(b => out.push(b));
-  return new Uint8Array(out);
+  return new Uint8Array(inner);
 }
 
 // Nested map (inside an array value)

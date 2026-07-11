@@ -347,11 +347,15 @@ function cborBytesItem(bytes) {
   return new Uint8Array(out);
 }
 
+// Returns the raw major-4 array encoding, UNWRAPPED — this becomes a map
+// field's *value* via cborFieldMap's own cborValue(out, v), whose Uint8Array
+// branch already wraps any Uint8Array as a byte string; wrapping here too
+// (e.g. via cborBytesItem) would double that header. Mirrors ../generator/index.html.
 function cborArrayBytes(items) {
   const inner = [];
   writeHead(inner, 4, items.length);
   items.forEach(item => cborValue(inner, item));
-  return cborBytesItem(new Uint8Array(inner));
+  return new Uint8Array(inner);
 }
 
 function concatBytes(...arrays) {
@@ -738,6 +742,17 @@ const RECORD_TYPE_INFO = new Map([
   } }],
   [String(TYPE_CONTENT_BODY), { name: 'Content-Body', keyNames: {
     0:'type_id', 1:'content', 3:'signature', 5:'signer_pubkey',
+  } }],
+  [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
+    0:'type_id', 1:'root_hash', 3:'hint', 5:'set', 7:'slug', 9:'domain', 11:'step',
+    13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon',
+    21:'lat', 23:'lng', 25:'radius_m', 27:'prefer_declared_location', 29:'location_label',
+    31:'signature_algorithm', 33:'signer_id', 35:'signer_label',
+    37:'in_reply_to', 39:'created_at', 41:'source_url', 43:'title', 45:'description',
+    47:'key_material', 49:'retain_key',
+  } }],
+  [String(TYPE_PAPER_BODY), { name: 'Paper-Body', keyNames: {
+    0:'type_id', 1:'files', 3:'related', 5:'signature', 7:'signer_pubkey',
   } }],
   [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
     0:'type_id', 2:'group_id', 4:'index', 6:'count', 8:'data', 9:'total_bytes', 11:'parity',
