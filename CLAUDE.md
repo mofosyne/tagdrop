@@ -6,20 +6,25 @@ Android build setup see `DEVELOPING.md`.
 
 ## Two parallel wire-format implementations
 
-The `tagdrop:<base41-cbor-sequence>` encoding (Base41 + CBOR-sequence
-envelope + DEFLATE, see `SPEC.md`) is implemented **independently twice**:
+TagDrop has two independent codec implementations, each handling both
+Content and Paper payloads:
 
 1. **Kotlin (Android app)** — `app/src/main/java/.../data/format/`
    (`Base41.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
    implementation; `app/src/test/.../TagDropCodecTest.kt` is the most
-   thorough test suite.
+   thorough test suite. Currently on **version 1** wire format (4-item
+   CBOR envelope) for both Content and Paper — the QDEF Record port for
+   Content is the next major piece of work.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
    `tools/examples/index.html` (encode side), `tools/reader/index.html`
    (decode side). SHA-256 via `crypto.subtle`, DEFLATE via
-   `CompressionStream`/`DecompressionStream`.
+   `CompressionStream`/`DecompressionStream`. Content encoding/decoding
+   has been **ported to version 2** QDEF Records (Preview/Body split,
+   Compress Wrapper, Split Wrapper). Paper encoding/decoding still uses
+   **version 1** envelope format (intentionally deferred).
 
-When SPEC.md changes (e.g. the CBOR-sequence envelope refactor done in an
-earlier session), **both** need updating and re-verifying, or they silently
+When SPEC.md changes (e.g. the QDEF Record redesign done in an earlier
+session), **both** need updating and re-verifying, or they silently
 drift apart. There's currently no automated cross-check between them —
 verification has so far been manual (decode every URI in
 `tools/examples/index.html` and check version/type/fields match).
@@ -81,17 +86,22 @@ Layout tab doesn't have one yet either (only its Single File tab does).
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
 `base41Decode`), CBOR (`writeHead`/`cborValue`/`cborMap`/`cborUInt`/
-`cborBytesItem`/`cborDecodeSequencePrefix`/etc.), sector framing
-(`sectorCbor`/`encodeSector`/`sectorize`/`buildStream`/
-`splitReassembledStream`), crypto (`encryptAesGcm`/`encryptOverrideMap`/
-`deriveKeyFromPassphrase`/`generateKeyMaterial`), and the sector builders
+`cborBytesItem`/`cborDecodeSequencePrefix`/etc.), QDEF Record builders
+(`cborFieldMap`/`cborRecord`/`compressWrap`/`splitFragments`/
+`buildContentPreview`/`buildContentBody`/`encodeCode`/`stripKeys`/
+`contentSignedMessageHash`), old-format sector framing
+(`sectorCbor`/`encodeSector`/`sectorize`/`splitReassembledStream`),
+crypto (`encryptAesGcm`/`encryptOverrideMap`/`deriveKeyFromPassphrase`/
+`generateKeyMaterial`), and the sector builders
 (`createContentSectors`/`createContentSectorsAutoSized`/
 `createKeyCodeSector`/`buildPaperStream`/`createPaper`/
 `createPaperAutoSized`) are byte-identical (same names, same bodies) to the
 copies inlined in `tools/examples/index.html`, which adds only its own
 example-data constants and rendering (`addCard`/`addContentSectorCards`/
-`addPaperSectorCards`) on top. `tools/reader/index.html` has the decode-side
-mirror (`base41Decode`, `cborDecodeSequencePrefix`, `parseContentStream`,
+`addPaperSectorCards`) on top. Signing helpers (`signContentSectors`/
+`signSectors`/`signedMessageHash`) are **generator-only** — examples has
+no signing support. `tools/reader/index.html` has the decode-side mirror
+(`base41Decode`, `cborDecodeSequencePrefix`, `parseContentStream`,
 `parsePaperStream`, `SectorAssembler`, etc.) plus its own UI/IndexedDB
 persistence layer.
 
@@ -151,9 +161,11 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `1`) is independent of the Android
-app's `versionName` (currently `2.1.0`, already accepted by F-Droid as of
-June 2026) — bumping one never requires bumping the other.
+SPEC.md's `version` field (currently `2` for QDEF Records, though the
+Kotlin app and Paper layout still use version 1 wire format) is
+independent of the Android app's `versionName` (currently `2.1.0`,
+already accepted by F-Droid as of June 2026) — bumping one never
+requires bumping the other.
 
 Version 1 is currently a **draft, not frozen** (see SPEC.md's `Status`
 line): no real TagDrop code has been printed or distributed yet, so no

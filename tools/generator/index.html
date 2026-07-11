@@ -1517,8 +1517,8 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
              RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
              IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55,
              STEP:57,
-             // Verified Authorship (SPEC §10) — wire-format fields only, not yet backed by
-             // real ML-DSA-44 sign/verify (no PQC dependency loaded by this tool yet).
+             // Verified Authorship (SPEC §10) — old-format keys 32-36 (Paper only;
+             // Content now uses QDEF keys 45/47/49 for signature fields).
              SIGNATURE_ALGORITHM:32, SIGNATURE:33, SIGNER_PUBKEY:34, SIGNER_ID:35, SIGNER_LABEL:36 };
 // Local keys for files[] sub-map entries (independent namespace, SPEC §3)
 const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };

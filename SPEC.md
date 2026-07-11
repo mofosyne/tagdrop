@@ -1550,15 +1550,18 @@ size-based placement principle the old `core_meta_item`/`bulky_meta_item`
 split already used, just now expressed as two separate Record Types
 instead of two concatenated items.
 
-**Implementation status:** this describes the target shape after the
-QDEF-based redesign (§2's "Relationship to QDEF"). The previous key
-numbering (32–36 in a shared `core_meta_item`/`bulky_meta_item`) is what's
-actually wired through both reference codecs today — porting to the new
-shape is tracked as follow-up work, not yet done. The rest of this
-implementation-status note describes what's already proven to work, which
-remains true of the underlying mechanism (ML-DSA-44 sign/verify, TOFU
-caching) even though the field layout it operates on is changing: the web
-tools do real ML-DSA-44 sign/verify via
+**Implementation status:** the web tools (generator and reader) now sign
+and verify Content using the new QDEF key layout described above —
+Preview signature fields (keys 45/47/49) are stripped for hashing via
+`contentSignedMessageHash()`, and the Compress/Split Wrapper layer sits
+outside the signed region. The Kotlin Android app still signs using the
+old key numbering (32–36 in a shared `core_meta_item`/`bulky_meta_item`)
+and will need updating when its Content codec is ported to QDEF Records.
+The rest of this implementation-status note describes what's already
+proven to work, which remains true of the underlying mechanism (ML-DSA-44
+sign/verify, TOFU caching) even though the field layout it operates on
+differs between implementations: the web tools do real ML-DSA-44
+sign/verify via
 [`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum),
 dynamically imported from a CDN like the generator's other optional
 dependencies (qrcode, jsPDF) — no build step, no bundled dependency: the
@@ -1889,17 +1892,20 @@ a clear marker — see the note above).
 
 ## 15. Reference Implementations
 
-**Status:** these files currently implement version 2's *predecessor* wire
-shape (`core_meta_item`/`bulky_meta_item`/`part_meta`) — porting them to
-this document's Preview/Body/QDEF-Record shape is tracked follow-up work,
-not yet done (§10's "Implementation status" note has the same caveat for
-signing specifically). File paths and high-level responsibilities below
-stay accurate either way.
+**Status:** the web tools (generator, reader, examples) now encode and
+decode Content using version 2's QDEF Record wire shape (Preview/Body
+split, Compress Wrapper, Split Wrapper). The Kotlin Android app and the
+Paper layout path in all three web tools still use version 1's
+`core_meta_item`/`bulky_meta_item`/`part_meta` envelope — porting those
+is tracked follow-up work. Signing (§10) uses the new QDEF key layout
+for Content in the web tools; the Kotlin app still signs with the old
+key layout. File paths and high-level responsibilities below stay
+accurate either way.
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
   - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
-  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742) for the version/type envelope
+  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742). Currently limited to 32-bit unsigned integers — 64-bit support (needed for QDEF Record Type IDs) is a known gap.
   - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `(type, cache_id)` groups concurrently
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<domain>/<slug>` and `tagdrop://[<domain>]@<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
   - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark
