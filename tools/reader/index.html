@@ -597,9 +597,8 @@ const TYPE_CONTENT = 0, TYPE_PAPER = 1;
 const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
 const TYPE_CONTENT_PREVIEW = 11040522420225562824n;
 const TYPE_CONTENT_BODY = 16141970035994251452n;
-// Paper-Preview (11467060725844413781) / Paper-Body (3662944544912906201) are assigned in
-// SPEC.md §2.1 but not emitted by any encoder yet — a code carrying one decodes as
-// 'invalid' here until the Paper port lands.
+const TYPE_PAPER_PREVIEW = 11467060725844413781n;
+const TYPE_PAPER_BODY = 3662944544912906201n;
 
 // Content-Preview's field keys (SPEC.md §3.1) — all odd (optional tier) except type-ID 0.
 const PK = {
@@ -617,10 +616,23 @@ const BK = { CONTENT:1, SIGNATURE:3, SIGNER_PUBKEY:5 };
 const SK = { GROUP_ID:2, INDEX:4, COUNT:6, DATA:8, TOTAL:9, PARITY:11 };
 const CK = { PAYLOAD:2 };
 
+// Paper-Preview's field keys (SPEC.md §3.3).
+const PPK = {
+  ROOT_HASH:1, HINT:3, SET:5, SLUG:7, DOMAIN:9, STEP:11,
+  COLLECTION_ID:13, COLLECTION_LABEL:15, COLLECTION_TAG:17, ICON:19,
+  LAT:21, LNG:23, RADIUS_M:25, PREFER_DECLARED_LOCATION:27, LOCATION_LABEL:29,
+  SIGNATURE_ALGORITHM:31, SIGNER_ID:33, SIGNER_LABEL:35,
+  IN_REPLY_TO:37, CREATED_AT:39, SOURCE_URL:41, TITLE:43, DESCRIPTION:45,
+};
+// Paper-Body's field keys (SPEC.md §3.4).
+const PBK = { FILES:1, RELATED:3, SIGNATURE:5, SIGNER_PUBKEY:7 };
+
 // Known-key sets for the even/odd criticality rule below.
 const KNOWN_KEYS = {
   CONTENT_PREVIEW: new Set([0, ...Object.values(PK)]),
   CONTENT_BODY:    new Set([0, ...Object.values(BK)]),
+  PAPER_PREVIEW:   new Set([0, ...Object.values(PPK)]),
+  PAPER_BODY:      new Set([0, ...Object.values(PBK)]),
   SPLIT:           new Set([0, ...Object.values(SK)]),
   COMPRESS:        new Set([0, ...Object.values(CK)]),
 };
@@ -914,6 +926,23 @@ async function verifyContentSignature(previewRaw, bodyRaw, fields) {
   return verifySignatureCommon(fields, () => contentSignedMessageHash(previewRaw, bodyRaw));
 }
 
+/**
+ * Paper's signed message hash (SPEC §10/§4.4): SHA-256(Preview' || Body') —
+ * same computation as root_hash (truncated to 8 bytes) but returned in full.
+ * Preview' strips key 1 (root_hash) + keys 31/33/35 (signature fields);
+ * Body' strips keys 5/7 (signature fields).
+ */
+const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([PPK.ROOT_HASH, PPK.SIGNATURE_ALGORITHM, PPK.SIGNER_ID, PPK.SIGNER_LABEL]);
+const PAPER_BODY_SIGNATURE_KEYS = new Set([PBK.SIGNATURE, PBK.SIGNER_PUBKEY]);
+function paperSignedMessageHash(previewRaw, bodyRaw) {
+  const unsignedPreview = stripKeys(previewRaw, PAPER_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = bodyRaw ? stripKeys(bodyRaw, PAPER_BODY_SIGNATURE_KEYS) : new Uint8Array(0);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
+}
+async function verifyPaperSignature(previewRaw, bodyRaw, fields) {
+  return verifySignatureCommon(fields, () => paperSignedMessageHash(previewRaw, bodyRaw));
+}
+
 // ── CBOR debug ────────────────────────────────────────────────────────────
 // Mirrors TagDropCodec.describeCbor/describeMap (Kotlin) for the "View raw CBOR"
 // debug view: hex dump, four-item envelope, part_meta breakdown, and (for a
@@ -957,6 +986,22 @@ const RECORD_TYPE_INFO = new Map([
   } }],
   [String(TYPE_CONTENT_BODY), { name: 'Content-Body', keyNames: {
     0:'type_id', [BK.CONTENT]:'content', [BK.SIGNATURE]:'signature', [BK.SIGNER_PUBKEY]:'signer_pubkey',
+  } }],
+  [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
+    0:'type_id', [PPK.ROOT_HASH]:'root_hash', [PPK.HINT]:'hint', [PPK.SET]:'set',
+    [PPK.SLUG]:'slug', [PPK.DOMAIN]:'domain', [PPK.STEP]:'step',
+    [PPK.COLLECTION_ID]:'collection_id', [PPK.COLLECTION_LABEL]:'collection_label',
+    [PPK.COLLECTION_TAG]:'collection_tag', [PPK.ICON]:'icon',
+    [PPK.LAT]:'lat', [PPK.LNG]:'lng', [PPK.RADIUS_M]:'radius_m',
+    [PPK.PREFER_DECLARED_LOCATION]:'prefer_declared_location', [PPK.LOCATION_LABEL]:'location_label',
+    [PPK.SIGNATURE_ALGORITHM]:'signature_algorithm', [PPK.SIGNER_ID]:'signer_id',
+    [PPK.SIGNER_LABEL]:'signer_label', [PPK.IN_REPLY_TO]:'in_reply_to',
+    [PPK.CREATED_AT]:'created_at', [PPK.SOURCE_URL]:'source_url',
+    [PPK.TITLE]:'title', [PPK.DESCRIPTION]:'description',
+  } }],
+  [String(TYPE_PAPER_BODY), { name: 'Paper-Body', keyNames: {
+    0:'type_id', [PBK.FILES]:'files', [PBK.RELATED]:'related',
+    [PBK.SIGNATURE]:'signature', [PBK.SIGNER_PUBKEY]:'signer_pubkey',
   } }],
   [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
     0:'type_id', [SK.GROUP_ID]:'group_id', [SK.INDEX]:'index', [SK.COUNT]:'count',
@@ -1135,23 +1180,63 @@ function parsePreviewFields(record) {
   };
 }
 
+function parsePaperPreviewFields(record) {
+  return {
+    rootHash:        record[PPK.ROOT_HASH] ? toHex(record[PPK.ROOT_HASH]) : null,
+    hint:            record[PPK.HINT] ?? null,
+    set:             record[PPK.SET] ?? null,
+    slug:            record[PPK.SLUG] ?? null,
+    domain:          record[PPK.DOMAIN] ?? null,
+    step:            record[PPK.STEP] ?? null,
+    collectionId:    record[PPK.COLLECTION_ID] ? toHex(record[PPK.COLLECTION_ID]) : null,
+    collectionLabel: record[PPK.COLLECTION_LABEL] ?? null,
+    collectionTag:   record[PPK.COLLECTION_TAG] ?? null,
+    icon:            record[PPK.ICON] ?? null,
+    lat:             record[PPK.LAT] ?? null,
+    lng:             record[PPK.LNG] ?? null,
+    radiusM:         record[PPK.RADIUS_M] ?? null,
+    preferDeclaredLocation: record[PPK.PREFER_DECLARED_LOCATION] === true,
+    locationLabel:   record[PPK.LOCATION_LABEL] ?? null,
+    signatureAlgorithm: record[PPK.SIGNATURE_ALGORITHM] ?? 0,
+    signerId:        record[PPK.SIGNER_ID] ? toHex(record[PPK.SIGNER_ID]) : null,
+    signerLabel:     record[PPK.SIGNER_LABEL] ?? null,
+    inReplyTo:       record[PPK.IN_REPLY_TO] ? toHex(record[PPK.IN_REPLY_TO]) : null,
+    createdAt:       record[PPK.CREATED_AT] ?? null,
+    sourceUrl:       record[PPK.SOURCE_URL] ?? null,
+    title:           record[PPK.TITLE] ?? null,
+    description:     record[PPK.DESCRIPTION] ?? null,
+  };
+}
+
 /**
- * Decodes a new-format code: a Content-Preview Record, optionally followed by one more
- * Record — the Body itself, a Compress Wrapper around it, or one Split fragment of it
- * (SPEC.md §2, §5.1). Returns { type: 'record', preview, previewRaw, second, cbor } or
- * { type: 'invalid' }. Trailing bytes after the second Record are tolerated, never an
- * error (forward-compat: may be a further stacked Record this decoder doesn't know).
+ * Decodes a new-format code: a Content-Preview or Paper-Preview Record, optionally followed
+ * by one more Record — the Body itself, a Compress Wrapper around it, or one Split fragment
+ * of it (SPEC.md §2, §5.1). Returns { type: 'record', kind, preview, previewRaw, second,
+ * cbor } or { type: 'invalid' }. Trailing bytes after the second Record are tolerated, never
+ * an error (forward-compat: may be a further stacked Record this decoder doesn't know).
  */
 function recordScanResult(bytes) {
   const first = decodeRecordPrefix(bytes);
-  if (!first || first.record[0] !== TYPE_CONTENT_PREVIEW) return { type: 'invalid' };
-  if (!checkRecordKeys(first.record, KNOWN_KEYS.CONTENT_PREVIEW)) return { type: 'invalid' };
+  if (!first) return { type: 'invalid' };
+  const typeId = first.record[0];
+  let kind, knownKeys;
+  if (typeId === TYPE_CONTENT_PREVIEW) {
+    kind = 'content'; knownKeys = KNOWN_KEYS.CONTENT_PREVIEW;
+  } else if (typeId === TYPE_PAPER_PREVIEW) {
+    kind = 'paper'; knownKeys = KNOWN_KEYS.PAPER_PREVIEW;
+  } else {
+    return { type: 'invalid' };
+  }
+  if (!checkRecordKeys(first.record, knownKeys)) return { type: 'invalid' };
   let second = null;
   if (first.trailing.length > 0) {
     second = decodeRecordPrefix(first.trailing);
     if (!second) return { type: 'invalid' };
   }
-  return { type: 'record', preview: parsePreviewFields(first.record), previewRaw: first.raw, second, cbor: bytes };
+  const preview = kind === 'content'
+    ? parsePreviewFields(first.record)
+    : parsePaperPreviewFields(first.record);
+  return { type: 'record', kind, preview, previewRaw: first.raw, second, cbor: bytes };
 }
 
 /**
@@ -1421,13 +1506,14 @@ class RecordAssembler {
     this.groups = new Map();
   }
 
-  /** Adds a scanned {preview, previewRaw, second} code and returns its group's state. */
+  /** Adds a scanned {kind, preview, previewRaw, second} code and returns its group's state. */
   async add(scan) {
-    const { preview, previewRaw, second } = scan;
+    const { kind, preview, previewRaw, second } = scan;
 
     // No second Record (key-only code) or an unwrapped/Compress-wrapped Body: single-code
     // payload, complete right away.
     if (!second || second.record[0] !== TYPE_SPLIT) {
+      if (kind === 'paper') return this._finishPaper(preview, previewRaw, second ? second.raw : null);
       return this._finishBody(preview, previewRaw, second ? second.raw : null, null);
     }
 
@@ -1441,7 +1527,7 @@ class RecordAssembler {
     const key = toHex(groupId);
     let group = this.groups.get(key);
     if (!group) {
-      group = { groupId, count, total, data: new Map(), parity: null, resolvedOverride: null };
+      group = { kind, groupId, count, total, data: new Map(), parity: null, resolvedOverride: null };
       this.groups.set(key, group);
     }
     // Preview repeats identically on every code (SPEC §5.1) — keep the latest scan's copy.
@@ -1537,7 +1623,7 @@ class RecordAssembler {
   /** Unwraps a (possibly Compress-wrapped) Body byte sequence into its Body Record,
    *  returning { body, bodyRaw } — bodyRaw being the LOGICAL Record bytes SPEC §10's
    *  signature formula covers — or null if malformed. */
-  async _unwrapBody(bodyWireBytes) {
+  async _unwrapBody(bodyWireBytes, isPaper = false) {
     let cur = decodeRecordPrefix(bodyWireBytes);
     if (!cur) return null;
     if (cur.record[0] === TYPE_COMPRESS) {
@@ -1549,8 +1635,10 @@ class RecordAssembler {
       cur = decodeRecordPrefix(inflated);
       if (!cur) return null;
     }
-    if (cur.record[0] !== TYPE_CONTENT_BODY) return null;
-    if (!checkRecordKeys(cur.record, KNOWN_KEYS.CONTENT_BODY)) return null;
+    const expectedType = isPaper ? TYPE_PAPER_BODY : TYPE_CONTENT_BODY;
+    const expectedKeys = isPaper ? KNOWN_KEYS.PAPER_BODY : KNOWN_KEYS.CONTENT_BODY;
+    if (cur.record[0] !== expectedType) return null;
+    if (!checkRecordKeys(cur.record, expectedKeys)) return null;
     return { body: cur.record, bodyRaw: cur.raw };
   }
 
@@ -1599,6 +1687,105 @@ class RecordAssembler {
     const declared = pendingBlob != null && (content.encryption === 1 || content.kdfAlg !== 0);
     return readyContentState(content, content.hint, content.filename, content.mimeType, slot,
       pendingBlob, declared, declared, verification);
+  }
+
+  /**
+   * Paper-specific counterpart to _finishBody: unwraps the Body Record (possibly Compress-
+   * wrapped), verifies root_hash (SHA-256(Preview' || Body')[0:8]), parses files/related
+   * from Paper-Body, and returns a PaperReady state. Single-code and multi-code (Split)
+   * paths converge here once the Body is reassembled.
+   */
+  async _finishPaper(preview, previewRaw, bodyWireBytes) {
+    if (bodyWireBytes == null) return { kind: 'Failed' };
+    const bodyParts = await this._unwrapBody(bodyWireBytes, true);
+    if (!bodyParts) return { kind: 'Failed' };
+    const { body, bodyRaw } = bodyParts;
+
+    // Verify root_hash: SHA-256(Preview' || Body')[0:8]
+    const hash = await paperSignedMessageHash(previewRaw, bodyRaw);
+    const computedRootHash = toHex(hash.slice(0, 8));
+    if (preview.rootHash && preview.rootHash !== computedRootHash) {
+      return { kind: 'HashMismatch', expected: preview.rootHash, got: computedRootHash };
+    }
+
+    // Verify signature (if present)
+    const verification = await verifyPaperSignature(previewRaw, bodyRaw, {
+      signatureAlgorithm: preview.signatureAlgorithm,
+      signerId: preview.signerId,
+      signerLabel: preview.signerLabel,
+      signature: body[PBK.SIGNATURE] ?? null,
+      signerPubkey: body[PBK.SIGNER_PUBKEY] ?? null,
+    });
+
+    // Parse files[] from Paper-Body (byte string containing CBOR array)
+    const filesRaw = body[PBK.FILES];
+    const files = (filesRaw instanceof Uint8Array) ? (() => {
+      try {
+        const arr = cborDecodeSequencePrefix(filesRaw, 1);
+        return (Array.isArray(arr) ? arr[0] : []).flatMap(entry => {
+          if (!isCborMap(entry)) return [];
+          const slug = entry[KF.SLUG], mimeType = entry[KF.MIME], fileId = entry[KF.FILE_ID];
+          if (!slug || !mimeType || !fileId) return [];
+          return [{ slug, mimeType, fileId: toHex(fileId), description: entry[KF.DESCRIPTION] ?? null, pixelArt: entry[KF.PIXEL_ART] === true }];
+        });
+      } catch { return []; }
+    })() : [];
+
+    // Parse related[] from Paper-Body
+    const relatedRaw = body[PBK.RELATED];
+    const related = (relatedRaw instanceof Uint8Array) ? (() => {
+      try {
+        const arr = cborDecodeSequencePrefix(relatedRaw, 1);
+        return (Array.isArray(arr) ? arr[0] : []).flatMap(entry => {
+          if (!isCborMap(entry)) return [];
+          const hint = entry[KR.HINT];
+          if (!hint) return [];
+          return [{
+            hint,
+            set:         entry[KR.SET] ?? null,
+            slug:        entry[KR.SLUG] ?? null,
+            paperId:     entry[KR.PAPER_ID] ? toHex(entry[KR.PAPER_ID]) : null,
+            lat:         entry[KR.LAT] ?? null,
+            lng:         entry[KR.LNG] ?? null,
+            radiusM:     entry[KR.RADIUS_M] ?? null,
+            keyMaterial: entry[KR.KEY_MATERIAL] ?? null,
+            retainKey:   entry[KR.RETAIN_KEY] !== false,
+            step:        entry[KR.STEP] ?? null,
+          }];
+        });
+      } catch { return []; }
+    })() : [];
+
+    const paper = {
+      rootHash: computedRootHash,
+      label:    preview.hint ?? null,
+      set:      preview.set ?? null,
+      slug:     preview.slug ?? null,
+      domain:   preview.domain ?? null,
+      step:     preview.step ?? null,
+      files, related,
+      description:     preview.description ?? null,
+      collectionId:    preview.collectionId ?? null,
+      collectionLabel: preview.collectionLabel ?? null,
+      collectionTag:   preview.collectionTag ?? null,
+      icon:            preview.icon ?? null,
+      lat:             preview.lat ?? null,
+      lng:             preview.lng ?? null,
+      radiusM:         preview.radiusM ?? null,
+      preferDeclaredLocation: preview.preferDeclaredLocation ?? false,
+      locationLabel:   preview.locationLabel ?? null,
+      inReplyTo:       preview.inReplyTo ?? null,
+      title:           preview.title ?? null,
+      createdAt:       preview.createdAt ?? null,
+      sourceUrl:       preview.sourceUrl ?? null,
+      signatureAlgorithm: preview.signatureAlgorithm ?? 0,
+      signerId:        preview.signerId ?? null,
+      signerLabel:     preview.signerLabel ?? null,
+      signature:       body[PBK.SIGNATURE] ?? null,
+      signerPubkey:    body[PBK.SIGNER_PUBKEY] ?? null,
+      verification,
+    };
+    return { kind: 'PaperReady', paper, streamBytes: null };
   }
 }
 
@@ -2088,7 +2275,9 @@ async function handleScanned(rawBytes) {
 
     case 'record': {
       lastScannedCbor = parsed.cbor;
-      lastScannedTitle = parsed.preview.cacheId || '(no cache_id)';
+      lastScannedTitle = parsed.kind === 'paper'
+        ? (parsed.preview.rootHash || '(no root_hash)')
+        : (parsed.preview.cacheId || '(no cache_id)');
       updateCborButton();
       const state = await recordAssembler.add(parsed);
       await handleState(state);
@@ -2127,7 +2316,7 @@ async function handleState(state) {
 
     case 'PaperReady':
       hideAssemblyProgress();
-      await handlePaper(state.paper, state.streamBytes);
+      await handlePaper(state.paper, state.streamBytes, state.verification);
       break;
 
     case 'HashMismatch':
@@ -2146,8 +2335,8 @@ async function handleState(state) {
  *  Stores `lastScannedCbor` (the completing sector's raw envelope, set in handleScanned above)
  *  as this paper's `cbor` field rather than the reassembled stream, since describeCbor() expects
  *  a single four-item sector envelope, not the bare core/bulky/content concatenation. */
-async function handlePaper(paper, streamBytes) {
-  const verification = await verifySignature(streamBytes, paper);
+async function handlePaper(paper, streamBytes, preVerification) {
+  const verification = preVerification || (streamBytes ? await verifySignature(streamBytes, paper) : { status: 'unsigned' });
   await dbPut('papers', { ...paper, cbor: lastScannedCbor, scannedAt: Date.now(), verification });
   activePaperHash = paper.rootHash;
   // SPEC §9: a paper manifest (and its related[] entries) may each carry their own

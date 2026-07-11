@@ -786,13 +786,32 @@ function buildContentBody(f) {
   return cborRecord(TYPE_CONTENT_BODY, { 1: f.content, 3: f.signature, 5: f.signerPubkey });
 }
 
-// ── Old CBOR-sequence envelope (SPEC v1) — Paper-only for now ─────────────
+// Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4).
+function buildPaperPreview(f) {
+  return cborRecord(TYPE_PAPER_PREVIEW, {
+    1: f.rootHash, 3: f.hint, 5: f.set, 7: f.slug, 9: f.domain,
+    11: f.step, 13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag,
+    19: f.icon,
+    21: f.lat != null ? cfloat(f.lat) : undefined, 23: f.lng != null ? cfloat(f.lng) : undefined,
+    25: f.radiusM != null ? cfloat(f.radiusM) : undefined,
+    27: f.preferDeclaredLocation, 29: f.locationLabel,
+    31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
+    37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
+    43: f.title, 45: f.description,
+  });
+}
+function buildPaperBody(f) {
+  return cborRecord(TYPE_PAPER_BODY, {
+    1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
+  });
+}
+
+// ── Old CBOR-sequence envelope (SPEC v1) — decode-side backward compatibility only ──────
 // tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
-// Paper Layout hasn't been ported to the new QDEF Preview/Body Record shape yet (CLAUDE.md/
-// "Generator's Content/Single-File path first" — Paper is a deliberately deferred later pass),
-// so createPaper/createPaperAutoSized and the Paper-tab rendering code below still build and
-// encode this older four-item envelope directly. Kept alongside (not merged with) the new
-// cborRecord-based Content path above.
+// Paper Layout has been ported to the new QDEF Preview/Body Record shape above. These
+// old-envelope helpers are retained for the reader's backward-compatible decode path
+// (sectorScanResult dispatches old-format Paper here) and for the old signedMessageHash
+// used by old-format Paper verification.
 const VERSION = 1;
 const TYPE_CONTENT = 0, TYPE_PAPER = 1;
 
@@ -1128,18 +1147,26 @@ function stripKeys(mapBytes, keysToStrip) {
 const CONTENT_PREVIEW_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
 const CONTENT_BODY_SIGNATURE_KEYS = new Set([3, 5]); // signature, signer_pubkey
 
-/**
- * SPEC.md §10's "signed message" for a Content payload: SHA-256(Preview' || Body'), with
- * §10's own fields stripped from each — the identical computation whether or not this
- * payload ends up signed (§10: "signing happens last and feeds back into nothing").
- * `bodyPlain` MUST be the logical (pre-Compress-wrap) bytes — never the wire-transmitted
- * ones — so the signature is independent of whether/how this payload happens to be
- * compressed (the exact bug this project's own prototype caught and fixed, see
- * tools/test-qdef-roundtrip.mjs).
- */
+const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([1, 31, 33, 35]); // root_hash, signature_algorithm, signer_id, signer_label
+const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]); // signature, signer_pubkey
+
 function contentSignedMessageHash(preview, bodyPlain) {
   const unsignedPreview = stripKeys(preview, CONTENT_PREVIEW_SIGNATURE_KEYS);
   const unsignedBody = stripKeys(bodyPlain, CONTENT_BODY_SIGNATURE_KEYS);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
+}
+
+/**
+ * Paper's signed message hash (SPEC §10/§4.4): SHA-256(Preview' || Body') —
+ * same computation as root_hash (truncated to 8 bytes) but returned in full.
+ * Preview' strips key 1 (root_hash itself) + keys 31/33/35 (signature fields);
+ * Body' strips keys 5/7 (signature fields). The Compress/Split Wrapper layer
+ * sits outside the signed region — the logical (decompressed) Body Record bytes
+ * are always used for hashing, never the wire bytes.
+ */
+function paperSignedMessageHash(preview, bodyPlain) {
+  const unsignedPreview = stripKeys(preview, PAPER_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = stripKeys(bodyPlain, PAPER_BODY_SIGNATURE_KEYS);
   return sha256(concatBytes(unsignedPreview, unsignedBody));
 }
 
@@ -1150,8 +1177,9 @@ function contentSignedMessageHash(preview, bodyPlain) {
  * an UNSIGNED build (nothing to strip, so this is just sha256(stream)) as the "hash the
  * unsigned build, then sign" half of the encode-side flow — see signContentSectors below.
  *
- * Still used by Paper signing (createPaper, unchanged this pass) — see
- * contentSignedMessageHash above for the new Preview/Body equivalent used by Content.
+ * Still used by old-format Paper signing (createPaper, unchanged this pass) — see
+ * contentSignedMessageHash above for the new Preview/Body equivalent used by Content
+ * and the new Paper signing path (paperSignedMessageHash / signPaperSectors).
  *
  * The key sets are built inline (not module-level consts) because `K` — defined later in this
  * file — isn't initialized yet when this function's own module-level code would otherwise run;
@@ -1376,6 +1404,30 @@ async function signContentSectors(buildFn, args, identity, includePubkey = true)
   };
   const placeholderResult = await buildFn(placeholderArgs);
   const hash = await contentSignedMessageHash(placeholderResult.preview, placeholderResult.bodyPlain);
+  const { ml_dsa44 } = await loadMlDsa();
+  const signature = ml_dsa44.sign(hash, identity.secretKey);
+  return buildFn({ ...placeholderArgs, signature });
+}
+
+/**
+ * Paper-specific counterpart to signContentSectors, for the new Preview/Body shape.
+ * Same placeholder-then-strip discipline: builds with placeholder signature, hashes
+ * via paperSignedMessageHash (Preview' || Body', SPEC §10/§4.4), signs, rebuilds.
+ * root_hash is stripped for hashing (PAPER_PREVIEW_SIGNATURE_KEYS includes key 1),
+ * so it doesn't matter what value is in the placeholder build — the hash is identical
+ * whether or not root_hash/signature fields are present (§10's "signing happens last").
+ */
+async function signPaperSectors(buildFn, args, identity, includePubkey = true) {
+  const placeholderArgs = {
+    ...args,
+    signatureAlgorithm: 1,
+    signature: new Uint8Array(2420),
+    signerPubkey: includePubkey ? identity.publicKey : null,
+    signerId: identity.signerId,
+    signerLabel: identity.label || null,
+  };
+  const placeholderResult = await buildFn(placeholderArgs);
+  const hash = await paperSignedMessageHash(placeholderResult.preview, placeholderResult.bodyPlain);
   const { ml_dsa44 } = await loadMlDsa();
   const signature = ml_dsa44.sign(hash, identity.secretKey);
   return buildFn({ ...placeholderArgs, signature });
@@ -1746,9 +1798,9 @@ function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
 }
 
 /**
- * The reassembled-stream bytes for a Paper (pre-hash) — what the root hash covers
- * (SPEC §4.4). `content` is always empty for a Paper. Mirrors Kotlin
- * TagDropCodec.buildPaperStream.
+ * Old-format reassembled-stream bytes for a Paper (SPEC v1) — retained for the reader's
+ * backward-compatible decode path (parsePaperStream). The new encode path uses
+ * createPaper() above which builds QDEF Records instead.
  *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
  *   related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
  *               radiusM:number|null, keyMaterial:Uint8Array|null, retainKey:boolean}]
@@ -1821,33 +1873,92 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
 }
 
 /**
- * Builds a Paper payload (`type` 1) and its sector(s) — mirrors Kotlin
- * TagDropCodec.createPaper. `root_hash` is content-addressed over the reassembled stream
- * (SPEC §4.4), and because it lives in part_meta, *outside* the bytes it's computed over,
- * there's no placeholder/re-encode pass: build the stream once, hash it, copy the hash
- * into every sector.
+ * Builds a Paper payload using QDEF Records (SPEC §3.3-§3.4, §4.4).
+ * root_hash is self-referential: SHA-256(Preview' || Body')[0:8], where Preview'
+ * strips key 1 (root_hash itself) + keys 31/33/35 (signature fields), and Body'
+ * strips keys 5/7 (signature fields). The Compress/Split Wrapper layer sits
+ * outside the signed region.
+ *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
+ *   related = [{hint, set, slug, paperId:Uint8Array|null, ...}]
  */
-async function createPaper(args) {
-  // root_hash is computed over the UNSIGNED bytes first (SPEC §10: "signing happens last and
-  // feeds back into nothing" — cache_id/root_hash/content_sha256/bulky_meta_sha256 are
-  // identical whether or not keys 32-36 are subsequently added). Signature fields, if any,
-  // are folded into a second build afterward; root_hash itself never changes.
-  const { signatureAlgorithm, signature, signerPubkey, signerId, signerLabel, ...unsignedArgs } = args;
-  const unsignedStream = await buildPaperStream(unsignedArgs);
-  const rootHash = await sha256first8(unsignedStream);
-  const isSigned = signatureAlgorithm || signature || signerPubkey || signerId || signerLabel;
-  const stream = isSigned
-    ? await buildPaperStream({ ...unsignedArgs, signatureAlgorithm, signature, signerPubkey, signerId, signerLabel })
-    : unsignedStream;
-  const maxSectorDataBytes = args.maxSectorDataBytes ?? Infinity;
-  return { rootHash, sectors: sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes) };
+async function createPaper({ label, set, slug, domain, files, related, description,
+  collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true,
+  lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
+  inReplyTo, title, createdAt, step, compress = false, parity = false,
+  signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
+  maxSectorDataBytes = Infinity }) {
+
+  // Encode files[] and related[] as CBOR byte strings (SPEC §3.4 — field-value-shape rule).
+  const filesCbor = cborMap(files.map(f => subMap([
+    [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
+    [KF.DESCRIPTION, f.description || null],
+    [KF.PIXEL_ART, f.pixelArt || null],
+  ])));
+  const relatedCbor = cborMap(related.map(r => subMap([
+    [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null],
+    [KR.PAPER_ID, r.paperId || null],
+    [KR.LAT, r.lat != null ? cfloat(r.lat) : null],
+    [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
+    [KR.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
+    [KR.KEY_MATERIAL, r.keyMaterial || null],
+    [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
+    [KR.STEP, r.step ?? null],
+  ])));
+
+  // Build Preview and Body Records. root_hash (key 1) is included in the build;
+  // paperSignedMessageHash strips it before hashing, so its value doesn't affect
+  // the hash — this is the self-referential root_hash discipline (§4.4).
+  const preview = buildPaperPreview({
+    rootHash: undefined, // included as-is; stripped by paperSignedMessageHash
+    hint: label, set, slug, domain, step,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt,
+    signatureAlgorithm, signerId, signerLabel,
+  });
+  const bodyPlain = buildPaperBody({ files: filesCbor, related: relatedCbor, signature, signerPubkey });
+
+  // root_hash = SHA-256(Preview' || Body')[0:8]
+  const hash = await paperSignedMessageHash(preview, bodyPlain);
+  const rootHash = hash.slice(0, 8);
+
+  // Rebuild Preview with root_hash now set to the computed value.
+  const finalPreview = buildPaperPreview({
+    rootHash, hint: label, set, slug, domain, step,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt,
+    signatureAlgorithm, signerId, signerLabel,
+  });
+
+  // Compress/split the Body for wire (same pattern as createContentSectors).
+  const bodyForWire = compress ? await compressWrap(bodyPlain) : bodyPlain;
+  const totalBytes = bodyForWire.length;
+
+  if (totalBytes <= maxSectorDataBytes) {
+    return {
+      codes: [{ raw: concatBytes(finalPreview, bodyForWire), rootHash, totalBytes, index: 0, count: 1, isParity: false }],
+      rootHash, preview: finalPreview, bodyPlain,
+    };
+  }
+
+  const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
+  const groupId = await sha256first8(bodyForWire);
+  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
+  return {
+    codes: fragments.map((frag, i) => ({
+      raw: concatBytes(finalPreview, frag), rootHash, totalBytes,
+      index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
+    })),
+    rootHash, preview: finalPreview, bodyPlain,
+  };
 }
 
 /** Two-pass auto-sizing wrapper around createPaper — see createContentSectorsAutoSized. */
 async function createPaperAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
   const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createPaper({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first.sectors[0]).uri.length <= targetUriLength) return first;
+  if (encodeCode(first.codes[0]).uri.length <= targetUriLength) return first;
   return createPaper({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
@@ -2981,7 +3092,7 @@ async function computePaperSectorPlan() {
     };
   });
 
-  // Encode the paper itself
+  // Encode the paper itself — parity is now baked into createPaper's codes array
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description, pixelArt: f.pixelArt || false }));
   let paper;
   try {
@@ -2990,6 +3101,7 @@ async function computePaperSectorPlan() {
       collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation, locationLabel,
       inReplyTo, title, createdAt, step,
+      parity: document.getElementById('p-add-parity')?.checked ?? false,
     }, targetSectorBytes);
   }
   catch(e) { throw new Error(`Paper encoding failed: ${e.message}`); }
@@ -3008,7 +3120,7 @@ const updatePaperEstimate = debounce(async () => {
   if (!el) return;
   try {
     const plan = await computePaperSectorPlan();
-    const total = plan.encodedFiles.reduce((sum, f) => sum + (f.codes ? f.codes.length : 1), 0) + plan.paper.sectors.length;
+    const total = plan.encodedFiles.reduce((sum, f) => sum + (f.codes ? f.codes.length : 1), 0) + plan.paper.codes.length;
     if (seq === paperEstimateSeq) showEstimate(el, describeQrCountEstimate(total), false);
   } catch (e) {
     if (seq === paperEstimateSeq) showEstimate(el, e.message, true);
@@ -3041,54 +3153,36 @@ async function generatePaper() {
   const rootHashHex = toHex(paper.rootHash);
 
   // Paper QR(s) first — readers need these to resolve every file_id below. A Paper that
-  // doesn't fit one QR is now split into several uniform sector codes too (SPEC §4.2/§5),
-  // the same mechanism as an oversized file, rather than a fixed manifest format.
-  const mCount = paper.sectors.length;
+  // doesn't fit one QR is split into several codes via QDEF Split Wrapper (SPEC §5).
+  // Parity codes (if enabled) are baked into the codes array by createPaper.
+  const mCount = paper.codes.length;
+  const parityCount = paper.codes.filter(c => c.isParity).length;
+  const dataCount = mCount - parityCount;
   if (mCount > 1) {
-    msgs.innerHTML += `<div class="warn">Paper layout is ${paper.sectors[0].partMeta.totalBytes} bytes
-      — split into ${mCount} sector QR codes.${addParity ? ' 🛟 A parity code is included so any one of these can be reconstructed if lost.' : ''}</div>`;
+    msgs.innerHTML += `<div class="warn">Paper layout is ${paper.codes[0].totalBytes} bytes
+      — split into ${dataCount} code${dataCount === 1 ? '' : 's'}${parityCount ? ` + ${parityCount} parity` : ''}.</div>`;
   }
-  for (const sector of paper.sectors) {
-    const enc = encodeSector(sector);
+  for (const code of paper.codes) {
+    const enc = encodeCode(code);
     const qrData = (mCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
-    const mLabel = mCount > 1 ? `📋 ${label || 'Manifest'} — sector ${sector.partMeta.sectorIndex + 1}/${mCount}` : `📋 ${label || 'Manifest'}`;
+    const suffix = code.isParity ? 'parity' : (mCount > 1 ? `code ${code.index + 1}/${dataCount}` : 'manifest');
+    const mLabel = `📋 ${label || 'Manifest'} — ${suffix}`;
     const mSub = mCount > 1
       ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
       : 'paper manifest';
-    const mId = mCount > 1 ? `${rootHashHex}-sector${sector.partMeta.sectorIndex + 1}` : rootHashHex;
-    const mItem = makeQrItem(mLabel, mSub, mId, enc.uri, null, qrData);
+    const mId = code.isParity ? `${rootHashHex}-parity` : (mCount > 1 ? `${rootHashHex}-code${code.index + 1}` : rootHashHex);
+    const mItem = makeQrItem(mLabel, mSub, mId, enc.uri, code.isParity ? 'parity' : null, qrData, code.isParity ? 'parity' : null);
     grid.appendChild(mItem.div);
     try {
       await renderQr(mItem.qrDiv, qrData);
       paperBulkItems.push({
-        filename: `tagdrop-${slugifyForFilename((label || 'paper') + (mCount > 1 ? `-sector${sector.partMeta.sectorIndex + 1}` : '-manifest'))}-${rootHashHex}.png`,
+        filename: `tagdrop-${slugifyForFilename((label || 'paper') + (code.isParity ? '-parity' : (mCount > 1 ? `-code${code.index + 1}` : '-manifest')))}-${rootHashHex}.png`,
         qrData,
-        caption: mCount > 1 ? `${label || 'Manifest'} (sector ${sector.partMeta.sectorIndex + 1}/${mCount})` : `${label || 'Manifest'} (manifest)`,
+        caption: `${label || 'Manifest'} (${code.isParity ? 'parity' : (mCount > 1 ? `code ${code.index + 1}/${dataCount}` : 'manifest')})`,
       });
     } catch(e) {
       mItem.div.querySelector('.action-row')?.remove();
-      msgs.innerHTML += `<div class="err">QR rendering failed for ${mCount > 1 ? `paper sector ${sector.partMeta.sectorIndex + 1}` : 'the manifest'} — is the qrcode library loaded?</div>`;
-      return;
-    }
-  }
-  if (mCount > 1 && addParity) {
-    const parity = paritySector(paper.sectors);
-    const enc = encodeSector(parity);
-    const qrData = useBinarySectors ? enc.raw : enc.uri;
-    const pSub = useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`;
-    const pId = `${rootHashHex}-parity`;
-    const pItem = makeQrItem(`📋 ${label || 'Manifest'} — parity`, pSub, pId, enc.uri, 'parity', qrData, 'parity');
-    grid.appendChild(pItem.div);
-    try {
-      await renderQr(pItem.qrDiv, qrData);
-      paperBulkItems.push({
-        filename: `tagdrop-${slugifyForFilename((label || 'paper') + '-parity')}-${rootHashHex}.png`,
-        qrData,
-        caption: `${label || 'Manifest'} (parity)`,
-      });
-    } catch(e) {
-      pItem.div.querySelector('.action-row')?.remove();
-      msgs.innerHTML += `<div class="err">QR rendering failed for the paper's parity sector — is the qrcode library loaded?</div>`;
+      msgs.innerHTML += `<div class="err">QR rendering failed for paper ${code.isParity ? 'parity' : `code ${code.index + 1}`} — is the qrcode library loaded?</div>`;
       return;
     }
   }

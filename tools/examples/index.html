@@ -446,6 +446,26 @@ function buildContentBody(f) {
   return cborRecord(TYPE_CONTENT_BODY, { 1: f.content, 3: f.signature, 5: f.signerPubkey });
 }
 
+// Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4).
+function buildPaperPreview(f) {
+  return cborRecord(TYPE_PAPER_PREVIEW, {
+    1: f.rootHash, 3: f.hint, 5: f.set, 7: f.slug, 9: f.domain,
+    11: f.step, 13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag,
+    19: f.icon,
+    21: f.lat != null ? cfloat(f.lat) : undefined, 23: f.lng != null ? cfloat(f.lng) : undefined,
+    25: f.radiusM != null ? cfloat(f.radiusM) : undefined,
+    27: f.preferDeclaredLocation, 29: f.locationLabel,
+    31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
+    37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
+    43: f.title, 45: f.description,
+  });
+}
+function buildPaperBody(f) {
+  return cborRecord(TYPE_PAPER_BODY, {
+    1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
+  });
+}
+
 /**
  * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with
  * every pair whose key is in [keysToStrip] removed, regardless of position — walks and keeps
@@ -492,6 +512,9 @@ function stripKeys(mapBytes, keysToStrip) {
 const CONTENT_PREVIEW_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
 const CONTENT_BODY_SIGNATURE_KEYS = new Set([3, 5]); // signature, signer_pubkey
 
+const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([1, 31, 33, 35]); // root_hash, signature_algorithm, signer_id, signer_label
+const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]); // signature, signer_pubkey
+
 /**
  * SPEC.md §10's "signed message" for a Content payload: SHA-256(Preview' || Body'), with
  * §10's own fields stripped from each — the identical computation whether or not this
@@ -500,6 +523,20 @@ const CONTENT_BODY_SIGNATURE_KEYS = new Set([3, 5]); // signature, signer_pubkey
 function contentSignedMessageHash(preview, bodyPlain) {
   const unsignedPreview = stripKeys(preview, CONTENT_PREVIEW_SIGNATURE_KEYS);
   const unsignedBody = stripKeys(bodyPlain, CONTENT_BODY_SIGNATURE_KEYS);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
+}
+
+/**
+ * Paper's signed message hash (SPEC §10/§4.4): SHA-256(Preview' || Body') —
+ * same computation as root_hash (truncated to 8 bytes) but returned in full.
+ * Preview' strips key 1 (root_hash itself) + keys 31/33/35 (signature fields);
+ * Body' strips keys 5/7 (signature fields). The Compress/Split Wrapper layer
+ * sits outside the signed region — the logical (decompressed) Body Record bytes
+ * are always used for hashing, never the wire bytes.
+ */
+function paperSignedMessageHash(preview, bodyPlain) {
+  const unsignedPreview = stripKeys(preview, PAPER_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = stripKeys(bodyPlain, PAPER_BODY_SIGNATURE_KEYS);
   return sha256(concatBytes(unsignedPreview, unsignedBody));
 }
 
@@ -1184,33 +1221,92 @@ async function buildPaperStream({ label, set, slug, domain, files, related, desc
 }
 
 /**
- * Builds a Paper payload (`type` 1) and its sector(s) — mirrors Kotlin
- * TagDropCodec.createPaper. `root_hash` is content-addressed over the reassembled stream
- * (SPEC §4.4), and because it lives in part_meta, *outside* the bytes it's computed over,
- * there's no placeholder/re-encode pass: build the stream once, hash it, copy the hash
- * into every sector.
+ * Builds a Paper payload using QDEF Records (SPEC §3.3-§3.4, §4.4).
+ * root_hash is self-referential: SHA-256(Preview' || Body')[0:8], where Preview'
+ * strips key 1 (root_hash itself) + keys 31/33/35 (signature fields), and Body'
+ * strips keys 5/7 (signature fields). The Compress/Split Wrapper layer sits
+ * outside the signed region.
+ *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
+ *   related = [{hint, set, slug, paperId:Uint8Array|null, ...}]
  */
-async function createPaper(args) {
-  // root_hash is computed over the UNSIGNED bytes first (SPEC §10: "signing happens last and
-  // feeds back into nothing" — cache_id/root_hash/content_sha256/bulky_meta_sha256 are
-  // identical whether or not keys 32-36 are subsequently added). Signature fields, if any,
-  // are folded into a second build afterward; root_hash itself never changes.
-  const { signatureAlgorithm, signature, signerPubkey, signerId, signerLabel, ...unsignedArgs } = args;
-  const unsignedStream = await buildPaperStream(unsignedArgs);
-  const rootHash = await sha256first8(unsignedStream);
-  const isSigned = signatureAlgorithm || signature || signerPubkey || signerId || signerLabel;
-  const stream = isSigned
-    ? await buildPaperStream({ ...unsignedArgs, signatureAlgorithm, signature, signerPubkey, signerId, signerLabel })
-    : unsignedStream;
-  const maxSectorDataBytes = args.maxSectorDataBytes ?? Infinity;
-  return { rootHash, sectors: sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes) };
+async function createPaper({ label, set, slug, domain, files, related, description,
+  collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true,
+  lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
+  inReplyTo, title, createdAt, step, compress = false, parity = false,
+  signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
+  maxSectorDataBytes = Infinity }) {
+
+  // Encode files[] and related[] as CBOR byte strings (SPEC §3.4 — field-value-shape rule).
+  const filesCbor = cborMap(files.map(f => subMap([
+    [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
+    [KF.DESCRIPTION, f.description || null],
+    [KF.PIXEL_ART, f.pixelArt || null],
+  ])));
+  const relatedCbor = cborMap(related.map(r => subMap([
+    [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null],
+    [KR.PAPER_ID, r.paperId || null],
+    [KR.LAT, r.lat != null ? cfloat(r.lat) : null],
+    [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
+    [KR.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
+    [KR.KEY_MATERIAL, r.keyMaterial || null],
+    [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
+    [KR.STEP, r.step ?? null],
+  ])));
+
+  // Build Preview and Body Records. root_hash (key 1) is included in the build;
+  // paperSignedMessageHash strips it before hashing, so its value doesn't affect
+  // the hash — this is the self-referential root_hash discipline (§4.4).
+  const preview = buildPaperPreview({
+    rootHash: undefined, // included as-is; stripped by paperSignedMessageHash
+    hint: label, set, slug, domain, step,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt,
+    signatureAlgorithm, signerId, signerLabel,
+  });
+  const bodyPlain = buildPaperBody({ files: filesCbor, related: relatedCbor, signature, signerPubkey });
+
+  // root_hash = SHA-256(Preview' || Body')[0:8]
+  const hash = await paperSignedMessageHash(preview, bodyPlain);
+  const rootHash = hash.slice(0, 8);
+
+  // Rebuild Preview with root_hash now set to the computed value.
+  const finalPreview = buildPaperPreview({
+    rootHash, hint: label, set, slug, domain, step,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt,
+    signatureAlgorithm, signerId, signerLabel,
+  });
+
+  // Compress/split the Body for wire (same pattern as createContentSectors).
+  const bodyForWire = compress ? await compressWrap(bodyPlain) : bodyPlain;
+  const totalBytes = bodyForWire.length;
+
+  if (totalBytes <= maxSectorDataBytes) {
+    return {
+      codes: [{ raw: concatBytes(finalPreview, bodyForWire), rootHash, totalBytes, index: 0, count: 1, isParity: false }],
+      rootHash, preview: finalPreview, bodyPlain,
+    };
+  }
+
+  const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
+  const groupId = await sha256first8(bodyForWire);
+  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
+  return {
+    codes: fragments.map((frag, i) => ({
+      raw: concatBytes(finalPreview, frag), rootHash, totalBytes,
+      index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
+    })),
+    rootHash, preview: finalPreview, bodyPlain,
+  };
 }
 
 /** Two-pass auto-sizing wrapper around createPaper — see createContentSectorsAutoSized. */
 async function createPaperAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
   const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createPaper({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first.sectors[0]).uri.length <= targetUriLength) return first;
+  if (encodeCode(first.codes[0]).uri.length <= targetUriLength) return first;
   return createPaper({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
@@ -2006,19 +2102,19 @@ async function addContentSectorCards(grid, result, { baseLabel, mime, extraBadge
   return { count, idHex };
 }
 
-// Renders one card per sector of a Paper's own root sector(s) — `isManifest: true`
+// Renders one card per code of a Paper's own root code(s) — `isManifest: true`
 // triggers the "📋 " CSS prefix (.qr-card.manifest .qr-label::before) used to set
-// these visually apart from each file's own Content sector(s) rendered alongside
+// these visually apart from each file's own Content code(s) rendered alongside
 // them, the same informal "manifest" framing ../generator/index.html uses.
-async function addPaperSectorCards(grid, sectors, { baseLabel }) {
-  const count = sectors.length;
-  const idHex = toHex(sectors[0].partMeta.cacheId);
-  for (const sector of sectors) {
-    const enc = encodeSector(sector);
+async function addPaperSectorCards(grid, codes, { baseLabel }) {
+  const count = codes.length;
+  const idHex = toHex(codes[0].rootHash);
+  for (const code of codes) {
+    const enc = encodeCode(code);
     await addCard(grid, {
-      label: count > 1 ? `${baseLabel || 'Manifest'} — sector ${sector.partMeta.sectorIndex + 1}/${count}` : (baseLabel || 'Manifest'),
+      label: count > 1 ? `${baseLabel || 'Manifest'} — code ${code.index + 1}/${count}` : (baseLabel || 'Manifest'),
       mime: 'paper manifest', extraBadge: null,
-      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex + 1}` : idHex,
+      id: count > 1 ? `${idHex}-code${code.index + 1}` : idHex,
       uri: enc.uri,
       isManifest: true,
     });
@@ -2187,7 +2283,7 @@ async function main() {
     <div class="step">③ Open <strong>readme</strong> — its relative links (<code>note</code>, <code>images/badge.svg</code>) resolve to the sibling files on this same paper.</div>`;
 
   const paperGrid = document.getElementById('paper-grid');
-  await addPaperSectorCards(paperGrid, paper.sectors, { baseLabel: p.label });
+  await addPaperSectorCards(paperGrid, paper.codes, { baseLabel: p.label });
   for (const f of encodedFiles) {
     await addContentSectorCards(paperGrid, f.result, {
       baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
@@ -2224,7 +2320,7 @@ async function main() {
     <div class="step">③ Open <strong>index</strong> to read the info page, which also explains the mixed format.</div>`;
 
   const rqpGrid = document.getElementById('raw-qr-paper-grid');
-  await addPaperSectorCards(rqpGrid, rqpPaper.sectors, { baseLabel: rqp.label });
+  await addPaperSectorCards(rqpGrid, rqpPaper.codes, { baseLabel: rqp.label });
   for (const f of rqpRawFileInfos) {
     await addRawQrCard(rqpGrid, {
       label: f.slug + ' (raw QR)',
@@ -2265,7 +2361,7 @@ async function main() {
       reading like one small cross-linked book.</div>`;
 
   const bookGrid = document.getElementById('book-grid');
-  await addPaperSectorCards(bookGrid, bookPaper.sectors, { baseLabel: book.label });
+  await addPaperSectorCards(bookGrid, bookPaper.codes, { baseLabel: book.label });
   for (const f of bookFiles) {
     await addContentSectorCards(bookGrid, f.result, {
       baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
@@ -2325,7 +2421,7 @@ async function main() {
     stopGrid.className = 'qr-grid';
     trailStops.appendChild(stopGrid);
 
-    await addPaperSectorCards(stopGrid, stopPaper.sectors, { baseLabel: `${stop.icon} ${stop.label}` });
+    await addPaperSectorCards(stopGrid, stopPaper.codes, { baseLabel: `${stop.icon} ${stop.label}` });
     await addContentSectorCards(stopGrid, fileResult, {
       baseLabel: stop.file.slug, mime: stop.file.mimeType, extraBadge: stop.file.compress ? 'deflate' : null,
     });

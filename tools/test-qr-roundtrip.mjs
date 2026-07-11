@@ -102,6 +102,14 @@ function cborValue(out, v) {
     writeHead(out, 3, b.length); b.forEach(x => out.push(x));
   } else if (Array.isArray(v)) {
     writeHead(out, 4, v.length); v.forEach(item => cborValue(out, item));
+  } else if (typeof v === 'object') {
+    const entries = Object.entries(v).filter(([, val]) => val !== undefined);
+    writeHead(out, 5, entries.length);
+    for (const [k, val] of entries) {
+      const b = Buffer.from(k, 'utf8');
+      writeHead(out, 3, b.length); b.forEach(x => out.push(x));
+      cborValue(out, val);
+    }
   }
 }
 
@@ -150,6 +158,8 @@ function cborRecord(typeId, fields) {
 const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
 const TYPE_CONTENT_PREVIEW = 11040522420225562824n;
 const TYPE_CONTENT_BODY = 16141970035994251452n;
+const TYPE_PAPER_PREVIEW = 11467060725844413781n;
+const TYPE_PAPER_BODY = 3662944544912906201n;
 
 async function compressWrap(bytes) {
   return cborRecord(TYPE_COMPRESS, { 2: await zlibCompress(bytes) });
@@ -293,14 +303,23 @@ async function zlibDecompress(bytes) {
 const PK = {
   CACHE_ID: 1, HINT: 3, MIME: 5, FILENAME: 7, TITLE: 9, DESCRIPTION: 11,
   COLLECTION_ID: 13, COLLECTION_LABEL: 15, COLLECTION_TAG: 17, ICON: 19,
-  PIXEL_ART: 21, LAT: 23, LNG: 25, RADIUS_M: 27, PREFER_DECLARED_LOCATION: 29,
-  LOCATION_LABEL: 31, KEY_MATERIAL: 33, RETAIN_KEY: 35, ENCRYPTION: 37,
-  KDF_ALG: 39, KDF_SALT: 41, KDF_ITERS: 43,
-  SIGNATURE_ALGORITHM: 45, SIGNER_ID: 47, SIGNER_LABEL: 49,
+  LAT: 21, LNG: 23, RADIUS_M: 25, PREFER_DECLARED_LOCATION: 27, LOCATION_LABEL: 29,
+  SIGNATURE_ALGORITHM: 31, SIGNER_ID: 33, SIGNER_LABEL: 35,
   IN_REPLY_TO: 51, CREATED_AT: 53, SOURCE_URL: 55,
 };
 // Content-Body keys (SPEC §3.2)
 const BK = { CONTENT: 1, SIGNATURE: 3, SIGNER_PUBKEY: 5 };
+// Paper-Preview keys (SPEC §3.3)
+const PPK = {
+  ROOT_HASH: 1, HINT: 3, SET: 5, SLUG: 7, DOMAIN: 9, STEP: 11,
+  COLLECTION_ID: 13, COLLECTION_LABEL: 15, COLLECTION_TAG: 17, ICON: 19,
+  LAT: 21, LNG: 23, RADIUS_M: 25, PREFER_DECLARED_LOCATION: 27, LOCATION_LABEL: 29,
+  SIGNATURE_ALGORITHM: 31, SIGNER_ID: 33, SIGNER_LABEL: 35,
+  IN_REPLY_TO: 37, CREATED_AT: 39, SOURCE_URL: 41,
+  TITLE: 43, DESCRIPTION: 45,
+};
+// Paper-Body keys (SPEC §3.4)
+const PBK = { FILES: 1, RELATED: 3, SIGNATURE: 5, SIGNER_PUBKEY: 7 };
 // Split Wrapper keys
 const SK = { GROUP_ID: 2, INDEX: 4, COUNT: 6, DATA: 8, TOTAL: 9, PARITY_FLAG: 11 };
 // Compress Wrapper keys
@@ -547,10 +566,201 @@ async function testMultiCode(label, { hint, filename, mimeType, rawBytes, compre
   ok(`${label} assembly + integrity check`);
 }
 
+// ── Paper QDEF Record encode (SPEC §3.3-§3.4) ────────────────────────────
+const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([1, 31, 33, 35]);
+const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]);
+
+function buildPaperPreview(f) {
+  return cborRecord(TYPE_PAPER_PREVIEW, {
+    1: f.rootHash, 3: f.hint, 5: f.set, 7: f.slug, 9: f.domain,
+    11: f.step, 13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag,
+    19: f.icon,
+    21: f.lat != null ? cfloat(f.lat) : undefined, 23: f.lng != null ? cfloat(f.lng) : undefined,
+    25: f.radiusM != null ? cfloat(f.radiusM) : undefined,
+    27: f.preferDeclaredLocation, 29: f.locationLabel,
+    31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
+    37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
+    43: f.title, 45: f.description,
+  });
+}
+function buildPaperBody(f) {
+  return cborRecord(TYPE_PAPER_BODY, {
+    1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
+  });
+}
+function stripKeys(mapBytes, keysToStrip) {
+  let pos = 0;
+  function rb() { return mapBytes[pos++]; }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) return rb() * 256 + rb();
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function skipValue() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    if (major === 2 || major === 3) { pos += a; }
+    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
+    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
+    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
+  }
+  const head = rb();
+  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
+  const count = readArg(head & 0x1F);
+  const survivors = [];
+  for (let i = 0; i < count; i++) {
+    const pairStart = pos;
+    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
+    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
+    skipValue();
+    if (!keysToStrip.has(key)) survivors.push(mapBytes.slice(pairStart, pos));
+  }
+  const newHeader = [];
+  writeHead(newHeader, 5, survivors.length);
+  return concatBytes(new Uint8Array(newHeader), ...survivors);
+}
+function paperSignedMessageHash(preview, bodyPlain) {
+  const unsignedPreview = stripKeys(preview, PAPER_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = stripKeys(bodyPlain, PAPER_BODY_SIGNATURE_KEYS);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
+}
+
+async function createPaper({ hint, files, related, collectionId, maxCodeDataBytes = Infinity }) {
+  const rootHashPlaceholder = new Uint8Array(8);
+  let preview = buildPaperPreview({
+    rootHash: rootHashPlaceholder, hint, collectionId, files: files.length,
+  });
+  const bodyPlainBytes = buildPaperBody({ files, related });
+  const bodyPlain = cborDecodeSequencePrefix(bodyPlainBytes, 1).items[0];
+  const bodyForWire = await compressWrap(bodyPlainBytes);
+
+  const totalBytes = bodyForWire.length;
+  if (totalBytes <= maxCodeDataBytes) {
+    const rootHash = await paperSignedMessageHash(preview, bodyPlainBytes);
+    preview = buildPaperPreview({
+      rootHash, hint, collectionId, files: files.length,
+    });
+    const codes = [{ raw: concatBytes(preview, bodyForWire), totalBytes, index: 0, count: 1, isParity: false }];
+    return { rootHash, codes, preview, bodyPlain };
+  }
+
+  const fragmentCount = Math.ceil(totalBytes / maxCodeDataBytes);
+  const groupId = await sha256first8(bodyForWire);
+  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, false);
+  const codes = fragments.map((frag, i) => ({
+    raw: concatBytes(preview, frag), totalBytes, index: i, count: fragmentCount, isParity: false,
+  }));
+
+  const rootHash = await paperSignedMessageHash(preview, bodyPlainBytes);
+  const finalPreview = buildPaperPreview({
+    rootHash, hint, collectionId, files: files.length,
+  });
+  for (let i = 0; i < codes.length; i++) {
+    codes[i].raw = concatBytes(finalPreview, fragments[i]);
+  }
+  return { rootHash, codes, preview: finalPreview, bodyPlain };
+}
+
+// ── Paper QDEF Record decode ──────────────────────────────────────────────
+async function assemblePaper(codes) {
+  const firstBytes = codes[0].raw;
+  const { record: previewRecord, trailing: afterPreview } = parseRecordPrefix(firstBytes);
+  const rootHash = previewRecord[PPK.ROOT_HASH];
+
+  const { record: secondRecord } = parseRecordPrefix(afterPreview);
+  const typeId = secondRecord[0];
+
+  let bodyPlain;
+  if (typeId === TYPE_PAPER_BODY) {
+    bodyPlain = secondRecord;
+  } else if (typeId === TYPE_COMPRESS) {
+    const compressed = secondRecord[CK.PAYLOAD];
+    const decompressed = await zlibDecompress(compressed);
+    const { record: innerRecord } = parseRecordPrefix(decompressed);
+    bodyPlain = innerRecord;
+  } else if (typeId === TYPE_SPLIT) {
+    const fragments = [];
+    for (const code of codes) {
+      const { trailing: afterPreview2 } = parseRecordPrefix(code.raw);
+      const { record: split } = parseRecordPrefix(afterPreview2);
+      fragments.push(split);
+    }
+    fragments.sort((a, b) => a[SK.INDEX] - b[SK.INDEX]);
+    const totalCount = fragments[0][SK.COUNT];
+    if (fragments.length !== totalCount) throw new Error(`Fragment count mismatch: expected ${totalCount}, got ${fragments.length}`);
+    const assembled = concatBytes(...fragments.map(f => f[SK.DATA]));
+    const { record: innerRecord } = parseRecordPrefix(assembled);
+    if (innerRecord[0] === TYPE_COMPRESS) {
+      const decompressed = await zlibDecompress(innerRecord[CK.PAYLOAD]);
+      const { record: innerInner } = parseRecordPrefix(decompressed);
+      bodyPlain = innerInner;
+    } else {
+      bodyPlain = innerRecord;
+    }
+  } else {
+    throw new Error(`Unexpected Paper second record typeId: ${typeId}`);
+  }
+
+  return { preview: previewRecord, bodyPlain, rootHash };
+}
+
+async function testPaperSingleCode(label, opts, width) {
+  const { hint, files, related, collectionId } = opts;
+  const result = await createPaper({ hint, files, related, collectionId, maxCodeDataBytes: Infinity });
+  const code = result.codes[0];
+  const uri = 'tagdrop:' + base41Encode(code.raw);
+  const pngBuf = await renderTextQr(uri, width);
+  const decoded = await scanQr(pngBuf);
+  if (!decoded) return bad(label, 'no barcode decoded');
+  const decodedUri = Buffer.from(decoded.bytes).toString('utf8');
+  if (decodedUri !== uri) return bad(label, 'decoded URI text does not match');
+  try {
+    const rawBytes = base41Decode(decodedUri.slice('tagdrop:'.length));
+    const decodedCodes = [{ raw: rawBytes }];
+    const assembled = await assemblePaper(decodedCodes);
+    if (toHex(assembled.rootHash) !== toHex(result.rootHash)) return bad(label, 'rootHash mismatch');
+    if (!cborEqual(assembled.bodyPlain[PBK.FILES], result.bodyPlain[PBK.FILES])) return bad(label, 'files mismatch');
+    ok(`${label} (URI ${uri.length} chars, ${width}px, text-mode QR)`);
+  } catch (e) { bad(label, e.message); }
+}
+
+async function testPaperMultiCode(label, opts, width) {
+  const { hint, files, related, collectionId, maxCodeDataBytes } = opts;
+  const result = await createPaper({ hint, files, related, collectionId, maxCodeDataBytes });
+  const decodedCodes = [];
+  for (const code of result.codes) {
+    const pngBuf = await renderByteQr(code.raw, width);
+    const decoded = await scanQr(pngBuf);
+    if (!decoded) return bad(label, `QR decode failed for code ${code.index}`);
+    decodedCodes.push({ raw: decoded.bytes });
+  }
+  decodedCodes.sort((a, b) => {
+    const { trailing: ta } = parseRecordPrefix(a.raw);
+    const { record: sa } = parseRecordPrefix(ta);
+    const { trailing: tb } = parseRecordPrefix(b.raw);
+    const { record: sb } = parseRecordPrefix(tb);
+    return sa[SK.INDEX] - sb[SK.INDEX];
+  });
+  ok(`${label} ${result.codes.length} code(s) (${result.codes[0].totalBytes} assembled bytes, ${width}px, binary-mode QR)`);
+  try {
+    const assembled = await assemblePaper(decodedCodes);
+    if (toHex(assembled.rootHash) !== toHex(result.rootHash)) return bad(label, 'rootHash mismatch');
+    if (!cborEqual(assembled.bodyPlain[PBK.FILES], result.bodyPlain[PBK.FILES])) return bad(label, 'files mismatch');
+    ok(`${label} assembly + rootHash check`);
+  } catch (e) { bad(label, e.message); }
+}
+
 function bytesEqual(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+function cborEqual(a, b) {
+  const ea = [], eb = [];
+  cborValue(ea, a); cborValue(eb, b);
+  return bytesEqual(new Uint8Array(ea), new Uint8Array(eb));
 }
 
 // ── Run ──────────────────────────────────────────────────────────────────
@@ -606,6 +816,39 @@ for (const w of WIDTHS) {
   await testMultiCode('Multi-code', {
     hint: 'spring trail story', filename: 'trail-story.html', mimeType: 'text/html',
     rawBytes: new TextEncoder().encode(largeHtml), compress: true, maxSectorDataBytes: 600,
+  }, w);
+}
+
+// ── Paper QDEF round-trip tests ──────────────────────────────────────────
+// Small Paper: a 2-file collection with short text files — fits in one QR.
+const smallFiles = [
+  { slug: 'hello.txt', sha256: await sha256first8(new TextEncoder().encode('hello world')), size: 11, mimeType: 'text/plain' },
+  { slug: 'note.txt',  sha256: await sha256first8(new TextEncoder().encode('a short note')),  size: 12, mimeType: 'text/plain' },
+];
+for (const w of WIDTHS) {
+  console.log(`Small Paper (${smallFiles.length} files, single-code, DEFLATE-compressed):`);
+  await testPaperSingleCode('Paper single-code', {
+    hint: 'small collection', files: smallFiles, collectionId: 'example.org/test',
+  }, w);
+}
+
+// Large Paper: many files with long filenames — too big for one QR, requires splitting.
+const largeFiles = [];
+for (let i = 0; i < 40; i++) {
+  const slug = `trail-stop-${String(i).padStart(2, '0')}-detailed-description-with-long-name.txt`;
+  const body = `Content for trail stop ${i}. `.repeat(10);
+  largeFiles.push({
+    slug,
+    sha256: await sha256first8(new TextEncoder().encode(body)),
+    size: body.length,
+    mimeType: 'text/plain',
+  });
+}
+for (const w of WIDTHS) {
+  console.log(`Large Paper (${largeFiles.length} files, multi-code, DEFLATE-compressed):`);
+  await testPaperMultiCode('Paper multi-code', {
+    hint: 'large trail collection', files: largeFiles, collectionId: 'example.org/trail',
+    maxCodeDataBytes: 600,
   }, w);
 }
 
