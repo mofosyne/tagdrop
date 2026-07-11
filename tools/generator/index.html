@@ -607,12 +607,25 @@ function base41Encode(u8) {
 }
 
 // ── Minimal CBOR encoder ──────────────────────────────────────────────────
+// `n` may be a Number or a BigInt — internally BigInt-ified either way, so
+// a 64-bit QDEF Record Type ID (SPEC.md §2.1) and an ordinary small field
+// both go through the identical path. Plain 32-bit bitwise ops (the old
+// `>>>`/`&` approach) silently misencode anything past 2^32 — this is the
+// exact bug class flagged upstream in mofosyne/qdef's own reference
+// prototype (FINDINGS.md #14) after checking a real 64-bit Type ID against
+// it, not a hypothetical concern.
 function writeHead(out, major, n) {
+  n = typeof n === 'bigint' ? n : BigInt(n);
   const m = major << 5;
-  if      (n <= 23)       { out.push(m | n); }
-  else if (n <= 0xFF)     { out.push(m | 24, n); }
-  else if (n <= 0xFFFF)   { out.push(m | 25, n >> 8, n & 0xFF); }
-  else { out.push(m | 26, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF); }
+  if (n < 24n) { out.push(m | Number(n)); }
+  else if (n < 256n) { out.push(m | 24, Number(n)); }
+  else if (n < 65536n) { out.push(m | 25, Number(n >> 8n), Number(n & 0xffn)); }
+  else if (n < 4294967296n) {
+    out.push(m | 26, Number((n >> 24n) & 0xffn), Number((n >> 16n) & 0xffn), Number((n >> 8n) & 0xffn), Number(n & 0xffn));
+  } else {
+    out.push(m | 27);
+    for (let shift = 56n; shift >= 0n; shift -= 8n) out.push(Number((n >> shift) & 0xffn));
+  }
 }
 
 // Always written as major type 7, additional info 27 (8-byte IEEE 754 double).
@@ -630,6 +643,7 @@ function cborValue(out, v) {
   if (v === null || v === undefined) return;
   if (v && v.__float64) { cborFloat64(out, v.value); }
   else if (typeof v === 'boolean') { out.push(v ? 0xF5 : 0xF4); } // true (0xf5) / false (0xf4)
+  else if (typeof v === 'bigint') { writeHead(out, 0, v); }
   else if (typeof v === 'number') { writeHead(out, 0, v); }
   else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
   else if (typeof v === 'string') {
@@ -655,21 +669,13 @@ function cborMap(pairs) {
 // Nested map (inside an array value)
 function subMap(pairs) { return { __map: true, pairs }; }
 
-// ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
-// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
-// Every code — standalone or one of several pieces — is a "sector" (SPEC §4.1): a
-// four-item CBOR Sequence carrying its slice of a payload's reassembled stream
-// (concatenated sector_bytes, SPEC §4.2): CBOR(core_meta_item) || CBOR(bulky_meta_item) || content.
-const VERSION = 1;
-const TYPE_CONTENT = 0, TYPE_PAPER = 1;
-
 function cborUInt(n) {
   const out = [];
   writeHead(out, 0, n);
   return new Uint8Array(out);
 }
 
-// A raw top-level CBOR byte-string item (major type 2) — e.g. a sector's sector_bytes.
+// A raw top-level CBOR byte-string item (major type 2).
 function cborBytesItem(bytes) {
   const out = [];
   writeHead(out, 2, bytes.length);
@@ -685,7 +691,112 @@ function concatBytes(...arrays) {
   return out;
 }
 
-// part_meta (SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
+// ── QDEF Records (SPEC.md §2's "Relationship to QDEF") ────────────────────
+// A field object's keys are always encoded in ascending numeric order —
+// SPEC.md's fixed, specified key-encoding order (§2.2) — rather than
+// whatever order a caller happened to list them in, the way the old
+// cborMap(pairs)-array pattern required getting right by convention.
+function cborFieldMap(fields) {
+  const keys = Object.keys(fields).filter(k => fields[k] !== null && fields[k] !== undefined).map(Number).sort((a, b) => a - b);
+  const out = [];
+  writeHead(out, 5, keys.length);
+  for (const k of keys) { writeHead(out, 0, k); cborValue(out, fields[k]); }
+  return new Uint8Array(out);
+}
+
+// A QDEF Record (SPEC.md §2.1/§3): cborFieldMap with key 0 = typeId.
+function cborRecord(typeId, fields) {
+  return cborFieldMap({ 0: typeId, ...fields });
+}
+
+// QDEF Record Type IDs. SPLIT/COMPRESS stay plain Numbers (small, well
+// under Number.MAX_SAFE_INTEGER); the four TagDrop Type IDs are BigInt
+// (SPEC.md §2.1 — 64-bit CSPRNG values in QDEF's private-use tier).
+const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
+const TYPE_CONTENT_PREVIEW = 11040522420225562824n;
+const TYPE_CONTENT_BODY = 16141970035994251452n;
+const TYPE_PAPER_PREVIEW = 11467060725844413781n;
+const TYPE_PAPER_BODY = 3662944544912906201n;
+
+// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 3) — wraps `bytes`
+// DEFLATE-compressed. Async: zlibCompress uses CompressionStream.
+async function compressWrap(bytes) {
+  return cborRecord(TYPE_COMPRESS, { 2: await zlibCompress(bytes) });
+}
+
+/**
+ * QDEF Split Wrapper Records (QDEF-SPEC.md §4.1 Type 2, SPEC.md §5) —
+ * fragments `bytes` into `fragmentCount` pieces of ceil(total/count) each
+ * (every fragment but the last the same length), stamped with `groupId`
+ * (a content hash of `bytes`, computed by the caller) and, if `withParity`,
+ * one appended full-XOR parity fragment at index == fragmentCount that
+ * recovers any single lost fragment (SPEC.md §5's redundancy scheme).
+ */
+function splitFragments(bytes, groupId, fragmentCount, withParity) {
+  const total = bytes.length;
+  const chunkLen = Math.ceil(total / fragmentCount);
+  const fragments = [];
+  for (let i = 0; i < fragmentCount; i++) {
+    const start = Math.min(i * chunkLen, total);
+    const end = Math.min(start + chunkLen, total);
+    fragments.push(cborRecord(TYPE_SPLIT, {
+      2: groupId, 4: i, 6: fragmentCount, 8: bytes.slice(start, end),
+      9: total, 11: withParity ? 1 : undefined,
+    }));
+  }
+  if (withParity) {
+    const parity = new Uint8Array(chunkLen);
+    for (let i = 0; i < fragmentCount; i++) {
+      const start = Math.min(i * chunkLen, total);
+      const end = Math.min(start + chunkLen, total);
+      const slice = bytes.slice(start, end);
+      for (let j = 0; j < slice.length; j++) parity[j] ^= slice[j];
+    }
+    fragments.push(cborRecord(TYPE_SPLIT, { 2: groupId, 4: fragmentCount, 6: fragmentCount, 8: parity, 9: total, 11: 1 }));
+  }
+  return fragments;
+}
+
+// A code's `tagdrop:` URI (SPEC.md §2 — no QDEF magic header on this path;
+// the `tagdrop:` scheme itself is the dispatch signal), plus its raw
+// Record-Sequence bytes for binary/byte-mode QR rendering. Takes a code
+// object shaped `{raw, cacheId, totalBytes, index, count}` (createContentSectors
+// et al.'s return shape) — mirrors the old encodeSector(sector) call pattern
+// so downstream rendering code only needs `.partMeta.X` flattened to `.X`,
+// not restructured.
+function encodeCode(code) {
+  return { uri: 'tagdrop:' + base41Encode(code.raw), raw: code.raw, code };
+}
+
+// Content-Preview / Content-Body Records (SPEC.md §3.1-§3.2).
+// Content-Preview's full field set (SPEC.md §3.1).
+function buildContentPreview(f) {
+  return cborRecord(TYPE_CONTENT_PREVIEW, {
+    1: f.cacheId, 3: f.hint, 5: f.mimeType, 7: f.filename, 9: f.title, 11: f.description,
+    13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag, 19: f.icon,
+    21: f.pixelArt, 23: f.lat != null ? cfloat(f.lat) : undefined, 25: f.lng != null ? cfloat(f.lng) : undefined,
+    27: f.radiusM != null ? cfloat(f.radiusM) : undefined, 29: f.preferDeclaredLocation, 31: f.locationLabel,
+    33: f.keyMaterial, 35: f.retainKey, 37: f.encryption,
+    39: f.kdfAlg, 41: f.kdfSalt, 43: f.kdfIters,
+    45: f.signatureAlgorithm, 47: f.signerId, 49: f.signerLabel,
+    51: f.inReplyTo, 53: f.createdAt, 55: f.sourceUrl,
+  });
+}
+function buildContentBody(f) {
+  return cborRecord(TYPE_CONTENT_BODY, { 1: f.content, 3: f.signature, 5: f.signerPubkey });
+}
+
+// ── Old CBOR-sequence envelope (SPEC v1) — Paper-only for now ─────────────
+// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
+// Paper Layout hasn't been ported to the new QDEF Preview/Body Record shape yet (CLAUDE.md/
+// "Generator's Content/Single-File path first" — Paper is a deliberately deferred later pass),
+// so createPaper/createPaperAutoSized and the Paper-tab rendering code below still build and
+// encode this older four-item envelope directly. Kept alongside (not merged with) the new
+// cborRecord-based Content path above.
+const VERSION = 1;
+const TYPE_CONTENT = 0, TYPE_PAPER = 1;
+
+// part_meta (old SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
 // 0-based sector_index, sector_count, parity_scheme (only on a parity sector, at index
 // >= sector_count — see paritySector below).
 function partMetaMap(pm) {
@@ -698,8 +809,8 @@ function partMetaMap(pm) {
   ]);
 }
 
-// A sector's four-item CBOR sequence (SPEC §2) — Base41-encoded for `tagdrop:`, or
-// carried raw on byte carriers (§13, e.g. a binary/byte-mode QR).
+// A sector's four-item CBOR sequence (old SPEC §2) — Base41-encoded for `tagdrop:`, or
+// carried raw on byte carriers (e.g. a binary/byte-mode QR).
 function sectorCbor(sector) {
   return concatBytes(
     cborUInt(VERSION), cborUInt(sector.type),
@@ -716,7 +827,7 @@ function encodeSector(sector) {
 /**
  * Slices a reassembled `stream` into data sectors of at most `maxSectorDataBytes` bytes
  * each, stamped with `cacheId` (null for a key-only code) and its sector_index/
- * sector_count/total_bytes in part_meta (SPEC §4.1). Every sector but the last is the
+ * sector_count/total_bytes in part_meta (old SPEC §4.1). Every sector but the last is the
  * same length. Mirrors Kotlin TagDropCodec.sectorize verbatim.
  */
 function sectorize(type, cacheId, stream, maxSectorDataBytes) {
@@ -738,7 +849,7 @@ function sectorize(type, cacheId, stream, maxSectorDataBytes) {
 }
 
 /**
- * Builds the single full-XOR parity sector (parity_scheme 1, SPEC §5) for dataSectors — the
+ * Builds the single full-XOR parity sector (parity_scheme 1, old SPEC §5) for dataSectors — the
  * byte-wise XOR of every data sector's sectorBytes, each implicitly zero-padded to the longest
  * before XOR-ing. Placed at sector_index == sector_count, it recovers any one lost data sector.
  * dataSectors must be a complete 0..sector_count-1 run of one payload. Mirrors Kotlin
@@ -760,11 +871,6 @@ function paritySector(dataSectors) {
     },
     sectorBytes: parity,
   };
-}
-
-// Concatenates CBOR(core_meta_item) || CBOR(bulky_meta_item) || content (SPEC §4.2).
-function buildStream(corePairs, bulkyPairs, content) {
-  return concatBytes(cborMap(corePairs), cborMap(bulkyPairs), content);
 }
 
 // ── CBOR debug (dev tool: 🔍 Inspect CBOR button) ──────────────────────────
@@ -808,13 +914,23 @@ function cborDecodeSequencePrefix(bytes, n) {
     if (info === 24) return rb();
     if (info === 25) { return rb() * 256 + rb(); }
     if (info === 26) { let n2 = 0; for (let i = 0; i < 4; i++) n2 = n2 * 256 + rb(); return n2; }
-    if (info === 27) { return rbs(8); } // float64: 8 raw bytes, decoded in readVal
+    if (info === 27) { return rbs(8); } // 8 raw bytes: float64 (major 7) or uint64 (major 0), decoded in readVal
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
   function readVal() {
     const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
     switch (major) {
-      case 0: return a;
+      case 0: {
+        // 8-byte argument (info 27): a full uint64 — e.g. a QDEF Record Type ID
+        // (SPEC.md §2.1). BigInt when it doesn't fit a JS Number losslessly,
+        // plain Number otherwise (so ordinary small fields stay `===`-comparable).
+        if (a instanceof Uint8Array) {
+          let n = 0n;
+          for (const byte of a) n = (n << 8n) | BigInt(byte);
+          return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n;
+        }
+        return a;
+      }
       case 2: return rbs(a);
       case 3: return new TextDecoder().decode(rbs(a));
       case 4: return Array.from({length: a}, readVal);
@@ -955,11 +1071,78 @@ function stripTrailingKeys(mapBytes, trailingKeysToStrip) {
 }
 
 /**
+ * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with
+ * every pair whose key is in [keysToStrip] removed, regardless of position — unlike
+ * stripTrailingKeys above, which assumes the stripped keys form a trailing run (true only
+ * by convention, when a caller manually lists them last in the source pairs array).
+ * cborFieldMap/cborRecord (used by the new Content-Preview/Content-Body builders) always
+ * sort keys ascending (SPEC.md §2.2's fixed key-encoding order), so a higher-numbered
+ * field (e.g. `source_url`, key 55) can legitimately sort after the signature fields
+ * (45/47/49) — the trailing-run assumption doesn't hold there, so this walks and keeps
+ * every surviving pair by its own byte range instead of just truncating a suffix.
+ */
+function stripKeys(mapBytes, keysToStrip) {
+  let pos = 0;
+  function rb() { return mapBytes[pos++]; }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) return rb() * 256 + rb();
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  function skipValue() {
+    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+    if (major === 2 || major === 3) { pos += a; }
+    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
+    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
+    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
+  }
+  const head = rb();
+  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
+  const count = readArg(head & 0x1F);
+
+  const survivors = [];
+  for (let i = 0; i < count; i++) {
+    const pairStart = pos;
+    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
+    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
+    skipValue();
+    if (!keysToStrip.has(key)) survivors.push(mapBytes.slice(pairStart, pos));
+  }
+  const newHeader = [];
+  writeHead(newHeader, 5, survivors.length);
+  return concatBytes(new Uint8Array(newHeader), ...survivors);
+}
+
+const CONTENT_PREVIEW_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
+const CONTENT_BODY_SIGNATURE_KEYS = new Set([3, 5]); // signature, signer_pubkey
+
+/**
+ * SPEC.md §10's "signed message" for a Content payload: SHA-256(Preview' || Body'), with
+ * §10's own fields stripped from each — the identical computation whether or not this
+ * payload ends up signed (§10: "signing happens last and feeds back into nothing").
+ * `bodyPlain` MUST be the logical (pre-Compress-wrap) bytes — never the wire-transmitted
+ * ones — so the signature is independent of whether/how this payload happens to be
+ * compressed (the exact bug this project's own prototype caught and fixed, see
+ * tools/test-qdef-roundtrip.mjs).
+ */
+function contentSignedMessageHash(preview, bodyPlain) {
+  const unsignedPreview = stripKeys(preview, CONTENT_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = stripKeys(bodyPlain, CONTENT_BODY_SIGNATURE_KEYS);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
+}
+
+/**
  * SPEC §10's "signed message": the full (untruncated) SHA-256 of core_meta_item ||
  * bulky_meta_item || content, with Verified Authorship's own keys (32-36) stripped back out
  * first. Mirrors Kotlin TagDropCodec.signedMessageHash and the reader's copy. Called here on
  * an UNSIGNED build (nothing to strip, so this is just sha256(stream)) as the "hash the
  * unsigned build, then sign" half of the encode-side flow — see signContentSectors below.
+ *
+ * Still used by Paper signing (createPaper, unchanged this pass) — see
+ * contentSignedMessageHash above for the new Preview/Body equivalent used by Content.
  *
  * The key sets are built inline (not module-level consts) because `K` — defined later in this
  * file — isn't initialized yet when this function's own module-level code would otherwise run;
@@ -1160,6 +1343,30 @@ async function signSectors(buildFn, args, identity, includePubkey = true) {
   const placeholderSectors = Array.isArray(placeholderResult) ? placeholderResult : placeholderResult.sectors;
   const placeholderStream = concatBytes(...placeholderSectors.map(s => s.sectorBytes));
   const hash = await signedMessageHash(placeholderStream);
+  const { ml_dsa44 } = await loadMlDsa();
+  const signature = ml_dsa44.sign(hash, identity.secretKey);
+  return buildFn({ ...placeholderArgs, signature });
+}
+
+/**
+ * Content-specific counterpart to signSectors above, for the new Preview/Body shape
+ * (createContentSectorsAutoSized's {codes, preview, bodyPlain} return, contentSignedMessageHash's
+ * Preview'||Body' formula, SPEC.md §10) — same placeholder-then-strip discipline and same
+ * reasoning (see signSectors' doc comment above for why a placeholder build, not two
+ * independent unsigned/signed builds, is required). Paper's own signing keeps using the
+ * generic signSectors above, unchanged this pass.
+ */
+async function signContentSectors(buildFn, args, identity, includePubkey = true) {
+  const placeholderArgs = {
+    ...args,
+    signatureAlgorithm: 1,
+    signature: new Uint8Array(2420), // ML-DSA-44 signature length (SPEC §10) — value doesn't matter, only length
+    signerPubkey: includePubkey ? identity.publicKey : null,
+    signerId: identity.signerId,
+    signerLabel: identity.label || null,
+  };
+  const placeholderResult = await buildFn(placeholderArgs);
+  const hash = await contentSignedMessageHash(placeholderResult.preview, placeholderResult.bodyPlain);
   const { ml_dsa44 } = await loadMlDsa();
   const signature = ml_dsa44.sign(hash, identity.secretKey);
   return buildFn({ ...placeholderArgs, signature });
@@ -1385,11 +1592,14 @@ async function decryptAesGcm(ciphertextAndTag, key, nonce) {
  * AES-256-GCM-encrypted under a fresh nonce.
  */
 async function encryptOverrideMap(override, key, compression) {
+  // Override map's own local key namespace (SPEC.md §3.2) — 1=hint,
+  // 3=mime_type, 5=content, 7=filename. Independent of Content-Preview's
+  // numbering; this is a nested structure, not a top-level Record.
   const cbor = cborMap([
-    [K.HINT,     override.hint ?? null],
-    [K.MIME,     override.mimeType ?? null],
-    [K.CONTENT,  override.content ?? null],
-    [K.FILENAME, override.filename ?? null],
+    [1, override.hint ?? null],
+    [3, override.mimeType ?? null],
+    [5, override.content ?? null],
+    [7, override.filename ?? null],
   ]);
   const plaintext = compression === 1 ? await zlibCompress(cbor) : cbor;
   const nonce = generateNonce();
@@ -1397,28 +1607,35 @@ async function encryptOverrideMap(override, key, compression) {
 }
 
 /**
- * Builds the sector(s) of a Content payload (`type` 0) — mirrors Kotlin
- * TagDropCodec.createContentSectors, plus a web-generator-only `kdfPassphrase` mode (the
- * Kotlin app has no encode-side passphrase support — see CLAUDE.md). The reassembled
- * stream is CBOR(core_meta_item) || CBOR(bulky_meta_item) || content, split into sectors
- * of at most `maxSectorDataBytes` each — one sector for content that fits, more for
- * larger payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added whenever more than
- * one sector is needed (required for sector_count > 1, SPEC §3) — without it, a decoder
- * has no way to detect a substituted/forged sector during reassembly.
+ * Builds the code(s) of a Content payload — mirrors Kotlin TagDropCodec (once ported;
+ * see SPEC.md §15's implementation-status note), plus a web-generator-only
+ * `kdfPassphrase` mode (the Kotlin app has no encode-side passphrase support — see
+ * CLAUDE.md). Builds Content-Preview + Content-Body (SPEC.md §3.1-§3.2, §4.1);
+ * Body is Compress-wrapped if `compress`, then Split-wrapped (§5) — with an
+ * optional appended parity fragment (`parity`) — whenever it doesn't fit
+ * `maxSectorDataBytes` alongside Preview on one code. Preview is repeated
+ * identically on every returned code (§5.1).
  *
- * `hint`/`filename`/`mimeType`/`rawBytes` are the clear map's own fields — shown until a
- * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
- * or genuine unremarkable content with no relation to `override`.
+ * `hint`/`filename`/`mimeType`/`rawBytes` are Preview's own fields / Body's plain
+ * `content` — shown until a hidden override map, if any, is unlocked (SPEC §9). They
+ * may be a cover story, a decoy, or genuine unremarkable content with no relation to
+ * `override`.
  *
- * If `override` is given, it's AES-256-GCM-encrypted into the content slot (SPEC §9);
- * `cacheId` becomes random rather than content-addressed. Supply exactly one of:
+ * If `override` is given, it's AES-256-GCM-encrypted into Body's `content` field
+ * (SPEC §9); `cacheId` becomes random rather than content-addressed, and the outer
+ * Body is never also Compress-wrapped (the encrypted blob is already high-entropy).
+ * Supply exactly one of:
  *   - `encryptionKey` (32-byte Uint8Array) — key-code mode, generates a separate key QR
  *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_alg/
- *     kdf_salt in the clear map so the reader knows to prompt for a passphrase
+ *     kdf_salt in Preview so the reader knows to prompt for a passphrase
  *
  * `signatureAlgorithm`/`signature`/`signerPubkey`/`signerId`/`signerLabel` are Verified
  * Authorship fields (SPEC §10) — embedded opaquely, exactly as given; this tool does not
  * compute a signature itself (no ML-DSA-44 implementation is wired up yet).
+ *
+ * Returns an array of `{raw, cacheId, totalBytes, index, count, isParity}` — `raw` is
+ * one code's complete Record-Sequence bytes (encodeCode(code) turns it into a
+ * `tagdrop:` URI). A single-code payload is just a one-element array.
  */
 async function createContentSectors({
   hint, filename, mimeType, rawBytes, compress,
@@ -1428,11 +1645,8 @@ async function createContentSectors({
   lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
   inReplyTo, title, createdAt, pixelArt = false,
   signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
-  maxSectorDataBytes = Infinity,
+  maxSectorDataBytes = Infinity, parity = false,
 }) {
-  let compression = null, compressedContent = rawBytes;
-  if (compress) { compressedContent = await zlibCompress(rawBytes); compression = 1; }
-
   let cacheId, contentSlot, encryption = null;
   let kdfAlg = null, kdfSalt = null, kdfIters = null;
   if (override) {
@@ -1443,86 +1657,83 @@ async function createContentSectors({
       kdfAlg   = 1;
       key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, kdfIters);
     }
-    contentSlot = await encryptOverrideMap(override, key, compression || 0);
+    contentSlot = await encryptOverrideMap(override, key, compress ? 1 : 0);
     cacheId = randomCacheId();
     encryption = declareEncryption ? 1 : null;
   } else {
-    contentSlot = compressedContent;
+    contentSlot = rawBytes;
     cacheId = await sha256first8(rawBytes);
   }
 
-  async function core(withSha) {
-    return [
-      [K.HINT,        hint || null],
-      [K.FILENAME,    filename || null],
-      [K.MIME,        mimeType],
-      [K.COMPRESSION, compression],
-      [K.CONTENT_SHA, withSha ? await sha256(contentSlot) : null],
-      [K.ENCRYPTION,  encryption],
-      [K.COLLECTION_ID,    collectionId || null],
-      [K.COLLECTION_LABEL, collectionLabel || null],
-      [K.COLLECTION_TAG,   collectionTag || null],
-      [K.ICON,             icon || null],
-      [K.KEY_MATERIAL, keyMaterial || null],
-      [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
-      [K.KDF_ALG,  kdfAlg],
-      [K.KDF_SALT, kdfSalt],
-      // kdf_iters is the default (100000) — omit to save bytes
-      [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
-      [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
-      [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
-      [K.LOCATION_LABEL, locationLabel || null],
-      [K.IN_REPLY_TO, inReplyTo || null],
-      [K.TITLE, title || null],
-      [K.CREATED_AT, createdAt || null],
-      [K.PIXEL_ART, pixelArt ? true : null],
-      [K.SIGNATURE_ALGORITHM, signatureAlgorithm || null],
-      [K.SIGNER_ID, signerId || null],
-      [K.SIGNER_LABEL, signerLabel || null],
-    ];
-  }
-  const bulky = [
-    [K.SIGNATURE, signature || null],
-    [K.SIGNER_PUBKEY, signerPubkey || null],
-  ];
+  const preview = buildContentPreview({
+    cacheId, hint: hint || undefined, filename: filename || undefined, mimeType,
+    collectionId: collectionId || undefined, collectionLabel: collectionLabel || undefined,
+    collectionTag: collectionTag || undefined, icon: icon || undefined,
+    keyMaterial: keyMaterial || undefined, retainKey: (keyMaterial && !retainKey) ? false : undefined,
+    encryption: encryption || undefined,
+    kdfAlg: kdfAlg || undefined, kdfSalt: kdfSalt || undefined, kdfIters: kdfIters || undefined,
+    lat, lng, radiusM, preferDeclaredLocation: preferDeclaredLocation ? true : undefined,
+    locationLabel: locationLabel || undefined,
+    inReplyTo: inReplyTo || undefined, title: title || undefined, createdAt: createdAt || undefined,
+    pixelArt: pixelArt ? true : undefined,
+    signatureAlgorithm: signatureAlgorithm || undefined, signerId: signerId || undefined, signerLabel: signerLabel || undefined,
+  });
 
-  // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
-  const single = buildStream(await core(false), bulky, contentSlot);
-  const stream = single.length <= maxSectorDataBytes ? single : buildStream(await core(true), bulky, contentSlot);
-  return sectorize(TYPE_CONTENT, cacheId, stream, maxSectorDataBytes);
+  const bodyPlain = buildContentBody({ content: contentSlot, signature, signerPubkey });
+  // An encrypted override blob is already high-entropy — Compress-wrapping it
+  // on top would waste a wrapper layer for nothing (DEFLATE doesn't shrink it).
+  const bodyForWire = (compress && !override) ? await compressWrap(bodyPlain) : bodyPlain;
+
+  const totalBytes = bodyForWire.length;
+  // preview/bodyPlain (the LOGICAL, pre-Split, pre-Compress bytes) are
+  // exposed alongside `codes` so signing (signedMessageHash, SPEC.md §10)
+  // can hash them directly — not something reconstructable from `codes`
+  // alone, since Preview is repeated on every code, not sliced (§5.1).
+  if (totalBytes <= maxSectorDataBytes) {
+    return {
+      codes: [{ raw: concatBytes(preview, bodyForWire), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
+      preview, bodyPlain, cacheId,
+    };
+  }
+
+  const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
+  const groupId = await sha256first8(bodyForWire);
+  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
+  return {
+    codes: fragments.map((frag, i) => ({
+      raw: concatBytes(preview, frag), cacheId, totalBytes,
+      index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
+    })),
+    preview, bodyPlain, cacheId,
+  };
 }
 
 /**
  * Two-pass auto-sizing wrapper around createContentSectors (mirrors Android's
  * ShareQrActivity.buildFrames pattern): build with an unbounded sector size first; if the
- * single resulting sector's tagdrop: URI fits under the target's don't-bother-splitting
+ * single resulting code's tagdrop: URI fits under the target's don't-bother-splitting
  * threshold, use it as-is; otherwise rebuild the whole payload with targetSectorBytes
- * forced, producing several uniform sectors. targetSectorBytes defaults to
+ * forced, producing several uniform codes. targetSectorBytes defaults to
  * DEFAULT_SECTOR_DATA_BYTES (SPEC §6) but is overridable (e.g. from the "Target sector
  * size" input), capped at the hard MAX_SECTOR_DATA_BYTES/MAX_URI_LENGTH ceiling.
  */
 async function createContentSectorsAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
   const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createContentSectors({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first[0]).uri.length <= targetUriLength) return first;
+  if (encodeCode(first.codes[0]).uri.length <= targetUriLength) return first;
   return createContentSectors({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
 /**
- * Builds a single "key-only" Content sector (SPEC §9): carries `keyMaterial` for other
- * content, with no content/mime_type of its own and — referencing no content to address —
- * no `cache_id` in its part_meta either. Per SPEC §9's "discovery, not declaration", no
- * field says which content this key unlocks — a reader tries it against any encrypted
- * content it has cached. Mirrors Kotlin TagDropCodec.createKeyCodeSector.
+ * Builds a single "key-only" Content-Preview code (SPEC §9): carries `keyMaterial` for
+ * other content, with no content/mime_type of its own and — referencing no content to
+ * address — no `cache_id` either, and no Body Record at all. Per SPEC §9's "discovery,
+ * not declaration", no field says which content this key unlocks — a reader tries it
+ * against any encrypted content it has cached.
  */
 function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
-  const core = [
-    [K.HINT,         hint || null],
-    [K.KEY_MATERIAL, keyMaterial],
-    [K.RETAIN_KEY,   retainKey ? null : false],
-  ];
-  const stream = buildStream(core, [], new Uint8Array(0));
-  return sectorize(TYPE_CONTENT, null, stream, Infinity)[0];
+  const raw = buildContentPreview({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false });
+  return { raw, cacheId: null, totalBytes: raw.length, index: 0, count: 1, isParity: false };
 }
 
 /**
@@ -2220,7 +2431,7 @@ async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPa
   if (encryptionKey) {
     const keyHint = 'TagDrop key';
     const keySector = createKeyCodeSector({ keyMaterial: encryptionKey, hint: keyHint });
-    const keyEncoded = encodeSector(keySector);
+    const keyEncoded = encodeCode(keySector);
     try {
       await addGeneratorQrCard(grid, {
         label: escHtml(keyHint),
@@ -2257,18 +2468,19 @@ async function renderEncryptionExtras(grid, result, msgs, { encryptionKey, kdfPa
 // Renders a multi-sector result: every sector has equal status — no separate
 // manifest/chunk distinction — so each is its own "tagdrop:" QR, rendered as binary
 // (byte-mode) or text QR per the "Use binary QR for sectors" checkbox; a reader can
-// scan them in any order and reassembles via part_meta.sector_index/sector_count
-// (SPEC §4.2/§5). Also renders (if encrypted) the same key-code/reference extras as
+// scan them in any order and reassembles via the QDEF Split Wrapper's group_id/index/count
+// (SPEC §5). Also renders (if encrypted) the same key-code/reference extras as
 // the single-sector flow.
-async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result }) {
+async function renderSectorsResult(contentResult, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result }) {
   const useBinary = document.getElementById('s-binary-sectors').checked;
-  const addParity = document.getElementById('s-add-parity').checked;
-  const count = sectors.length;
-  const idHex = toHex(sectors[0].partMeta.cacheId);
+  const codes = contentResult.codes;
+  const hasParity = codes.some(c => c.isParity);
+  const count = hasParity ? codes.length - 1 : codes.length;
+  const idHex = toHex(contentResult.cacheId);
 
-  msgs.innerHTML += `<div class="warn">Content is ${sectors[0].partMeta.totalBytes} bytes — split into
+  msgs.innerHTML += `<div class="warn">Content is ${codes[0].totalBytes} bytes — split into
     ${count} sector QR codes.</div>`;
-  if (addParity) {
+  if (hasParity) {
     msgs.innerHTML += `<div class="warn">🛟 An extra parity code is included below — scanning it together with
       any ${count - 1} of the ${count} sectors above reconstructs the one you're missing.</div>`;
   }
@@ -2283,43 +2495,24 @@ async function renderSectorsResult(sectors, { encodeArgs, compress, encrypt, enc
   const grid = result.querySelector('.qr-grid');
   const nameBase = encodeArgs.hint || encodeArgs.filename || 'tagdrop';
 
-  for (const sector of sectors) {
-    const enc = encodeSector(sector);
+  for (const code of codes) {
+    const enc = encodeCode(code);
     const qrData = useBinary ? enc.raw : enc.uri;
+    const label = code.isParity ? 'Parity (recovery)' : `Sector ${code.index + 1} / ${count}`;
+    const idSuffix = code.isParity ? 'parity' : `sector${code.index + 1}`;
     try {
       await addGeneratorQrCard(grid, {
-        label: `Sector ${sector.partMeta.sectorIndex + 1} / ${count}`,
+        label,
         sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
-        badge: useBinary ? 'binary' : null,
-        badgeClass: 'binary',
-        id: `${idHex}-sector${sector.partMeta.sectorIndex + 1}`,
+        badge: code.isParity ? 'parity' : (useBinary ? 'binary' : null),
+        badgeClass: code.isParity ? 'parity' : 'binary',
+        id: `${idHex}-${idSuffix}`,
         uri: enc.uri,
         qrData,
-        slugBase: `${nameBase}-sector${sector.partMeta.sectorIndex + 1}`,
+        slugBase: `${nameBase}-${idSuffix}`,
       });
     } catch (e) {
-      msgs.innerHTML += `<div class="err">QR rendering failed for sector ${sector.partMeta.sectorIndex + 1}.</div>`;
-      return;
-    }
-  }
-
-  if (addParity) {
-    const parity = paritySector(sectors);
-    const enc = encodeSector(parity);
-    const qrData = useBinary ? enc.raw : enc.uri;
-    try {
-      await addGeneratorQrCard(grid, {
-        label: 'Parity (recovery)',
-        sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
-        badge: 'parity',
-        badgeClass: 'parity',
-        id: `${idHex}-parity`,
-        uri: enc.uri,
-        qrData,
-        slugBase: `${nameBase}-parity`,
-      });
-    } catch (e) {
-      msgs.innerHTML += `<div class="err">QR rendering failed for parity sector.</div>`;
+      msgs.innerHTML += `<div class="err">QR rendering failed for ${code.isParity ? 'parity sector' : `sector ${code.index + 1}`}.</div>`;
       return;
     }
   }
@@ -2377,6 +2570,10 @@ function buildSingleEncodeArgs() {
   const sectorSizeRaw = parseInt(document.getElementById('s-sector-size').value, 10);
   const targetSectorBytes = Number.isFinite(sectorSizeRaw)
     ? Math.min(MAX_SECTOR_DATA_BYTES, Math.max(100, sectorSizeRaw)) : DEFAULT_SECTOR_DATA_BYTES;
+  // Only takes effect when the payload actually splits into multiple codes
+  // (createContentSectors only appends a parity fragment past a single code) —
+  // harmless to always pass through.
+  const parity = document.getElementById('s-add-parity').checked;
 
   if (!text.trim()) throw new Error('Content cannot be empty.');
 
@@ -2403,7 +2600,7 @@ function buildSingleEncodeArgs() {
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-        inReplyTo, title, createdAt,
+        inReplyTo, title, createdAt, parity,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -2417,14 +2614,14 @@ function buildSingleEncodeArgs() {
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-        inReplyTo, title, createdAt,
+        inReplyTo, title, createdAt, parity,
       };
     }
   } else {
     encodeArgs = {
       hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-      inReplyTo, title, createdAt, pixelArt,
+      inReplyTo, title, createdAt, pixelArt, parity,
     };
   }
 
@@ -2466,8 +2663,8 @@ const updateSingleEstimate = debounce(async () => {
   try { built = buildSingleEncodeArgs(); }
   catch (e) { if (seq === singleEstimateSeq) showEstimate(el, e.message, true); return; }
   try {
-    const sectors = await createContentSectorsAutoSized(built.encodeArgs, built.targetSectorBytes);
-    if (seq === singleEstimateSeq) showEstimate(el, describeQrCountEstimate(sectors.length), false);
+    const contentResult = await createContentSectorsAutoSized(built.encodeArgs, built.targetSectorBytes);
+    if (seq === singleEstimateSeq) showEstimate(el, describeQrCountEstimate(contentResult.codes.length), false);
   } catch (e) {
     if (seq === singleEstimateSeq) showEstimate(el, e.message, true);
   }
@@ -2483,25 +2680,25 @@ async function generateSingle() {
   catch (e) { msgs.innerHTML = `<div class="err">${escHtml(e.message)}</div>`; return; }
   const { encodeArgs, targetSectorBytes, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType } = built;
 
-  let sectors;
+  let contentResult;
   try {
     const sign = document.getElementById('s-sign')?.checked;
     if (sign) {
       const label = document.getElementById('s-signer-label').value.trim() || null;
       const identity = await getOrCreateSigningIdentity(label);
-      sectors = await signSectors(a => createContentSectorsAutoSized(a, targetSectorBytes), encodeArgs, identity);
+      contentResult = await signContentSectors(a => createContentSectorsAutoSized(a, targetSectorBytes), encodeArgs, identity);
     } else {
-      sectors = await createContentSectorsAutoSized(encodeArgs, targetSectorBytes);
+      contentResult = await createContentSectorsAutoSized(encodeArgs, targetSectorBytes);
     }
   }
   catch (e) { msgs.innerHTML = `<div class="err">Encoding failed: ${e.message}</div>`; return; }
 
-  if (sectors.length > 1) {
-    await renderSectorsResult(sectors, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result });
+  if (contentResult.codes.length > 1) {
+    await renderSectorsResult(contentResult, { encodeArgs, compress, encrypt, encryptionKey, kdfPassphrase, hint, filename, mimeType, msgs, result });
     return;
   }
 
-  const encoded = encodeSector(sectors[0]);
+  const encoded = encodeCode(contentResult.codes[0]);
   if (encoded.uri.length > MAX_URI_LENGTH)
     msgs.innerHTML += `<div class="warn">URI is ${encoded.uri.length} chars — may not fit in one QR.
       Enable compression or reduce content size.</div>`;
@@ -2527,7 +2724,7 @@ async function generateSingle() {
       sub: `${encodeArgs.mimeType}${compress ? ' · deflate' : ''}`,
       badge: encrypt ? 'hidden content' : null,
       badgeClass: 'encrypted',
-      id: toHex(sectors[0].partMeta.cacheId),
+      id: toHex(contentResult.cacheId),
       uri: encoded.uri,
       slugBase: encodeArgs.hint || encodeArgs.filename || 'tagdrop',
     });
