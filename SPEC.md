@@ -1,6 +1,7 @@
 # TagDrop Encoding Specification
 
-**Version:** 2 (breaking redesign — see "Relationship to QDEF" below)
+**Version:** 3 (outer-framing simplification — QDEF dropped its version
+byte; see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -43,10 +44,10 @@ Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-edito
 | Carrier | Framing | Why |
 |---|---|---|
 | `tagdrop:` URI (QR alphanumeric mode) | `tagdrop:` + Base41(Record Sequence bytes) | The `tagdrop:` scheme itself is the dispatch signal — no QDEF magic header needed (QDEF-SPEC.md §1: "any application that already defines its own text/URI scheme should encode its envelope directly under that scheme, not wrap it in QDEF"). |
-| Byte-mode QR / other 2D barcode | QDEF magic + version (5 bytes) + Record Sequence bytes | No scheme, no prior dispatch signal exists — this is exactly the case QDEF's magic header earns its keep for. |
+| Byte-mode QR / other 2D barcode | QDEF magic (4 bytes) + Record Sequence bytes | No scheme, no prior dispatch signal exists — this is exactly the case QDEF's magic header earns its keep for. QDEF's outer framing carries no separate version byte (§14) — a container is just magic + CBOR Sequence, full stop. |
 | NFC NDEF | Record Sequence bytes only, as the payload of an `application/vnd.tagdrop` MIME record | NDEF's own MIME-type field is the dispatch signal, same reasoning as the URI case — carrying QDEF's magic header here would be redundant, matching QDEF-SPEC.md §2's own guidance for NFC. |
 
-This is the "near 1:1" property: an encoder builds the Record Sequence bytes once, then picks a framing based only on which carrier it's targeting — Base41-encode them, prefix them with the QDEF magic+version, or hand them to NDEF raw. Nothing about the Records' own structure changes per carrier.
+This is the "near 1:1" property: an encoder builds the Record Sequence bytes once, then picks a framing based only on which carrier it's targeting — Base41-encode them, prefix them with the QDEF magic, or hand them to NDEF raw. Nothing about the Records' own structure changes per carrier.
 
 ### 2.1 Record Types
 
@@ -1739,9 +1740,9 @@ The Record Sequence (§2; the same bytes that get Base41-encoded into the
 - **TNF:** `0x02` (MIME Media type)
 - **Type:** `application/vnd.tagdrop`
 - **Payload:** the raw Record Sequence bytes — no Base41 encoding, and no
-  QDEF magic/version prefix either: NDEF's own MIME-type field is the
-  dispatch signal, so adding QDEF's header here would be redundant (§2's
-  carrier table).
+  QDEF magic prefix either: NDEF's own MIME-type field is the dispatch
+  signal, so adding QDEF's header here would be redundant (§2's carrier
+  table).
 
 Because each Record carries its own QDEF Type ID (§2.1) in its own bytes,
 one permanent MIME type covers every TagDrop Record Type this document
@@ -1772,12 +1773,12 @@ Order matters, and so does a real limitation it introduces: Android resolves `AC
 
 The format is carrier-agnostic. Any medium that can carry a UTF-8 string
 supports the `tagdrop:` URI form. Any medium that carries raw bytes
-supports the raw Record Sequence form (with or without QDEF's magic/version
+supports the raw Record Sequence form (with or without QDEF's magic
 prefix, per §2's carrier table).
 
 | Carrier | Form | Notes |
 |---|---|---|
-| QR code | `tagdrop:` URI, alphanumeric mode; or QDEF-framed Record Sequence, byte mode | Primary target. Byte mode avoids Base41 overhead but pays QDEF's ~5-byte magic/version cost instead — denser than Base41 either way, but not human-typable; best for non-initial codes in a multi-code group, which are always camera-scanned |
+| QR code | `tagdrop:` URI, alphanumeric mode; or QDEF-framed Record Sequence, byte mode | Primary target. Byte mode avoids Base41 overhead but pays QDEF's 4-byte magic cost instead — denser than Base41 either way, but not human-typable; best for non-initial codes in a multi-code group, which are always camera-scanned |
 | Aztec code | `tagdrop:` URI | Higher density than QR at small sizes |
 | Data Matrix | `tagdrop:` URI | Better damage resistance |
 | JABCode (color) | `tagdrop:` URI or QDEF-framed Record Sequence | ~4× capacity of QR; see [jabcode/jabcode](https://github.com/jabcode/jabcode) |
@@ -1788,17 +1789,29 @@ prefix, per §2's carrier table).
 
 ## 14. Version Negotiation
 
-`version` is the second field of the outer framing (§2 — magic, then
-version, for the two carriers that have a magic header at all; for the
-`tagdrop:` URI and NFC, which have none, there is no separate version byte
-outside the Record Sequence itself, and the reader relies on QDEF's own
-per-Record-Type versioning instead, if any given Record Type ever needs it)
-— a single CBOR integer, decodable independently of everything that
-follows it, for the carriers that have one. A reader encountering an
-unsupported `version` should stop immediately and show a human-readable
-"unsupported format version" message, without attempting to decode the
-Record Sequence that follows — a future version is free to redefine
-anything about it, even to something other than CBOR.
+**No carrier framing has a physical version byte.** QDEF's own outer
+framing (the magic header used by the byte-mode QR/JABCode carrier, §2) is
+just `[4-byte magic][CBOR Sequence]` — no version field at all; the
+`tagdrop:` URI and NFC carriers never had one either, since their dispatch
+signal (the scheme, the MIME type) already does that job. TagDrop's own
+versioning lives entirely in three other mechanisms instead, each covering
+a different kind of change:
+
+- This document's own `Version:` field (top of file) — a human-facing
+  marker for "the wire shape changed," bumped when this document's own
+  Record/field definitions change incompatibly (see the version history
+  below).
+- Each Record's own QDEF Type ID (§2.1) — a reader that doesn't recognize
+  a Type ID simply doesn't understand that Record; a genuinely
+  incompatible redesign of an existing payload (Content, Paper) would
+  register new Type IDs rather than silently reinterpreting the old ones.
+- §2.2's even/odd key criticality — per-field forward compatibility inside
+  an already-recognized Record Type, without needing a version bump for
+  every additive change (see below).
+
+A reader that doesn't recognize a Record's Type ID (§2.1) skips that whole
+Record rather than guessing at its shape — the same graceful-degradation
+QDEF gives any unrecognized Record, carrier-independent.
 
 **Additive fields vs. version bumps (issue #37):** §2.2's even/odd
 criticality rule gives forward compatibility for both optional fields an
@@ -1816,17 +1829,27 @@ was under the old sectoring scheme, but not zero: any future mechanism that
 could make an old parser silently treat incomplete data as complete MUST
 still be gated by a version bump, not an additive key.
 
-*(The Preview/Body/Split/Compress structure in §2–§5 is itself exactly this
-kind of change. Strictly, it didn't *need* a version bump at all — version 1
-was still an undeployed Draft when it happened, and the rule above only
-governs changes made *after* a version has shipped real-world codes. The
-number was bumped from 1 to 2 anyway, as a clear marker that the wire shape
-changed, not because any deployed content needed protecting — nothing has
-been deployed under either number.)*
+*(The Preview/Body/Split/Compress structure in §2–§5, and later the removal
+of the outer-framing version byte itself, are both exactly this kind of
+change. Strictly, neither *needed* a version bump — this document was still
+an undeployed Draft both times, and the rule above only governs changes
+made *after* a version has shipped real-world codes. The number was bumped
+each time anyway (1 to 2, then 2 to 3), as a clear marker that the wire
+shape changed, not because any deployed content needed protecting — nothing
+has been deployed under any of the three numbers.)*
 
 Version history:
 
-**Version 2** (current) — breaking redesign onto QDEF's Record/Wrapper
+**Version 3** (current) — QDEF simplified its outer framing: no more
+version byte, just `[4-byte magic][CBOR Sequence]` (upstream design
+discussion, mofosyne/qdef). TagDrop's byte-mode QR/JABCode carrier (§2,
+§13) drops one byte per code accordingly; this document's own versioning
+story is now the three-mechanism list at the top of this section rather
+than a physical per-code field. No Record/field-level changes — §3's key
+tables, §4's Preview/Body shapes, and §5's Wrapper usage are all unchanged
+from version 2.
+
+**Version 2** — breaking redesign onto QDEF's Record/Wrapper
 primitives (§2's "Relationship to QDEF"), while version 1 was still an
 undeployed Draft (no version bump strictly required, but bumped anyway as
 a clear marker — see the note above).
@@ -1851,9 +1874,11 @@ a clear marker — see the note above).
   both), rather than left as two independently-defined computations.
 - Outer framing now differs deliberately by carrier (§2): the `tagdrop:`
   URI stays unwrapped (no QDEF magic header — the scheme itself already
-  dispatches); byte-mode QR gains QDEF's 5-byte magic+version; NFC stays
-  prefix-free (its own MIME type already dispatches). Same Record bytes
-  across all three, so an encoder builds them once and picks framing last.
+  dispatches); byte-mode QR gains QDEF's magic header (5 bytes at the
+  time — magic + version; version 3 above dropped the version byte); NFC
+  stays prefix-free (its own MIME type already dispatches). Same Record
+  bytes across all three, so an encoder builds them once and picks framing
+  last.
 - No code changes shipped yet as of this entry — see the repo's own
   tracking for implementation status; §10's "Implementation status" note
   is explicit about what's actually wired through today versus what this
@@ -1936,7 +1961,7 @@ accurate either way.
 
 **Why not extend `data:` URI syntax?** (issues #2, #4, #13) Adding parameters like `;seq-id=`, `;seq-total=`, `;crc=` to the data URI was the original approach. It fails because data: URIs are opaque to QR readers — there's no way to route them to the app by scheme. The `tagdrop:` scheme gives us OS-level routing and a clean separation between the envelope and payload.
 
-**Why a version/type envelope instead of URI path segments or per-map keys?** (version-1-era reasoning; its conclusion — self-describing bytes independent of carrier — is exactly what §2.1's per-Record Type ID now provides too, via QDEF's key-0 routing instead of a bespoke envelope) An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §12/§13) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every sector with a CBOR Sequence (RFC 8742) led by `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — made the same bytes self-describing on every carrier: Base41-encode them for `tagdrop:<base41>`, or store them raw in an NDEF record, with identical decode logic either way. It also let the URI collapse to `tagdrop:<base41>` (no `//`, no `/<type>/` segment), gave a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — cost one less byte than an equivalent `[version, type, part_meta, sector_bytes]` array. `version` lived *only* in the envelope, not redundantly inside `part_meta` too, for the same reason two fields claiming to describe the same fact can disagree — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. Version 2 (§2) keeps the "self-description belongs in the outer framing, not duplicated inside" conclusion, but the framing itself is now QDEF's magic+version (where a carrier needs one at all) plus each Record's own Type ID, rather than a TagDrop-specific 4-item envelope.
+**Why a version/type envelope instead of URI path segments or per-map keys?** (version-1-era reasoning; its conclusion — self-describing bytes independent of carrier — is exactly what §2.1's per-Record Type ID now provides too, via QDEF's key-0 routing instead of a bespoke envelope) An earlier draft put `v1/<type>/` in the URI path and a `version` key inside each payload map. That works for QR, but raw-byte carriers (NFC NDEF, JABCode raw — §12/§13) have no URI wrapper, so type/version information would either be lost or have to be guessed from which map keys happen to be present — fragile, and ambiguous for future payload types. Prefixing every sector with a CBOR Sequence (RFC 8742) led by `CBOR(version) || CBOR(type)`, 1 byte each for the foreseeable range of values — made the same bytes self-describing on every carrier: Base41-encode them for `tagdrop:<base41>`, or store them raw in an NDEF record, with identical decode logic either way. It also let the URI collapse to `tagdrop:<base41>` (no `//`, no `/<type>/` segment), gave a clean disambiguation rule against `tagdrop://<rootHash>/<slug>` navigation links (§2), and — being a sequence rather than a CBOR array — cost one less byte than an equivalent `[version, type, part_meta, sector_bytes]` array. `version` lived *only* in the envelope, not redundantly inside `part_meta` too, for the same reason two fields claiming to describe the same fact can disagree — the same class of ambiguity RFC 9112 §6.3 closes off by forbidding conflicting `Content-Length`/`Transfer-Encoding` framing in HTTP/1.1. Version 2 (§2) kept the "self-description belongs in the outer framing, not duplicated inside" conclusion, but moved self-description onto each Record's own Type ID rather than a TagDrop-specific 4-item envelope; version 3 went further and dropped the outer framing's version byte entirely (§14), since QDEF's magic header now carries no field beyond the magic itself.
 
 **Why `@` to mark a pinned hash, not `:` or triple-slash?** (issue #51) An
 earlier draft resolved `domain`/`root_hash` collisions purely by *lookup
