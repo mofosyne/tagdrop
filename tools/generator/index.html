@@ -513,6 +513,31 @@
         <small style="display:block;color:#888;margin-top:2px">Leaving latitude/longitude blank while this is set tells scanners this drop has no fixed point — they won't substitute their own GPS fix</small>
       </div>
     </div>
+    <div class="row">
+      <div style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="margin:0">
+          <input type="checkbox" id="p-sign">
+          🔏 Sign with ML-DSA-44 (SPEC §10)
+          <small style="display:block;color:#888;margin-top:2px">Post-quantum signature proving this paper came from the same private key as everything else signed under your signer ID — trust-on-first-use, like an SSH host key, not a real-world identity. Adds ~2.4–3.7 KB to the manifest.</small>
+        </label>
+      </div>
+      <div id="p-signer-label-row" style="display:none">
+        <label>Signer label <small>(optional, shown to anyone who verifies this paper)</small></label>
+        <input type="text" id="p-signer-label" placeholder="e.g. Alice's Trail">
+      </div>
+    </div>
+    <div class="row">
+      <div id="p-identity-section" style="display:none;flex-direction:column">
+        <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+          <button type="button" class="secondary" onclick="exportSigningIdentity()">⬇️ Export signing identity…</button>
+          <button type="button" class="secondary" onclick="document.getElementById('p-import-identity-file').click()">⬆️ Import signing identity…</button>
+          <input type="file" id="p-import-identity-file" accept=".json,application/json" style="display:none" onchange="importSigningIdentity(event)">
+        </div>
+        <small style="display:block;color:#888;margin-top:4px">
+          Same shared signing identity as the Single File tab — see its description there for what export/import does.
+        </small>
+      </div>
+    </div>
   </div>
 
   <div class="card controls">
@@ -669,27 +694,13 @@ function cborMap(pairs) {
 // Nested map (inside an array value)
 function subMap(pairs) { return { __map: true, pairs }; }
 
-function cborUInt(n) {
-  const out = [];
-  writeHead(out, 0, n);
-  return new Uint8Array(out);
-}
-
-// A raw top-level CBOR byte-string item (major type 2).
-function cborBytesItem(bytes) {
-  const out = [];
-  writeHead(out, 2, bytes.length);
-  bytes.forEach(b => out.push(b));
-  return new Uint8Array(out);
-}
-
 // The raw major-4 CBOR array encoding of `items` — used for Paper-Body's
 // files/related fields (SPEC §3.4 — field-value-shape rule: sub-maps live
 // inside a byte-string-encoded CBOR array, not bare at the Record level).
 // Returns the array's bytes UNWRAPPED: this becomes a map field's *value* via
 // cborFieldMap's own cborValue(out, v) call, whose Uint8Array branch already
-// wraps any Uint8Array as a byte string — wrapping here too (e.g. via
-// cborBytesItem) would double that header and corrupt files/related on decode.
+// wraps any Uint8Array as a byte string — wrapping here too, as a top-level
+// byte-string item, would double that header and corrupt files/related on decode.
 function cborArrayBytes(items) {
   const inner = [];
   writeHead(inner, 4, items.length);
@@ -819,92 +830,6 @@ function buildPaperBody(f) {
   return cborRecord(TYPE_PAPER_BODY, {
     1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
   });
-}
-
-// ── Old CBOR-sequence envelope (SPEC v1) — decode-side backward compatibility only ──────
-// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
-// Paper Layout has been ported to the new QDEF Preview/Body Record shape above. These
-// old-envelope helpers are retained for the reader's backward-compatible decode path
-// (sectorScanResult dispatches old-format Paper here) and for the old signedMessageHash
-// used by old-format Paper verification.
-const VERSION = 1;
-const TYPE_CONTENT = 0, TYPE_PAPER = 1;
-
-// part_meta (old SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
-// 0-based sector_index, sector_count, parity_scheme (only on a parity sector, at index
-// >= sector_count — see paritySector below).
-function partMetaMap(pm) {
-  return cborMap([
-    [K.CACHE_ID,     pm.cacheId || null],
-    [K.TOTAL_BYTES,  pm.totalBytes],
-    [K.SECTOR_INDEX, pm.sectorIndex],
-    [K.SECTOR_COUNT, pm.sectorCount],
-    [K.PARITY,       pm.paritySchemeRaw ?? null],
-  ]);
-}
-
-// A sector's four-item CBOR sequence (old SPEC §2) — Base41-encoded for `tagdrop:`, or
-// carried raw on byte carriers (e.g. a binary/byte-mode QR).
-function sectorCbor(sector) {
-  return concatBytes(
-    cborUInt(VERSION), cborUInt(sector.type),
-    partMetaMap(sector.partMeta), cborBytesItem(sector.sectorBytes)
-  );
-}
-
-// A sector's `tagdrop:` encoding URI, plus its raw CBOR bytes for binary/byte-mode QR rendering.
-function encodeSector(sector) {
-  const raw = sectorCbor(sector);
-  return { uri: 'tagdrop:' + base41Encode(raw), raw, sector };
-}
-
-/**
- * Slices a reassembled `stream` into data sectors of at most `maxSectorDataBytes` bytes
- * each, stamped with `cacheId` (null for a key-only code) and its sector_index/
- * sector_count/total_bytes in part_meta (old SPEC §4.1). Every sector but the last is the
- * same length. Mirrors Kotlin TagDropCodec.sectorize verbatim.
- */
-function sectorize(type, cacheId, stream, maxSectorDataBytes) {
-  const total = stream.length;
-  const count = (maxSectorDataBytes <= 0 || total <= maxSectorDataBytes)
-    ? 1 : Math.ceil(total / maxSectorDataBytes);
-  const sectorSize = Math.ceil(total / count);
-  const sectors = [];
-  for (let i = 0; i < count; i++) {
-    const start = Math.min(i * sectorSize, total);
-    const end = Math.min(start + sectorSize, total);
-    sectors.push({
-      type,
-      partMeta: { cacheId, sectorIndex: i, sectorCount: count, totalBytes: total, paritySchemeRaw: null },
-      sectorBytes: stream.slice(start, end),
-    });
-  }
-  return sectors;
-}
-
-/**
- * Builds the single full-XOR parity sector (parity_scheme 1, old SPEC §5) for dataSectors — the
- * byte-wise XOR of every data sector's sectorBytes, each implicitly zero-padded to the longest
- * before XOR-ing. Placed at sector_index == sector_count, it recovers any one lost data sector.
- * dataSectors must be a complete 0..sector_count-1 run of one payload. Mirrors Kotlin
- * TagDropCodec.paritySector verbatim.
- */
-function paritySector(dataSectors) {
-  const first = dataSectors[0].partMeta;
-  const width = Math.max(...dataSectors.map(s => s.sectorBytes.length));
-  const parity = new Uint8Array(width);
-  for (const sector of dataSectors) {
-    const b = sector.sectorBytes;
-    for (let j = 0; j < b.length; j++) parity[j] ^= b[j];
-  }
-  return {
-    type: dataSectors[0].type,
-    partMeta: {
-      cacheId: first.cacheId, sectorIndex: first.sectorCount, sectorCount: first.sectorCount,
-      totalBytes: first.totalBytes, paritySchemeRaw: PARITY_XOR,
-    },
-    sectorBytes: parity,
-  };
 }
 
 // ── CBOR debug (dev tool: 🔍 Inspect CBOR button) ──────────────────────────
@@ -1060,65 +985,13 @@ function loadMlDsa() {
 }
 
 /**
- * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with a
- * trailing run of pairs whose key is in [trailingKeysToStrip] removed. Mirrors Kotlin
- * MiniCbor.stripTrailingKeys and the reader's copy — see either doc comment for why this
- * operates on raw bytes rather than a decode-then-re-encode.
- */
-function stripTrailingKeys(mapBytes, trailingKeysToStrip) {
-  let pos = 0;
-  function rb() { return mapBytes[pos++]; }
-  function readArg(info) {
-    if (info <= 23) return info;
-    if (info === 24) return rb();
-    if (info === 25) return rb() * 256 + rb();
-    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
-    // 8-byte argument: a uint64, or a float64's raw payload (major 7) — either way,
-    // consume the 8 bytes here so skipValue needs no float special case. Without this,
-    // any map containing a float64 value (e.g. related[]'s lat/lng) threw mid-skip.
-    if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
-    throw new Error('Unsupported CBOR additional info: ' + info);
-  }
-  function skipValue() {
-    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
-    if (major === 2 || major === 3) { pos += a; }
-    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
-    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
-    // major 0/1/7 carry no payload beyond the argument readArg already consumed
-    // (including a float64's 8 bytes, per readArg's info-27 case above).
-  }
-  const head = rb();
-  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
-  const count = readArg(head & 0x1F);
-  const headerLen = pos;
-
-  let survivingCount = 0, cutOffset = mapBytes.length, foundCut = false;
-  for (let i = 0; i < count; i++) {
-    const pairStart = pos;
-    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
-    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
-    skipValue();
-    if (!foundCut) {
-      if (trailingKeysToStrip.has(key)) { cutOffset = pairStart; foundCut = true; }
-      else survivingCount++;
-    }
-  }
-  if (!foundCut) return mapBytes;
-  const newHeader = [];
-  writeHead(newHeader, 5, survivingCount);
-  return concatBytes(new Uint8Array(newHeader), mapBytes.slice(headerLen, cutOffset));
-}
-
-/**
  * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with
- * every pair whose key is in [keysToStrip] removed, regardless of position — unlike
- * stripTrailingKeys above, which assumes the stripped keys form a trailing run (true only
- * by convention, when a caller manually lists them last in the source pairs array).
- * cborFieldMap/cborRecord (used by the new Content-Preview/Content-Body builders) always
- * sort keys ascending (SPEC.md §2.2's fixed key-encoding order), so a higher-numbered
- * field (e.g. `source_url`, key 55) can legitimately sort after the signature fields
- * (45/47/49) — the trailing-run assumption doesn't hold there, so this walks and keeps
- * every surviving pair by its own byte range instead of just truncating a suffix.
+ * every pair whose key is in [keysToStrip] removed, regardless of position.
+ * cborFieldMap/cborRecord (used by the Content-Preview/Content-Body/Paper-Preview/Paper-Body
+ * builders) always sort keys ascending (SPEC.md §2.2's fixed key-encoding order), so a
+ * higher-numbered field (e.g. `source_url`, key 55) can legitimately sort after the signature
+ * fields (45/47/49) — this walks and keeps every surviving pair by its own byte range rather
+ * than assuming the stripped keys form a truncatable trailing run.
  */
 function stripKeys(mapBytes, keysToStrip) {
   let pos = 0;
@@ -1185,31 +1058,6 @@ function paperSignedMessageHash(preview, bodyPlain) {
   return sha256(concatBytes(unsignedPreview, unsignedBody));
 }
 
-/**
- * SPEC §10's "signed message": the full (untruncated) SHA-256 of core_meta_item ||
- * bulky_meta_item || content, with Verified Authorship's own keys (32-36) stripped back out
- * first. Mirrors Kotlin TagDropCodec.signedMessageHash and the reader's copy. Called here on
- * an UNSIGNED build (nothing to strip, so this is just sha256(stream)) as the "hash the
- * unsigned build, then sign" half of the encode-side flow — see signContentSectors below.
- *
- * Still used by old-format Paper signing (createPaper, unchanged this pass) — see
- * contentSignedMessageHash above for the new Preview/Body equivalent used by Content
- * and the new Paper signing path (paperSignedMessageHash / signPaperSectors).
- *
- * The key sets are built inline (not module-level consts) because `K` — defined later in this
- * file — isn't initialized yet when this function's own module-level code would otherwise run;
- * by the time signedMessageHash is actually *called*, the whole script has finished loading.
- */
-async function signedMessageHash(stream) {
-  const parts = await splitReassembledStream(stream);
-  if (!parts) return null;
-  const unsignedCore = stripTrailingKeys(parts.coreRaw, new Set([K.SIGNATURE_ALGORITHM, K.SIGNER_ID, K.SIGNER_LABEL]));
-  const bulkyLogicalRaw = (parts.core[K.BULKY_COMPRESSION] ?? 0) !== 0
-    ? await zlibDecompress(parts.bulkyRaw) : parts.bulkyRaw;
-  const unsignedBulky = stripTrailingKeys(bulkyLogicalRaw, new Set([K.SIGNATURE, K.SIGNER_PUBKEY]));
-  return sha256(concatBytes(unsignedCore, unsignedBulky, parts.content));
-}
-
 // A signing identity (ML-DSA-44 keypair + label) persisted in this browser's localStorage —
 // generated on first use, reused after that so signer_id stays stable across codes (SPEC §10's
 // TOFU model depends on a *consistent* signer_id, not a fresh one per code).
@@ -1258,9 +1106,21 @@ async function getOrCreateSigningIdentity(label) {
  * `secretKey` is passphrase-encrypted, since leaking it lets anyone forge signatures under
  * this signer_id indefinitely.
  */
+// The signing identity is shared globally (one browser-wide keypair), but its label field
+// is duplicated per-tab (s-signer-label on Single File, p-signer-label on Paper Layout) so
+// each tab can be signed from without switching away. Export reads whichever has something
+// typed — getOrCreateSigningIdentity(null) safely no-ops on label if neither does, rather
+// than blanking an existing one.
+function currentSignerLabelInput() {
+  const s = document.getElementById('s-signer-label');
+  const p = document.getElementById('p-signer-label');
+  if (s?.value.trim()) return s.value.trim();
+  if (p?.value.trim()) return p.value.trim();
+  return null;
+}
+
 async function exportSigningIdentity() {
-  const label = document.getElementById('s-signer-label')?.value.trim() || null;
-  const identity = await getOrCreateSigningIdentity(label);
+  const identity = await getOrCreateSigningIdentity(currentSignerLabelInput());
   const passphrase = prompt(
     "Choose a passphrase to protect this signing identity backup.\n\n" +
     "Anyone with the file AND this passphrase can sign as you — pick something you'll " +
@@ -1354,59 +1214,34 @@ async function importSigningIdentity(event) {
 
   const label = payload.label || '';
   saveSigningIdentity({ secretKey, publicKey, signerId, label });
-  const labelInput = document.getElementById('s-signer-label');
-  if (labelInput) labelInput.value = label;
+  // Both tabs' label fields mirror the one shared identity — keep them in sync regardless
+  // of which tab the import was triggered from.
+  const sLabelInput = document.getElementById('s-signer-label');
+  if (sLabelInput) sLabelInput.value = label;
+  const pLabelInput = document.getElementById('p-signer-label');
+  if (pLabelInput) pLabelInput.value = label;
   alert('Signing identity imported. New codes signed in this browser will use signer_id ' + toHex(signerId).slice(0, 16) + '…');
 }
 
 /**
- * Sign-and-build. [buildFn] is a unary `(args) => Promise<Sector[]>` thunk — pass
- * `a => createContentSectorsAutoSized(a, targetSectorBytes)` (or the Paper equivalent) so this
- * stays agnostic to which builder/extra params the caller needs. Only [identity.publicKey] is
- * included when [includePubkey] — SPEC §10's "Key caching": omit it on later codes once a
- * verifier has already cached it.
- *
- * Builds with a same-length PLACEHOLDER signature first, rather than building unsigned and
- * signed versions from two independent calls. That's not just an optimization: adding ~3.7 KB
- * of signature fields can itself push a payload from single- to multi-sector, and
- * createContentSectors only adds `content_sha256` once it's required for a multi-sector split
- * (SPEC §3) — so an independently-built "unsigned" version can end up missing a field the real
- * signed version needs, breaking SPEC §10's "signing happens last and feeds back into
- * nothing" invariant (every other field, including content_sha256, MUST be identical whether
- * or not signing happens). Building signed-with-a-placeholder first makes every sizing
- * decision (sector count, content_sha256 inclusion) exactly what the final signed build will
- * need; [signedMessageHash] then strips the placeholder's signature fields back out (same
- * operation a verifier performs) to get the correct hash to sign. Swapping the placeholder for
- * the real signature afterward can't change any sizing decision, since ML-DSA-44 signatures
- * are fixed-length — same bytes in, same bytes out, everywhere except the signature itself.
- */
-async function signSectors(buildFn, args, identity, includePubkey = true) {
-  const placeholderArgs = {
-    ...args,
-    signatureAlgorithm: 1,
-    signature: new Uint8Array(2420), // ML-DSA-44 signature length (SPEC §10) — value doesn't matter, only length
-    signerPubkey: includePubkey ? identity.publicKey : null,
-    signerId: identity.signerId,
-    signerLabel: identity.label || null,
-  };
-  const placeholderResult = await buildFn(placeholderArgs);
-  // createContentSectors(AutoSized) returns Sector[] directly; createPaper(AutoSized) returns
-  // { rootHash, sectors } — normalize so signSectors works with either builder.
-  const placeholderSectors = Array.isArray(placeholderResult) ? placeholderResult : placeholderResult.sectors;
-  const placeholderStream = concatBytes(...placeholderSectors.map(s => s.sectorBytes));
-  const hash = await signedMessageHash(placeholderStream);
-  const { ml_dsa44 } = await loadMlDsa();
-  const signature = ml_dsa44.sign(hash, identity.secretKey);
-  return buildFn({ ...placeholderArgs, signature });
-}
-
-/**
- * Content-specific counterpart to signSectors above, for the new Preview/Body shape
+ * Content-specific sign-and-build, for the new Preview/Body shape
  * (createContentSectorsAutoSized's {codes, preview, bodyPlain} return, contentSignedMessageHash's
- * Preview'||Body' formula, SPEC.md §10) — same placeholder-then-strip discipline and same
- * reasoning (see signSectors' doc comment above for why a placeholder build, not two
- * independent unsigned/signed builds, is required). Paper's own signing keeps using the
- * generic signSectors above, unchanged this pass.
+ * Preview'||Body' formula, SPEC.md §10). Builds with a same-length PLACEHOLDER signature first,
+ * rather than building unsigned and signed versions from two independent calls. That's not just
+ * an optimization: adding ~3.7 KB of signature fields can itself push a payload from single- to
+ * multi-sector, and createContentSectors only adds `content_sha256` once it's required for a
+ * multi-sector split (SPEC §3) — so an independently-built "unsigned" version can end up missing
+ * a field the real signed version needs, breaking SPEC §10's "signing happens last and feeds
+ * back into nothing" invariant (every other field, including content_sha256, MUST be identical
+ * whether or not signing happens). Building signed-with-a-placeholder first makes every sizing
+ * decision (sector count, content_sha256 inclusion) exactly what the final signed build will
+ * need; [contentSignedMessageHash] then strips the placeholder's signature fields back out (same
+ * operation a verifier performs) to get the correct hash to sign. Swapping the placeholder for
+ * the real signature afterward can't change any sizing decision, since ML-DSA-44 signatures are
+ * fixed-length — same bytes in, same bytes out, everywhere except the signature itself. Only
+ * [identity.publicKey] is included when [includePubkey] — SPEC §10's "Key caching": omit it on
+ * later codes once a verifier has already cached it. Paper's counterpart is signPaperSectors
+ * below, same discipline via paperSignedMessageHash.
  */
 async function signContentSectors(buildFn, args, identity, includePubkey = true) {
   const placeholderArgs = {
@@ -1620,9 +1455,6 @@ const MAX_SECTOR_DATA_BYTES = 1300;
 const DEFAULT_SECTOR_DATA_BYTES = 600;
 const DEFAULT_URI_LENGTH = 700;
 
-// parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5).
-const PARITY_XOR = 1;
-
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
 function generateNonce() { return crypto.getRandomValues(new Uint8Array(12)); }
@@ -1762,9 +1594,9 @@ async function createContentSectors({
 
   const totalBytes = bodyForWire.length;
   // preview/bodyPlain (the LOGICAL, pre-Split, pre-Compress bytes) are
-  // exposed alongside `codes` so signing (signedMessageHash, SPEC.md §10)
-  // can hash them directly — not something reconstructable from `codes`
-  // alone, since Preview is repeated on every code, not sliced (§5.1).
+  // exposed alongside `codes` so signing (contentSignedMessageHash, SPEC.md
+  // §10) can hash them directly — not something reconstructable from
+  // `codes` alone, since Preview is repeated on every code, not sliced (§5.1).
   if (totalBytes <= maxSectorDataBytes) {
     return {
       codes: [{ raw: concatBytes(preview, bodyForWire), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
@@ -1810,81 +1642,6 @@ async function createContentSectorsAutoSized(args, targetSectorBytes = DEFAULT_S
 function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
   const raw = buildContentPreview({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false });
   return { raw, cacheId: null, totalBytes: raw.length, index: 0, count: 1, isParity: false };
-}
-
-/**
- * Old-format reassembled-stream bytes for a Paper (SPEC v1) — retained for the reader's
- * backward-compatible decode path (parsePaperStream). The new encode path uses
- * createPaper() above which builds QDEF Records instead.
- *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
- *   related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null,
- *               radiusM:number|null, keyMaterial:Uint8Array|null, retainKey:boolean}]
- *
- * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
- * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
- * than one sector, since that's the only integrity check over `files`/`related` (the
- * slug -> file_id directory) once a multi-sector paper is reassembled from independently
- * scanned codes. Always including it (rather than only above the sector-count threshold,
- * as createContentSectors does for `content_sha256`) keeps this byte-reproducible from the
- * function's arguments alone, with no hidden state to replay — Paper payloads are directory
- * structures where a constant ~36-byte cost is negligible next to the cost of an unverified
- * directory.
- */
-async function buildPaperStream({ label, set, slug, domain, files, related, description, collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true, lat, lng, radiusM, preferDeclaredLocation = false, locationLabel, inReplyTo, title, createdAt, step, signatureAlgorithm, signature, signerPubkey, signerId, signerLabel }) {
-  const filesAndRelated = [
-    [K.FILES, files.map(f => subMap([
-      [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
-      [KF.DESCRIPTION, f.description || null],
-      [KF.PIXEL_ART, f.pixelArt || null],
-    ]))],
-    [K.RELATED, related.map(r => subMap([
-      [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null], [KR.PAPER_ID, r.paperId || null],
-      [KR.LAT, r.lat != null ? cfloat(r.lat) : null], [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
-      [KR.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
-      [KR.KEY_MATERIAL, r.keyMaterial || null],
-      [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
-      [KR.STEP, r.step ?? null],
-    ]))],
-  ];
-  // bulky_meta_sha256 covers files/related ONLY, never keys 32-36 — see the matching comment
-  // in Kotlin TagDropCodec.buildPaperStream for why (its VALUE, not just its presence, must
-  // stay identical whether or not the paper ends up signed).
-  const bulkySha = await sha256(cborMap(filesAndRelated));
-  const bulky = [...filesAndRelated,
-    [K.SIGNATURE, signature || null],
-    [K.SIGNER_PUBKEY, signerPubkey || null],
-  ];
-  const bulkyBytes = cborMap(bulky);
-  const core = [
-    [K.HINT,     label || null],
-    [K.PAPER_DESCRIPTION, description || null],
-    [K.SET,      set || null],
-    [K.SLUG,     slug || null],
-    [K.COLLECTION_ID,    collectionId || null],
-    [K.COLLECTION_LABEL, collectionLabel || null],
-    [K.COLLECTION_TAG,   collectionTag || null],
-    [K.ICON,             icon || null],
-    [K.KEY_MATERIAL, keyMaterial || null],
-    [K.RETAIN_KEY,   (keyMaterial && !retainKey) ? false : null],
-    [K.LAT, lat != null ? cfloat(lat) : null], [K.LNG, lng != null ? cfloat(lng) : null],
-    [K.RADIUS_M, radiusM != null ? cfloat(radiusM) : null],
-    [K.PREFER_DECLARED_LOCATION, preferDeclaredLocation ? true : null],
-    [K.LOCATION_LABEL, locationLabel || null],
-    [K.IN_REPLY_TO, inReplyTo || null],
-    [K.TITLE, title || null],
-    [K.CREATED_AT, createdAt || null],
-    [K.DOMAIN, domain || null],
-    [K.STEP, step ?? null],
-    [K.BULKY_SHA, bulkySha],
-    // Verified Authorship (SPEC §10) fields MUST stay last — "signing happens last": a
-    // verifier reconstructs the unsigned message by trimming a trailing run of keys
-    // 32/35/36 off core_meta_item's raw bytes (see stripTrailingKeys), which only works
-    // if nothing else follows them.
-    [K.SIGNATURE_ALGORITHM, signatureAlgorithm || null],
-    [K.SIGNER_ID, signerId || null],
-    [K.SIGNER_LABEL, signerLabel || null],
-  ];
-  return concatBytes(cborMap(core), bulkyBytes);
 }
 
 /**
@@ -3114,15 +2871,23 @@ async function computePaperSectorPlan() {
 
   // Encode the paper itself — parity is now baked into createPaper's codes array
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId, description: f.description, pixelArt: f.pixelArt || false }));
+  const paperArgs = {
+    label, set, slug, domain, files: manifestFiles, related, description,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt, step,
+    parity: document.getElementById('p-add-parity')?.checked ?? false,
+  };
   let paper;
   try {
-    paper = await createPaperAutoSized({
-      label, set, slug, domain, files: manifestFiles, related, description,
-      collectionId, collectionLabel, collectionTag, icon,
-      lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-      inReplyTo, title, createdAt, step,
-      parity: document.getElementById('p-add-parity')?.checked ?? false,
-    }, targetSectorBytes);
+    const sign = document.getElementById('p-sign')?.checked;
+    if (sign) {
+      const signerLabel = document.getElementById('p-signer-label').value.trim() || null;
+      const identity = await getOrCreateSigningIdentity(signerLabel);
+      paper = await signPaperSectors(a => createPaperAutoSized(a, targetSectorBytes), paperArgs, identity);
+    } else {
+      paper = await createPaperAutoSized(paperArgs, targetSectorBytes);
+    }
   }
   catch(e) { throw new Error(`Paper encoding failed: ${e.message}`); }
 
@@ -3133,6 +2898,10 @@ async function computePaperSectorPlan() {
 // across every file's sectors plus the manifest's own sectors. Kept in sync via a
 // delegated listener plus explicit calls after async uploads/removals (see bottom of
 // file). Debounced and sequence-guarded for the same reason as updateSingleEstimate().
+//
+// Does NOT account for the "Sign with ML-DSA-44" checkbox (SPEC §10), same reasoning as
+// updateSingleEstimate: a real keygen/sign on every keystroke would be slow, and this is a
+// size estimate, not the actual encode — generatePaper() does the real signed build.
 let paperEstimateSeq = 0;
 const updatePaperEstimate = debounce(async () => {
   const seq = ++paperEstimateSeq;
@@ -3377,6 +3146,11 @@ document.getElementById('s-sign').addEventListener('change', function () {
   const display = this.checked ? 'flex' : 'none';
   document.getElementById('s-signer-label-row').style.display = this.checked ? 'block' : 'none';
   document.getElementById('s-identity-section').style.display = display;
+});
+document.getElementById('p-sign').addEventListener('change', function () {
+  const display = this.checked ? 'flex' : 'none';
+  document.getElementById('p-signer-label-row').style.display = this.checked ? 'block' : 'none';
+  document.getElementById('p-identity-section').style.display = display;
 });
 
 // When "Encrypt" is on, force-check "Compress", lock it, and show the key-mode selector.

@@ -1,20 +1,27 @@
 /**
- * QDEF-redesign round-trip prototype: builds TagDrop's version-2 wire shape
- * (SPEC.md §2-§5 as of the QDEF-based redesign) — Preview/Body Records,
- * QDEF Split/Compress Wrapper Records, the root_hash/signed-message
- * placeholder-then-strip discipline — and round-trips it through encode →
- * decode → reassemble → verify, entirely in-memory (no QR rendering, no
- * Base41, no real ML-DSA-44 — signatures here are fixed-length mock bytes,
- * standing in only to exercise the *byte layout* discipline SPEC.md §10
- * requires, not the cryptography itself, which is proven separately by the
- * existing reference codecs' real sign/verify implementations).
+ * QDEF wire-shape validation suite: builds TagDrop's version-2 wire shape
+ * (SPEC.md §2-§5) — Preview/Body Records, QDEF Split/Compress Wrapper
+ * Records, the root_hash/signed-message placeholder-then-strip discipline —
+ * and round-trips it through encode → decode → reassemble → verify, entirely
+ * in-memory (no QR rendering, no Base41, no real ML-DSA-44 — signatures here
+ * are fixed-length mock bytes, standing in only to exercise the *byte
+ * layout* discipline SPEC.md §10 requires, not the cryptography itself,
+ * which is proven separately by the real sign/verify implementations in
+ * tools/generator+reader/index.html and the Kotlin app).
  *
- * This is intentionally throwaway, not a third reference implementation:
- * the point is finding bugs in the new *shape* before porting it into the
- * two real codecs (Kotlin, browser JS), the same discipline
- * mofosyne/qdef's own prototype+FINDINGS.md process used before this
- * project ever touched production code. Expect this file to be deleted or
- * radically cut down once Phase 2/3 (the real JS/Kotlin ports) land.
+ * Originally written as a throwaway shape-prototyping tool (find bugs in the
+ * new shape *before* porting it into the real codecs — the same discipline
+ * mofosyne/qdef's own prototype+FINDINGS.md process used) — but its
+ * adversarial/validation coverage (tamper detection via group_id/root_hash
+ * recomputation, SPEC §2.2 even/odd key criticality enforcement, key-only
+ * codes) isn't duplicated anywhere else, including tools/test-qr-
+ * roundtrip.mjs (which focuses on real QR rendering/decoding round-trips,
+ * not malformed/adversarial input), so it's kept as a permanent part of the
+ * test suite and gated in CI (.github/workflows/ci.yml) rather than deleted
+ * now that the real JS ports (Content and Paper, both generator and reader)
+ * have landed. The Kotlin port, when it happens, should get this same
+ * adversarial coverage in its own JUnit suite rather than relying on this
+ * file, which only exercises the JS-side byte layout.
  *
  * Run with:
  *   cd tools

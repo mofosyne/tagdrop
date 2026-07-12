@@ -30,6 +30,13 @@ jobs:
         working-directory: tools
         run: npm test
 
+      # Adversarial/validation coverage the round-trip test above doesn't exercise
+      # (tamper detection via group_id/root_hash, SPEC §2.2 even/odd key criticality,
+      # key-only codes) — see the file's own header comment for why it's kept separate.
+      - name: Run QDEF encode/decode validation suite
+        working-directory: tools
+        run: npm run test:qdef
+
   test-and-build:
     name: Unit tests & APK builds
     runs-on: ubuntu-latest

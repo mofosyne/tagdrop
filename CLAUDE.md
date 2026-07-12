@@ -13,21 +13,38 @@ Content and Paper payloads:
    (`Base41.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
    implementation; `app/src/test/.../TagDropCodecTest.kt` is the most
    thorough test suite. Currently on **version 1** wire format (4-item
-   CBOR envelope) for both Content and Paper — the QDEF Record port for
-   Content is the next major piece of work.
+   CBOR envelope) for both Content and Paper — the QDEF Record port (both
+   payload types) is the next major piece of work, now that the JS side
+   (below) has landed for both and can serve as a settled target to port
+   against, rather than a moving one.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
    `tools/examples/index.html` (encode side), `tools/reader/index.html`
    (decode side). SHA-256 via `crypto.subtle`, DEFLATE via
-   `CompressionStream`/`DecompressionStream`. Content encoding/decoding
-   has been **ported to version 2** QDEF Records (Preview/Body split,
-   Compress Wrapper, Split Wrapper). Paper encoding/decoding still uses
-   **version 1** envelope format (intentionally deferred).
+   `CompressionStream`/`DecompressionStream`. Both Content and Paper
+   encoding/decoding have been **ported to version 2** QDEF Records
+   (Preview/Body split per payload type, Compress Wrapper, Split Wrapper) —
+   Content-Preview/Content-Body and Paper-Preview/Paper-Body are four
+   independent Record Type IDs, each with its own field-key namespace
+   (SPEC.md §2.1/§3). No wire format left on the old four-item envelope in
+   any of the three web tools.
 
-When SPEC.md changes (e.g. the QDEF Record redesign done in an earlier
-session), **both** need updating and re-verifying, or they silently
-drift apart. There's currently no automated cross-check between them —
-verification has so far been manual (decode every URI in
-`tools/examples/index.html` and check version/type/fields match).
+When SPEC.md changes, **both** implementations need updating and
+re-verifying, or they silently drift apart. There's still no *automated,
+committed* cross-check between the two Kotlin/JS implementations (that
+remains manual — decode a real generator-produced code by hand and check
+fields match) — but the JS side's own internal cross-tool consistency
+(generator's output actually being readable by reader) is no longer purely
+manual: `tools/test-qr-roundtrip.mjs` and `tools/test-qdef-roundtrip.mjs`
+are both CI-gated (`.github/workflows/ci.yml`), and this project's own
+verification practice throughout the QDEF port was to drive the *actual*
+generator and reader pages in a real headless browser (Playwright) and
+assert on the reader's resulting IndexedDB/UI state, not just compare two
+independent codec copies' output bytes — catching several real bugs
+(a CBOR double-wrap, a lost verification result, a routing bug for
+multi-code Papers) that self-consistent unit tests alone missed. Those
+Playwright scripts were run ad hoc from a scratch directory, not committed
+to the repo — worth formalizing into a real `tools/test-*` script if this
+kind of regression recurs.
 
 The web tools (generator + reader) do real ML-DSA-44 sign/verify via
 `@noble/post-quantum` (dynamically imported from a CDN, same pattern as
@@ -77,33 +94,40 @@ single-code Content payloads; `ReceiveActivity` verifies every scanned
 Content/Paper's signature and persists the result
 (`signatureStatus`/`signerIdHex`/`signerLabel` on `FoundCache`/`ScannedPaper`);
 `CollectionDetailAdapter`/`item_page.xml` show a ✅/⚠️/🔏 badge for
-verified/invalid/pending. `CreatePaperActivity` does **not** yet have a
-signing checkbox — per "web generator first" above, paper-layout signing UI
-should land there before the Android app, and the web generator's Paper
-Layout tab doesn't have one yet either (only its Single File tab does).
+verified/invalid/pending. The web generator now has a "Sign with ML-DSA-44"
+checkbox on **both** tabs — Single File and Paper Layout — sharing the same
+browser-local signing identity (`signPaperSectors`/`paperSignedMessageHash`
+mirror `signContentSectors`/`contentSignedMessageHash`'s placeholder-then-
+strip discipline). `CreatePaperActivity` is the one place that still lacks
+a signing checkbox — per "web generator first" above, the web tool getting
+it first was the intended order, and the Android app is the remaining
+follow-up.
 
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
-`base41Decode`), CBOR (`writeHead`/`cborValue`/`cborMap`/`cborUInt`/
-`cborBytesItem`/`cborDecodeSequencePrefix`/etc.), QDEF Record builders
+`base41Decode`), CBOR (`writeHead`/`cborValue`/`cborMap`/`cborArrayBytes`/
+`cborDecodeSequencePrefix`/etc.), QDEF Record builders
 (`cborFieldMap`/`cborRecord`/`compressWrap`/`splitFragments`/
 `buildContentPreview`/`buildContentBody`/`encodeCode`/`stripKeys`/
-`contentSignedMessageHash`), old-format sector framing
-(`sectorCbor`/`encodeSector`/`sectorize`/`splitReassembledStream`),
-crypto (`encryptAesGcm`/`encryptOverrideMap`/`deriveKeyFromPassphrase`/
+`contentSignedMessageHash`/`paperSignedMessageHash`), crypto
+(`encryptAesGcm`/`encryptOverrideMap`/`deriveKeyFromPassphrase`/
 `generateKeyMaterial`), and the sector builders
 (`createContentSectors`/`createContentSectorsAutoSized`/
-`createKeyCodeSector`/`buildPaperStream`/`createPaper`/
+`createKeyCodeSector`/`createPaper`/
 `createPaperAutoSized`) are byte-identical (same names, same bodies) to the
 copies inlined in `tools/examples/index.html`, which adds only its own
 example-data constants and rendering (`addCard`/`addContentSectorCards`/
 `addPaperSectorCards`) on top. Signing helpers (`signContentSectors`/
-`signSectors`/`signedMessageHash`) are **generator-only** — examples has
-no signing support. `tools/reader/index.html` has the decode-side mirror
-(`base41Decode`, `cborDecodeSequencePrefix`, `parseContentStream`,
-`parsePaperStream`, `SectorAssembler`, etc.) plus its own UI/IndexedDB
-persistence layer.
+`signPaperSectors`) are **generator-only** — examples has no signing
+support. `tools/reader/index.html` has the decode-side mirror
+(`base41Decode`, `cborDecodeSequencePrefix`, `RecordAssembler`,
+`SectorAssembler`, etc.) plus its own UI/IndexedDB persistence layer. Both
+generator and examples have their old-format (SPEC v1) sector-framing
+encoders removed entirely now that Content and Paper are both on QDEF
+Records — only the reader still carries an old-format decode path, kept
+deliberately for backward compatibility with codes scanned before the port
+(see "Two parallel wire-format implementations" above).
 
 This is **browser-vs-browser** duplication (same APIs, same runtime), which
 is lower-risk than the old Node-vs-browser split (`generate.mjs` was
@@ -162,7 +186,7 @@ build step.
 ## Wire-format version policy
 
 SPEC.md's `version` field (currently `2` for QDEF Records, though the
-Kotlin app and Paper layout still use version 1 wire format) is
+Kotlin app — both Content and Paper — still uses version 1 wire format) is
 independent of the Android app's `versionName` (currently `2.1.0`,
 already accepted by F-Droid as of June 2026) — bumping one never
 requires bumping the other.
@@ -222,6 +246,31 @@ can't be smuggled through that handoff.
 Ideas raised and assessed but deliberately deferred — revisit if they come up
 again or a concrete need emerges.
 
+- **QDEF App Route Record (auto-launch routing)** (assessed, not
+  implemented). Raised with the qdef bot while designing TagDrop's Paper
+  port: could a generic QR/NFC reader auto-launch the right app on scan,
+  the way NFC's Android Application Record (AAR) does — without a routing
+  table that grows as apps × types-per-app? Landed upstream as QDEF's own
+  Type 7 (`App Route`, QDEF-SPEC.md §4.4): a domain-verified form (Android
+  App Links / iOS Universal Links style, real anti-spoofing) and a
+  decentralized form (a private-use random uint, no anti-spoofing — a
+  cheap pre-filter only, never a substitute for `group_id`), plus a
+  session-scoped `Companion ID` (key 5) that lets a domain-verified code
+  vouch for a linked ID on other codes in the same scan. Byte cost is real
+  and non-trivial for the decentralized form specifically — it must repeat
+  on every code in a multi-code group (41 bytes/code with a Hint name, so
+  7×41=287 bytes across a 7-code group) — while the domain form only needs
+  a SHOULD-repeat. Deliberately **not implemented here**: Companion ID is
+  explicitly session-scoped, not durable — exactly the wrong shape for
+  TagDrop's actual use (physical, printed, scanned asynchronously by
+  unrelated people/devices, potentially months apart) — and TagDrop
+  already has the right tool for *that* trust shape, the durable
+  `signer_pubkey` TOFU cache (SPEC §10), if auto-launch or domain-verified
+  dispatch ever becomes a real need. Full design exchange (byte-cost
+  verification, split-ratio math for structured private-use Type IDs, the
+  private-use tier's "closed/internal" documentation bug this surfaced and
+  got fixed upstream) lives in this session's conversation history, not
+  duplicated here.
 - ~~**Paper "homepage" via `index` slug convention**~~ — **done.** A file
   whose `slug` is `index`, `index.html`, or `index.md` is now highlighted as
   the paper's primary "Open" action: `tools/reader/index.html`'s
