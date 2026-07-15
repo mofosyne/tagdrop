@@ -185,23 +185,24 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `2` for QDEF Records, though the
-Kotlin app — both Content and Paper — still uses version 1 wire format) is
+SPEC.md's `version` field (currently `5` — QDEF Records plus its outer
+framing's mandatory namespace discriminator, §14; the Kotlin app still
+uses the pre-QDEF version-1 wire format for both Content and Paper) is
 independent of the Android app's `versionName` (currently `2.1.0`,
 already accepted by F-Droid as of June 2026) — bumping one never
 requires bumping the other.
 
-Version 1 is currently a **draft, not frozen** (see SPEC.md's `Status`
+SPEC.md as a whole is currently a **draft, not frozen** (see its `Status`
 line): no real TagDrop code has been printed or distributed yet, so no
-deployed content depends on its exact byte layout. F-Droid accepting the
-app only means a binary *could* eventually reach a stranger — it doesn't
-mean any version-1 *content* exists yet for that binary to misread.
-Breaking changes (key reuse, envelope changes, semantics changes) are fine
-without a version bump **until the first real code is deployed** — printed,
-shared, or otherwise placed somewhere a third party might scan it. At that
-point treat version 1 as frozen: breaking changes from then on require a
-version bump (SPEC.md §14), and SPEC.md's `Status` line should flip back to
-`Stable`.
+deployed content depends on its exact byte layout at any version number
+to date. F-Droid accepting the app only means a binary *could* eventually
+reach a stranger — it doesn't mean any content exists yet for that binary
+to misread. Breaking changes (key reuse, envelope changes, semantics
+changes) are fine without a version bump **until the first real code is
+deployed** — printed, shared, or otherwise placed somewhere a third party
+might scan it. At that point treat SPEC.md's then-current version as
+frozen: breaking changes from then on require a version bump (SPEC.md
+§14), and SPEC.md's `Status` line should flip back to `Stable`.
 
 ## Authoring tools: web generator is primary
 
