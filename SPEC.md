@@ -1,7 +1,7 @@
 # TagDrop Encoding Specification
 
-**Version:** 3 (outer-framing simplification — QDEF dropped its version
-byte; see §14 "Version history")
+**Version:** 4 (Paper's two Type IDs re-minted to fix a QDEF Type-ID
+parity compliance gap; see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -57,8 +57,10 @@ TagDrop registers four QDEF Record Type IDs, each with its own independent key n
 |---|---|---|
 | `11040522420225562824` | Content-Preview | Small, always-plain fields — identity, hint, location, collection, encryption/signing metadata. See §3.1. |
 | `16141970035994251452` | Content-Body | `content` bytes, plus the large signature fields. See §3.2. |
-| `11467060725844413781` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
-| `3662944544912906201` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
+| `5378751847309657042` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
+| `3791774695141159602` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
+
+All four Type IDs are deliberately **even** — QDEF-SPEC.md §3.1 classifies an even-uint Type ID as "Standard record type," always globally interpreted regardless of namespace, versus an odd-uint Type ID ("Scoped record type"), which requires a preceding Type-0 namespace-declaration Record (QDEF-SPEC.md §3.5) in the same Sequence or must be treated as an abort. TagDrop declares no namespace on any carrier, so every registered Type ID here MUST stay even; this was already true for Content-Preview/Content-Body, and Paper-Preview/Paper-Body were re-minted for version 4 (§14) after the original odd values were found to violate this rule.
 
 A **key-only** code (§9, "Decryption keys") is a Content-Preview Record with no accompanying Body at all — carrying `key_material` but no content, exactly as today's key codes do; nothing about that case changes.
 
@@ -198,7 +200,7 @@ hidden override map — see §9, "Discovery, not declaration." Content-Preview's
 own `hint`/`mime_type`/`filename`, if present, are the values shown before
 (or without) a matching override key.
 
-### 3.3 Paper-Preview (Type `11467060725844413781`)
+### 3.3 Paper-Preview (Type `5378751847309657042`)
 
 Always plain, unwrapped, present on every code carrying this payload
 (§5.1).
@@ -231,7 +233,7 @@ Always plain, unwrapped, present on every code carrying this payload
 | 47 | `key_material` | bytes (32, opt) | Decryption key for other content (§9) — **Note: uses key 47 here, not key 33 as on Content-Preview.** Paper-Preview's key 33 is `signer_id` (§10), so `key_material`/`retain_key` occupy the next available odd slots (47/49) to avoid collision. See §9 for the full encryption design. |
 | 49 | `retain_key` | bool (opt, default `true`) | Whether the app should remember `key_material` across sessions (§9) |
 
-### 3.4 Paper-Body (Type `3662944544912906201`)
+### 3.4 Paper-Body (Type `3791774695141159602`)
 
 Optionally Compress-wrapped and/or Split-wrapped, same as Content-Body. A
 Paper has no `content` of its own — its body is entirely directory data.
@@ -1840,7 +1842,26 @@ has been deployed under any of the three numbers.)*
 
 Version history:
 
-**Version 3** (current) — QDEF simplified its outer framing: no more
+**Version 4** (current) — QDEF finalized a Type-ID parity rule alongside
+the namespace-scoping mechanism (Type 0, QDEF-SPEC.md §3.5): an even-uint
+Type ID is always globally interpreted, but an odd-uint Type ID requires
+a preceding Type-0 namespace declaration in the same Record Sequence or
+must be treated as an abort. Checking TagDrop's four Type IDs against
+this rule surfaced that Paper-Preview and Paper-Body were both odd —
+pure chance from how the original CSPRNG values were minted, with no
+namespace declared on any TagDrop carrier — making every Paper payload
+non-compliant under the finalized rule. Fixed by re-minting both as new
+even 64-bit values (§2.1), matching Content-Preview/Content-Body's
+existing (already-compliant) pattern. Value-only change — no field/key
+changes within Paper-Preview's or Paper-Body's own tables (§3.3, §3.4).
+Adopting namespace-scoping itself (shrinking all four Type IDs to small
+odd integers behind a shared Type-0 declaration) was considered and
+deliberately deferred — see CLAUDE.md's backlog — pending confirmation of
+whether a Type-0 record must repeat per code in a multi-code Split
+group, the same class of cost question that tripped up the App Route
+design discussion.
+
+**Version 3** — QDEF simplified its outer framing: no more
 version byte, just `[4-byte magic][CBOR Sequence]` (upstream design
 discussion, mofosyne/qdef). TagDrop's byte-mode QR/JABCode carrier (§2,
 §13) drops one byte per code accordingly; this document's own versioning

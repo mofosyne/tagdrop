@@ -270,7 +270,36 @@ again or a concrete need emerges.
   verification, split-ratio math for structured private-use Type IDs, the
   private-use tier's "closed/internal" documentation bug this surfaced and
   got fixed upstream) lives in this session's conversation history, not
-  duplicated here.
+  duplicated here. **Update:** Companion ID (key 5) was later removed
+  upstream entirely, not just deprecated — see the namespace-scoping entry
+  below for why (the mechanism that replaced it does the job better). §4.4
+  is back to its pre-Companion-ID shape; the rest of this entry (domain vs.
+  decentralized form, byte costs, the reasoning for not adopting it here)
+  still applies.
+- **QDEF Type-ID namespace-scoping** (assessed, deliberately deferred —
+  unlike App Route above, this one was finalized upstream *in direct
+  response* to a TagDrop-initiated ask, so it's a live candidate, not a
+  closed question). QDEF-SPEC.md §3.1 now classifies a Record's Type ID by
+  CBOR shape/parity: an even uint is a "Standard record type," always
+  globally interpreted; an odd uint is a "Scoped record type," requiring a
+  preceding Type-0 namespace-declaration Record (§3.5) in the same
+  Sequence, or it MUST be treated as an abort. Checking TagDrop's four
+  Type IDs against this (finalized) rule surfaced a real compliance gap —
+  see SPEC.md §14's version-4 entry — fixed there by re-minting Paper's
+  two odd IDs to even, matching Content's existing (already-compliant)
+  pair. That fix is deliberately the *minimal* one: it does not adopt
+  namespace-scoping itself. Adopting it for real — shrinking all four
+  Type IDs from 9-byte CBOR uints down to 1-byte small odd integers behind
+  a shared `tagdrop` Type-0 declaration — is a real, upstream-enabled
+  opportunity (namespace-scoping was built specifically because of an
+  earlier TagDrop relay asking about shrinking these same four IDs), not
+  implemented yet because one concrete cost question is still
+  unconfirmed: whether a Type-0 record must repeat on every code of a
+  multi-code Split group (mirroring how Preview already repeats per code)
+  or only needs to appear once — the same per-code-vs-per-group cost trap
+  that App Route's decentralized form ran into above. Revisit once that's
+  answered; a relay asking exactly this was sent following this entry's
+  creation.
 - ~~**Paper "homepage" via `index` slug convention**~~ — **done.** A file
   whose `slug` is `index`, `index.html`, or `index.md` is now highlighted as
   the paper's primary "Open" action: `tools/reader/index.html`'s
