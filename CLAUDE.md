@@ -276,30 +276,58 @@ again or a concrete need emerges.
   is back to its pre-Companion-ID shape; the rest of this entry (domain vs.
   decentralized form, byte costs, the reasoning for not adopting it here)
   still applies.
-- **QDEF Type-ID namespace-scoping** (assessed, deliberately deferred —
-  unlike App Route above, this one was finalized upstream *in direct
-  response* to a TagDrop-initiated ask, so it's a live candidate, not a
-  closed question). QDEF-SPEC.md §3.1 now classifies a Record's Type ID by
-  CBOR shape/parity: an even uint is a "Standard record type," always
-  globally interpreted; an odd uint is a "Scoped record type," requiring a
-  preceding Type-0 namespace-declaration Record (§3.5) in the same
-  Sequence, or it MUST be treated as an abort. Checking TagDrop's four
-  Type IDs against this (finalized) rule surfaced a real compliance gap —
-  see SPEC.md §14's version-4 entry — fixed there by re-minting Paper's
-  two odd IDs to even, matching Content's existing (already-compliant)
-  pair. That fix is deliberately the *minimal* one: it does not adopt
-  namespace-scoping itself. Adopting it for real — shrinking all four
+- **QDEF Type-ID namespace-scoping** (assessed with real numbers,
+  declined — unlike App Route above, this one was finalized upstream *in
+  direct response* to a TagDrop-initiated ask, and the cost question was
+  actually answered, not just deferred). QDEF-SPEC.md §3.1 classifies a
+  Record's Type ID by CBOR shape/parity: an even uint is a "Standard
+  record type," always globally interpreted; an odd uint is a "Scoped
+  record type," requiring a declared namespace, or it MUST be treated as
+  an abort. Checking TagDrop's four Type IDs against this rule surfaced a
+  real compliance gap — see SPEC.md §14's version-4 entry — fixed there by
+  re-minting Paper's two odd IDs to even, matching Content's existing
+  (already-compliant) pair. That fix deliberately does not adopt
+  namespace-scoping itself. Whether to go further — shrinking all four
   Type IDs from 9-byte CBOR uints down to 1-byte small odd integers behind
-  a shared `tagdrop` Type-0 declaration — is a real, upstream-enabled
-  opportunity (namespace-scoping was built specifically because of an
-  earlier TagDrop relay asking about shrinking these same four IDs), not
-  implemented yet because one concrete cost question is still
-  unconfirmed: whether a Type-0 record must repeat on every code of a
-  multi-code Split group (mirroring how Preview already repeats per code)
-  or only needs to appear once — the same per-code-vs-per-group cost trap
-  that App Route's decentralized form ran into above. Revisit once that's
-  answered; a relay asking exactly this was sent following this entry's
-  creation.
+  a declared namespace — got a real answer via a relay to qdef bot: a
+  namespace declaration MUST repeat on every code of a multi-code Split
+  group, the same reason
+  Preview already does (each code is independently parsed, no shared
+  state). Real numbers, checked against their encoder: shrinking a Type ID
+  saves ~6 bytes; the per-code namespace-declaration overhead costs ~8
+  bytes (the exact figure moved again with issue #66 below, but the shape
+  of the trade-off didn't). Breakeven needs ≥2 shrunk IDs sharing a code.
+  TagDrop's own Split design means Body's real Type ID never sits bare
+  per-code (it's inside the Split-wrapped fragment, surfacing once only
+  after reassembly) — so a multi-code group only ever has *one* bare
+  namespace-scoped ID (Preview) per code, which is the losing case: **net
+  −2 bytes/code, scaling with group size** (a 7-code Paper comes out ~14
+  bytes worse). Single-code payloads (Preview+Body sharing a code) do net
+  a small win (~+4 bytes), but not enough on its own to justify adopting
+  the mechanism. **Declined** for this reason, not for lack of upstream
+  support — revisit only if TagDrop's own Split-per-code shape changes, or
+  if a future need for third-party detection (a generic QDEF-aware
+  scanner recognizing "this is TagDrop") outweighs the per-code cost on
+  its own merits.
+- **QDEF mandatory container discriminator** (checked in, settled — see
+  github.com/mofosyne/tagdrop#66). Landed after the namespace-scoping
+  entry above: the previously-optional Type-0 namespace header became a
+  mandatory 1-byte container discriminator on any carrier using QDEF's
+  magic header (ambiguity fix — a decoder couldn't otherwise tell "this is
+  the header" from "this is the next Record's own Type ID"). Cost to
+  TagDrop: the discriminator only applies where the magic header does —
+  TagDrop's byte-mode QR/JABCode carrier, not implemented in any codec yet
+  — and both real TagDrop carriers (`tagdrop:` URI, NFC NDEF) are
+  explicitly exempt, same as they already were from the magic header
+  itself, since their own dispatch signal (scheme, MIME type) already does
+  the discriminator's job. Net effect: byte-mode QR framing grows from 4
+  to 5 bytes (SPEC.md version 5); zero cost anywhere TagDrop actually
+  ships today. Also landed: a per-Record namespace-pairing override
+  (`[namespace, typeId]`) for multiple namespaces in one container —
+  TagDrop, using at most one namespace context (currently zero) per code,
+  would never need this, but it costs nothing when unused. No SPEC.md
+  action beyond the version-5 framing update; no reason found to reopen
+  the namespace-scoping decision above.
 - ~~**Paper "homepage" via `index` slug convention**~~ — **done.** A file
   whose `slug` is `index`, `index.html`, or `index.md` is now highlighted as
   the paper's primary "Open" action: `tools/reader/index.html`'s
