@@ -1,29 +1,27 @@
 package com.github.mofosyne.tagdrop.data.format
 
-import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 
 /**
- * Reassembles TagDrop payloads from scanned [Sector]s (SPEC §5).
+ * Reassembles TagDrop payloads from scanned [ScannedRecord]s (SPEC §5), mirroring
+ * `tools/reader/index.html`'s `RecordAssembler` — the settled JS reference this Kotlin port
+ * targets.
  *
- * Unlike a single in-flight assembly, this tracks **several payloads concurrently**, keyed
- * by `(type, cache_id/root_hash)`: sectors from different payloads can be interleaved in any
- * order, any session (SPEC §4.1, §5), and each is matched to its own group as it arrives. A
- * single-sector payload (the common case) completes on its first [add]. Multi-sector payloads
- * accumulate until every `sector_index` `0..sector_count-1` is in; an optional XOR parity
- * sector (SPEC §5) can reconstruct one missing data sector.
- *
- * Integrity (`content_sha256`, SPEC §3/§9) is verified during parsing; the assembler resolves
- * the cover/plain reading of a Content payload, leaving key-trial override decryption (§9) to
- * the caller via [tryKey].
+ * Groups are keyed by Split Wrapper `group_id` (SPEC §5.1), not `(type, cache_id)`: a lone
+ * Preview (key-only code) or a Preview + plain/Compress-wrapped Body (single-code payload)
+ * completes immediately on its first [add]. A Preview + Split-fragment accumulates by
+ * `group_id` until every fragment `0..count-1` is in (an optional XOR parity fragment, at
+ * index `== count`, can reconstruct one missing data fragment).
  *
  * Thread-safety: not thread-safe; call from a single thread (main thread).
  */
 class SectorAssembler {
 
-    private class Group(val type: Int) {
-        var meta: PartMeta? = null
+    private class Group(val kind: PayloadKind, val groupId: ByteArray, val count: Int, val total: Int) {
         val data = mutableMapOf<Int, ByteArray>()
         var parity: ByteArray? = null
+        var previewRaw: ByteArray? = null
+        var preview: Map<Int, Any>? = null
         /** Set once a `key_material` (SPEC §9) decrypts this payload's content slot as an override map. */
         var resolvedOverride: TagDropPayload.OverrideMap? = null
     }
@@ -35,25 +33,29 @@ class SectorAssembler {
         /** Nothing in flight. */
         object Idle : State()
 
-        /** Still collecting sectors for one payload. [missingIndices] is sorted ascending. */
+        /** Still collecting Split fragments for one payload. [missingIndices] is sorted ascending. */
         data class Collecting(
             val received: Int,
             val total: Int,
-            val type: Int,
+            val kind: PayloadKind,
             val cacheId: ByteArray?,
             val hint: String?,
             val missingIndices: List<Int>
         ) : State()
 
         /**
-         * A Content payload fully reassembled and integrity-verified; [content] is its resolved
-         * cover/plain reading. If [pendingOverrideBlob] is non-null the content slot may also be a
-         * hidden override map (SPEC §9) not yet unlocked — a candidate for [tryKey] to
-         * "self-correct" [content]/[hint]/[filename]/[mimeType] later. [keyMaterial], if present,
-         * is a key this code carries for *other* content (SPEC §9), to be discovered by the caller.
+         * A Content payload's Preview+Body fully reassembled (SPEC §5, §9). [content] is the
+         * content slot's bytes exactly as carried — for an override-map payload (SPEC §9) this
+         * IS the encrypted blob unless [pendingOverrideBlob] has already been resolved by a
+         * matching key ([wasEncrypted] true, [content] the decrypted override reading). There is
+         * no separate "awaiting key" state: a still-locked payload is fully "ready" with
+         * [pendingOverrideBlob] set, exactly like the web reader — the caller shows [content] as
+         * the clear/cover reading and offers key trial for [pendingOverrideBlob] in the
+         * background ([SectorAssembler.tryKey]).
          */
         data class ContentReady(
-            val streamBytes: ByteArray,
+            val previewRaw: ByteArray,
+            val bodyRaw: ByteArray?,
             val cacheId: ByteArray?,
             val hint: String?,
             val filename: String?,
@@ -74,7 +76,6 @@ class SectorAssembler {
              * fire on ordinary unencrypted content that happens to be ≥28 bytes.
              */
             val pendingOverrideDeclared: Boolean = false,
-            val pendingOverrideCompression: Int = TagDropCodec.COMPRESSION_NONE,
             val kdfAlg: Int = TagDropCodec.KDF_NONE,
             val kdfSalt: ByteArray? = null,
             val kdfIters: Int = 100000,
@@ -97,42 +98,37 @@ class SectorAssembler {
             val signerLabel: String? = null
         ) : State()
 
-        /** A Paper payload fully reassembled. [streamBytes] is the reassembled stream, stored as `ScannedPaper.cborBytes`. */
-        data class PaperReady(val paper: TagDropPayload.Paper, val streamBytes: ByteArray) : State()
-
         /**
-         * All sectors present but the content slot couldn't be read as plain content (SPEC §5
-         * step 5) — it must be a hidden override blob (SPEC §9), and no key has decrypted it yet.
-         * Call [tryKey] when a candidate key arrives (scan order doesn't matter); [contentSlot]
-         * plus the kdf fields let the caller also try a passphrase-derived key (SPEC §9).
+         * A Paper payload fully reassembled. [streamBytes] (`previewRaw + bodyRaw`) is the
+         * reassembled (Compress-unwrapped, unsplit) stream, stored as `ScannedPaper.cborBytes`;
+         * [previewRaw]/[bodyRaw] are exposed separately for signature verification
+         * (`data/signing/SignatureVerifier.kt`'s `verifyPaperSignature`).
          */
-        data class AwaitingKey(
-            val cacheId: ByteArray?,
-            val hint: String?,
-            val contentSlot: ByteArray,
-            val compression: Int,
-            val kdfAlg: Int = TagDropCodec.KDF_NONE,
-            val kdfSalt: ByteArray? = null,
-            val kdfIters: Int = 100000
-        ) : State()
+        data class PaperReady(val paper: TagDropPayload.Paper, val previewRaw: ByteArray, val bodyRaw: ByteArray, val streamBytes: ByteArray) : State()
 
-        /** All sectors present but `content_sha256` didn't match — incomplete or corrupt assembly. */
+        /** A Split group fully reassembled but `group_id` didn't match — incomplete or corrupt assembly. */
         object HashMismatch : State()
 
-        /** All sectors present but the reassembled bytes weren't a well-formed payload. */
+        /** All fragments present but the reassembled bytes weren't a well-formed payload. */
         object Failed : State()
     }
 
-    /** Adds a scanned [sector], matching it to (or starting) its payload group, and returns that group's state. */
-    fun add(sector: Sector): State {
-        val key = groupKey(sector)
-        val group = groups.getOrPut(key) { Group(sector.type) }
-        group.meta = sector.partMeta
-        if (sector.partMeta.paritySchemeRaw != null) {
-            group.parity = sector.sectorBytes
-        } else {
-            group.data[sector.partMeta.sectorIndex] = sector.sectorBytes
+    /** Adds a scanned [record], matching it to (or starting) its payload group, and returns that group's state. */
+    fun add(record: ScannedRecord): State {
+        if (!TagDropCodec.isSplitFragment(record)) {
+            return if (record.kind == PayloadKind.PAPER) {
+                finishPaper(record, TagDropCodec.unwrappedBodyBytes(record))
+            } else {
+                finishContent(record, TagDropCodec.unwrappedBodyBytes(record), resolvedOverride = null)
+            }
         }
+        val frag = TagDropCodec.splitFragmentOf(record) ?: return State.Failed
+        val key = frag.groupId.toHex()
+        val group = groups.getOrPut(key) { Group(record.kind, frag.groupId, frag.count, frag.total) }
+        // Preview repeats identically on every code (SPEC §5.1) — keep the latest scan's copy.
+        group.previewRaw = record.previewRaw
+        group.preview = record.preview
+        if (frag.isParity) group.parity = frag.data else group.data[frag.index] = frag.data
         lastGroupKey = key
         val state = computeState(group)
         if (state.isTerminal) groups.remove(key)
@@ -142,7 +138,7 @@ class SectorAssembler {
     /** State of the most-recently-touched group, for status display; [State.Idle] if none pending. */
     fun currentState(): State = lastGroupKey?.let { groups[it] }?.let { computeState(it) } ?: State.Idle
 
-    /** True while any payload is still being collected (or awaiting a key). */
+    /** True while any payload is still being collected. */
     val hasPending: Boolean get() = groups.isNotEmpty()
 
     /**
@@ -156,15 +152,18 @@ class SectorAssembler {
         val iterator = groups.entries.iterator()
         while (iterator.hasNext()) {
             val (_, group) = iterator.next()
-            if (group.type != TagDropCodec.TYPE_CONTENT || group.resolvedOverride != null) continue
-            val meta = group.meta ?: continue
-            val stream = reassemble(group, meta.sectorCount) ?: continue
-            val parsed = TagDropCodec.parseContentStream(stream, meta) as? TagDropCodec.ContentParse.Ok ?: continue
+            if (group.kind != PayloadKind.CONTENT || group.resolvedOverride != null) continue
+            val previewRaw = group.previewRaw ?: continue
+            val preview = group.preview ?: continue
+            val wrapped = reassemble(group) ?: continue
+            val record = ScannedRecord(group.kind, previewRaw, preview, null, null)
+            val parsed = TagDropCodec.parseContentStream(record, wrapped) as? TagDropCodec.ContentParse.Ok ?: continue
             val slot = parsed.content.content
             if (slot.size < TagDropCodec.OVERRIDE_BLOB_MIN_BYTES) continue
-            val override = TagDropCodec.tryDecryptOverrideMap(slot, keyMaterial, parsed.content.compression) ?: continue
+            val override = TagDropCodec.tryDecryptOverrideMap(slot, keyMaterial) ?: continue
             group.resolvedOverride = override
-            (computeState(group) as? State.ContentReady)?.let { resolved += it; iterator.remove() }
+            val state = finishContent(record, wrapped, override)
+            if (state is State.ContentReady) { resolved += state; iterator.remove() }
         }
         return resolved
     }
@@ -180,79 +179,69 @@ class SectorAssembler {
         get() = this is State.ContentReady || this is State.PaperReady ||
                 this is State.HashMismatch || this is State.Failed
 
-    /** `(type, cache_id)` identity (SPEC §4.1); a key-only code with no `cache_id` keys off its type alone. */
-    private fun groupKey(sector: Sector): String =
-        "${sector.type}:${sector.partMeta.cacheId?.toHex() ?: "nokey"}"
-
     private fun computeState(group: Group): State {
-        val meta = group.meta ?: return State.Idle
-        val count = meta.sectorCount
-        val missing = (0 until count).filterNot { group.data.containsKey(it) }
-
-        if (missing.isEmpty()) {
-            return finish(group, group.data, meta, count)
-        }
-
-        // Single missing data sector + a parity sector → try XOR reconstruction (SPEC §5).
-        if (missing.size == 1 && group.parity != null) {
-            val reconstructed = reconstruct(group, missing[0], count, meta.totalBytes)
-            if (reconstructed != null) {
-                val trial = HashMap(group.data).apply { put(missing[0], reconstructed) }
-                val state = finish(group, trial, meta, count)
-                // Trust the reconstruction only if it parses/verifies; otherwise keep waiting.
-                if (state !is State.HashMismatch && state !is State.Failed) {
-                    if (state.isTerminal) group.data[missing[0]] = reconstructed
-                    return state
-                }
+        val wrapped = reassemble(group)
+        if (wrapped != null) {
+            // group_id is SHA-256(wrapped Body)[0:8] (SPEC §5.1) — the reassembly integrity
+            // check over the bytes exactly as transmitted (after Compress-wrap, if applicable).
+            if (!sha256(wrapped).copyOf(8).contentEquals(group.groupId)) return State.HashMismatch
+            val previewRaw = group.previewRaw ?: return State.Failed
+            val preview = group.preview ?: return State.Failed
+            val record = ScannedRecord(group.kind, previewRaw, preview, null, null)
+            return if (group.kind == PayloadKind.PAPER) {
+                finishPaper(record, wrapped)
+            } else {
+                finishContent(record, wrapped, group.resolvedOverride)
             }
         }
-
-        return State.Collecting(group.data.size, count, group.type, meta.cacheId, bestEffortHint(group, count), missing)
+        val missing = (0 until group.count).filterNot { group.data.containsKey(it) }
+        val preview = group.preview
+        return State.Collecting(
+            group.data.size, group.count, group.kind,
+            preview?.let { identityOf(it) }, preview?.let { hintOf(it) }, missing
+        )
     }
 
-    /** Reassembles [data] and parses it into a terminal/awaiting state per [group]'s type. */
-    private fun finish(group: Group, data: Map<Int, ByteArray>, meta: PartMeta, count: Int): State {
-        val stream = reassemble(data, count) ?: return State.Failed
-        return when (group.type) {
-            TagDropCodec.TYPE_PAPER -> TagDropCodec.parsePaperStream(stream, meta)
-                ?.let { State.PaperReady(it, stream) } ?: State.Failed
-            else -> when (val parsed = TagDropCodec.parseContentStream(stream, meta)) {
-                is TagDropCodec.ContentParse.Malformed -> State.Failed
-                is TagDropCodec.ContentParse.HashMismatch -> State.HashMismatch
-                is TagDropCodec.ContentParse.Ok -> contentState(group, parsed.content, stream)
-            }
+    /** Completes a payload whose full (wire-form) Body bytes are in hand — or a key-only code with no Body at all ([bodyWireBytes] null). */
+    private fun finishContent(record: ScannedRecord, bodyWireBytes: ByteArray?, resolvedOverride: TagDropPayload.OverrideMap?): State =
+        when (val parsed = TagDropCodec.parseContentStream(record, bodyWireBytes)) {
+            is TagDropCodec.ContentParse.Malformed -> State.Failed
+            is TagDropCodec.ContentParse.HashMismatch -> State.HashMismatch
+            is TagDropCodec.ContentParse.Ok -> contentState(record, parsed.bodyRaw, resolvedOverride, parsed.content)
         }
-    }
 
-    /** Resolves a parsed Content into a ready/awaiting state: override (if a key matched) → cover → awaiting key. */
-    private fun contentState(group: Group, content: TagDropPayload.Content, stream: ByteArray): State {
-        val override = group.resolvedOverride
-        if (override != null) {
-            return readyState(stream, content, override.hint ?: content.hint,
-                override.filename ?: content.filename, override.mimeType ?: content.mimeType,
-                override.content ?: ByteArray(0), pendingBlob = null, wasEncrypted = true)
-        }
-        // SPEC §5 step 5: try the cover/plain-content reading per content_compression.
-        val cover = runCatching { TagDropCodec.decompressPayload(content.content, content.compression) }.getOrNull()
-            ?: return State.AwaitingKey(
-                content.cacheId, content.hint, content.content, content.compression,
-                content.kdfAlg, content.kdfSalt, content.kdfIters
+    /** Resolves a parsed Content into a ready state: an already-unlocked override reading, or the clear/cover reading with the candidate blob (if any) left pending. */
+    private fun contentState(
+        record: ScannedRecord, bodyRaw: ByteArray?,
+        resolvedOverride: TagDropPayload.OverrideMap?, content: TagDropPayload.Content
+    ): State {
+        if (resolvedOverride != null) {
+            return readyState(
+                record.previewRaw, bodyRaw, content,
+                resolvedOverride.hint ?: content.hint, resolvedOverride.filename ?: content.filename,
+                resolvedOverride.mimeType ?: content.mimeType, resolvedOverride.content ?: ByteArray(0),
+                pendingBlob = null, wasEncrypted = true
             )
+        }
         val pendingBlob = content.overrideBlob
         // Only treat the candidate blob as a UI-worthy "locked" hint if the author actually
         // declared it (cosmetic `encryption` field or a passphrase KDF) — SPEC §9 deliberately
         // leaves undeclared candidates indistinguishable from ordinary content.
         val declared = pendingBlob != null &&
             (content.encryption == TagDropCodec.ENCRYPTION_AES256GCM || content.kdfAlg != TagDropCodec.KDF_NONE)
-        return readyState(stream, content, content.hint, content.filename, content.mimeType, cover,
-            pendingBlob = pendingBlob, wasEncrypted = declared, declared = declared)
+        return readyState(
+            record.previewRaw, bodyRaw, content, content.hint, content.filename, content.mimeType, content.content,
+            pendingBlob = pendingBlob, wasEncrypted = declared, declared = declared
+        )
     }
 
     private fun readyState(
-        stream: ByteArray, content: TagDropPayload.Content, hint: String?, filename: String?, mimeType: String,
+        previewRaw: ByteArray, bodyRaw: ByteArray?, content: TagDropPayload.Content,
+        hint: String?, filename: String?, mimeType: String,
         resolved: ByteArray, pendingBlob: ByteArray?, wasEncrypted: Boolean, declared: Boolean = false
     ) = State.ContentReady(
-        streamBytes = stream,
+        previewRaw = previewRaw,
+        bodyRaw = bodyRaw,
         cacheId = content.cacheId,
         hint = hint,
         filename = filename,
@@ -266,7 +255,6 @@ class SectorAssembler {
         retainKey = content.retainKey,
         pendingOverrideBlob = pendingBlob,
         pendingOverrideDeclared = declared,
-        pendingOverrideCompression = if (pendingBlob != null) content.compression else TagDropCodec.COMPRESSION_NONE,
         kdfAlg = content.kdfAlg,
         kdfSalt = content.kdfSalt,
         kdfIters = content.kdfIters,
@@ -289,23 +277,39 @@ class SectorAssembler {
         signerLabel = content.signerLabel
     )
 
-    /** Concatenates `sector_bytes` for indices `0..count-1` in order, or null if any is missing. */
-    private fun reassemble(data: Map<Int, ByteArray>, count: Int): ByteArray? {
-        val out = ByteArrayOutputStream()
-        for (i in 0 until count) out.write(data[i] ?: return null)
-        return out.toByteArray()
+    /** Paper-specific counterpart to [finishContent]: [bodyWireBytes] null means malformed (a Paper always has a Body). */
+    private fun finishPaper(record: ScannedRecord, bodyWireBytes: ByteArray?): State {
+        if (bodyWireBytes == null) return State.Failed
+        val paper = TagDropCodec.parsePaperStream(record, bodyWireBytes) ?: return State.Failed
+        val bodyRaw = TagDropCodec.logicalBodyBytes(bodyWireBytes, isPaper = true) ?: return State.Failed
+        return State.PaperReady(paper, record.previewRaw, bodyRaw, record.previewRaw + bodyRaw)
     }
 
-    private fun reassemble(group: Group, count: Int): ByteArray? = reassemble(group.data, count)
+    /** Concatenated fragment data for a complete group (with XOR parity reconstruction of a single missing fragment, SPEC §5), or null while fragments are still missing. */
+    private fun reassemble(group: Group): ByteArray? {
+        val missing = (0 until group.count).filterNot { group.data.containsKey(it) }
+        val data: Map<Int, ByteArray> = if (missing.size == 1 && group.parity != null) {
+            val reconstructed = reconstruct(group, missing[0]) ?: return null
+            HashMap(group.data).apply { put(missing[0], reconstructed) }
+        } else if (missing.isNotEmpty()) {
+            return null
+        } else {
+            group.data
+        }
+        val out = java.io.ByteArrayOutputStream()
+        for (i in 0 until group.count) out.write(data[i] ?: return null)
+        val bytes = out.toByteArray()
+        return bytes.takeIf { it.size == group.total }
+    }
 
     /**
-     * Reconstructs the single missing data sector [index] by XOR-ing the parity sector against
-     * every present data sector (each implicitly zero-padded), then truncating to that sector's
-     * real length derived from `total_bytes` (SPEC §5).
+     * Reconstructs the single missing data fragment [index] by XOR-ing the parity fragment
+     * against every present data fragment (each implicitly zero-padded), then truncating to
+     * that fragment's real length derived from `total` (SPEC §5).
      */
-    private fun reconstruct(group: Group, index: Int, count: Int, totalBytes: Int): ByteArray? {
+    private fun reconstruct(group: Group, index: Int): ByteArray? {
         val parity = group.parity ?: return null
-        val sectorSize = (totalBytes + count - 1) / count
+        val chunkLen = (group.total + group.count - 1) / group.count
         val x = parity.copyOf()
         for ((i, bytes) in group.data) {
             if (i == index) continue
@@ -313,23 +317,15 @@ class SectorAssembler {
                 if (k < x.size) x[k] = (x[k].toInt() xor bytes[k].toInt()).toByte()
             }
         }
-        val realLen = if (index == count - 1) totalBytes - (count - 1) * sectorSize else sectorSize
+        val realLen = if (index == group.count - 1) group.total - (group.count - 1) * chunkLen else chunkLen
         if (realLen < 0 || realLen > x.size) return null
         return x.copyOf(realLen)
     }
 
-    /** Best-effort `hint`/`label` from the contiguous run of sectors starting at index 0 (SPEC §5). */
-    private fun bestEffortHint(group: Group, count: Int): String? {
-        val buf = ByteArrayOutputStream()
-        var i = 0
-        while (i < count && group.data.containsKey(i)) { buf.write(group.data[i]); i++ }
-        if (buf.size() == 0) return null
-        @Suppress("UNCHECKED_CAST")
-        return runCatching {
-            val (items, _) = MiniCbor.decodeSequencePrefix(buf.toByteArray(), 1)
-            (items[0] as? Map<Int, Any>)?.get(3) as? String
-        }.getOrNull()
-    }
+    private fun identityOf(preview: Map<Int, Any>): ByteArray? = preview[1] as? ByteArray
+    private fun hintOf(preview: Map<Int, Any>): String? = preview[3] as? String
+
+    private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 }

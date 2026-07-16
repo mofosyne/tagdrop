@@ -15,7 +15,6 @@ import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
-import com.github.mofosyne.tagdrop.data.format.Sector
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.databinding.ActivityWriteNfcTagBinding
 import com.github.mofosyne.tagdrop.util.NfcUtils
@@ -24,11 +23,11 @@ import java.io.IOException
 
 /**
  * Writes a cached item's content onto a physical NFC NDEF tag (SPEC §12): one MIME record per
- * sector ([TagDropCodec.sectorCbor], no Base41/`tagdrop:` wrapper — NFC stores raw bytes per
+ * code (its raw CBOR Record Sequence, no Base41/`tagdrop:` wrapper — NFC stores raw bytes per
  * SPEC §13), optionally followed by an Android Application Record so a tap launches TagDrop
  * directly. Content too large for one tag is split across several ([TagDropCodec.createContentSectors]
  * with a per-tag capacity cap) and written across a sequential "tap next tag" loop, mirroring the
- * multi-sector QR cycling in [ShareQrActivity] but driven by taps instead of a timer.
+ * multi-code QR cycling in [ShareQrActivity] but driven by taps instead of a timer.
  */
 class WriteNfcTagActivity : AppCompatActivity() {
 
@@ -36,7 +35,7 @@ class WriteNfcTagActivity : AppCompatActivity() {
     private var nfcAdapter: NfcAdapter? = null
 
     @Volatile private var cache: FoundCache? = null
-    @Volatile private var pendingSectors: List<Sector>? = null
+    @Volatile private var pendingSectors: List<ByteArray>? = null
     @Volatile private var nextSectorIndex = 0
     @Volatile private var includeAppRecord = true
     @Volatile private var includeStandardRecord = false
@@ -143,9 +142,9 @@ class WriteNfcTagActivity : AppCompatActivity() {
         pendingSectors = sectors
         if (nextSectorIndex >= sectors.size) return // already done; ignore stray taps
 
-        val sector = sectors[nextSectorIndex]
+        val code = sectors[nextSectorIndex]
         val standardRecord = if (includeStandardRecord) NfcUtils.buildStandardRecord(cache.mimeType, cache.contentBytes!!) else null
-        val message = NfcUtils.buildNdefMessage(TagDropCodec.sectorCbor(sector), packageName, includeAppRecord, standardRecord)
+        val message = NfcUtils.buildNdefMessage(code, packageName, includeAppRecord, standardRecord)
 
         if (ndef != null) {
             if (!ndef.isWritable) throw IOException(getString(R.string.write_nfc_read_only))
@@ -187,7 +186,7 @@ class WriteNfcTagActivity : AppCompatActivity() {
      */
     private fun sectorsFittingTag(
         cache: FoundCache, tagCapacity: Int, includeAppRecord: Boolean, includeStandardRecord: Boolean
-    ): List<Sector>? {
+    ): List<ByteArray>? {
         val rawContent = cache.contentBytes!!
         val collectionId = cache.collectionId?.hexToBytes()
         val compress = TagDropCodec.compress(rawContent).size < rawContent.size
@@ -201,18 +200,20 @@ class WriteNfcTagActivity : AppCompatActivity() {
             maxSectorDataBytes = maxSectorDataBytes
         )
 
-        fun fitsCapacity(sector: Sector) =
-            NfcUtils.buildNdefMessage(TagDropCodec.sectorCbor(sector), packageName, includeAppRecord, standardRecord)
+        fun fitsCapacity(code: ByteArray) =
+            NfcUtils.buildNdefMessage(code, packageName, includeAppRecord, standardRecord)
                 .toByteArray().size <= tagCapacity
 
         val single = build(Int.MAX_VALUE)
-        if (fitsCapacity(single.first())) return single
+        if (fitsCapacity(single.codes.first())) return single.codes
         if (includeStandardRecord) return null
 
-        val total = single.first().partMeta.totalBytes
+        // Wrapped (post-compress, if applicable) Body size — the actual bytes Split divides —
+        // recovered as this single unsplit code's length minus its (always-plain) Preview.
+        val total = single.codes.first().size - single.previewRaw.size
         for (count in 2..MAX_SECTOR_PROBES) {
             val candidate = build((total + count - 1) / count)
-            if (fitsCapacity(candidate.first())) return candidate
+            if (fitsCapacity(candidate.codes.first())) return candidate.codes
         }
         return null
     }

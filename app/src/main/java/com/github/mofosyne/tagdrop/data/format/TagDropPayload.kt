@@ -3,27 +3,30 @@ package com.github.mofosyne.tagdrop.data.format
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 
 /**
- * Represents a decoded TagDrop payload, fully reassembled from one or more scanned sectors.
+ * Represents a decoded TagDrop payload, fully reassembled from one or more scanned codes.
  *
  * Encoding URIs: tagdrop:<base41-cbor-sequence>
- *   <base41-cbor-sequence> = Base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )
- *   type: 0 = Content (a cache of any size, one or more sectors)
- *         1 = Paper   (directory of files on a physical paper, one or more sectors)
- *   Reassembled stream (concatenated sector_bytes, SPEC §4.2):
- *     CBOR(core_meta_item) || CBOR(bulky_meta_item) || content
+ *   <base41-cbor-sequence> = Base41( CBOR Sequence of 1-2 QDEF Records, SPEC.md §2 )
+ *   A code always carries a Preview Record (Content-Preview, Type 1; or Paper-Preview,
+ *   Type 5) and, if the payload has a body, either the complete Body Record (Content-Body,
+ *   Type 3; or Paper-Body, Type 7 — optionally Compress-wrapped, QDEF Type 8) or one
+ *   Split-Wrapper-wrapped (QDEF Type 2) Body fragment, for a multi-code payload. No magic
+ *   header, no namespace discriminator on this carrier — the `tagdrop:` scheme itself is
+ *   both the dispatch signal and (implicitly, never transmitted) TagDrop's namespace, the
+ *   same fixed value declared explicitly on the byte-mode QR carrier (SPEC.md §2.1a).
  *
  * Navigation links (not QR payloads):
  *   tagdrop://<domain-or-@rootHash-hex>/<slug>  resolved by TagDropLinkResolver
  */
 sealed class TagDropPayload {
 
-    /** A cache (file, page, snippet) of any size, fully reassembled (SPEC §4.2). */
+    /** A cache (file, page, snippet) of any size, fully reassembled (SPEC §4.1). */
     data class Content(
         val cacheId: ByteArray?,  // SHA-256(uncompressed content)[0:8] — content-addressed; null for a key-only code; random if a hidden override map is present (SPEC §9)
         val hint: String?,
         val filename: String?,
         val mimeType: String,     // empty for a key-only code (SPEC §9)
-        val compression: Int,     // 0 = none, 1 = deflate — content_compression
+        val compression: Int,     // 0 = none, 1 = deflate — QDEF Compress Wrapper (Type 8) presence
         val content: ByteArray,   // raw (possibly compressed) content bytes — cover/decoy/genuine; empty for a key-only code
         val overrideBlob: ByteArray? = null,    // candidate encrypted override map found positionally in the content slot, >=28 bytes (SPEC §9)
         val encryption: Int = 0,                // 0 = none, 1 = AES-256-GCM — optional cosmetic hint only, NOT a precondition (SPEC §9)
@@ -47,7 +50,7 @@ sealed class TagDropPayload {
         val createdAt: Long? = null,            // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
         val pixelArt: Boolean = false,          // optional — author hint to render this image with no smoothing/nearest-neighbor scaling (SPEC §7)
         val sourceUrl: String? = null,          // optional — URL of a JSON drop-source registry listing nearby drops
-        val signatureAlgorithm: Int = 0,        // 0 = unsigned, 1 = ML-DSA-44 (SPEC §10) — wire-format field only, not yet verified by this app
+        val signatureAlgorithm: Int = 0,        // 0 = unsigned, 1 = ML-DSA-44 (SPEC §10)
         val signature: ByteArray? = null,       // opaque signature bytes (SPEC §10)
         val signerPubkey: ByteArray? = null,    // present only on the first signed code from a given signer_id (SPEC §10)
         val signerId: ByteArray? = null,        // SHA-256(signerPubkey)[0:8] (SPEC §10)
@@ -59,9 +62,11 @@ sealed class TagDropPayload {
 
     /**
      * A hidden override map (SPEC §9), decrypted from a Content's [Content.overrideBlob] —
-     * found positionally inside the reassembled stream's `content` slot. Its present fields
-     * overlay `core_meta_item`'s same-numbered fields — `hint`/`mime_type`/`content`/`filename` —
-     * with the override map's values winning on collisions.
+     * found positionally inside the reassembled Body's `content` slot (Content-Body key 1).
+     * Its present fields overlay Content-Preview's same-purpose fields — `hint`/`mime_type`/
+     * `content`/`filename` — with the override map's values winning on collisions. Its own
+     * local key namespace (1=hint, 3=mime_type, 5=content, 7=filename) is independent of
+     * Content-Preview's numbering (SPEC §9).
      */
     data class OverrideMap(
         val hint: String? = null,
@@ -70,7 +75,7 @@ sealed class TagDropPayload {
         val filename: String? = null
     )
 
-    /** One file listed in a paper's directory. */
+    /** One file listed in a paper's directory (Paper-Body `files[]`, local key namespace). */
     data class FileEntry(
         val slug: String,        // URL-safe name for this file within the paper
         val mimeType: String,
@@ -82,7 +87,7 @@ sealed class TagDropPayload {
         override fun hashCode() = 31 * slug.hashCode() + fileId.contentHashCode()
     }
 
-    /** A hint pointing to a related paper at a different physical location. */
+    /** A hint pointing to a related paper at a different physical location (Paper-Body `related[]`, local key namespace). */
     data class RelatedPaper(
         val hint: String,              // human-readable description / location hint
         val set: String?    = null,    // which network/trail this paper belongs to
@@ -101,16 +106,17 @@ sealed class TagDropPayload {
 
     /**
      * Paper — the directory payload for a physical paper (A4 sheet, sticker, etc.), fully
-     * reassembled (SPEC §4.3).
+     * reassembled (SPEC §4.3, §4.4).
      *
      * Analogous to a floppy-disk FAT: lists every file on the paper and can
      * point to related papers at other locations, forming an offline TagDropNet.
      *
-     * rootHash = SHA-256(core_meta_item || bulky_meta_item || content)[0:8] over the
-     * **logical** (decompressed) bytes — content is always empty for a Paper, so in
-     * practice this is SHA-256(core_meta_item || bulky_meta_item)[0:8] (SPEC §4.4).
-     * Since root_hash lives in part_meta, outside the structure it's computed over,
-     * there's no placeholder/re-encode pass needed — compute once, done.
+     * rootHash = SHA-256(Preview' || Body')[0:8] — a genuine self-reference (unlike
+     * Content's cache_id): Preview' is Paper-Preview's own canonical bytes with root_hash
+     * itself and the signature fields stripped; Body' is Paper-Body's canonical bytes with
+     * its own signature fields stripped. Built via the same placeholder-then-strip
+     * discipline SPEC §10 already requires for signing (SPEC §4.4) — this is in fact the
+     * *same* SHA-256 call as SPEC §10's signed-message hash, just truncated to 8 bytes.
      *
      * Navigation links embedded in HTML pages:
      *   tagdrop://@<rootHash-hex>/<slug>  — pinned to this exact paper, resolved by
@@ -118,7 +124,7 @@ sealed class TagDropPayload {
      *   claim ever being mistaken for this root hash, SPEC §7).
      */
     data class Paper(
-        val rootHash: ByteArray,           // SHA-256(CBOR)[0:8]; paper's permanent address
+        val rootHash: ByteArray,           // SHA-256(Preview' || Body')[0:8]; paper's permanent address
         val label: String?,                // human-readable name for this paper
         val set: String?,                  // network/trail name
         val slug: String?,                 // this paper's address within the set
@@ -141,7 +147,7 @@ sealed class TagDropPayload {
         val createdAt: Long? = null,            // optional — author-declared Unix timestamp (seconds) this payload was authored; the authoring device's clock, not independently verified (SPEC §3)
         val domain: String? = null,             // optional — human-readable name for tagdrop://<domain>/<slug> links; falls back to slug if absent (SPEC §7)
         val step: Int? = null,                  // optional — 1-based position of this paper within its `set` trail (SPEC §4.3)
-        val signatureAlgorithm: Int = 0,        // 0 = unsigned, 1 = ML-DSA-44 (SPEC §10) — wire-format field only, not yet verified by this app
+        val signatureAlgorithm: Int = 0,        // 0 = unsigned, 1 = ML-DSA-44 (SPEC §10)
         val signature: ByteArray? = null,       // opaque signature bytes (SPEC §10)
         val signerPubkey: ByteArray? = null,    // present only on the first signed code from a given signer_id (SPEC §10)
         val signerId: ByteArray? = null,        // SHA-256(signerPubkey)[0:8] (SPEC §10)
@@ -155,74 +161,97 @@ sealed class TagDropPayload {
     data class Legacy(val dataUri: String) : TagDropPayload()
 }
 
+/** Which payload kind a scanned code's Preview Record belongs to (its own Type ID, SPEC §2.1). */
+enum class PayloadKind { CONTENT, PAPER }
+
 /**
- * Per-sector bookkeeping carried in the envelope alongside `sector_bytes` (SPEC §4.1):
- * which payload this sector belongs to, where it sits in the sequence, how many sectors
- * to expect. `cacheId` is the one field that may be omitted — a key-only code (SPEC §9)
- * carries no content of its own to identify, so it typically has none either.
+ * One scanned/printed code, decoded down to its Preview Record plus whatever came after it
+ * (SPEC §2, §5.1) — mirrors tools/reader/index.html's recordScanResult()/RecordAssembler
+ * design, the settled JS reference implementation this Kotlin port targets.
+ *
+ * Preview is always plain and unwrapped, and — for a multi-code payload — MUST be repeated
+ * identically on every code in the group (SPEC §5.1): a decoder scanning any single code
+ * already knows the payload's identity and can show a usable preview. [second] is:
+ *   - `null` for a key-only code (SPEC §9) — Preview only, nothing else.
+ *   - the complete (optionally Compress-wrapped) Body Record for a single-code payload.
+ *   - one Split-Wrapper-wrapped (QDEF Type 2) Body fragment for a multi-code payload.
+ *
+ * [preview]/[second] are MiniCbor's decoded `Map<Int, Any>` field maps (the Record's own
+ * Type ID sits at key 0) — kept as raw maps, not further typed here, so field extraction
+ * stays in [com.github.mofosyne.tagdrop.data.format.TagDropCodec] alongside the key tables
+ * it already owns, the same division of responsibility the pre-QDEF format used.
  */
-data class PartMeta(
-    val cacheId: ByteArray?,
-    val sectorIndex: Int,             // 0-based
-    val sectorCount: Int,             // how many data sectors carry the payload
-    val totalBytes: Int,              // length of the full reassembled stream
-    val paritySchemeRaw: Int? = null  // only present on sectors at index >= sectorCount (SPEC §5)
+data class ScannedRecord(
+    val kind: PayloadKind,
+    val previewRaw: ByteArray,
+    val preview: Map<Int, Any>,
+    val secondRaw: ByteArray?,
+    val second: Map<Int, Any>?
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other !is PartMeta) return false
-        if (!cacheId.contentEquals(other.cacheId)) return false
-        if (sectorIndex != other.sectorIndex) return false
-        if (sectorCount != other.sectorCount) return false
-        if (totalBytes != other.totalBytes) return false
-        if (paritySchemeRaw != other.paritySchemeRaw) return false
+        if (other !is ScannedRecord) return false
+        if (kind != other.kind) return false
+        if (!previewRaw.contentEquals(other.previewRaw)) return false
+        if (secondRaw == null != (other.secondRaw == null)) return false
+        if (secondRaw != null && other.secondRaw != null && !secondRaw.contentEquals(other.secondRaw)) return false
         return true
     }
 
     override fun hashCode(): Int {
-        var result = cacheId?.contentHashCode() ?: 0
-        result = 31 * result + sectorIndex
-        result = 31 * result + sectorCount
-        result = 31 * result + totalBytes
-        result = 31 * result + (paritySchemeRaw ?: -1)
+        var result = kind.hashCode()
+        result = 31 * result + previewRaw.contentHashCode()
+        result = 31 * result + (secondRaw?.contentHashCode() ?: 0)
         return result
     }
 }
 
 /**
- * One scanned/printed code (one CBOR-sequence envelope), before reassembly (SPEC §2/§4.1).
- * Every code — standalone or one of several pieces — decodes to a Sector; feed it to
- * [SectorAssembler] to reassemble the payload it belongs to.
+ * A Split Wrapper fragment's own wire fields (QDEF-SPEC.md §4.1 Type 2, SPEC §5) — [second]/
+ * [secondRaw] decoded one level further when `second[0] == TYPE_SPLIT`. A fragment at
+ * `index == count` is the optional XOR parity fragment (SPEC §5's redundancy scheme), never
+ * a data fragment; [isParity] distinguishes the two cases explicitly rather than leaving
+ * callers to compare `index`/`count` themselves.
  */
-data class Sector(
-    val type: Int,     // 0 = Content, 1 = Paper (SPEC §2)
-    val partMeta: PartMeta,
-    val sectorBytes: ByteArray
+data class SplitFragment(
+    val groupId: ByteArray,
+    val index: Int,
+    val count: Int,
+    val data: ByteArray,
+    val total: Int,
+    val isParity: Boolean
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other !is Sector) return false
-        if (type != other.type) return false
-        if (partMeta != other.partMeta) return false
-        if (!sectorBytes.contentEquals(other.sectorBytes)) return false
+        if (other !is SplitFragment) return false
+        if (!groupId.contentEquals(other.groupId)) return false
+        if (index != other.index) return false
+        if (count != other.count) return false
+        if (!data.contentEquals(other.data)) return false
+        if (total != other.total) return false
+        if (isParity != other.isParity) return false
         return true
     }
 
     override fun hashCode(): Int {
-        var result = type
-        result = 31 * result + partMeta.hashCode()
-        result = 31 * result + sectorBytes.contentHashCode()
+        var result = groupId.contentHashCode()
+        result = 31 * result + index
+        result = 31 * result + count
+        result = 31 * result + data.contentHashCode()
+        result = 31 * result + total
+        result = 31 * result + isParity.hashCode()
         return result
     }
 }
 
 /**
- * What one scanned/printed code decoded to. A [SectorScan] always needs [SectorAssembler]
- * to resolve into a usable [TagDropPayload] — even a `sector_count` 1 payload is technically
- * one sector — while a [LegacyScan] is already a complete, displayable [TagDropPayload.Legacy].
+ * What one scanned/printed code decoded to. A [RecordScan] always needs [SectorAssembler]
+ * to resolve into a usable [TagDropPayload] — even a single-code payload is technically a
+ * one-code group — while a [LegacyScan] is already a complete, displayable
+ * [TagDropPayload.Legacy].
  */
 sealed class TagDropScan {
-    data class SectorScan(val sector: Sector) : TagDropScan()
+    data class RecordScan(val record: ScannedRecord) : TagDropScan()
     data class LegacyScan(val payload: TagDropPayload.Legacy) : TagDropScan()
 }
 

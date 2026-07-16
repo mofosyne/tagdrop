@@ -256,6 +256,57 @@ object MiniCbor {
         return out.toByteArray()
     }
 
+    /**
+     * Re-encodes [mapBytes] (a definite-length CBOR map, major type 5, starting at its own
+     * head byte) with every pair whose key is in [keysToStrip] removed, regardless of
+     * position — unlike [stripTrailingKeys], which assumes the stripped keys form a trailing
+     * run (true only when a caller lists them last by convention). QDEF Record field lists
+     * (Content-Preview/Content-Body/Paper-Preview/Paper-Body, SPEC.md §3.1-§3.4) always sort
+     * keys ascending — a higher-numbered field (e.g. `source_url`, key 55) can legitimately
+     * sort after the signature fields (45/47/49), so the trailing-run assumption doesn't hold
+     * for these Records the way it did for the old envelope's `core_meta_item`; this walks and
+     * keeps every surviving pair by its own byte range instead of truncating a suffix.
+     */
+    fun stripKeys(mapBytes: ByteArray, keysToStrip: Set<Int>): ByteArray {
+        val stream = ByteArrayInputStream(mapBytes)
+        val head = readByte(stream)
+        require(head ushr 5 == 5) { "Expected CBOR map (major 5), got major ${head ushr 5}" }
+        val count = readArg(head and 0x1F, stream).toInt()
+
+        val survivors = mutableListOf<ByteArray>()
+        repeat(count) {
+            val pairStart = mapBytes.size - stream.available()
+            val key = readValue(stream)
+            readValue(stream) // value bytes only need to be skipped, not interpreted
+            val pairEnd = mapBytes.size - stream.available()
+            if (!(key is Long && key.toInt() in keysToStrip)) {
+                survivors.add(mapBytes.copyOfRange(pairStart, pairEnd))
+            }
+        }
+        val out = ByteArrayOutputStream()
+        writeHead(out, 5, survivors.size.toLong())
+        for (pair in survivors) out.write(pair)
+        return out.toByteArray()
+    }
+
+    /**
+     * Raw major-4 CBOR array encoding of [items] — the array's bytes UNWRAPPED. Mirrors the JS
+     * reference's `cborArrayBytes` (used for QDEF Record fields whose value is an array of
+     * sub-maps, e.g. Paper-Body's `files`/`related`, SPEC §3.4's field-value-shape rule: arrays
+     * live inside a byte-string-encoded CBOR array, not bare at the Record level).
+     *
+     * Returns the array bytes UNWRAPPED: passing the result as a map value elsewhere is safe
+     * without any extra step, because [encodeValue]'s `ByteArray` branch already wraps any
+     * `ByteArray` as a byte string (major type 2) when used as a field value — wrapping here too
+     * would double that header and corrupt the field on decode.
+     */
+    fun encodeArrayBytes(items: List<CborMap>): ByteArray {
+        val out = ByteArrayOutputStream()
+        writeHead(out, 4, items.size.toLong())
+        for (item in items) out.write(encodeValue(item))
+        return out.toByteArray()
+    }
+
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /**

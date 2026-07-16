@@ -17,19 +17,24 @@ data class SignatureVerification(
 private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
 /**
- * Verifies a decoded Content/Paper's Verified Authorship fields against [stream] (SPEC §10) —
- * mirrors the web reader's `verifySignature()`. TOFU: an embedded [signerPubkey] is cached in
- * [signerDao] under [signerId] the first time it's seen, so later codes from the same signer
- * verify even when they omit it to save space (SPEC §10 "Key caching").
+ * Verifies a decoded Content/Paper's Verified Authorship fields (SPEC §10) — mirrors the web
+ * reader's `verifySignatureCommon()`. [computeHash] supplies the format-specific signed-message
+ * hash (`TagDropCodec.contentSignedMessageHash`/`paperSignedMessageHash`, over the LOGICAL
+ * `previewRaw`/`bodyRaw` — not reconstructable from wire-form code bytes alone once
+ * Split/Compress-wrapped); everything else (TOFU key caching, signer_id binding, the
+ * ML-DSA-44 check itself) is format-independent and shared here. TOFU: an embedded
+ * [signerPubkey] is cached in [signerDao] under [signerId] the first time it's seen, so later
+ * codes from the same signer verify even when they omit it to save space (SPEC §10 "Key
+ * caching").
  */
-suspend fun verifySignature(
-    stream: ByteArray,
+suspend fun verifySignatureCommon(
     signatureAlgorithm: Int,
     signature: ByteArray?,
     signerPubkey: ByteArray?,
     signerId: ByteArray?,
     signerLabel: String?,
-    signerDao: SignerDao
+    signerDao: SignerDao,
+    computeHash: () -> ByteArray
 ): SignatureVerification {
     // Unsigned, or an algorithm this app doesn't recognise (SPEC §3 forward-compat: ignore).
     if (signatureAlgorithm != TagDropCodec.SIGNATURE_ALG_MLDSA44) return SignatureVerification(SignatureStatus.NONE, null, null)
@@ -49,7 +54,7 @@ suspend fun verifySignature(
         pubkey = signerDao.getBySignerId(signerIdHex)?.publicKey
     }
     if (pubkey == null || signature == null) return SignatureVerification(SignatureStatus.PENDING, signerIdHex, signerLabel)
-    val hash = TagDropCodec.signedMessageHash(stream) ?: return SignatureVerification(SignatureStatus.PENDING, signerIdHex, signerLabel)
+    val hash = computeHash()
     val ok = MLDSA44.verify(signature, hash, pubkey)
     val cachedLabel = signerIdHex?.let { signerDao.getBySignerId(it)?.label }
     return SignatureVerification(
@@ -59,10 +64,19 @@ suspend fun verifySignature(
     )
 }
 
-/** Convenience overload for a parsed [TagDropPayload.Content] — see the field-list overload for details. */
-suspend fun verifySignature(stream: ByteArray, content: TagDropPayload.Content, signerDao: SignerDao): SignatureVerification =
-    verifySignature(stream, content.signatureAlgorithm, content.signature, content.signerPubkey, content.signerId, content.signerLabel, signerDao)
+/**
+ * Verifies a scanned Content's Verified Authorship fields against its LOGICAL [previewRaw]/
+ * [bodyRaw] (SPEC §10) — [bodyRaw] null for a key-only code (Preview only, no Body at all;
+ * [TagDropCodec.contentSignedMessageHash] treats that as an empty-bytes contribution, same as
+ * the web reader).
+ */
+suspend fun verifyContentSignature(previewRaw: ByteArray, bodyRaw: ByteArray?, content: TagDropPayload.Content, signerDao: SignerDao): SignatureVerification =
+    verifySignatureCommon(
+        content.signatureAlgorithm, content.signature, content.signerPubkey, content.signerId, content.signerLabel, signerDao
+    ) { TagDropCodec.contentSignedMessageHash(previewRaw, bodyRaw) }
 
-/** Convenience overload for a parsed [TagDropPayload.Paper] — see the field-list overload for details. */
-suspend fun verifySignature(stream: ByteArray, paper: TagDropPayload.Paper, signerDao: SignerDao): SignatureVerification =
-    verifySignature(stream, paper.signatureAlgorithm, paper.signature, paper.signerPubkey, paper.signerId, paper.signerLabel, signerDao)
+/** Verifies a scanned Paper's Verified Authorship fields against its LOGICAL [previewRaw]/[bodyRaw] (SPEC §10). */
+suspend fun verifyPaperSignature(previewRaw: ByteArray, bodyRaw: ByteArray, paper: TagDropPayload.Paper, signerDao: SignerDao): SignatureVerification =
+    verifySignatureCommon(
+        paper.signatureAlgorithm, paper.signature, paper.signerPubkey, paper.signerId, paper.signerLabel, signerDao
+    ) { TagDropCodec.paperSignedMessageHash(previewRaw, bodyRaw) }

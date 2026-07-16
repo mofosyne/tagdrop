@@ -20,7 +20,6 @@ import androidx.lifecycle.lifecycleScope
 import com.github.mofosyne.tagdrop.data.db.AppDatabase
 import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
-import com.github.mofosyne.tagdrop.data.format.Sector
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.databinding.ActivityCreatePaperBinding
@@ -34,10 +33,10 @@ import java.util.Date
 /**
  * Creates a multi-file TagDrop "paper": a manifest QR plus one QR per file, laid out
  * for printing (or "Save as PDF" via the system print dialog). A file or the manifest
- * that doesn't fit one QR is auto-split into several uniform sector codes
+ * that doesn't fit one QR is auto-split into several uniform codes
  * ([TagDropCodec.createContentSectorsAutoSized]/[TagDropCodec.createPaperAutoSized],
- * SPEC §4.1/§5); an optional parity sector ([TagDropCodec.paritySector]) can be added
- * per multi-sector file/manifest so any one lost sector can be reconstructed.
+ * SPEC §4.1/§5), with an optional trailing parity code (`withParity`) added per
+ * multi-code file/manifest so any one lost code can be reconstructed.
  *
  * Mirrors the Paper Layout tab of the web generator (tools/generator/index.html), but
  * runs entirely on-device.
@@ -179,44 +178,48 @@ class CreatePaperActivity : AppCompatActivity() {
             val mimeType = mimeTypes[entry.spinnerFileMime.selectedItemPosition]
             val compress = entry.checkFileCompress.isChecked
             val rawContent = content.toByteArray(Charsets.UTF_8)
-            val sectors = TagDropCodec.createContentSectorsAutoSized(null, fileSlug, mimeType, rawContent, compress, createdAt = createdAt)
-            val fileId = sectors.first().partMeta.cacheId ?: ByteArray(0)
+            val build = TagDropCodec.createContentSectorsAutoSized(null, fileSlug, mimeType, rawContent, compress, createdAt = createdAt, withParity = addParity)
+            val fileId = build.cacheId ?: ByteArray(0)
             val fileIdHex = hex(fileId)
             files.add(TagDropPayload.FileEntry(fileSlug, mimeType, fileId))
             fileContents.add(FileContent(fileIdHex, fileSlug, mimeType, rawContent))
-            fileEntries.addAll(sectorQrEntries(sectors, fileSlug, mimeType, fileIdHex, addParity))
+            fileEntries.addAll(sectorQrEntries(build.codes, fileSlug, mimeType, fileIdHex, addParity, build.bodyRaw.size))
         }
 
-        val (paper, paperSectors) = TagDropCodec.createPaperAutoSized(label, set, slug, files, createdAt = createdAt)
+        val paperBuild = TagDropCodec.createPaperAutoSized(label, set, slug, files, createdAt = createdAt, withParity = addParity)
+        val paper = paperBuild.paper
         val rootHashHex = hex(paper.rootHash)
         val manifestLabel = label ?: getString(R.string.paper_manifest_label)
 
         lastManifest = paper
-        lastEntries = sectorQrEntries(paperSectors, manifestLabel, getString(R.string.paper_manifest_sub), rootHashHex, addParity) + fileEntries
+        lastEntries = sectorQrEntries(paperBuild.codes, manifestLabel, getString(R.string.paper_manifest_sub), rootHashHex, addParity, paperBuild.bodyRaw.size) + fileEntries
 
         renderResults(paper)
         saveToMyDrops(paper, fileContents)
     }
 
     /**
-     * Renders one [QrEntry] per sector of a Content/Paper payload, labelled with a
-     * sector index once split (SPEC §4.1, §5), plus a trailing parity entry when
-     * [addParity] is set and splitting actually happened — mirrors the web generator's
-     * per-file/per-manifest sector + parity rendering in generatePaper().
+     * Renders one [QrEntry] per code of a Content/Paper payload, labelled with a code
+     * index once split (SPEC §4.1, §5), plus a trailing parity entry when [addParity] was
+     * requested at build time and splitting actually happened (a no-op single-code payload
+     * ignores [addParity] entirely, same as [TagDropCodec.createContentSectors]/
+     * [TagDropCodec.createPaper] do) — mirrors the web generator's per-file/per-manifest
+     * code + parity rendering in generatePaper(). [totalBytesForDisplay] is the LOGICAL
+     * (pre-wrap) Body size, shown in the split warning toast.
      */
-    private fun sectorQrEntries(sectors: List<Sector>, label: String, sub: String, idHex: String, addParity: Boolean): List<QrEntry> {
-        if (sectors.size == 1) return listOf(QrEntry(label, sub, idHex, TagDropCodec.encode(sectors.first())))
+    private fun sectorQrEntries(codes: List<ByteArray>, label: String, sub: String, idHex: String, addParity: Boolean, totalBytesForDisplay: Int): List<QrEntry> {
+        if (codes.size == 1) return listOf(QrEntry(label, sub, idHex, TagDropCodec.encode(codes.first())))
 
-        toast(getString(R.string.paper_split_warning, label, sectors.first().partMeta.totalBytes, sectors.size))
-        val entries = sectors.map { sector ->
-            val idx = sector.partMeta.sectorIndex
+        val dataCodes = if (addParity) codes.dropLast(1) else codes
+        toast(getString(R.string.paper_split_warning, label, totalBytesForDisplay, dataCodes.size))
+        val entries = dataCodes.mapIndexed { idx, code ->
             QrEntry(
-                getString(R.string.paper_sector_label, label, idx + 1, sectors.size),
-                sub, "$idHex-sector${idx + 1}", TagDropCodec.encode(sector)
+                getString(R.string.paper_sector_label, label, idx + 1, dataCodes.size),
+                sub, "$idHex-sector${idx + 1}", TagDropCodec.encode(code)
             )
         }
         if (!addParity) return entries
-        val parityUri = TagDropCodec.encode(TagDropCodec.paritySector(sectors))
+        val parityUri = TagDropCodec.encode(codes.last())
         return entries + QrEntry(getString(R.string.paper_parity_label, label), getString(R.string.paper_parity_sub), "$idHex-parity", parityUri)
     }
 

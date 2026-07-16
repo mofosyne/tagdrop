@@ -12,11 +12,45 @@ Content and Paper payloads:
 1. **Kotlin (Android app)** — `app/src/main/java/.../data/format/`
    (`Base41.kt`, `MiniCbor.kt`, `TagDropCodec.kt`). This is the canonical
    implementation; `app/src/test/.../TagDropCodecTest.kt` is the most
-   thorough test suite. Currently on **version 1** wire format (4-item
-   CBOR envelope) for both Content and Paper — the QDEF Record port (both
-   payload types) is the next major piece of work, now that the JS side
-   (below) has landed for both and can serve as a settled target to port
-   against, rather than a moving one.
+   thorough test suite. **Ported to QDEF Records (SPEC.md v8)** for both
+   Content and Paper, matching the JS reference's Preview/Body split,
+   Compress Wrapper, and Split Wrapper — the old version-1 four-item
+   envelope (`part_meta`/`sector_bytes`) is gone entirely, a clean cutover
+   with no dual-format decode support (SPEC.md was still Draft with no
+   real code deployed at port time, so no backward-compat burden). Key
+   redesigns: `TagDropPayload.kt`'s `Sector`/`PartMeta`/`TagDropScan`
+   became `ScannedRecord`/`SplitFragment`/`TagDropScan.RecordScan`,
+   mirroring the JS reader's `RecordAssembler`; `SectorAssembler.kt` now
+   keys in-flight groups by Split Wrapper `group_id` instead of
+   `(type, cache_id)`, and — matching the JS reference exactly — has no
+   `AwaitingKey` state: an encrypted payload resolves to `ContentReady`
+   immediately with `pendingOverrideBlob` set, and single-code override
+   resolution happens in the caller (`ReceiveActivity.handleContentReady`
+   trying retained keys directly via `TagDropCodec.tryDecryptOverrideMap`)
+   rather than via `SectorAssembler.tryKey()`, which only ever has
+   something to resolve for a still-collecting multi-code Split group.
+   `createContentSectors`/`createPaper` etc. now return a `ContentBuild`/
+   `PaperBuild` exposing the LOGICAL (pre-wrap) `previewRaw`/`bodyRaw`
+   alongside the wire-ready `codes`, mirroring the JS generator's
+   `{codes, preview, bodyPlain}` shape — needed so `data/signing/
+   SigningIdentity.kt`'s placeholder-then-strip signing can hash the
+   right bytes without re-decoding a built code. Verification note: this
+   environment's Gradle wrapper can't download its own distribution
+   (`gradle-9.5.1-bin.zip` 403s — GitHub releases blocked by org egress
+   policy) and the one pre-installed system Gradle (8.14.3) is below AGP
+   9.2.1's minimum (9.4.1+), so no real `./gradlew testDebugUnitTest` has
+   run against this port yet. Verified instead via a standalone
+   `kotlinc`+JUnit harness assembled from Maven Central jars (same
+   precedent as the signing work's earlier verification, CLAUDE.md's
+   "placeholder-then-strip" note below): the full `data/format`+
+   `data/signing` package set compiles clean, and a rewritten
+   `TagDropCodecTest.kt` (64 tests — Content/Paper round trips including
+   real ML-DSA-44 sign/verify, Split reassembly in shuffled order, XOR
+   parity reconstruction, `group_id`/`root_hash` tamper detection, SPEC
+   §2.2 even/odd key criticality, key-only codes, override-map
+   encryption) passes green. A full Android Studio build (Room codegen,
+   resource linking, the 15 caller Activities/Fragments) remains the
+   honest verification gap.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
    `tools/examples/index.html` (encode side), `tools/reader/index.html`
    (decode side). SHA-256 via `crypto.subtle`, DEFLATE via
@@ -185,12 +219,12 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `5` — QDEF Records plus its outer
-framing's mandatory namespace discriminator, §14; the Kotlin app still
-uses the pre-QDEF version-1 wire format for both Content and Paper) is
-independent of the Android app's `versionName` (currently `2.1.0`,
-already accepted by F-Droid as of June 2026) — bumping one never
-requires bumping the other.
+SPEC.md's `version` field (currently `8` — QDEF Records with Type IDs
+`1`/`3`/`5`/`7` under a fixed implied namespace, §14; both the Kotlin
+app and the web tools are on this shape now, see "Two parallel
+wire-format implementations" above) is independent of the Android app's
+`versionName` (currently `2.1.0`, already accepted by F-Droid as of June
+2026) — bumping one never requires bumping the other.
 
 SPEC.md as a whole is currently a **draft, not frozen** (see its `Status`
 line): no real TagDrop code has been printed or distributed yet, so no

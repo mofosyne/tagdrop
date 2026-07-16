@@ -280,7 +280,7 @@ class CollectionDetailActivity : AppCompatActivity() {
         }
         val (passphrase, shouldStore) = result
         val derivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, salt, 100000)
-        val override = TagDropCodec.tryDecryptOverrideMap(cache.pendingOverrideBlob!!, derivedKey, cache.pendingCompression)
+        val override = TagDropCodec.tryDecryptOverrideMap(cache.pendingOverrideBlob!!, derivedKey)
         if (override == null) {
             Toast.makeText(this, getString(R.string.passphrase_wrong), Toast.LENGTH_SHORT).show()
             val bytes = cache.contentBytes ?: return

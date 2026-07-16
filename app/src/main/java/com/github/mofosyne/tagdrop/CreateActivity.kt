@@ -120,7 +120,7 @@ class CreateActivity : AppCompatActivity() {
         // Keystore access (first-use MasterKey provisioning) and ML-DSA-44 keygen/signing can
         // take well over 100ms — keep them off the UI thread so tapping Generate never freezes.
         lifecycleScope.launch {
-            val sector = withContext(Dispatchers.IO) {
+            val build = withContext(Dispatchers.IO) {
                 if (sign) {
                     val identity = SigningIdentityStore.getOrCreate(this@CreateActivity, signerLabel)
                     signContentSectors(identity) { alg, sig, pubkey, signerId, label ->
@@ -128,12 +128,13 @@ class CreateActivity : AppCompatActivity() {
                             rawContent, compress, icon = icon, createdAt = createdAt,
                             signatureAlgorithm = alg, signature = sig,
                             signerPubkey = pubkey, signerId = signerId, signerLabel = label)
-                    }.first()
+                    }
                 } else {
                     TagDropCodec.createContentSectors(hint, filename, mimeType,
-                        rawContent, compress, icon = icon, createdAt = createdAt).first()
+                        rawContent, compress, icon = icon, createdAt = createdAt)
                 }
             }
+            val sector = build.codes.first()
             val uri = TagDropCodec.encode(sector)
             lastUri = uri
             lastPayloadHint = hint ?: filename
@@ -142,7 +143,7 @@ class CreateActivity : AppCompatActivity() {
 
             try {
                 binding.imageQr.setImageBitmap(QrUtils.encodeQr(uri, 640))
-                val idHex = (sector.partMeta.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
+                val idHex = (build.cacheId ?: ByteArray(0)).joinToString("") { "%02x".format(it) }
                 binding.textCacheId.text = getString(R.string.qr_cache_id, idHex)
                 binding.textUri.text = uri
                 lastCacheId = idHex

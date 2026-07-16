@@ -33,7 +33,7 @@ object MLDSA44 {
         return secretKey to publicKey
     }
 
-    /** Signs [message] (SPEC §10's signed-message hash — see TagDropCodec.signedMessageHash) with [secretKey]. */
+    /** Signs [message] (SPEC §10's signed-message hash — see TagDropCodec.contentSignedMessageHash/paperSignedMessageHash) with [secretKey]. */
     fun sign(message: ByteArray, secretKey: ByteArray): ByteArray {
         require(secretKey.size == SECRET_KEY_BYTES) { "ML-DSA-44 secret key must be $SECRET_KEY_BYTES bytes" }
         val privateKey = MLDSAPrivateKeyParameters(PARAMS, secretKey)

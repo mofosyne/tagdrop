@@ -1,46 +1,46 @@
 package com.github.mofosyne.tagdrop.data.format
 
+import com.github.mofosyne.tagdrop.data.signing.MLDSA44
 import org.junit.Assert.*
 import org.junit.Test
 
+/**
+ * Tests TagDropCodec against the QDEF Record wire format (SPEC.md v8): Content-Preview/
+ * Content-Body (Type 1/3) and Paper-Preview/Paper-Body (Type 5/7), Split Wrapper (Type 2) and
+ * Compress Wrapper (Type 8). Mirrors `tools/test-qdef-roundtrip.mjs`'s adversarial coverage
+ * (tamper detection via group_id/root_hash recomputation, SPEC §2.2 even/odd key criticality,
+ * key-only codes, the placeholder-then-strip signing round trip) rather than porting the old
+ * version-1 envelope's byte-layout assertions, which no longer apply.
+ */
 class TagDropCodecTest {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    /** Round-trips each sector through encode → decode, like a real scan would. */
-    private fun roundTrip(sectors: List<Sector>): List<Sector> =
-        sectors.map { (TagDropCodec.decode(TagDropCodec.encode(it)) as TagDropScan.SectorScan).sector }
+    /** Round-trips each code through encode → decode, like a real scan would. */
+    private fun roundTrip(codes: List<ByteArray>): List<ScannedRecord> =
+        codes.map { (TagDropCodec.decode(TagDropCodec.encode(it)) as TagDropScan.RecordScan).record }
 
-    /** Feeds [sectors] (optionally shuffled) into a fresh assembler and returns the final state. */
-    private fun assemble(sectors: List<Sector>, shuffle: Boolean = false): SectorAssembler.State {
+    /** Feeds [records] (optionally shuffled) into a fresh assembler and returns the final state. */
+    private fun assemble(records: List<ScannedRecord>, shuffle: Boolean = false): SectorAssembler.State {
         val a = SectorAssembler()
-        val order = if (shuffle) sectors.shuffled(java.util.Random(42)) else sectors
+        val order = if (shuffle) records.shuffled(java.util.Random(42)) else records
         var last: SectorAssembler.State = SectorAssembler.State.Idle
-        for (s in order) last = a.add(s)
+        for (r in order) last = a.add(r)
         return last
     }
 
-    /** Decodes the `core_meta_item` (first CBOR item) from a sector's `sector_bytes`. */
-    @Suppress("UNCHECKED_CAST")
-    private fun coreOf(sector: Sector): Map<Int, Any> =
-        MiniCbor.decodeSequencePrefix(sector.sectorBytes, 1).first[0] as Map<Int, Any>
-
-    @Suppress("UNCHECKED_CAST")
-    private fun partMetaOf(sector: Sector): Map<Int, Any> =
-        MiniCbor.decodeSequence(TagDropCodec.sectorCbor(sector))[2] as Map<Int, Any>
-
-    // ── Content: single sector ─────────────────────────────────────────────────
+    // ── Content: single code ─────────────────────────────────────────────────
 
     @Test fun contentSingleRoundTrip() {
-        val sectors = TagDropCodec.createContentSectors(
+        val build = TagDropCodec.createContentSectors(
             "under the bridge", "poem.html", "text/html", "<h1>Hello</h1>".toByteArray()
         )
-        assertEquals(1, sectors.size)
-        val uri = TagDropCodec.encode(sectors.first())
+        assertEquals(1, build.codes.size)
+        val uri = TagDropCodec.encode(build.codes.first())
         assertTrue(uri.startsWith("tagdrop:"))
         assertFalse(uri.startsWith("tagdrop://"))
 
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertEquals("under the bridge", state.hint)
         assertEquals("poem.html", state.filename)
         assertEquals("text/html", state.mimeType)
@@ -49,8 +49,8 @@ class TagDropCodecTest {
     }
 
     @Test fun contentOptionalFieldsNull() {
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hello".toByteArray())
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hello".toByteArray())
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertNull(state.hint)
         assertNull(state.filename)
         assertNull(state.collectionId)
@@ -62,12 +62,12 @@ class TagDropCodecTest {
 
     @Test fun contentWithCollectionAndIcon() {
         val collectionId = byteArrayOf(0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80.toByte())
-        val sectors = TagDropCodec.createContentSectors(
+        val build = TagDropCodec.createContentSectors(
             null, null, "text/plain", "hi".toByteArray(),
             collectionId = collectionId, collectionLabel = "Spring 2026 Sticker Hunt",
             collectionTag = "springtrail2026", icon = "🌳"
         )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertArrayEquals(collectionId, state.collectionId)
         assertEquals("Spring 2026 Sticker Hunt", state.collectionLabel)
         assertEquals("springtrail2026", state.collectionTag)
@@ -76,307 +76,431 @@ class TagDropCodecTest {
 
     @Test fun contentWithTitleDescriptionAndInReplyTo() {
         val parentId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val sectors = TagDropCodec.createContentSectors(
+        val build = TagDropCodec.createContentSectors(
             "hint text", null, "text/plain", "postcard message".toByteArray(),
             inReplyTo = parentId, title = "Greetings from the coast", description = "Wish you were here"
         )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertEquals("Greetings from the coast", state.title)
         assertEquals("Wish you were here", state.description)
         assertArrayEquals(parentId, state.inReplyTo)
     }
 
     @Test fun contentWithCreatedAt() {
-        val sectors = TagDropCodec.createContentSectors(
-            "hint text", null, "text/plain", "postcard message".toByteArray(),
-            createdAt = 1_750_000_000L
+        val build = TagDropCodec.createContentSectors(
+            "hint text", null, "text/plain", "postcard message".toByteArray(), createdAt = 1_750_000_000L
         )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertEquals(1_750_000_000L, state.createdAt)
     }
 
+    @Test fun contentPixelArtRoundTripsWhenDeclaredTrue() {
+        val build = TagDropCodec.createContentSectors(null, null, "image/png", byteArrayOf(1), pixelArt = true)
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertTrue(state.pixelArt)
+    }
+
+    @Test fun contentPixelArtDefaultsToFalse() {
+        val build = TagDropCodec.createContentSectors(null, null, "image/png", byteArrayOf(1))
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertFalse(state.pixelArt)
+    }
+
+    @Test fun contentDeclaredLocationRoundTrip() {
+        val build = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(),
+            lat = -33.8688, lng = 151.2093, radiusM = 25.0, preferDeclaredLocation = true
+        )
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertEquals(-33.8688, state.lat!!, 0.0)
+        assertEquals(151.2093, state.lng!!, 0.0)
+        assertEquals(25.0, state.radiusM!!, 0.0)
+        assertTrue(state.preferDeclaredLocation)
+    }
+
+    @Test fun contentDeclaredLocationDefaultsAreNullAndFalse() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertNull(state.lat)
+        assertNull(state.lng)
+        assertNull(state.radiusM)
+        assertFalse(state.preferDeclaredLocation)
+    }
+
+    @Test fun contentLocationLabelRoundTripsAlongsideCoordinates() {
+        val build = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(), lat = 1.0, lng = 2.0, locationLabel = "🚋 Tram 40"
+        )
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertEquals("🚋 Tram 40", state.locationLabel)
+    }
+
+    @Test fun contentLocationLabelRoundTripsWithoutCoordinates() {
+        // "Explicit no fixed point" (SPEC §4.2): a location label with no lat/lng at all.
+        val build = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(), preferDeclaredLocation = true, locationLabel = "🚋 Tram 40"
+        )
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertNull(state.lat)
+        assertNull(state.lng)
+        assertTrue(state.preferDeclaredLocation)
+        assertEquals("🚋 Tram 40", state.locationLabel)
+    }
+
+    // ── Content: signing (SPEC §10) ─────────────────────────────────────────────
+
     @Test fun contentWithSignatureFieldsRoundTrip() {
-        // SPEC §10 — wire-format round-trip only, no real ML-DSA-44 math involved here.
+        // Wire-format round-trip only, no real ML-DSA-44 math involved here.
         val signature = ByteArray(2420) { it.toByte() }
         val signerPubkey = ByteArray(1312) { (it * 3).toByte() }
         val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val sectors = TagDropCodec.createContentSectors(
-            "hint text", null, "text/plain", "signed content".toByteArray(),
+        val build = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "hi".toByteArray(),
             signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = signature, signerPubkey = signerPubkey,
-            signerId = signerId, signerLabel = "Alice's Trail"
+            signature = signature, signerPubkey = signerPubkey, signerId = signerId, signerLabel = "Alice"
         )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, state.signatureAlgorithm)
         assertArrayEquals(signature, state.signature)
         assertArrayEquals(signerPubkey, state.signerPubkey)
         assertArrayEquals(signerId, state.signerId)
-        assertEquals("Alice's Trail", state.signerLabel)
+        assertEquals("Alice", state.signerLabel)
     }
 
     @Test fun contentSignatureFieldsDefaultToUnsigned() {
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
         assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, state.signatureAlgorithm)
         assertNull(state.signature)
         assertNull(state.signerPubkey)
-        assertNull(state.signerId)
-        assertNull(state.signerLabel)
-        // Absent signature_algorithm costs zero bytes in core_meta_item (SPEC §10: "0 or absent").
-        assertFalse(coreOf(sectors.first()).containsKey(32))
     }
 
-    @Test fun contentSignatureOmitsPubkeyOnSubsequentCodesFromSameSigner() {
-        // SPEC §10 "Key caching": signer_pubkey is only needed on the first signed code from a
-        // signer_id — later codes omit it and cost only signature + signer_id.
-        val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val sectors = TagDropCodec.createContentSectors(
+    @Test fun contentSignedMessageHashOfUnsignedIsDeterministic() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val h1 = TagDropCodec.contentSignedMessageHash(build.previewRaw, build.bodyRaw)
+        val h2 = TagDropCodec.contentSignedMessageHash(build.previewRaw, build.bodyRaw)
+        assertArrayEquals(h1, h2)
+        assertEquals(32, h1.size)
+    }
+
+    @Test fun contentSignedMessageHashStripsSignatureFieldsBeforeHashing() {
+        // The hash must be identical whether or not the payload ends up signed (SPEC §10
+        // "signing happens last and feeds back into nothing").
+        val unsigned = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val signed = TagDropCodec.createContentSectors(
             null, null, "text/plain", "hi".toByteArray(),
             signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = ByteArray(2420), signerId = signerId
+            signature = ByteArray(2420), signerPubkey = ByteArray(1312), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
         )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, state.signatureAlgorithm)
-        assertNull(state.signerPubkey)
-        assertArrayEquals(signerId, state.signerId)
+        val unsignedHash = TagDropCodec.contentSignedMessageHash(unsigned.previewRaw, unsigned.bodyRaw)
+        val signedHash = TagDropCodec.contentSignedMessageHash(signed.previewRaw, signed.bodyRaw)
+        assertArrayEquals(unsignedHash, signedHash)
     }
 
-    // ── signedMessageHash (SPEC §10) ─────────────────────────────────────────────
-
-    @Test fun signedMessageHashOfUnsignedStreamEqualsPlainSha256() {
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val stream = sectors.single().sectorBytes
-        val expected = java.security.MessageDigest.getInstance("SHA-256").digest(stream)
-        assertArrayEquals(expected, TagDropCodec.signedMessageHash(stream))
-    }
-
-    @Test fun signedMessageHashStripsSignatureFieldsBeforeHashing() {
-        val unsignedStream = TagDropCodec.createContentSectors(
-            "hint text", null, "text/plain", "signed content".toByteArray()
-        ).single().sectorBytes
-        val signedStream = TagDropCodec.createContentSectors(
-            "hint text", null, "text/plain", "signed content".toByteArray(),
-            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = ByteArray(2420) { it.toByte() },
-            signerPubkey = ByteArray(1312) { (it * 3).toByte() },
-            signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
-            signerLabel = "Alice's Trail"
-        ).single().sectorBytes
-        // The two streams differ (one carries a signature, the other doesn't) but the
-        // recomputed signed-message hash — what actually gets signed/verified — must match,
-        // since stripping keys 32-36 back out reconstructs the same unsigned bytes.
-        assertFalse(unsignedStream.contentEquals(signedStream))
-        assertArrayEquals(TagDropCodec.signedMessageHash(unsignedStream), TagDropCodec.signedMessageHash(signedStream))
-    }
-
-    @Test fun signedMessageHashChangesIfContentTampered() {
-        val stream = TagDropCodec.createContentSectors(
-            "hint text", null, "text/plain", "signed content".toByteArray(),
-            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = ByteArray(2420), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        ).single().sectorBytes
-        val tampered = stream.copyOf().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() }
-        assertFalse(TagDropCodec.signedMessageHash(stream).contentEquals(TagDropCodec.signedMessageHash(tampered)))
-    }
-
-    @Test fun signedMessageHashForPaperMatchesRootHashFirst8Bytes() {
-        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (paper, sectors) = TagDropCodec.createPaper(
-            "Trail Stop 4", "sunset-trail", "stop-4", files,
-            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = ByteArray(2420), signerId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
+    @Test fun contentSignedMessageHashChangesIfContentTampered() {
+        val a = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val b = TagDropCodec.createContentSectors(null, null, "text/plain", "ho".toByteArray())
+        assertFalse(
+            TagDropCodec.contentSignedMessageHash(a.previewRaw, a.bodyRaw)
+                .contentEquals(TagDropCodec.contentSignedMessageHash(b.previewRaw, b.bodyRaw))
         )
-        val hash = TagDropCodec.signedMessageHash(sectors.single().sectorBytes)
-        assertNotNull(hash)
-        // SPEC §10: "computing root_hash and computing the signed message are one and the same
-        // SHA-256 call" — root_hash is just its first 8 bytes.
-        assertArrayEquals(paper.rootHash, hash!!.copyOf(8))
     }
 
-    @Test fun contentWithCompressionDecompressedOnAssembly() {
-        val raw = "<html><body>test</body></html>".repeat(20).toByteArray()
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/html", raw, compress = true)
-        assertEquals(TagDropCodec.COMPRESSION_DEFLATE.toLong(), coreOf(sectors.first())[12])
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertArrayEquals(raw, state.content)
-        // cache_id is over the uncompressed content, regardless of compression (SPEC §4.4).
-        assertArrayEquals(TagDropCodec.contentId(raw), state.cacheId)
-    }
-
-    @Test fun contentIdIsContentAddressed() {
-        val a = TagDropCodec.createContentSectors(null, null, "text/plain", "same".toByteArray()).first()
-        val b = TagDropCodec.createContentSectors("different hint", "x.txt", "text/plain", "same".toByteArray()).first()
-        // Same content bytes ⇒ same cache_id, regardless of metadata (SPEC §4.4).
-        assertArrayEquals(a.partMeta.cacheId, b.partMeta.cacheId)
-        assertArrayEquals(TagDropCodec.contentId("same".toByteArray()), a.partMeta.cacheId)
-    }
-
-    // ── Content: multi-sector ──────────────────────────────────────────────────
-
-    @Test fun contentMultiSectorRoundTripAnyOrder() {
-        val content = ByteArray(3000) { it.toByte() }
-        val sectors = TagDropCodec.createContentSectors(
-            "big file", "data.bin", "application/octet-stream", content, maxSectorDataBytes = 600
+    @Test fun contentRealMlDsa44SignVerifyRoundTrip() {
+        // The genuine end-to-end crypto path: placeholder-then-strip discipline, real keypair,
+        // real signature — the exact class of bug (a field's value silently changing between an
+        // independently-built "unsigned" pass and the real signed build) CLAUDE.md flags as only
+        // catchable this way, not by code review alone.
+        val (secretKey, publicKey) = MLDSA44.generateKeyPair()
+        val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val placeholder = TagDropCodec.createContentSectors(
+            "signed note", null, "text/plain", "hello, signed world".toByteArray(),
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(MLDSA44.SIGNATURE_BYTES), signerPubkey = publicKey, signerId = signerId
         )
-        assertTrue("expected several sectors", sectors.size > 1)
-        sectors.forEachIndexed { i, s ->
-            assertEquals(i, s.partMeta.sectorIndex)
-            assertEquals(sectors.size, s.partMeta.sectorCount)
-            assertArrayEquals(sectors.first().partMeta.cacheId, s.partMeta.cacheId)
-            assertTrue(TagDropCodec.encode(s).length <= TagDropCodec.MAX_URI_LENGTH)
-        }
-        val state = assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.ContentReady
+        val hash = TagDropCodec.contentSignedMessageHash(placeholder.previewRaw, placeholder.bodyRaw)
+        val signature = MLDSA44.sign(hash, secretKey)
+        val final = TagDropCodec.createContentSectors(
+            "signed note", null, "text/plain", "hello, signed world".toByteArray(),
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = signature, signerPubkey = publicKey, signerId = signerId
+        )
+        // Placeholder-swap must not have changed the logical bytes (fixed-length signature).
+        assertArrayEquals(placeholder.previewRaw, final.previewRaw)
+
+        val state = assemble(roundTrip(final.codes)) as SectorAssembler.State.ContentReady
+        val verifyHash = TagDropCodec.contentSignedMessageHash(state.previewRaw, state.bodyRaw)
+        assertTrue(MLDSA44.verify(state.signature!!, verifyHash, state.signerPubkey!!))
+        // A signature must not verify against a different payload's hash.
+        val otherHash = TagDropCodec.contentSignedMessageHash(
+            TagDropCodec.createContentSectors(null, null, "text/plain", "different content".toByteArray()).previewRaw,
+            null
+        )
+        assertFalse(MLDSA44.verify(state.signature!!, otherHash, state.signerPubkey!!))
+    }
+
+    // ── Content: compression (Compress Wrapper, QDEF Type 8) ───────────────────
+
+    @Test fun contentCompressedRoundTripsToOriginalBytes() {
+        val original = "The quick brown fox jumps over the lazy dog. ".repeat(60).toByteArray()
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", original, compress = true)
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertArrayEquals(original, state.content)
+    }
+
+    // ── Content: multi-code Split (SPEC §5) ─────────────────────────────────────
+
+    @Test fun contentMultiCodeRoundTripAnyOrder() {
+        val content = ByteArray(2000) { it.toByte() }
+        val build = TagDropCodec.createContentSectors(null, null, "application/octet-stream", content, maxSectorDataBytes = 600)
+        assertTrue("expected multiple codes", build.codes.size > 1)
+        val state = assemble(roundTrip(build.codes), shuffle = true) as SectorAssembler.State.ContentReady
         assertArrayEquals(content, state.content)
-        assertArrayEquals(TagDropCodec.contentId(content), state.cacheId)
-        assertEquals("big file", state.hint)
     }
 
-    @Test fun contentSectorsAutoSizedUsesSingleSectorWhenItFits() {
-        val sectors = TagDropCodec.createContentSectorsAutoSized(null, null, "text/plain", "hi".toByteArray())
-        assertEquals(1, sectors.size)
-        assertTrue(TagDropCodec.encode(sectors.first()).length <= TagDropCodec.MAX_URI_LENGTH)
+    @Test fun contentSectorsAutoSizedUsesSingleCodeWhenItFits() {
+        val build = TagDropCodec.createContentSectorsAutoSized(null, null, "text/plain", "hi".toByteArray())
+        assertEquals(1, build.codes.size)
+        assertTrue(TagDropCodec.encode(build.codes.first()).length <= TagDropCodec.DEFAULT_URI_LENGTH)
     }
 
     @Test fun contentSectorsAutoSizedSplitsWhenTooLarge() {
-        val content = ByteArray(5000) { it.toByte() }
-        val sectors = TagDropCodec.createContentSectorsAutoSized(
-            "big file", "data.bin", "application/octet-stream", content
-        )
-        assertTrue("expected several sectors", sectors.size > 1)
-        sectors.forEach { assertTrue(TagDropCodec.encode(it).length <= TagDropCodec.MAX_URI_LENGTH) }
-        val state = assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.ContentReady
-        assertArrayEquals(content, state.content)
-    }
-
-    @Test fun multiSectorAddsContentSha256ButSingleSectorOmitsIt() {
-        val small = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        assertFalse("single-sector content omits content_sha256", coreOf(small.first()).containsKey(8))
-
-        val big = TagDropCodec.createContentSectors(
-            null, null, "text/plain", ByteArray(2000) { it.toByte() }, maxSectorDataBytes = 600
-        )
-        assertTrue("multi-sector content carries content_sha256", coreOf(big.first()).containsKey(8))
-    }
-
-    @Test fun multiSectorCorruptionIsHashMismatch() {
-        val content = ByteArray(2000) { it.toByte() }
-        val sectors = TagDropCodec.createContentSectors(
-            null, null, "text/plain", content, maxSectorDataBytes = 600
-        ).toMutableList()
-        // Corrupt the last byte of the final sector (pure content tail) → content_sha256 fails.
-        val last = sectors.last()
-        val tampered = last.sectorBytes.copyOf().also { it[it.lastIndex] = (it[it.lastIndex] + 1).toByte() }
-        sectors[sectors.lastIndex] = Sector(last.type, last.partMeta, tampered)
-        assertTrue(assemble(sectors) is SectorAssembler.State.HashMismatch)
-    }
-
-    @Test fun multiSectorWithoutContentSha256IsRejected() {
-        // A forged stream that omits content_sha256 (key 8) entirely, split across two sectors —
-        // simulates an attacker substituting sectors with no hash left to disprove the forgery.
-        val core = MiniCbor.encodeMap(listOf(4 to "text/plain"))
-        val bulky = MiniCbor.encodeMap(emptyList())
-        val stream = core + bulky + "forged content, no hash".toByteArray()
-        val cacheId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val mid = stream.size / 2
-        val sectors = listOf(
-            Sector(TagDropCodec.TYPE_CONTENT, PartMeta(cacheId, 0, 2, stream.size), stream.copyOfRange(0, mid)),
-            Sector(TagDropCodec.TYPE_CONTENT, PartMeta(cacheId, 1, 2, stream.size), stream.copyOfRange(mid, stream.size))
-        )
-        assertTrue(assemble(sectors) is SectorAssembler.State.Failed)
+        val big = ByteArray(5000) { it.toByte() }
+        val build = TagDropCodec.createContentSectorsAutoSized(null, null, "application/octet-stream", big)
+        assertTrue("expected several codes", build.codes.size > 1)
+        val state = assemble(roundTrip(build.codes), shuffle = true) as SectorAssembler.State.ContentReady
+        assertArrayEquals(big, state.content)
     }
 
     @Test fun collectingReportsMissingIndices() {
-        val sectors = TagDropCodec.createContentSectors(
-            null, null, "text/plain", ByteArray(2500) { it.toByte() }, maxSectorDataBytes = 600
+        val content = ByteArray(2000) { it.toByte() }
+        val build = TagDropCodec.createContentSectors(null, null, "application/octet-stream", content, maxSectorDataBytes = 600)
+        assertTrue(build.codes.size >= 3)
+        val records = roundTrip(build.codes).dropLast(1) // withhold the last fragment
+        val state = assemble(records) as SectorAssembler.State.Collecting
+        assertEquals(records.size, state.received)
+        assertEquals(build.codes.size, state.total)
+        assertEquals(listOf(build.codes.size - 1), state.missingIndices)
+    }
+
+    @Test fun multiCodeGroupIdMismatchIsHashMismatch() {
+        // Reassembling a truncated/corrupted fragment set that still nominally "completes"
+        // (every index present) but doesn't hash back to the declared group_id.
+        val content = ByteArray(2000) { it.toByte() }
+        val build = TagDropCodec.createContentSectors(null, null, "application/octet-stream", content, maxSectorDataBytes = 600)
+        assertTrue(build.codes.size >= 3)
+        val records = roundTrip(build.codes).toMutableList()
+        // Corrupt one fragment's data bytes in place (same length, so it still "completes"
+        // once every index is present) by re-decoding a hand-tampered raw record.
+        val victim = records[1]
+        val frag = TagDropCodec.splitFragmentOf(victim)!!
+        val tamperedData = frag.data.copyOf().also { it[0] = (it[0].toInt() xor 0xFF).toByte() }
+        val tamperedRaw = MiniCbor.encodeMap(listOf(
+            0 to 2, 2 to frag.groupId, 4 to frag.index, 6 to frag.count, 8 to tamperedData, 9 to frag.total
+        ))
+        val tamperedFull = victim.previewRaw + tamperedRaw
+        val tamperedRecord = (TagDropCodec.decodeRaw(tamperedFull) as TagDropScan.RecordScan).record
+        records[1] = tamperedRecord
+
+        val state = assemble(records)
+        assertTrue("expected HashMismatch, got $state", state is SectorAssembler.State.HashMismatch)
+    }
+
+    @Test fun parityReconstructsOneMissingDataFragment() {
+        val content = ByteArray(2000) { it.toByte() }
+        val build = TagDropCodec.createContentSectors(
+            null, null, "application/octet-stream", content, maxSectorDataBytes = 600, withParity = true
+        )
+        assertTrue(build.codes.size >= 4) // >=3 data + 1 parity
+        val records = roundTrip(build.codes)
+        // Drop data fragment index 1 (keep parity + everything else).
+        val withoutOne = records.filter { TagDropCodec.splitFragmentOf(it)?.index != 1 }
+        val state = assemble(withoutOne) as SectorAssembler.State.ContentReady
+        assertArrayEquals(content, state.content)
+    }
+
+    @Test fun parityReconstructsMissingLastFragment() {
+        val content = ByteArray(1750) { it.toByte() }
+        val build = TagDropCodec.createContentSectors(
+            null, null, "application/octet-stream", content, maxSectorDataBytes = 600, withParity = true
+        )
+        val records = roundTrip(build.codes)
+        val lastDataIndex = records.mapNotNull { TagDropCodec.splitFragmentOf(it) }.filter { !it.isParity }.maxOf { it.index }
+        val withoutLast = records.filter { TagDropCodec.splitFragmentOf(it)?.index != lastDataIndex }
+        val state = assemble(withoutLast) as SectorAssembler.State.ContentReady
+        assertArrayEquals(content, state.content)
+    }
+
+    // ── Content: key-only codes and encryption (SPEC §9) ────────────────────────
+
+    @Test fun keyCodeOmitsCacheIdAndContent() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val code = TagDropCodec.createKeyCodeSector(key, hint = "key for the trailhead box")
+        val state = assemble(roundTrip(listOf(code))) as SectorAssembler.State.ContentReady
+        assertArrayEquals(key, state.keyMaterial)
+        assertEquals("key for the trailhead box", state.hint)
+        assertEquals("", state.mimeType)
+        assertTrue(state.content.isEmpty())
+        assertNull(state.cacheId)
+        assertNull(state.bodyRaw)
+    }
+
+    @Test fun keyCodeRetainKeyFalseRoundTrip() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val code = TagDropCodec.createKeyCodeSector(key, retainKey = false)
+        val state = assemble(roundTrip(listOf(code))) as SectorAssembler.State.ContentReady
+        assertFalse(state.retainKey)
+    }
+
+    @Test fun encryptedContentUsesRandomCacheId() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val override = TagDropPayload.OverrideMap(content = "secret".toByteArray())
+        val build = TagDropCodec.createContentSectors(
+            null, null, "text/plain", "cover".toByteArray(), override = override, encryptionKey = key
+        )
+        assertFalse(build.cacheId!!.contentEquals(TagDropCodec.contentId("cover".toByteArray())))
+    }
+
+    /**
+     * A single-code payload resolves immediately to [SectorAssembler.State.ContentReady] with
+     * [SectorAssembler.State.ContentReady.pendingOverrideBlob] set — there is no in-flight
+     * group left in the assembler to retry later (unlike a still-collecting multi-code Split
+     * group, see [multiCodeEncryptedContentResolvesViaAssemblerTryKey]), matching the real app
+     * flow: `ReceiveActivity.handleContentReady` resolves a just-arrived single-code blob by
+     * trying retained keys directly via [TagDropCodec.tryDecryptOverrideMap], not by calling
+     * back into the assembler.
+     */
+    @Test fun encryptedContentResolvesViaDirectKeyTrial() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val real = "The quick brown fox. ".repeat(80).toByteArray()
+        val override = TagDropPayload.OverrideMap(hint = "real hint", filename = "fox.txt", content = real)
+        val build = TagDropCodec.createContentSectors(
+            "cover hint", "cover.txt", "text/plain", "cover story. ".repeat(40).toByteArray(),
+            compress = true, override = override, encryptionKey = key
         )
         val a = SectorAssembler()
-        // Add all but index 2.
-        sectors.filter { it.partMeta.sectorIndex != 2 }.forEach { a.add(it) }
-        val state = a.currentState() as SectorAssembler.State.Collecting
-        assertEquals(listOf(2), state.missingIndices)
-        assertEquals(sectors.size, state.total)
+        val ready = roundTrip(build.codes).map { a.add(it) }.last() as SectorAssembler.State.ContentReady
+        // Cover reading is shown as-is (the encrypted blob) until a key resolves it.
+        assertNotNull(ready.pendingOverrideBlob)
+        assertTrue(ready.pendingOverrideDeclared)
+        assertFalse(a.hasPending) // single-code payload never entered the assembler's tracking
+
+        assertNull("a non-matching key changes nothing", TagDropCodec.tryDecryptOverrideMap(ready.pendingOverrideBlob!!, TagDropCodec.generateKeyMaterial()))
+        val resolved = TagDropCodec.tryDecryptOverrideMap(ready.pendingOverrideBlob!!, key)
+        assertNotNull(resolved)
+        assertArrayEquals(real, resolved!!.content)
+        assertEquals("real hint", resolved.hint)
+        assertEquals("fox.txt", resolved.filename)
     }
 
-    // ── Envelope structure (SPEC §2) ───────────────────────────────────────────
+    /**
+     * [SectorAssembler.tryKey] resolves an encrypted payload still mid-assembly (a Split group
+     * missing its final fragment) the moment a key arrives *and* the last fragment lands right
+     * after — exercising the actual reachable path through [SectorAssembler.tryKey]'s group
+     * tracking, unlike the single-code case above.
+     */
+    @Test fun multiCodeEncryptedContentResolvesViaAssemblerTryKey() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val real = "The quick brown fox. ".repeat(200).toByteArray()
+        val override = TagDropPayload.OverrideMap(hint = "real hint", content = real)
+        val build = TagDropCodec.createContentSectors(
+            "cover hint", null, "text/plain", "cover story. ".repeat(200).toByteArray(),
+            override = override, encryptionKey = key, maxSectorDataBytes = 600
+        )
+        assertTrue("expected a multi-code payload", build.codes.size > 1)
+        val records = roundTrip(build.codes)
+        val a = SectorAssembler()
+        // Feed every fragment but the last — group is genuinely still Collecting.
+        records.dropLast(1).forEach { a.add(it) }
+        assertTrue(a.hasPending)
+        assertTrue("a non-matching key changes nothing while incomplete", a.tryKey(TagDropCodec.generateKeyMaterial()).isEmpty())
 
-    @Test fun sectorEnvelopeIsFourCborItems() {
-        val sector = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray()).first()
-        val items = MiniCbor.decodeSequence(TagDropCodec.sectorCbor(sector))
-        assertEquals(4, items.size)
-        assertEquals(1L, items[0])          // version
-        assertEquals(0L, items[1])          // type = Content
-        assertTrue(items[2] is Map<*, *>)   // part_meta
-        assertTrue(items[3] is ByteArray)   // sector_bytes
+        // The final fragment completes the group as ContentReady with an unresolved blob —
+        // matching the single-code case, tryKey can no longer help once it's terminal.
+        val last = a.add(records.last())
+        assertTrue(last is SectorAssembler.State.ContentReady)
+        assertFalse(a.hasPending)
     }
 
-    @Test fun envelopeFirstTwoBytesEncodeVersionAndType() {
-        val content = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray()).first()
-        assertArrayEquals(byteArrayOf(0x01, 0x00), TagDropCodec.sectorCbor(content).copyOf(2))
+    @Test fun encryptedPlainContentShowsCoverWithPendingBlob() {
+        val key = TagDropCodec.generateKeyMaterial()
+        val override = TagDropPayload.OverrideMap(hint = "real hint", content = "secret trail notes".toByteArray())
+        val build = TagDropCodec.createContentSectors(
+            "cover hint", null, "text/plain", "cover".toByteArray(), override = override, encryptionKey = key
+        )
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertEquals("cover hint", state.hint)
+        assertNotNull(state.pendingOverrideBlob)
+        assertTrue(state.pendingOverrideDeclared)
 
-        val paper = TagDropCodec.createPaper(null, null, null, emptyList()).second.first()
-        assertArrayEquals(byteArrayOf(0x01, 0x01), TagDropCodec.sectorCbor(paper).copyOf(2))
+        val ov = TagDropCodec.tryDecryptOverrideMap(state.pendingOverrideBlob!!, key)
+        assertNotNull(ov)
+        assertArrayEquals("secret trail notes".toByteArray(), ov!!.content)
+        assertEquals("real hint", ov.hint)
     }
 
-    @Test fun partMetaCarriesSectorFields() {
-        val sector = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray()).first()
-        val pm = partMetaOf(sector)
-        assertTrue(pm.containsKey(2))   // cache_id
-        assertTrue(pm.containsKey(7))   // total_bytes
-        assertEquals(0L, pm[42])        // sector_index
-        assertEquals(1L, pm[43])        // sector_count
-        assertFalse(pm.containsKey(44)) // parity_scheme absent on a data sector
+    @Test fun unencryptedContentHasNoPendingBlobUnderMinSize() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertNull(state.pendingOverrideBlob)
+        assertFalse(state.wasEncrypted)
     }
 
-    // ── decode / decodeRaw → TagDropScan ───────────────────────────────────────
+    @Test fun unencryptedLongContentIsCandidateButNotDeclaredLocked() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "x".repeat(40).toByteArray())
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.ContentReady
+        assertNotNull(state.pendingOverrideBlob)
+        assertFalse(state.pendingOverrideDeclared)
+        assertFalse(state.wasEncrypted)
+    }
+
+    // ── Content: SPEC §2.2 even/odd key criticality ─────────────────────────────
+
+    @Test fun decodeIgnoresUnknownOddKey() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val (items, trailing) = MiniCbor.decodeSequencePrefix(build.previewRaw, 1)
+        @Suppress("UNCHECKED_CAST")
+        val fields = (items[0] as Map<Int, Any>).toList() + (9001 to "unknown but odd")
+        val tamperedPreview = MiniCbor.encodeMap(fields)
+        val record = TagDropCodec.decodeRaw(tamperedPreview + trailing + (build.bodyRaw)) as? TagDropScan.RecordScan
+        assertNotNull("an unknown ODD key must be safely ignored, not rejected", record)
+    }
+
+    @Test fun decodeRejectsUnknownEvenKey() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 1)
+        @Suppress("UNCHECKED_CAST")
+        val fields = (items[0] as Map<Int, Any>).toList() + (9002 to "unknown and even")
+        val tamperedPreview = MiniCbor.encodeMap(fields)
+        val scan = TagDropCodec.decodeRaw(tamperedPreview + build.bodyRaw)
+        assertNull("an unknown EVEN key must reject the whole Record (forward-compat safety valve)", scan)
+    }
+
+    // ── Encoding / decoding plumbing ─────────────────────────────────────────────
 
     @Test fun decodeRawMatchesDecodeOfEncodedUri() {
-        val sector = TagDropCodec.createContentSectors("hint", "f.txt", "text/plain", "hi".toByteArray()).first()
-        val uri = TagDropCodec.encode(sector)
-        val viaUri = (TagDropCodec.decode(uri) as TagDropScan.SectorScan).sector
-        val viaRaw = (TagDropCodec.decodeRaw(Base41.decode(uri.removePrefix("tagdrop:"))) as TagDropScan.SectorScan).sector
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val viaUri = TagDropCodec.decode(TagDropCodec.encode(build.codes.first()))
+        val viaRaw = TagDropCodec.decodeRaw(build.codes.first())
         assertEquals(viaUri, viaRaw)
     }
 
     @Test fun decodeRawReturnsNullForGarbageBytes() {
-        assertNull(TagDropCodec.decodeRaw(byteArrayOf(1, 2, 3)))
-        assertNull(TagDropCodec.decodeRaw(ByteArray(0)))
-    }
-
-    @Test fun decodeRawReturnsNullForUnsupportedVersion() {
-        val pm = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 7 to 0, 42 to 0, 43 to 1))
-        val seq = MiniCbor.encodeUInt(2) + MiniCbor.encodeUInt(0) + pm + MiniCbor.encodeBytes(ByteArray(0))
-        assertNull(TagDropCodec.decodeRaw(seq))
+        assertNull(TagDropCodec.decodeRaw(byteArrayOf(0xFF.toByte(), 0x00, 0x11)))
     }
 
     @Test fun legacyDataUriDecodesToLegacyScan() {
-        val uri = "data:text/html;base64,AAAA"
-        val scan = TagDropCodec.decode(uri)
+        val scan = TagDropCodec.decode("data:text/plain;base64,aGVsbG8=")
         assertTrue(scan is TagDropScan.LegacyScan)
-        assertEquals(uri, (scan as TagDropScan.LegacyScan).payload.dataUri)
     }
 
     @Test fun navigationLinkAndUnknownSchemesReturnNull() {
-        assertNull(TagDropCodec.decode("tagdrop://ABCD/some-slug"))
+        assertNull(TagDropCodec.decode("tagdrop://example.com/slug"))
         assertNull(TagDropCodec.decode("https://example.com"))
-        assertNull(TagDropCodec.decode(""))
-        assertNull(TagDropCodec.decode("tagdrop:!!!!INVALID!!!!"))
+        assertNull(TagDropCodec.decode("not a uri at all"))
     }
 
-    @Test fun decodeIgnoresUnknownKeys() {
-        // SPEC §3: unknown keys must be ignored (forward compatibility).
-        val core = MiniCbor.encodeMap(listOf(4 to "text/plain", 99 to "a field from the future"))
-        val bulky = MiniCbor.encodeMap(emptyList())
-        val stream = core + bulky + "hello".toByteArray()
-        val pm = MiniCbor.encodeMap(listOf(2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 7 to stream.size, 42 to 0, 43 to 1))
-        val cbor = MiniCbor.encodeUInt(1) + MiniCbor.encodeUInt(0) + pm + MiniCbor.encodeBytes(stream)
-
-        val sector = (TagDropCodec.decodeRaw(cbor) as TagDropScan.SectorScan).sector
-        val state = SectorAssembler().add(sector) as SectorAssembler.State.ContentReady
-        assertEquals("text/plain", state.mimeType)
-        assertArrayEquals("hello".toByteArray(), state.content)
-    }
-
-    // ── Paper (SPEC §4.3) ──────────────────────────────────────────────────────
+    // ── Paper (SPEC §3.3-§3.4, §4.4) ─────────────────────────────────────────────
 
     @Test fun paperRoundTrip() {
         val files = listOf(
@@ -389,15 +513,15 @@ class TagDropCodecTest {
             TagDropPayload.RelatedPaper("trail start at town square")
         )
         val collectionId = byteArrayOf(1, 1, 2, 2, 3, 3, 4, 4)
-        val (paper, sectors) = TagDropCodec.createPaper(
+        val build = TagDropCodec.createPaper(
             "Trail Stop 3 — Oak Tree", "sunset-trail", "oak-tree", files, related,
             description = "Day 2 of the sunset trail",
             collectionId = collectionId, collectionLabel = "Sunset Trail 2026", collectionTag = "sunsettrail", icon = "🌲"
         )
 
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady
         val decoded = state.paper
-        assertArrayEquals(paper.rootHash, decoded.rootHash)
+        assertArrayEquals(build.paper.rootHash, decoded.rootHash)
         assertEquals("Trail Stop 3 — Oak Tree", decoded.label)
         assertEquals("sunset-trail", decoded.set)
         assertEquals("oak-tree", decoded.slug)
@@ -423,69 +547,46 @@ class TagDropCodecTest {
         assertNull(decoded.related[1].radiusM)
     }
 
-    @Test fun paperWithStepAndFork() {
+    @Test fun paperWithStepAndDomain() {
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        // SPEC §4.3: two related entries sharing the same set+step are a fork — alternative
-        // next stops — not a collision. A third entry shares step with a *different* set,
-        // so it must NOT be treated as part of the same fork.
-        val related = listOf(
-            TagDropPayload.RelatedPaper("turn left for the pond", set = "sunset-trail", step = 4),
-            TagDropPayload.RelatedPaper("turn right for the meadow", set = "sunset-trail", step = 4),
-            TagDropPayload.RelatedPaper("history trail stop 2", set = "history-trail", step = 4)
+        val build = TagDropCodec.createPaper(
+            "Trail Stop 3", "sunset-trail", "oak-tree", files, step = 3, domain = "sunsettrail"
         )
-        val (_, sectors) = TagDropCodec.createPaper(
-            "Trail Stop 3 — Oak Tree", "sunset-trail", "oak-tree", files, related, step = 3
-        )
-
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
-        val decoded = state.paper
-        assertEquals(3, decoded.step)
-
-        val forkSiblings = decoded.related.filter { it.set == "sunset-trail" && it.step == 4 }
-        assertEquals(2, forkSiblings.size)
-        assertEquals("turn left for the pond", forkSiblings[0].hint)
-        assertEquals("turn right for the meadow", forkSiblings[1].hint)
-
-        val differentTrail = decoded.related.single { it.set == "history-trail" }
-        assertEquals(4, differentTrail.step)
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady
+        assertEquals(3, state.paper.step)
+        assertEquals("sunsettrail", state.paper.domain)
     }
 
     @Test fun paperWithTitleAndInReplyTo() {
         val parentId = byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9)
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (_, sectors) = TagDropCodec.createPaper(
-            "Trail Stop 4", "sunset-trail", "stop-4", files,
-            inReplyTo = parentId, title = "Reply to Stop 3"
+        val build = TagDropCodec.createPaper(
+            "Trail Stop 4", "sunset-trail", "stop-4", files, inReplyTo = parentId, title = "Reply to Stop 3"
         )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady
         assertEquals("Reply to Stop 3", state.paper.title)
         assertArrayEquals(parentId, state.paper.inReplyTo)
     }
 
     @Test fun paperWithCreatedAt() {
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (_, sectors) = TagDropCodec.createPaper(
-            "Trail Stop 4", "sunset-trail", "stop-4", files,
-            createdAt = 1_750_000_000L
-        )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        val build = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files, createdAt = 1_750_000_000L)
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady
         assertEquals(1_750_000_000L, state.paper.createdAt)
     }
 
     @Test fun paperWithSignatureFieldsRoundTrip() {
-        // SPEC §10 — wire-format round-trip only, no real ML-DSA-44 math involved here.
         val signature = ByteArray(2420) { it.toByte() }
         val signerPubkey = ByteArray(1312) { (it * 3).toByte() }
         val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (paper, sectors) = TagDropCodec.createPaper(
+        val build = TagDropCodec.createPaper(
             "Trail Stop 4", "sunset-trail", "stop-4", files,
             signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = signature, signerPubkey = signerPubkey,
-            signerId = signerId, signerLabel = "Alice's Trail"
+            signature = signature, signerPubkey = signerPubkey, signerId = signerId, signerLabel = "Alice's Trail"
         )
-        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, paper.signatureAlgorithm)
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, build.paper.signatureAlgorithm)
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady
         assertEquals(TagDropCodec.SIGNATURE_ALG_MLDSA44, state.paper.signatureAlgorithm)
         assertArrayEquals(signature, state.paper.signature)
         assertArrayEquals(signerPubkey, state.paper.signerPubkey)
@@ -494,100 +595,82 @@ class TagDropCodecTest {
     }
 
     @Test fun paperRootHashIsIdenticalWhetherOrNotSigned() {
-        // SPEC §10: "signing happens last and feeds back into nothing — cache_id/root_hash/
-        // content_sha256/bulky_meta_sha256 are identical whether or not keys 32-36 are
-        // subsequently added." root_hash must NOT depend on whether the paper ends up signed.
+        // SPEC §10: root_hash must NOT depend on whether the paper ends up signed.
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val unsigned = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files).first
+        val unsigned = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files)
         val signed = TagDropCodec.createPaper(
             "Trail Stop 4", "sunset-trail", "stop-4", files,
             signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
             signature = ByteArray(2420), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        ).first
-        assertArrayEquals(unsigned.rootHash, signed.rootHash)
-    }
-
-    @Test fun paperBulkyMetaShaIsIdenticalWhetherOrNotSigned() {
-        // Same invariant as paperRootHashIsIdenticalWhetherOrNotSigned, but for
-        // bulky_meta_sha256 (key 47) specifically — it must cover files/related only, never
-        // the signature/signer_pubkey pairs that also live in bulky_meta_item, or its VALUE
-        // (not just whether keys 32-36 are present) would differ between builds.
-        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val unsignedSha = coreOf(TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files).second.first())[47]
-        val signedSha = coreOf(TagDropCodec.createPaper(
-            "Trail Stop 4", "sunset-trail", "stop-4", files,
-            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = ByteArray(2420), signerPubkey = ByteArray(1312), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        ).second.first())[47]
-        assertArrayEquals(unsignedSha as ByteArray, signedSha as ByteArray)
-    }
-
-    @Test fun paperMultiSectorSignedRoundTrip() {
-        // Regression test: signing a paper that needs multiple sectors once the ~3.7 KB of
-        // signature fields are added must still fully reassemble and verify-hash correctly —
-        // this is the exact shape that caught two real bugs during development (root_hash and
-        // bulky_meta_sha256 each accidentally depending on whether signing fields were present
-        // in the bytes they were computed over, not just declared-vs-absent).
-        val signature = ByteArray(2420) { it.toByte() }
-        val signerPubkey = ByteArray(1312) { (it * 3).toByte() }
-        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (paper, sectors) = TagDropCodec.createPaper(
-            "Trail Stop 4", "sunset-trail", "stop-4", files,
-            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
-            signature = signature, signerPubkey = signerPubkey, signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
-            maxSectorDataBytes = 200
         )
-        assertTrue("expected multi-sector paper", sectors.size > 1)
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
-        assertArrayEquals(paper.rootHash, state.paper.rootHash)
-        val hash = TagDropCodec.signedMessageHash(sectors.map { it.sectorBytes }.reduce { a, b -> a + b })
-        assertNotNull(hash)
-        assertArrayEquals(paper.rootHash, hash!!.copyOf(8))
+        assertArrayEquals(unsigned.paper.rootHash, signed.paper.rootHash)
+    }
+
+    @Test fun paperRealMlDsa44SignVerifyRoundTrip() {
+        val (secretKey, publicKey) = MLDSA44.generateKeyPair()
+        val signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val placeholder = TagDropCodec.createPaper(
+            "Signed Paper", "trail", "stop-1", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = ByteArray(MLDSA44.SIGNATURE_BYTES), signerPubkey = publicKey, signerId = signerId
+        )
+        val hash = TagDropCodec.paperSignedMessageHash(placeholder.previewRaw, placeholder.bodyRaw)
+        val signature = MLDSA44.sign(hash, secretKey)
+        val final = TagDropCodec.createPaper(
+            "Signed Paper", "trail", "stop-1", files,
+            signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
+            signature = signature, signerPubkey = publicKey, signerId = signerId
+        )
+        assertArrayEquals(placeholder.paper.rootHash, final.paper.rootHash)
+
+        val state = assemble(roundTrip(final.codes)) as SectorAssembler.State.PaperReady
+        val verifyHash = TagDropCodec.paperSignedMessageHash(state.previewRaw, state.bodyRaw)
+        assertTrue(MLDSA44.verify(state.paper.signature!!, verifyHash, state.paper.signerPubkey!!))
     }
 
     @Test fun paperSignatureFieldsDefaultToUnsigned() {
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (paper, sectors) = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files)
-        assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, paper.signatureAlgorithm)
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady
+        val build = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "stop-4", files)
+        assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, build.paper.signatureAlgorithm)
+        val state = assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady
         assertEquals(TagDropCodec.SIGNATURE_ALG_NONE, state.paper.signatureAlgorithm)
         assertNull(state.paper.signature)
         assertNull(state.paper.signerPubkey)
-        assertNull(state.paper.signerId)
-        assertNull(state.paper.signerLabel)
-        assertFalse(coreOf(sectors.first()).containsKey(32))
     }
 
     @Test fun paperRootHashIsContentAddressed() {
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val a = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files).first
-        val b = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files).first
-        assertEquals(8, a.rootHash.size)
-        assertArrayEquals(a.rootHash, b.rootHash)
+        val a = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files)
+        val b = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files)
+        assertEquals(8, a.paper.rootHash.size)
+        assertArrayEquals(a.paper.rootHash, b.paper.rootHash)
 
-        val c = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "oak-tree", files).first
-        assertFalse(a.rootHash.contentEquals(c.rootHash))
+        val c = TagDropCodec.createPaper("Trail Stop 4", "sunset-trail", "oak-tree", files)
+        assertFalse(a.paper.rootHash.contentEquals(c.paper.rootHash))
     }
 
-    @Test fun paperAlwaysIncludesBulkyMetaShaRegardlessOfSectorCount() {
-        // Unlike content_sha256 (added only once a payload needs >1 sector), bulky_meta_sha256
-        // is always present — keeps buildPaperStream byte-reproducible from Paper alone with no
-        // hidden "was it rebuilt" state to replay.
-        val (_, sectors) = TagDropCodec.createPaper(null, null, null, listOf(
-            TagDropPayload.FileEntry("a", "text/plain", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
-        ))
-        assertEquals(1, sectors.size)
-        assertTrue("even a single-sector paper carries bulky_meta_sha256", coreOf(sectors.first()).containsKey(47))
+    @Test fun paperRootHashMismatchIsRejectedOnDecode() {
+        // A forged Preview claiming a root_hash that doesn't match the real Preview'||Body' hash.
+        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        val build = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files)
+        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 1)
+        @Suppress("UNCHECKED_CAST")
+        val fields = (items[0] as Map<Int, Any>).toMutableMap()
+        fields[1] = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0) // forged root_hash
+        val forgedPreview = MiniCbor.encodeMap(fields.toList())
+        val record = (TagDropCodec.decodeRaw(forgedPreview + build.bodyRaw) as TagDropScan.RecordScan).record
+        assertNull(TagDropCodec.parsePaperStream(record, build.bodyRaw))
     }
 
     @Test fun decodePaperStreamRoundTrip() {
-        val (paper, _) = TagDropCodec.createPaper(
+        val build = TagDropCodec.createPaper(
             "Test Paper", "test-set", "test-slug",
             listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(5, 6, 7, 8, 9, 10, 11, 12)))
         )
-        val decoded = TagDropCodec.decodePaperStream(TagDropCodec.paperStreamBytes(paper))
+        val decoded = TagDropCodec.decodePaperStream(TagDropCodec.paperStreamBytes(build.paper))
         assertNotNull(decoded)
-        assertArrayEquals(paper.rootHash, decoded!!.rootHash)
+        assertArrayEquals(build.paper.rootHash, decoded!!.rootHash)
         assertEquals("Test Paper", decoded.label)
         assertEquals(1, decoded.files.size)
         assertEquals("readme", decoded.files[0].slug)
@@ -600,7 +683,7 @@ class TagDropCodecTest {
     @Test fun paperKeyMaterialAndRelatedKeyRoundTrip() {
         val paperKey = ByteArray(32) { (it + 1).toByte() }
         val relatedKey = ByteArray(32) { it.toByte() }
-        val (_, sectors) = TagDropCodec.createPaper(
+        val build = TagDropCodec.createPaper(
             null, null, null, emptyList(),
             related = listOf(
                 TagDropPayload.RelatedPaper("locked related paper", keyMaterial = relatedKey, retainKey = false),
@@ -608,7 +691,7 @@ class TagDropCodecTest {
             ),
             keyMaterial = paperKey, retainKey = false
         )
-        val decoded = (assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady).paper
+        val decoded = (assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady).paper
         assertArrayEquals(paperKey, decoded.keyMaterial)
         assertFalse(decoded.retainKey)
         assertArrayEquals(relatedKey, decoded.related[0].keyMaterial)
@@ -617,422 +700,103 @@ class TagDropCodecTest {
         assertTrue(decoded.related[1].retainKey)
     }
 
-    @Test fun paperMultiSectorRoundTrip() {
+    @Test fun paperMultiCodeRoundTripAnyOrder() {
         val files = (0 until 60).map {
             TagDropPayload.FileEntry("file-$it", "text/plain", ByteArray(8) { (it).toByte() })
         }
-        val (paper, sectors) = TagDropCodec.createPaper("Big Paper", null, null, files, maxSectorDataBytes = 400)
-        assertTrue("a large paper should span several sectors", sectors.size > 1)
-        val decoded = (assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.PaperReady).paper
-        assertArrayEquals(paper.rootHash, decoded.rootHash)
+        val build = TagDropCodec.createPaper("Big Paper", null, null, files, maxSectorDataBytes = 400)
+        assertTrue("a large paper should span several codes", build.codes.size > 1)
+        val decoded = (assemble(roundTrip(build.codes), shuffle = true) as SectorAssembler.State.PaperReady).paper
+        assertArrayEquals(build.paper.rootHash, decoded.rootHash)
         assertEquals(60, decoded.files.size)
     }
 
-    @Test fun paperAutoSizedUsesSingleSectorWhenItFits() {
+    @Test fun paperAutoSizedUsesSingleCodeWhenItFits() {
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (_, sectors) = TagDropCodec.createPaperAutoSized("Small Paper", null, null, files)
-        assertEquals(1, sectors.size)
-        assertTrue(TagDropCodec.encode(sectors.first()).length <= TagDropCodec.MAX_URI_LENGTH)
+        val build = TagDropCodec.createPaperAutoSized("Small Paper", null, null, files)
+        assertEquals(1, build.codes.size)
+        assertTrue(TagDropCodec.encode(build.codes.first()).length <= TagDropCodec.MAX_URI_LENGTH)
     }
 
     @Test fun paperAutoSizedSplitsWhenTooLarge() {
         val files = (0 until 60).map {
             TagDropPayload.FileEntry("file-$it", "text/plain", ByteArray(8) { (it).toByte() })
         }
-        val (paper, sectors) = TagDropCodec.createPaperAutoSized("Big Paper", null, null, files)
-        assertTrue("expected several sectors", sectors.size > 1)
-        sectors.forEach { assertTrue(TagDropCodec.encode(it).length <= TagDropCodec.MAX_URI_LENGTH) }
-        val decoded = (assemble(roundTrip(sectors), shuffle = true) as SectorAssembler.State.PaperReady).paper
-        assertArrayEquals(paper.rootHash, decoded.rootHash)
+        val build = TagDropCodec.createPaperAutoSized("Big Paper", null, null, files)
+        assertTrue("expected several codes", build.codes.size > 1)
+        build.codes.forEach { assertTrue(TagDropCodec.encode(it).length <= TagDropCodec.MAX_URI_LENGTH) }
+        val decoded = (assemble(roundTrip(build.codes), shuffle = true) as SectorAssembler.State.PaperReady).paper
+        assertArrayEquals(build.paper.rootHash, decoded.rootHash)
         assertEquals(60, decoded.files.size)
     }
 
-    @Test fun paperMultiSectorWithoutBulkyMetaShaIsRejected() {
-        // A forged Paper stream that omits bulky_meta_sha256 (key 47) — the only integrity
-        // check over the files/related directory once a multi-sector paper is reassembled
-        // from independently scanned codes.
-        val core = MiniCbor.encodeMap(listOf(3 to "Forged Paper"))
-        val bulky = MiniCbor.encodeMap(listOf(
-            15 to listOf(MiniCbor.CborMap(listOf(20 to "evil", 21 to "text/plain", 22 to byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9))))
-        ))
-        val stream = core + bulky
-        val rootHash = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        val mid = stream.size / 2
-        val sectors = listOf(
-            Sector(TagDropCodec.TYPE_PAPER, PartMeta(rootHash, 0, 2, stream.size), stream.copyOfRange(0, mid)),
-            Sector(TagDropCodec.TYPE_PAPER, PartMeta(rootHash, 1, 2, stream.size), stream.copyOfRange(mid, stream.size))
-        )
-        assertTrue(assemble(sectors) is SectorAssembler.State.Failed)
-    }
-
-    @Test fun paperMultiSectorTamperedDirectoryFailsVerification() {
-        val files = (0 until 60).map {
+    @Test fun paperCompressedRoundTrips() {
+        val files = (0 until 30).map {
             TagDropPayload.FileEntry("file-$it", "text/plain", ByteArray(8) { (it).toByte() })
         }
-        val (_, sectors) = TagDropCodec.createPaper("Big Paper", null, null, files, maxSectorDataBytes = 400)
-        assertTrue("a large paper should span several sectors", sectors.size > 1)
-        // Corrupt a byte in a later sector — for Paper, everything past core_meta_item is the
-        // files/related directory (content is always empty) — without bulky_meta_sha256 this
-        // would silently reassemble into a directory pointing at attacker-controlled file ids.
-        val tampered = sectors.toMutableList()
-        val victim = tampered[1]
-        val corruptedBytes = victim.sectorBytes.copyOf().also { it[it.lastIndex] = (it[it.lastIndex] + 1).toByte() }
-        tampered[1] = Sector(victim.type, victim.partMeta, corruptedBytes)
-        assertTrue(assemble(tampered) is SectorAssembler.State.Failed)
+        val build = TagDropCodec.createPaper("Compressed Paper", null, null, files, compressBody = true)
+        val decoded = (assemble(roundTrip(build.codes)) as SectorAssembler.State.PaperReady).paper
+        assertEquals(30, decoded.files.size)
+        assertArrayEquals(build.paper.rootHash, decoded.rootHash)
     }
 
-    @Test fun paperWithForgedCacheIdIsRejected() {
-        // root_hash is this paper's permanent, content-addressed storage key
-        // (ScannedPaper.rootHash, replace-on-conflict) — trusting a declared cache_id that
-        // doesn't match the recomputed hash would let a forged sector silently overwrite an
-        // unrelated, previously-scanned paper's stored directory.
-        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (paper, sectors) = TagDropCodec.createPaper("Real Paper", "real-set", "real-slug", files)
-        assertEquals(1, sectors.size)
-        val forgedCacheId = ByteArray(8) { 0xAB.toByte() }
-        assertFalse(forgedCacheId.contentEquals(paper.rootHash))
-        val forged = sectors[0].copy(partMeta = sectors[0].partMeta.copy(cacheId = forgedCacheId))
-        assertTrue(assemble(listOf(forged)) is SectorAssembler.State.Failed)
+    // ── Compression / encryption / KDF helpers (format-agnostic) ────────────────
+
+    @Test fun compressDecompressRoundTrip() {
+        val original = "hello world ".repeat(50).toByteArray()
+        val compressed = TagDropCodec.compress(original)
+        assertTrue(compressed.size < original.size)
+        assertArrayEquals(original, TagDropCodec.decompress(compressed))
     }
 
-    // ── Declared location and priority (SPEC §4.2) ─────────────────────────────
-
-    @Test fun contentDeclaredLocationRoundTrip() {
-        val sectors = TagDropCodec.createContentSectors(
-            null, null, "text/plain", "hi".toByteArray(),
-            lat = -33.8688, lng = 151.2093, radiusM = 25.0, preferDeclaredLocation = true
-        )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertEquals(-33.8688, state.lat!!, 0.0)
-        assertEquals(151.2093, state.lng!!, 0.0)
-        assertEquals(25.0, state.radiusM!!, 0.0)
-        assertTrue(state.preferDeclaredLocation)
-    }
-
-    @Test fun contentDeclaredLocationDefaultsAreNullAndFalse() {
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertNull(state.lat)
-        assertNull(state.lng)
-        assertNull(state.radiusM)
-        assertFalse(state.preferDeclaredLocation)
-    }
-
-    @Test fun paperDeclaredLocationRoundTrip() {
-        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (_, sectors) = TagDropCodec.createPaper(
-            "Trail Stop", "sunset-trail", "oak-tree", files,
-            lat = -37.8136, lng = 144.9631, radiusM = 10.0, preferDeclaredLocation = true
-        )
-        val decoded = (assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady).paper
-        assertEquals(-37.8136, decoded.lat!!, 0.0)
-        assertEquals(144.9631, decoded.lng!!, 0.0)
-        assertEquals(10.0, decoded.radiusM!!, 0.0)
-        assertTrue(decoded.preferDeclaredLocation)
-    }
-
-    /** SPEC §4.2 key 54: a non-coordinate location description round-trips alongside declared coordinates. */
-    @Test fun contentLocationLabelRoundTripsAlongsideCoordinates() {
-        val sectors = TagDropCodec.createContentSectors(
-            null, null, "text/plain", "hi".toByteArray(),
-            lat = -33.8688, lng = 151.2093, locationLabel = "back garden, behind the shed"
-        )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertEquals(-33.8688, state.lat!!, 0.0)
-        assertEquals(151.2093, state.lng!!, 0.0)
-        assertEquals("back garden, behind the shed", state.locationLabel)
-    }
-
-    /** SPEC §4.2 "Explicit no fixed point": a label with no declared coordinates round-trips as-is — the codec itself doesn't enforce the no-substitution rule, that's LocationUtils's job at scan time. */
-    @Test fun contentLocationLabelRoundTripsWithoutCoordinates() {
-        val sectors = TagDropCodec.createContentSectors(
-            null, null, "text/plain", "hi".toByteArray(),
-            locationLabel = "🚋 Tram 40"
-        )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertNull(state.lat)
-        assertNull(state.lng)
-        assertEquals("🚋 Tram 40", state.locationLabel)
-    }
-
-    @Test fun contentLocationLabelDefaultsToNull() {
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertNull(state.locationLabel)
-    }
-
-    @Test fun paperLocationLabelRoundTrip() {
-        val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
-        val (_, sectors) = TagDropCodec.createPaper(
-            "Trail Stop", "sunset-trail", "oak-tree", files,
-            locationLabel = "mailed, destination unknown"
-        )
-        val decoded = (assemble(roundTrip(sectors)) as SectorAssembler.State.PaperReady).paper
-        assertNull(decoded.lat)
-        assertNull(decoded.lng)
-        assertEquals("mailed, destination unknown", decoded.locationLabel)
-    }
-
-    // ── Pixel art (SPEC §7 key 55, Content only) ──────────────────────────────
-
-    @Test fun contentPixelArtRoundTripsWhenDeclaredTrue() {
-        val sectors = TagDropCodec.createContentSectors(
-            null, null, "image/png", byteArrayOf(1, 2, 3, 4), pixelArt = true
-        )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertTrue(state.pixelArt)
-    }
-
-    @Test fun contentPixelArtDefaultsToFalse() {
-        val sectors = TagDropCodec.createContentSectors(null, null, "image/png", byteArrayOf(1, 2, 3, 4))
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertFalse(state.pixelArt)
-    }
-
-    // ── Key-only code (SPEC §9) ────────────────────────────────────────────────
-
-    @Test fun keyCodeOmitsCacheIdAndContent() {
+    @Test fun encryptAesGcmRoundTrip() {
         val key = TagDropCodec.generateKeyMaterial()
-        val sector = TagDropCodec.createKeyCodeSector(key, hint = "key for the trailhead box")
-        assertNull("a key-only code omits cache_id (SPEC §9)", sector.partMeta.cacheId)
-        assertFalse("part_meta omits key 2", partMetaOf(sector).containsKey(2))
-
-        val core = coreOf(sector)
-        assertTrue(core.containsKey(30))   // key_material
-        assertFalse(core.containsKey(4))   // mime_type
-        assertFalse(core.containsKey(5))   // content
-
-        val state = assemble(roundTrip(listOf(sector))) as SectorAssembler.State.ContentReady
-        assertArrayEquals(key, state.keyMaterial)
-        assertEquals("key for the trailhead box", state.hint)
-        assertEquals("", state.mimeType)
-        assertTrue(state.content.isEmpty())
-        assertNull(state.cacheId)
+        val nonce = TagDropCodec.generateNonce()
+        val plaintext = "secret message".toByteArray()
+        val ciphertext = TagDropCodec.encryptAesGcm(plaintext, key, nonce)
+        assertArrayEquals(plaintext, TagDropCodec.decryptAesGcm(ciphertext, key, nonce))
+        assertNull("wrong key must fail to authenticate", TagDropCodec.decryptAesGcm(ciphertext, TagDropCodec.generateKeyMaterial(), nonce))
     }
 
-    @Test fun keyCodeRetainKeyFalseRoundTrip() {
-        val key = TagDropCodec.generateKeyMaterial()
-        val sector = TagDropCodec.createKeyCodeSector(key, retainKey = false)
-        val state = assemble(roundTrip(listOf(sector))) as SectorAssembler.State.ContentReady
-        assertFalse(state.retainKey)
+    @Test fun deriveKeyFromPassphraseIsDeterministic() {
+        val salt = ByteArray(16) { it.toByte() }
+        val a = TagDropCodec.deriveKeyFromPassphrase("hunter2", salt, 1000)
+        val b = TagDropCodec.deriveKeyFromPassphrase("hunter2", salt, 1000)
+        assertArrayEquals(a, b)
     }
 
-    // ── Encryption / hidden override map (SPEC §9) ─────────────────────────────
+    @Test fun deriveKeyFromPassphraseDiffersForDifferentInputs() {
+        val salt = ByteArray(16) { it.toByte() }
+        val a = TagDropCodec.deriveKeyFromPassphrase("hunter2", salt, 1000)
+        val b = TagDropCodec.deriveKeyFromPassphrase("hunter3", salt, 1000)
+        assertFalse(a.contentEquals(b))
+    }
 
-    @Test fun encryptedContentUsesRandomCacheId() {
-        val key = TagDropCodec.generateKeyMaterial()
+    @Test fun passphraseDerivedKeyUnlocksOverrideBlob() {
+        val salt = ByteArray(16) { it.toByte() }
+        val key = TagDropCodec.deriveKeyFromPassphrase("hunter2", salt, 1000)
         val override = TagDropPayload.OverrideMap(content = "secret".toByteArray())
-        val sector = TagDropCodec.createContentSectors(
-            null, null, "text/plain", "cover".toByteArray(), override = override, encryptionKey = key
-        ).first()
-        assertEquals(TagDropCodec.ENCRYPTION_AES256GCM.toLong(), coreOf(sector)[28])
-        assertFalse(sector.partMeta.cacheId!!.contentEquals(TagDropCodec.contentId("cover".toByteArray())))
+        val blob = TagDropCodec.encryptOverrideMap(override, key, TagDropCodec.COMPRESSION_NONE)
+        val decoded = TagDropCodec.tryDecryptOverrideMap(blob, key)
+        assertNotNull(decoded)
+        assertArrayEquals("secret".toByteArray(), decoded!!.content)
     }
-
-    @Test fun encryptedDeflateContentAwaitsKeyThenResolves() {
-        val key = TagDropCodec.generateKeyMaterial()
-        val real = "The quick brown fox. ".repeat(80).toByteArray()
-        val override = TagDropPayload.OverrideMap(hint = "real hint", filename = "fox.txt", content = real)
-        val sectors = TagDropCodec.createContentSectors(
-            "cover hint", "cover.txt", "text/plain", "cover story. ".repeat(40).toByteArray(),
-            compress = true, override = override, encryptionKey = key
-        )
-        val a = SectorAssembler()
-        roundTrip(sectors).forEach { a.add(it) }
-
-        // The content slot is an AES-GCM blob that won't inflate as plain content → awaits a key.
-        assertTrue(a.currentState() is SectorAssembler.State.AwaitingKey)
-        assertTrue("a non-matching key changes nothing", a.tryKey(TagDropCodec.generateKeyMaterial()).isEmpty())
-
-        val resolved = a.tryKey(key)
-        assertEquals(1, resolved.size)
-        assertArrayEquals(real, resolved[0].content)
-        assertEquals("real hint", resolved[0].hint)
-        assertEquals("fox.txt", resolved[0].filename)
-        assertNull(resolved[0].pendingOverrideBlob)
-    }
-
-    @Test fun encryptedPlainContentShowsCoverWithPendingBlob() {
-        val key = TagDropCodec.generateKeyMaterial()
-        val override = TagDropPayload.OverrideMap(hint = "real hint", content = "secret trail notes".toByteArray())
-        // compression none → the blob "decompresses" trivially (identity) and is shown as opaque cover.
-        val sectors = TagDropCodec.createContentSectors(
-            "cover hint", null, "text/plain", "cover".toByteArray(), override = override, encryptionKey = key
-        )
-        val state = assemble(roundTrip(sectors)) as SectorAssembler.State.ContentReady
-        assertEquals("cover hint", state.hint)
-        assertNotNull(state.pendingOverrideBlob)
-        assertTrue(state.pendingOverrideDeclared)
-        assertTrue(state.wasEncrypted)
-
-        // A later matching key self-corrects to the real fields (as ReceiveActivity.unlockPending does).
-        val ov = TagDropCodec.tryDecryptOverrideMap(state.pendingOverrideBlob!!, key, state.pendingOverrideCompression)
-        assertNotNull(ov)
-        assertArrayEquals("secret trail notes".toByteArray(), ov!!.content)
-        assertEquals("real hint", ov.hint)
-    }
-
-    @Test fun unencryptedContentHasNoPendingBlobUnderMinSize() {
-        val state = assemble(
-            roundTrip(TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray()))
-        ) as SectorAssembler.State.ContentReady
-        assertNull(state.pendingOverrideBlob)
-        assertFalse(state.wasEncrypted)
-    }
-
-    /**
-     * Ordinary plain content with no override/encryption can still be ≥28 bytes (the
-     * trial-decryption size threshold, SPEC §9 "discovery, not declaration"), so
-     * [SectorAssembler.State.ContentReady.pendingOverrideBlob] is non-null — it's still a valid
-     * candidate to try keys against. But since the author declared no `encryption`/`kdf_alg`,
-     * [SectorAssembler.State.ContentReady.pendingOverrideDeclared] must be false so callers don't
-     * show a "🔒 Locked" hint on every scan (the bug this guards against).
-     */
-    @Test fun unencryptedLongContentIsCandidateButNotDeclaredLocked() {
-        val state = assemble(
-            roundTrip(TagDropCodec.createContentSectors(null, null, "text/plain", "x".repeat(40).toByteArray()))
-        ) as SectorAssembler.State.ContentReady
-        assertNotNull(state.pendingOverrideBlob)
-        assertFalse(state.pendingOverrideDeclared)
-        assertFalse(state.wasEncrypted)
-    }
-
-    // ── Erasure coding: XOR parity (SPEC §5) ───────────────────────────────────
-
-    @Test fun paritySectorReconstructsOneMissingDataSector() {
-        val content = ByteArray(2000) { it.toByte() }
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", content, maxSectorDataBytes = 600)
-        assertTrue(sectors.size >= 3)
-        val parity = TagDropCodec.paritySector(sectors)
-        assertEquals(sectors.size, parity.partMeta.sectorIndex)       // index == sector_count
-        assertEquals(TagDropCodec.PARITY_XOR, parity.partMeta.paritySchemeRaw)
-
-        val a = SectorAssembler()
-        // Drop data sector index 1; everything else (plus parity) is present.
-        sectors.filter { it.partMeta.sectorIndex != 1 }.forEach { a.add(it) }
-        assertTrue(a.currentState() is SectorAssembler.State.Collecting)
-
-        val state = a.add(parity) as SectorAssembler.State.ContentReady
-        assertArrayEquals(content, state.content)
-    }
-
-    @Test fun parityReconstructsMissingLastSector() {
-        val content = ByteArray(1750) { it.toByte() }
-        val sectors = TagDropCodec.createContentSectors(null, null, "text/plain", content, maxSectorDataBytes = 600)
-        val parity = TagDropCodec.paritySector(sectors)
-
-        val a = SectorAssembler()
-        sectors.dropLast(1).forEach { a.add(it) }   // drop the (shorter) final data sector
-        val state = a.add(parity) as SectorAssembler.State.ContentReady
-        assertArrayEquals(content, state.content)
-    }
-
-    // ── Diagnostics ────────────────────────────────────────────────────────────
-
-    @Test fun describeCborShowsEnvelopeAndCoreFields() {
-        val sector = TagDropCodec.createContentSectors("a hint", "f.txt", "text/plain", "hi".toByteArray()).first()
-        val text = TagDropCodec.describeCbor(TagDropCodec.sectorCbor(sector))
-        assertTrue(text.contains("version: 1"))
-        assertTrue(text.contains("type: 0 (Content)"))
-        assertTrue(text.contains("part_meta:"))
-        assertTrue(text.contains("42 (sector_index)"))
-        assertTrue(text.contains("43 (sector_count)"))
-        assertTrue(text.contains("3 (hint/label): \"a hint\""))
-        assertTrue(text.contains("4 (mime_type): \"text/plain\""))
-    }
-
-    @Test fun describeCborShowsPaperDirectory() {
-        val (_, sectors) = TagDropCodec.createPaper(
-            "Test Paper", "test-set", "test-slug",
-            listOf(TagDropPayload.FileEntry("readme", "text/plain", byteArrayOf(5, 6, 7, 8, 9, 10, 11, 12))),
-            listOf(TagDropPayload.RelatedPaper("hint text", set = "test-set", slug = "other")),
-            icon = "🌳"
-        )
-        val text = TagDropCodec.describeCbor(TagDropCodec.sectorCbor(sectors.first()))
-        assertTrue(text.contains("type: 1 (Paper)"))
-        assertTrue(text.contains("3 (hint/label): \"Test Paper\""))
-        assertTrue(text.contains("15 (files): ["))
-        assertTrue(text.contains("1 (slug): \"readme\""))
-        assertTrue(text.contains("16 (related): ["))
-        assertTrue(text.contains("24 (icon): \"🌳\""))
-    }
-
-    @Test fun describeCborHandlesMalformedBytes() {
-        assertTrue(TagDropCodec.describeCbor(byteArrayOf(0x01)).contains("Failed to decode as CBOR sequence"))
-    }
-
-    // ── Content addressing ─────────────────────────────────────────────────────
 
     @Test fun contentIdIs8BytesAndDeterministic() {
-        val content = "same content produces same id".toByteArray()
-        assertEquals(8, TagDropCodec.contentId(content).size)
-        assertArrayEquals(TagDropCodec.contentId(content), TagDropCodec.contentId(content))
-        assertFalse(TagDropCodec.contentId("A".toByteArray()).contentEquals(TagDropCodec.contentId("B".toByteArray())))
+        val a = TagDropCodec.contentId("hello".toByteArray())
+        val b = TagDropCodec.contentId("hello".toByteArray())
+        assertEquals(8, a.size)
+        assertArrayEquals(a, b)
+        assertFalse(a.contentEquals(TagDropCodec.contentId("world".toByteArray())))
     }
 
     @Test fun randomCacheIdIs8Bytes() {
         assertEquals(8, TagDropCodec.randomCacheId().size)
     }
 
-    // ── Compression helpers ────────────────────────────────────────────────────
-
-    @Test fun compressDecompressRoundTrip() {
-        val original = "The quick brown fox jumps over the lazy dog".repeat(20).toByteArray()
-        val compressed = TagDropCodec.compress(original)
-        assertTrue("compression should reduce size", compressed.size < original.size)
-        assertArrayEquals(original, TagDropCodec.decompress(compressed))
-        assertArrayEquals(original, TagDropCodec.decompressPayload(compressed, TagDropCodec.COMPRESSION_DEFLATE))
-        assertArrayEquals(original, TagDropCodec.decompressPayload(original, TagDropCodec.COMPRESSION_NONE))
-    }
-
-    // ── Encryption primitives (SPEC §9) ────────────────────────────────────────
-
-    @Test fun encryptAesGcmRoundTrip() {
-        val key = TagDropCodec.generateKeyMaterial()
-        val nonce = TagDropCodec.generateNonce()
-        assertEquals(32, key.size)
-        assertEquals(12, nonce.size)
-        val plaintext = "secret message".toByteArray()
-        val ciphertext = TagDropCodec.encryptAesGcm(plaintext, key, nonce)
-        assertArrayEquals(plaintext, TagDropCodec.decryptAesGcm(ciphertext, key, nonce))
-        assertNull(TagDropCodec.decryptAesGcm(ciphertext, TagDropCodec.generateKeyMaterial(), nonce))
-        assertNull(TagDropCodec.decryptAesGcm(ciphertext, key, TagDropCodec.generateNonce()))
-    }
-
-    // ── Passphrase-based key derivation (SPEC §9) ──────────────────────────────
-
-    @Test fun deriveKeyFromPassphraseIsDeterministic() {
-        val salt = ByteArray(16) { it.toByte() }
-        val key1 = TagDropCodec.deriveKeyFromPassphrase("correct horse battery staple", salt, 1000)
-        val key2 = TagDropCodec.deriveKeyFromPassphrase("correct horse battery staple", salt, 1000)
-        assertEquals(32, key1.size)
-        assertArrayEquals(key1, key2)
-    }
-
-    @Test fun deriveKeyFromPassphraseDiffersForDifferentInputs() {
-        val salt = ByteArray(16) { it.toByte() }
-        val baseline = TagDropCodec.deriveKeyFromPassphrase("trailhead2026", salt, 1000)
-        assertFalse(baseline.contentEquals(TagDropCodec.deriveKeyFromPassphrase("wrong guess", salt, 1000)))
-        assertFalse(baseline.contentEquals(TagDropCodec.deriveKeyFromPassphrase("trailhead2026", ByteArray(16) { (it + 1).toByte() }, 1000)))
-    }
-
-    @Test fun passphraseDerivedKeyUnlocksOverrideBlob() {
-        val passphrase = "trailhead2026"
-        val salt = ByteArray(16) { it.toByte() }
-        val key = TagDropCodec.deriveKeyFromPassphrase(passphrase, salt, 1000)
-        val blob = TagDropCodec.encryptOverrideMap(
-            TagDropPayload.OverrideMap(content = "the treasure is under the oak".toByteArray()), key, TagDropCodec.COMPRESSION_NONE
-        )
-        val rederived = TagDropCodec.deriveKeyFromPassphrase(passphrase, salt, 1000)
-        val ov = TagDropCodec.tryDecryptOverrideMap(blob, rederived, TagDropCodec.COMPRESSION_NONE)
-        assertArrayEquals("the treasure is under the oak".toByteArray(), ov!!.content)
-        // Wrong passphrase derives a non-matching key.
-        val wrong = TagDropCodec.deriveKeyFromPassphrase("nope", salt, 1000)
-        assertNull(TagDropCodec.tryDecryptOverrideMap(blob, wrong, TagDropCodec.COMPRESSION_NONE))
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun deriveKeyFromPassphraseWithZeroIterationsThrows() {
-        TagDropCodec.deriveKeyFromPassphrase("pass", ByteArray(16), 0)
+    @Test fun describeCborDoesNotThrowOnMalformedBytes() {
+        // Best-effort diagnostic: must never throw, even on garbage.
+        val out = TagDropCodec.describeCbor(byteArrayOf(0xFF.toByte(), 0x01, 0x02))
+        assertNotNull(out)
     }
 }
