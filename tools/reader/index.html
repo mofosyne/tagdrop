@@ -594,11 +594,11 @@ const TYPE_CONTENT = 0, TYPE_PAPER = 1;
 // A new-format code is a CBOR Sequence of Records — flat CBOR maps with a Record
 // Type ID at key 0. TagDrop's own Type IDs are 64-bit values in QDEF's private-use
 // tier (decoded as BigInt); Split/Compress are QDEF's small well-known Wrapper types.
-const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
-const TYPE_CONTENT_PREVIEW = 48250;
-const TYPE_CONTENT_BODY = 56990;
-const TYPE_PAPER_PREVIEW = 34456;
-const TYPE_PAPER_BODY = 58984;
+const TYPE_SPLIT = 2, TYPE_COMPRESS = 8;
+const TYPE_CONTENT_PREVIEW = 1;
+const TYPE_CONTENT_BODY = 3;
+const TYPE_PAPER_PREVIEW = 5;
+const TYPE_PAPER_BODY = 7;
 
 // Content-Preview's field keys (SPEC.md §3.1) — all odd (optional tier) except type-ID 0.
 const PK = {

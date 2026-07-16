@@ -40,11 +40,11 @@ import assert from 'node:assert/strict';
 // against elsewhere; the constants themselves have to match it too.
 const TYPE = {
   SPLIT: 2,
-  COMPRESS: 3,
-  CONTENT_PREVIEW: 48250,
-  CONTENT_BODY: 56990,
-  PAPER_PREVIEW: 34456,
-  PAPER_BODY: 58984,
+  COMPRESS: 8,
+  CONTENT_PREVIEW: 1,
+  CONTENT_BODY: 3,
+  PAPER_PREVIEW: 5,
+  PAPER_BODY: 7,
 };
 
 // ── Minimal CBOR (RFC 8949) — maps, uints, byte/text strings, arrays, float64 ──

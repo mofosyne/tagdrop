@@ -1,8 +1,7 @@
 # TagDrop Encoding Specification
 
-**Version:** 7 (byte-mode QR/JABCode framing now declares a namespace,
-correcting a carrier-scoping gap in version 6's Type ID safety claim; see
-§14 "Version history")
+**Version:** 8 (all four Type IDs shrunk further to small odd values under
+a fixed implied namespace; see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -44,73 +43,91 @@ Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-edito
 
 | Carrier | Framing | Why |
 |---|---|---|
-| `tagdrop:` URI (QR alphanumeric mode) | `tagdrop:` + Base41(Record Sequence bytes) | The `tagdrop:` scheme itself is the dispatch signal — no QDEF magic header needed (QDEF-SPEC.md §1: "any application that already defines its own text/URI scheme should encode its envelope directly under that scheme, not wrap it in QDEF"). |
-| Byte-mode QR / other 2D barcode | QDEF magic (4 bytes) + a declared-namespace discriminator (5 bytes) + Record Sequence bytes | No scheme, no prior dispatch signal exists — unlike the other two carriers, nothing external isolates this carrier's Type IDs from an unrelated app's, so it MUST declare TagDrop's namespace (§2.1a) rather than use the discriminator's cheapest "no namespace" value. |
-| NFC NDEF | Record Sequence bytes only, as the payload of an `application/vnd.tagdrop` MIME record | NDEF's own MIME-type field is the dispatch signal, same reasoning as the URI case — carrying QDEF's magic header here would be redundant, matching QDEF-SPEC.md §2's own guidance for NFC. |
+| `tagdrop:` URI (QR alphanumeric mode) | `tagdrop:` + Base41(Record Sequence bytes) | The `tagdrop:` scheme itself is the dispatch signal — no QDEF magic header needed (QDEF-SPEC.md §1: "any application that already defines its own text/URI scheme should encode its envelope directly under that scheme, not wrap it in QDEF"). TagDrop's fixed namespace (§2.1a) is implied by this carrier too, never transmitted. |
+| Byte-mode QR / other 2D barcode | QDEF magic (4 bytes) + a declared-namespace discriminator (5 bytes) + Record Sequence bytes | No scheme, no prior dispatch signal exists — unlike the other two carriers, nothing external isolates this carrier's Type IDs from an unrelated app's, so it MUST declare TagDrop's namespace (§2.1a) explicitly, rather than imply it the way `tagdrop:` URI and NFC do. |
+| NFC NDEF | Record Sequence bytes only, as the payload of an `application/vnd.tagdrop` MIME record | NDEF's own MIME-type field is the dispatch signal, same reasoning as the URI case — carrying QDEF's magic header here would be redundant, matching QDEF-SPEC.md §2's own guidance for NFC. TagDrop's fixed namespace (§2.1a) is implied by this carrier too, never transmitted. |
 
 This is the "near 1:1" property: an encoder builds the Record Sequence bytes once, then picks a framing based only on which carrier it's targeting — Base41-encode them, prefix them with the QDEF magic, or hand them to NDEF raw. Nothing about the Records' own structure changes per carrier.
 
 ### 2.1 Record Types
 
-TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed). IDs are small self-allocated values in QDEF's `32768`+ "First Come First Served" tier (QDEF-SPEC.md §4):
+TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed):
 
 | Type ID | Record | Contains |
 |---|---|---|
-| `48250` | Content-Preview | Small, always-plain fields — identity, hint, location, collection, encryption/signing metadata. See §3.1. |
-| `56990` | Content-Body | `content` bytes, plus the large signature fields. See §3.2. |
-| `34456` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
-| `58984` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
+| `1` | Content-Preview | Small, always-plain fields — identity, hint, location, collection, encryption/signing metadata. See §3.1. |
+| `3` | Content-Body | `content` bytes, plus the large signature fields. See §3.2. |
+| `5` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
+| `7` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
 
-All four Type IDs are deliberately **even** — QDEF-SPEC.md §3.1 classifies an even-uint Type ID as "Standard record type," always globally interpreted **regardless of whether a namespace is declared or not**, versus an odd-uint Type ID ("Scoped record type"), which requires a preceding namespace declaration or must be treated as an abort. Staying even is what lets these four Type IDs work unmodified across every carrier (§2.1a) — the Record Sequence bytes are identical whether or not the carrier they're framed in happens to declare a namespace.
-
-**Why small values, not large random ones.** These were originally 64-bit CSPRNG values (collision-avoidance for a Type ID that might appear in a shared, generic QDEF container alongside other apps' Records). QDEF-SPEC.md §2/§3.5 now formalizes that an application carrying QDEF content under its own URI scheme — as TagDrop's `tagdrop:` carrier already does — has no need for that collision margin at all on that carrier specifically: the scheme itself is a recognition boundary no other app's decoder crosses, so a small, self-allocated even Type ID from the `32768`+ tier is exactly as collision-safe *on that carrier* as a 64-bit value would be, at roughly a third of the byte cost (4 bytes per occurrence vs. 10). **This safety argument is carrier-specific, not a property of the Type ID values themselves** — the `32768`+ tier's width alone (roughly 32,767 possible even values) is nowhere near collision-safe for a carrier with no external isolation; see §2.1a for why byte-mode QR/JABCode needs a declared namespace to use these same small values safely. Content-Preview/Content-Body and Paper-Preview/Paper-Body were all re-minted to this tier for version 6 (§14); Paper-Preview/Paper-Body had already been re-minted once before, for version 4, to fix an unrelated odd/even parity violation — that fix is superseded by this one.
+All four Type IDs are deliberately **odd** — QDEF-SPEC.md §3.1 classifies an odd-uint Type ID as "Scoped record type," requiring a namespace to be declared or the Record MUST be treated as an abort. TagDrop declares a single fixed namespace (§2.1a) that's implied — never transmitted — on `tagdrop:` URI and NFC NDEF, and explicitly transmitted on byte-mode QR/JABCode; every carrier's decoder ends up applying that same namespace before interpreting a Type ID, so the same small odd values work unmodified everywhere.
 
 A **key-only** code (§9, "Decryption keys") is a Content-Preview Record with no accompanying Body at all — carrying `key_material` but no content, exactly as today's key codes do; nothing about that case changes.
 
-### 2.1a Namespace declaration (byte-mode QR/JABCode only)
+### 2.1a Namespace declaration
 
-`tagdrop:` URI and NFC NDEF both carry external dispatch context — the
-scheme, the MIME type — before a decoder ever looks at a Type ID, so
-declaring a namespace on those carriers would be pure overhead for no
-safety gain (§2's carrier table). Byte-mode QR/JABCode has no such
-context: it's exactly the "otherwise-unidentified byte stream" case
-QDEF's magic header exists for, so a decoder scanning one has nothing
-telling it "this is TagDrop" before it looks at a Type ID — an unrelated
-app that also self-allocated Type ID `48250` in the same `32768`+ tier
-would be indistinguishable from TagDrop's own Content-Preview without a
-declared namespace to disambiguate. This carrier therefore MUST declare
-one, following QDEF-SPEC.md §3.5's populated-discriminator shape.
+QDEF-SPEC.md §3.5's namespace mechanism exists to disambiguate an odd
+Type ID from an unrelated app's — but *how* a namespace gets applied
+doesn't have to be the same on every carrier. `tagdrop:` URI and NFC
+NDEF both carry external dispatch context of their own (the scheme, the
+MIME type) before a decoder ever looks at a Type ID: exactly the same
+context that already lets those two carriers skip QDEF's magic header
+entirely (§2's carrier table). TagDrop's decoder treats that same
+context as implying its namespace too — recognizing the `tagdrop:`
+scheme, or the `application/vnd.tagdrop` MIME type, is what tells it
+"apply TagDrop's namespace to what follows," with the namespace value
+itself never appearing on the wire. Byte-mode QR/JABCode has no such
+context of its own — it's exactly the "otherwise-unidentified byte
+stream" case QDEF's magic header exists for — so that carrier declares
+the namespace explicitly instead, via QDEF-SPEC.md §3.5's
+populated-discriminator shape.
 
-TagDrop's namespace is the first 4 bytes of `SHA-256("io.github.mofosyne.tagdrop")`:
+TagDrop's namespace, used both ways, is the first 4 bytes of
+`SHA-256("io.github.mofosyne.tagdrop")`:
 
 ```
 namespace = SHA-256("io.github.mofosyne.tagdrop")[0:4] = 89 D4 14 E0
 ```
 
-encoded as a bare CBOR byte string — the discriminator item itself,
-immediately after the magic bytes, with no wrapping map (QDEF-SPEC.md
-§3.5's `byte string` discriminator shape): `h'89d414e0'`, 5 bytes total
-(1-byte CBOR header + 4-byte value). No recoverable-name field is
-included — the value is self-certifying (recompute the hash from the
-name above and compare) and this document itself is the record of what
-the value means, so a redundant on-wire name would only cost bytes for
-no benefit here. The reverse-domain-qualified source string (rather than
-a bare `"tagdrop"`) follows QDEF-SPEC.md §4's guidance to avoid
-hash-of-generic-word collisions.
+On byte-mode QR/JABCode this is encoded as a bare CBOR byte string — the
+discriminator item itself, immediately after the magic bytes, with no
+wrapping map (QDEF-SPEC.md §3.5's `byte string` discriminator shape):
+`h'89d414e0'`, 5 bytes total (1-byte CBOR header + 4-byte value). No
+recoverable-name field is included — the value is self-certifying
+(recompute the hash from the name above and compare) and this document
+itself is the record of what the value means, so a redundant on-wire
+name would only cost bytes for no benefit here. The reverse-domain-
+qualified source string (rather than a bare `"tagdrop"`) follows
+QDEF-SPEC.md §4's guidance to avoid hash-of-generic-word collisions.
 
-Content-Preview/Content-Body/Paper-Preview/Paper-Body's Type IDs
-themselves are unchanged on this carrier — they stay the same small even
-values used everywhere else (§2.1), since an even Type ID is valid with
-or without a declared namespace. Only the outer framing differs: byte-mode
-QR/JABCode's discriminator carries this namespace value instead of the
-"no namespace" bare `0` that `tagdrop:` URI and NFC never even need to
-carry in the first place (§2's carrier table).
+**The one discipline this places on an implementation:** the implied
+namespace must be bound to exactly the same value, `89d414e0`, on every
+carrier that implies it — a decoder that hard-codes "content reaching me
+via `tagdrop:` or `vnd.tagdrop` NDEF gets this namespace" is only
+correct if that's the *same* namespace byte-mode QR/JABCode would
+transmit explicitly for the identical Record Sequence bytes. This is
+what makes §2's "near 1:1" property hold even with the discriminator
+sometimes present and sometimes not: the Type IDs and the namespace
+they resolve against are identical regardless of carrier, only whether
+the namespace is spelled out on the wire differs.
+
+**Why this is safe, not just convenient.** An odd Type ID with no
+namespace present is a spec-mandated abort — so if TagDrop's Record
+Sequence bytes ever reached a decoder that *didn't* already know to
+imply TagDrop's namespace (e.g. extracted from a `tagdrop:` URI and fed
+to an unrelated, generic QDEF inspector with no TagDrop-specific
+knowledge), that decoder correctly refuses to interpret them rather than
+silently misreading Type ID `1` as whatever else that value might mean
+in a different context. An even, globally-interpreted Type ID has no
+such protection — it would be accepted and potentially misinterpreted
+by exactly the kind of out-of-context decoder this scheme is designed
+to fail safely against.
 
 ### 2.2 Even/odd key criticality
 
 TagDrop's own Record fields (§3) are, in this version, **entirely odd-numbered (optional)** — every field defined below is safe for an old decoder to ignore if it doesn't recognize it, degrading gracefully rather than misinterpreting anything. Even key numbers are deliberately left unused in every TagDrop Record Type for now, reserved as headroom for a future field that genuinely needs must-understand-or-abort semantics (QDEF-SPEC.md §3.2's even/odd rule) — a real capability the old single-namespace, ignore-everything-unknown design didn't have (tracked as tagdrop#63, now resolved by adopting QDEF's rule directly instead of inventing an equivalent). Key `0` (the Type ID itself) is the one mandatory exception, per QDEF's own rule.
 
-For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 major type 0). Record Type IDs (§2.1) cost 4 bytes each (a `32768`+ value plus its map key) — still more than the old 1-byte `version`/`type` pair, but paid once per code, same order of magnitude as before; see the QDEF byte-overhead discussion this project relayed back upstream (mofosyne/qdef PR #2 and the own-URI-scheme isolation guidance, §2.1) for the actual numbers.
+For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 major type 0). Record Type IDs (§2.1) cost exactly that: 1 byte for the value plus 1 byte for the map key, 2 bytes total per occurrence — cheaper than the old 1-byte `version`/`type` pair combined, since a single Type ID now does the job both fields used to; see the QDEF byte-overhead discussion this project relayed back upstream (mofosyne/qdef PR #2 and the namespace-scoping/own-URI-scheme guidance, §2.1/§2.1a) for how the numbers got here.
 
 ### Navigation links (not QR payloads)
 
@@ -175,7 +192,7 @@ namespace — a field number means nothing outside the Record Type it's
 listed under (QDEF-SPEC.md §3.1). Per §2.2, every field below is odd
 (optional/ignorable); even numbers are unused, reserved headroom.
 
-### 3.1 Content-Preview (Type `48250`)
+### 3.1 Content-Preview (Type `1`)
 
 Always plain, unwrapped, present on every code carrying this payload
 (§5.1). `cache_id` is the content-addressed identity used for
@@ -213,9 +230,9 @@ scoped differently from Paper's `root_hash`.
 | 53 | `created_at` | uint (opt) | Author-declared Unix timestamp; not independently verified |
 | 55 | `source_url` | text (opt) | See §17 |
 
-### 3.2 Content-Body (Type `56990`)
+### 3.2 Content-Body (Type `3`)
 
-Optionally Compress-wrapped (QDEF-SPEC.md §4.1 Type 3) and/or
+Optionally Compress-wrapped (QDEF-SPEC.md §4.1 Type 8) and/or
 Split-wrapped (§5) when it doesn't fit alongside Preview in one code.
 
 | Key | Field | Type | Notes |
@@ -242,7 +259,7 @@ hidden override map — see §9, "Discovery, not declaration." Content-Preview's
 own `hint`/`mime_type`/`filename`, if present, are the values shown before
 (or without) a matching override key.
 
-### 3.3 Paper-Preview (Type `34456`)
+### 3.3 Paper-Preview (Type `5`)
 
 Always plain, unwrapped, present on every code carrying this payload
 (§5.1).
@@ -275,7 +292,7 @@ Always plain, unwrapped, present on every code carrying this payload
 | 47 | `key_material` | bytes (32, opt) | Decryption key for other content (§9) — **Note: uses key 47 here, not key 33 as on Content-Preview.** Paper-Preview's key 33 is `signer_id` (§10), so `key_material`/`retain_key` occupy the next available odd slots (47/49) to avoid collision. See §9 for the full encryption design. |
 | 49 | `retain_key` | bool (opt, default `true`) | Whether the app should remember `key_material` across sessions (§9) |
 
-### 3.4 Paper-Body (Type `58984`)
+### 3.4 Paper-Body (Type `7`)
 
 Optionally Compress-wrapped and/or Split-wrapped, same as Content-Body. A
 Paper has no `content` of its own — its body is entirely directory data.
@@ -350,7 +367,7 @@ always identifies what it found and shows a usable preview, regardless of
 whether the Body has been fully reassembled yet. Body carries whatever
 doesn't need to be in that early preview: `content` (Content) or
 `files[]`/`related[]` (Paper), plus the large signature fields — optionally
-Compress-wrapped (QDEF-SPEC.md §4.1 Type 3), and Split-wrapped (§5) when it
+Compress-wrapped (QDEF-SPEC.md §4.1 Type 8), and Split-wrapped (§5) when it
 doesn't fit alongside Preview in one code.
 
 This replaces the old design's single three-part `core_meta_item ||
@@ -1252,7 +1269,7 @@ smoothing, or never smoothing) still decodes the content correctly.
 
 ## 8. Compression
 
-Compression is QDEF's Compress Wrapper (QDEF-SPEC.md §4.1 Type 3,
+Compression is QDEF's Compress Wrapper (QDEF-SPEC.md §4.1 Type 8,
 DEFLATE, zlib-wrapped RFC 1950), applied to a Body Record's encoded bytes
 as a whole when an author chooses to — not a TagDrop-specific field.
 Preview is never wrapped (§4.1), since it must stay cheaply parseable
@@ -1903,7 +1920,29 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 7** (current) — corrects a carrier-scoping gap in version 6's
+**Version 8** (current) — all four Type IDs shrink again, from small even
+values to small sequential odd ones (`1`/`3`/`5`/`7`), under a single
+fixed namespace (`89d414e0`, unchanged from version 7's byte-mode
+QR/JABCode declaration — see §2.1a) that's now implied rather than
+transmitted on `tagdrop:` URI and NFC NDEF, and explicitly transmitted
+on byte-mode QR/JABCode as before. Halves the per-occurrence Type ID
+cost again (4 bytes → 2), and — the real point, not just the byte count
+— makes TagDrop's Type IDs fail closed instead of open: an odd Type ID
+with no namespace present is a spec-mandated abort, so bytes that
+escaped into a context that didn't already know to imply TagDrop's
+namespace would be correctly refused rather than silently misread as
+whatever else that small value might mean elsewhere. An even,
+always-global Type ID (version 6/7) had no equivalent protection.
+Byte-mode QR/JABCode's own framing cost is unchanged (still 9 bytes —
+version 7 already required its namespace to be transmitted there); only
+the Type ID values inside the Record Sequence shrink, on every carrier
+equally. Considered and declined alongside this: shrinking further via
+decentralized (byte-string) Type IDs — SPEC.md's own key-registry-plus-
+retirement documentation already gives what that mechanism's real
+justification (independent self-certifying verification) would buy, so
+there was nothing left for it to add here.
+
+**Version 7** — corrects a carrier-scoping gap in version 6's
 Type ID safety argument. Version 6 justified shrinking all four Type IDs
 by "own-URI-scheme isolation" — true for `tagdrop:` URI and NFC NDEF,
 both of which have external dispatch context before a decoder ever looks

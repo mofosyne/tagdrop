@@ -306,10 +306,12 @@ again or a concrete need emerges.
   bytes worse). Single-code payloads (Preview+Body sharing a code) do net
   a small win (~+4 bytes), but not enough on its own to justify adopting
   the mechanism. **Declined** for this reason, not for lack of upstream
-  support — revisit only if TagDrop's own Split-per-code shape changes, or
-  if a future need for third-party detection (a generic QDEF-aware
-  scanner recognizing "this is TagDrop") outweighs the per-code cost on
-  its own merits.
+  support. **Update (SPEC.md version 8):** the per-code repetition cost
+  this math was built on turned out to be avoidable, not fundamental —
+  see the "own-URI-scheme Type ID isolation" entry below for the
+  resolution (an *implied*, never-transmitted namespace on carriers with
+  their own dispatch context). Namespace-scoping is adopted after all,
+  just not the way this entry originally evaluated it.
 - **QDEF mandatory container discriminator** (checked in, settled — see
   github.com/mofosyne/tagdrop#66). Landed after the namespace-scoping
   entry above: the previously-optional Type-0 namespace header became a
@@ -329,40 +331,58 @@ again or a concrete need emerges.
   would never need this, but it costs nothing when unused. No SPEC.md
   action beyond the version-5 framing update; no reason found to reopen
   the namespace-scoping decision above.
-- ~~**QDEF own-URI-scheme Type ID isolation**~~ — **done** (SPEC.md
-  version 6, corrected in version 7). A genuinely different mechanism
-  from the namespace-scoping entry above, not a reopening of it —
-  QDEF-SPEC.md §2/§3.5 now formalize that an app carrying QDEF content
-  under its own URI scheme (`tagdrop:`, in TagDrop's case) already
-  provides the collision isolation a declared namespace exists to buy —
-  **but only on carriers that actually have that external dispatch
-  context.** Adopted: all four Type IDs re-minted from 64-bit CSPRNG
-  values to small even ones (`48250`/`56990`/`34456`/`58984`), saving 6
-  bytes per occurrence on `tagdrop:` URI and NFC NDEF, with no offsetting
-  cost on either. Version 6's first pass claimed this held with **no**
-  offsetting cost *anywhere* — wrong, caught in review: byte-mode
-  QR/JABCode has no scheme or MIME type to isolate it, so it's exactly
-  the case that needs a declared namespace after all. Version 7 fixed
-  this by declaring TagDrop's namespace (`SHA-256("io.github.mofosyne.
-  tagdrop")[0:4]`, SPEC.md §2.1a) on that one carrier specifically — 4
-  bytes more framing there, still nothing on `tagdrop:`/NFC, and the
-  Type ID values themselves stay unchanged (even IDs are valid with or
-  without a namespace, so only the outer framing differs per carrier).
-  Byte-mode QR isn't implemented in any codec yet, so this was a
-  documentation-only fix. Separately, version 6 surfaced a real
-  implementation bug, not just a spec update: the reader/generator/
-  examples/test scripts declared these Type IDs as JS `BigInt` (needed
-  when they were 64-bit, since they exceed `Number.MAX_SAFE_INTEGER`),
-  but the CBOR decoder returns a plain `Number` for values in the
-  256–65535 range — `48250 !== 48250n` under strict equality silently
-  broke every Type-ID comparison once the values shrank. Fixed by
-  dropping the `BigInt` suffix now that the values safely fit in a
-  `Number` (matching how QDEF's own stdlib Wrapper Type IDs,
-  `TYPE_SPLIT`/`TYPE_COMPRESS`, were already declared) — verified via the
-  full regression suite plus all Playwright cross-tool scripts, which
-  caught it immediately. Also resolves a Kotlin-port item: `MiniCbor.kt`'s
-  32-bit-uint limitation (SPEC.md §15) is no longer a gap for Type IDs
-  specifically, since all four now fit in 16 bits.
+- ~~**QDEF own-URI-scheme Type ID isolation**~~ — **done, superseded
+  twice more** (SPEC.md versions 6 → 7 → 8, current state is 8). A
+  genuinely different mechanism from the namespace-scoping entry above,
+  not a reopening of it, at least at first — QDEF-SPEC.md §2/§3.5
+  formalize that an app carrying QDEF content under its own URI scheme
+  (`tagdrop:`, in TagDrop's case) already provides the collision
+  isolation a declared namespace exists to buy, but only on carriers
+  that actually have that external dispatch context.
+  - **v6:** all four Type IDs re-minted from 64-bit CSPRNG values to
+    small even ones (`48250`/`56990`/`34456`/`58984`), claiming zero
+    offsetting cost *anywhere*.
+  - **v7:** v6's "anywhere" was wrong — byte-mode QR/JABCode has no
+    scheme or MIME type to isolate it, so it needs a declared namespace
+    after all. Fixed by declaring one (`SHA-256("io.github.mofosyne.
+    tagdrop")[0:4]` = `89d414e0`) on that one carrier specifically.
+  - **v8 (current):** qdef bot pointed out the decoder can imply that
+    same namespace value on `tagdrop:` URI and NFC NDEF too — never
+    transmitted, just hard-coded as "content reaching me via my own
+    carrier gets my namespace" — which means the four Type IDs no
+    longer need to stay even at all. Re-minted a third time, to small
+    **odd** sequential values (`1`/`3`/`5`/`7`) under that implied
+    namespace: cheaper again (2 bytes/occurrence vs. 4) and a real
+    correctness upgrade, not just smaller — an odd Type ID with no
+    namespace present is a spec-mandated abort, so bytes that escaped
+    into a context that didn't already know to imply TagDrop's
+    namespace fail closed instead of being silently, wrongly accepted
+    the way an always-global even ID would be. This is effectively the
+    namespace-scoping entry above, adopted after all, once the "must
+    repeat namespace per code" assumption its cost math was built on
+    turned out not to hold for TagDrop's own two real carriers.
+  - Version 6 also surfaced a real implementation bug, not just a spec
+    update: the reader/generator/examples/test scripts declared these
+    Type IDs as JS `BigInt` (needed when they were 64-bit, since they
+    exceed `Number.MAX_SAFE_INTEGER`), but the CBOR decoder returns a
+    plain `Number` for small values — `48250 !== 48250n` under strict
+    equality silently broke every Type-ID comparison once the values
+    shrank. Fixed by dropping the `BigInt` suffix (matching how QDEF's
+    own stdlib Wrapper Type IDs were already declared) — verified via
+    the full regression suite plus all Playwright cross-tool scripts.
+  - Implementing v8 surfaced a second, unrelated real bug while
+    checking for Type ID collisions: `TYPE_COMPRESS` was hard-coded as
+    `3` in all five JS/test files, but QDEF-SPEC.md §4.1's actual
+    current allocation for the Compress Wrapper is `8` (`TYPE_SPLIT`'s
+    `2` was already correct). This had been silently, harmlessly wrong
+    for a while — TagDrop's own Type IDs were never small enough to
+    collide with it before — until v8's new `Content-Body = 3` would
+    have collided with it directly. Fixed alongside v8's own Type ID
+    changes, including the three matching `QDEF-SPEC.md §4.1 Type 3`
+    references in SPEC.md itself (now `Type 8`).
+  - Also resolves a Kotlin-port item: `MiniCbor.kt`'s 32-bit-uint
+    limitation (SPEC.md §15) is no longer a gap for Type IDs
+    specifically, since all four now fit in a single byte.
 - ~~**Paper "homepage" via `index` slug convention**~~ — **done.** A file
   whose `slug` is `index`, `index.html`, or `index.md` is now highlighted as
   the paper's primary "Open" action: `tools/reader/index.html`'s
