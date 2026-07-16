@@ -348,15 +348,16 @@ recording at all — e.g. an item mailed to a recipient whose address the
 author never geocoded, or one carried on a moving vehicle ("🚋 Tram 40")
 rather than left at a point. Two ways to say so:
 
-- `prefer_declared_location` (key 49) set `true` while `lat`/`lng` are both
-  absent. Ordinarily this key only reorders *priority* between two
-  candidate locations (declared vs. live), but with no declared coordinates
-  to prioritize there is nothing for it to prefer — so this combination is
-  instead read as an explicit author assertion that this payload has no
-  reliable fixed point, and a live GPS fix at scan time (which would
-  otherwise fill the gap by default, per the priority rule above) MUST NOT
-  be substituted for it.
-- `location_label` (key 54, text, optional) — a human-readable, non-coordinate
+- `prefer_declared_location` (Content-Preview key 29, Paper-Preview key 27)
+  set `true` while `lat`/`lng` are both absent. Ordinarily this key only
+  reorders *priority* between two candidate locations (declared vs. live),
+  but with no declared coordinates to prioritize there is nothing for it
+  to prefer — so this combination is instead read as an explicit author
+  assertion that this payload has no reliable fixed point, and a live GPS
+  fix at scan time (which would otherwise fill the gap by default, per the
+  priority rule above) MUST NOT be substituted for it.
+- `location_label` (Content-Preview key 31, Paper-Preview key 29, text,
+  optional) — a human-readable, non-coordinate
   description of the drop's location ("🚋 Tram 40", "mailed, destination
   unknown"). Decoders SHOULD display it as-is. Its presence without
   declared `lat`/`lng` carries the same "no fixed point, don't substitute
@@ -839,7 +840,8 @@ no rewriting of the authored HTML required.
 
 ### Markdown content (`text/markdown`)
 
-`mime_type` (key 4) is a free-form string — `text/markdown` is rendered as
+`mime_type` (Content-Preview key 5, or `files[]`'s local key 2 for a
+Paper's file entries, §3.1/§3.4) is a free-form string — `text/markdown` is rendered as
 HTML (via [CommonMark](https://commonmark.org/)) and displayed through the
 same WebView/iframe path as `text/html`, so `tagdrop://` links and relative
 same-paper links inside the rendered Markdown work identically to the
@@ -926,9 +928,10 @@ Root hashes are permanent because paper is immutable. If a paper is updated, it 
 ### Domains
 
 A 16-character hex root hash is precise but not memorable. The optional
-`domain` field (key 53, text) lets a paper claim a short, human-readable
-name instead — `helloworld`, say — for use in navigation links. If a paper
-doesn't declare `domain`, its `slug` (key 14) is used as a fallback domain,
+`domain` field (Paper-Preview key 9, text, §3.3) lets a paper claim a
+short, human-readable name instead — `helloworld`, say — for use in
+navigation links. If a paper doesn't declare `domain`, its `slug`
+(Paper-Preview key 7) is used as a fallback domain,
 so a paper that's already part of a named set gets a memorable address for
 free with no extra field.
 
@@ -1002,7 +1005,8 @@ candidate, the app picks a single one using:
    a known location (declared, or resolved from a live GPS fix when it was
    scanned — §4.2's location/priority rules), pick the candidate nearest to
    the device.
-2. Otherwise, among candidates that declare `created_at` (key 52), pick the
+2. Otherwise, among candidates that declare `created_at` (Paper-Preview
+   key 39), pick the
    one with the newest author-declared timestamp, breaking ties by the
    greater `root_hash` — a deterministic rule (borrowed from the
    [Willow protocol](https://willowprotocol.org)'s entry-ordering: newest
@@ -1044,7 +1048,8 @@ exhibition.
 For looser groupings — a handful of stickers scattered by the same person, a
 single-file drop that's part of a bigger scavenger hunt, or any case where
 there's no shared directory to scan first — the optional `collection_id`
-field (key 17, 8 random bytes) provides a lighter-weight mechanism:
+field (key 13 on both Content-Preview and Paper-Preview, 8 random bytes,
+§3.1/§3.3) provides a lighter-weight mechanism:
 
 - The author generates one random `collection_id` and stamps it into every
   QR code (Content or Paper) that should be grouped together. There's no
@@ -1070,12 +1075,13 @@ grouping in the finder's app, not identity or integrity.
 Two optional text fields give a collection a human identity, independent of
 its random `collection_id`:
 
-- `collection_label` (key 18) — a human-readable name for the collection
+- `collection_label` (key 15 on both Content-Preview and Paper-Preview) —
+  a human-readable name for the collection
   (e.g. `"Spring 2026 Sticker Hunt"`), shown as the title of the collection
   card on the home screen. The author repeats the same label on every code
   that shares the `collection_id`; the app can display it as soon as it sees
   the first one.
-- `collection_tag` (key 19) — a short, hashtag-style string (e.g.
+- `collection_tag` (key 17 on both Content-Preview and Paper-Preview) — a short, hashtag-style string (e.g.
   `"springtrail2026"`) for cross-referencing **separate** collections that
   belong to a larger event or theme. Unlike `collection_id`, a tag is not a
   grouping key by itself — multiple distinct `collection_id`s (e.g. several
@@ -1094,7 +1100,8 @@ opposite: a code that responds to one specific earlier code, the way a
 forum post or an email replies to exactly one prior message, forming a
 thread as replies accumulate.
 
-The optional `in_reply_to` field (key 50, 8 bytes) carries the `cache_id`
+The optional `in_reply_to` field (Content-Preview key 51, Paper-Preview
+key 37, 8 bytes) carries the `cache_id`
 (if the parent is a Content payload) or `root_hash` (if the parent is a
 Paper) of the single code this one is replying to. Absent, this is a new,
 root message — not part of any thread. Present, it's a directed pointer to
@@ -1125,11 +1132,12 @@ Verified Authorship (§10) if a thread needs to resist forged replies.
 A common shape combining the above: a short message, optionally with one
 or more attachments, optionally directed at an earlier drop as a reply —
 otherwise it's a new conversation. This needs no new wire structure beyond
-`title` (key 51) and widening `description` (key 40) from Paper-only to
-both payload kinds; a "postcard" is just an ordinary Content or Paper
+`title` (Content-Preview key 9, Paper-Preview key 43) and `description`
+(Content-Preview key 11, Paper-Preview key 45) being valid on both payload
+kinds; a "postcard" is just an ordinary Content or Paper
 payload, composed from fields that already exist:
 
-- **Subject line:** `title` (key 51, optional) — a short caption, kept
+- **Subject line:** `title` (optional) — a short caption, kept
   separate from `hint`/`label`'s existing role (§4.2/§4.3) so a postcard's
   subject doesn't have to share a field with that pre-existing meaning.
 - **Message, no attachment:** a Content payload whose `content` bytes
@@ -1141,9 +1149,9 @@ payload, composed from fields that already exist:
 - **Message with one attachment:** a Content payload where
   `content`/`filename`/`mime_type` carry the attachment (a photo, a voice
   clip) — `cache_id` is then content-addressed over the attachment, which
-  is the thing worth deduplicating by — and `description` (key 40, now
-  valid for Content, not just Paper) carries the message instead, since the
-  content slot is spoken for.
+  is the thing worth deduplicating by — and `description` (Content-Preview
+  key 11) carries the message instead, since the content slot is spoken
+  for.
 - **Longer message with attachment(s):** a Paper payload, with `description`
   carrying the message and `files[]` listing the attachment(s) — each
   attachment is its own small Content payload the author creates alongside
@@ -1162,7 +1170,7 @@ to keep the conversation going.
 
 ### Icons
 
-`icon` (key 24) is an optional text field — typically a single emoji — that
+`icon` (key 19 on both Content-Preview and Paper-Preview) is an optional text field — typically a single emoji — that
 authors can stamp onto a Content or Paper payload to give a page or
 collection a visual identity (e.g. "🌳" for a trail stop under a tree,
 "📖" for a story page). The TagDrop app shows it in a small icon slot on the
@@ -1178,7 +1186,7 @@ icon slot in the app's UI is designed to host either form.
 
 ### Pixel art
 
-`pixel_art` (key 55) is an optional boolean, default `false`, Content only —
+`pixel_art` (Content-Preview key 21) is an optional boolean, default `false`, Content only —
 an author's declaration that this image's bytes should be rendered with
 nearest-neighbor (no smoothing) scaling rather than a renderer's default
 bilinear/smooth scaling. It exists for pixel art whose native resolution is
@@ -1947,7 +1955,7 @@ field-level changes.
 - Ad-hoc collections via `collection_id`/`collection_label`/`collection_tag` (keys 17–19). Emoji `icon` (key 24).
 - Content-teaser `description` (key 40, both payload kinds) and per-file `description` (local key 4, in `files[]` entries) — distinct from `label`/`hint` and from the short-caption `title` (key 51, both payload kinds) (§4.3).
 - AES-256-GCM hidden override maps (§9), Content payloads only: self-contained `nonce||ciphertext||tag` blob carried in the reassembled stream's `content` slot, applied after compression. Optional non-binding `encryption` hint (key 28). `key_material`/`retain_key` (keys 30/31) matched by trial decryption ("discovery, not declaration"). PBKDF2-HMAC-SHA256 passphrase derivation via `kdf_alg`/`kdf_salt`/`kdf_iters` (keys 37–39).
-- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Real sign/verify implemented in both reference codecs: the web tools via `@noble/post-quantum` (generator: Single File tab only; reader: any scanned code), and the Kotlin app via BouncyCastle (`CreateActivity`: Single-code screen only; `ReceiveActivity`: any scanned code) — neither `CreatePaperActivity` nor the generator's Paper Layout tab has signing UI yet, though the underlying codec functions support it (§10, §15).
+- ML-DSA-44 post-quantum signatures (§10): `signature_algorithm`/`signature`/`signer_pubkey`/`signer_id`/`signer_label` (keys 32–36), additive and not affecting `cache_id`/`root_hash`/`content_sha256`/`bulky_meta_sha256`. Real sign/verify implemented in both reference codecs: the web tools via `@noble/post-quantum` (generator: both Single File and Paper Layout tabs; reader: any scanned code), and the Kotlin app via BouncyCastle (`CreateActivity`: Single-code screen only; `ReceiveActivity`: any scanned code) — `CreatePaperActivity` is the one place that still lacks a signing checkbox, though the underlying codec functions support it (§10, §15).
 - Author-declared `created_at` (key 52, both payload kinds): optional Unix timestamp (seconds) recording when the payload was authored, taken from the authoring device's clock at encode time — self-declared like `lat`/`lng`, not a verified/trusted timestamp.
 - Drop source registry (§17): `source_url` (key 56) in `core_meta_item` — a URL pointing to a JSON file listing nearby TagDrop drop locations. When scanned, the app prompts the user before fetching. Source management (add/enable/disable/remove) is explicit and user-controlled; no automatic background fetches.
 - Trail steps and forks (§4.3): `step` (key 57 in `core_meta_item`; local key 10 in a `related` entry) is an optional 1-based absolute ordinal scoped by `set` (no declared trail length), letting a decoder show "stop N" and, when two `related` entries share the same `set`/`step`, present a fork of alternative next stops rather than a single pointer.
@@ -1956,15 +1964,18 @@ field-level changes.
 
 ## 15. Reference Implementations
 
-**Status:** the web tools (generator, reader, examples) now encode and
-decode Content using version 2's QDEF Record wire shape (Preview/Body
-split, Compress Wrapper, Split Wrapper). The Kotlin Android app and the
-Paper layout path in all three web tools still use version 1's
-`core_meta_item`/`bulky_meta_item`/`part_meta` envelope — porting those
-is tracked follow-up work. Signing (§10) uses the new QDEF key layout
-for Content in the web tools; the Kotlin app still signs with the old
-key layout. File paths and high-level responsibilities below stay
-accurate either way.
+**Status:** the web tools (generator, reader, examples) encode and
+decode both Content and Paper using the current QDEF Record wire shape
+(Preview/Body split, Compress Wrapper, Split Wrapper, §2-§5) — no wire
+format left on the old envelope in any of the three web tools (a small
+old-format decode path is deliberately kept in the reader only, for
+backward compatibility with codes scanned before the port). The Kotlin
+Android app is the one implementation still on version 1's
+`core_meta_item`/`bulky_meta_item`/`part_meta` envelope for both payload
+types — porting it is tracked follow-up work. Signing (§10) uses the new
+QDEF key layout for both Content and Paper in the web tools; the Kotlin
+app still signs with the old key layout. File paths and high-level
+responsibilities below stay accurate either way.
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
@@ -2101,7 +2112,7 @@ Re-fetching is user-initiated or on a configurable schedule chosen by the user. 
 }
 ```
 
-Field names deliberately mirror the TagDrop wire format (§3) where they overlap — `hint` (key 3), `description` (key 40), `lat`/`lng` (keys 26/27) — so a hint QR scan already contains every entry field except `status` and `status_updated`. A future app feature could auto-generate a drops.json submission from a scanned hint QR with those two fields added by the submitter.
+Field names deliberately mirror Content-Preview's wire format (§3.1) where they overlap — `hint` (key 3), `description` (key 11), `lat`/`lng` (keys 23/25) — so a hint QR scan already contains every entry field except `status` and `status_updated`. A future app feature could auto-generate a drops.json submission from a scanned hint QR with those two fields added by the submitter.
 
 Top-level fields:
 
@@ -2116,11 +2127,11 @@ Per-drop entry fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | string (required) | `cache_id` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). Matches wire format key 2. |
-| `lat` | number (required) | WGS84 latitude. Matches wire format key 26. |
-| `lng` | number (required) | WGS84 longitude. Matches wire format key 27. |
-| `hint` | string (opt) | Short human-readable location clue, e.g. `"Behind the loose brick"`. Matches wire format key 3. |
-| `description` | string (opt) | Longer location description, e.g. directions or context. Matches wire format key 40. |
+| `id` | string (required) | `cache_id` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). Matches Content-Preview key 1. |
+| `lat` | number (required) | WGS84 latitude. Matches Content-Preview key 23. |
+| `lng` | number (required) | WGS84 longitude. Matches Content-Preview key 25. |
+| `hint` | string (opt) | Short human-readable location clue, e.g. `"Behind the loose brick"`. Matches Content-Preview key 3. |
+| `description` | string (opt) | Longer location description, e.g. directions or context. Matches Content-Preview key 11. |
 | `status` | string (opt) | Operational status: `"working"`, `"unknown"` (default), `"broken"`, or `"removed"`. `"removed"` drops are hidden from the map. No wire format equivalent — community-maintained mutable state, not encoded in the QR. |
 | `status_updated` | string (opt) | ISO 8601 date of the last status check, e.g. `"2026-07-03"`. No wire format equivalent. |
 | `drop_type` | string (opt) | Content type tag; default `"tagdrop"`. Reserved for future extensibility (e.g. listing non-TagDrop drops in a mixed source). |
