@@ -160,10 +160,10 @@ function cborRecord(typeId, fields) {
 }
 
 const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
-const TYPE_CONTENT_PREVIEW = 11040522420225562824n;
-const TYPE_CONTENT_BODY = 16141970035994251452n;
-const TYPE_PAPER_PREVIEW = 5378751847309657042n;
-const TYPE_PAPER_BODY = 3791774695141159602n;
+const TYPE_CONTENT_PREVIEW = 48250;
+const TYPE_CONTENT_BODY = 56990;
+const TYPE_PAPER_PREVIEW = 34456;
+const TYPE_PAPER_BODY = 58984;
 
 async function compressWrap(bytes) {
   return cborRecord(TYPE_COMPRESS, { 2: await zlibCompress(bytes) });

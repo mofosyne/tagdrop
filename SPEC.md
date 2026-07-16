@@ -1,7 +1,8 @@
 # TagDrop Encoding Specification
 
-**Version:** 5 (QDEF's namespace discriminator became mandatory on
-magic-header carriers; see §14 "Version history")
+**Version:** 6 (all four Type IDs shrunk from 64-bit random values to
+small self-allocated even IDs, using QDEF's own-URI-scheme isolation
+guidance; see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -51,16 +52,18 @@ This is the "near 1:1" property: an encoder builds the Record Sequence bytes onc
 
 ### 2.1 Record Types
 
-TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed). IDs are 64-bit CSPRNG values in QDEF's private-use tier (`0x10000`+, QDEF-SPEC.md §9), pending a real shared registry:
+TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed). IDs are small self-allocated values in QDEF's `32768`+ "First Come First Served" tier (QDEF-SPEC.md §4):
 
 | Type ID | Record | Contains |
 |---|---|---|
-| `11040522420225562824` | Content-Preview | Small, always-plain fields — identity, hint, location, collection, encryption/signing metadata. See §3.1. |
-| `16141970035994251452` | Content-Body | `content` bytes, plus the large signature fields. See §3.2. |
-| `5378751847309657042` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
-| `3791774695141159602` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
+| `48250` | Content-Preview | Small, always-plain fields — identity, hint, location, collection, encryption/signing metadata. See §3.1. |
+| `56990` | Content-Body | `content` bytes, plus the large signature fields. See §3.2. |
+| `34456` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
+| `58984` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
 
-All four Type IDs are deliberately **even** — QDEF-SPEC.md §3.1 classifies an even-uint Type ID as "Standard record type," always globally interpreted regardless of namespace, versus an odd-uint Type ID ("Scoped record type"), which requires a preceding Type-0 namespace-declaration Record (QDEF-SPEC.md §3.5) in the same Sequence or must be treated as an abort. TagDrop declares no namespace on any carrier, so every registered Type ID here MUST stay even; this was already true for Content-Preview/Content-Body, and Paper-Preview/Paper-Body were re-minted for version 4 (§14) after the original odd values were found to violate this rule.
+All four Type IDs are deliberately **even** — QDEF-SPEC.md §3.1 classifies an even-uint Type ID as "Standard record type," always globally interpreted regardless of namespace, versus an odd-uint Type ID ("Scoped record type"), which requires a preceding Type-0 namespace-declaration Record (QDEF-SPEC.md §3.5) in the same Sequence or must be treated as an abort. TagDrop declares no namespace on any carrier, so every registered Type ID here MUST stay even.
+
+**Why small values, not large random ones.** These were originally 64-bit CSPRNG values (collision-avoidance for a Type ID that might appear in a shared, generic QDEF container alongside other apps' Records). QDEF-SPEC.md §2/§3.5 now formalizes that an application carrying QDEF content under its own URI scheme — as TagDrop's `tagdrop:` carrier already does — has no need for that collision margin at all: the scheme itself is a recognition boundary no other app's decoder crosses, so a small, self-allocated even Type ID from the `32768`+ tier is exactly as collision-safe *for TagDrop's actual deployment* as a 64-bit value would be, at roughly a third of the byte cost (4 bytes per occurrence vs. 10) and with no namespace machinery — no Type-0 declaration, no per-code repetition cost — required anywhere. Content-Preview/Content-Body and Paper-Preview/Paper-Body were all re-minted to this tier for version 6 (§14); Paper-Preview/Paper-Body had already been re-minted once before, for version 4, to fix an unrelated odd/even parity violation — that fix is superseded by this one.
 
 A **key-only** code (§9, "Decryption keys") is a Content-Preview Record with no accompanying Body at all — carrying `key_material` but no content, exactly as today's key codes do; nothing about that case changes.
 
@@ -68,7 +71,7 @@ A **key-only** code (§9, "Decryption keys") is a Content-Preview Record with no
 
 TagDrop's own Record fields (§3) are, in this version, **entirely odd-numbered (optional)** — every field defined below is safe for an old decoder to ignore if it doesn't recognize it, degrading gracefully rather than misinterpreting anything. Even key numbers are deliberately left unused in every TagDrop Record Type for now, reserved as headroom for a future field that genuinely needs must-understand-or-abort semantics (QDEF-SPEC.md §3.2's even/odd rule) — a real capability the old single-namespace, ignore-everything-unknown design didn't have (tracked as tagdrop#63, now resolved by adopting QDEF's rule directly instead of inventing an equivalent). Key `0` (the Type ID itself) is the one mandatory exception, per QDEF's own rule.
 
-For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 major type 0). Record Type IDs above are large by design (collision avoidance, §2.1) and cost more than the old 1-byte `version`/`type` pair — but they're paid once per code, same order of magnitude as before; see the QDEF byte-overhead discussion this project relayed back upstream (mofosyne/qdef PR #2) for the actual numbers.
+For values 0–23, a CBOR unsigned integer is exactly **one byte** (RFC 8949 major type 0). Record Type IDs (§2.1) cost 4 bytes each (a `32768`+ value plus its map key) — still more than the old 1-byte `version`/`type` pair, but paid once per code, same order of magnitude as before; see the QDEF byte-overhead discussion this project relayed back upstream (mofosyne/qdef PR #2 and the own-URI-scheme isolation guidance, §2.1) for the actual numbers.
 
 ### Navigation links (not QR payloads)
 
@@ -133,7 +136,7 @@ namespace — a field number means nothing outside the Record Type it's
 listed under (QDEF-SPEC.md §3.1). Per §2.2, every field below is odd
 (optional/ignorable); even numbers are unused, reserved headroom.
 
-### 3.1 Content-Preview (Type `11040522420225562824`)
+### 3.1 Content-Preview (Type `48250`)
 
 Always plain, unwrapped, present on every code carrying this payload
 (§5.1). `cache_id` is the content-addressed identity used for
@@ -171,7 +174,7 @@ scoped differently from Paper's `root_hash`.
 | 53 | `created_at` | uint (opt) | Author-declared Unix timestamp; not independently verified |
 | 55 | `source_url` | text (opt) | See §17 |
 
-### 3.2 Content-Body (Type `16141970035994251452`)
+### 3.2 Content-Body (Type `56990`)
 
 Optionally Compress-wrapped (QDEF-SPEC.md §4.1 Type 3) and/or
 Split-wrapped (§5) when it doesn't fit alongside Preview in one code.
@@ -200,7 +203,7 @@ hidden override map — see §9, "Discovery, not declaration." Content-Preview's
 own `hint`/`mime_type`/`filename`, if present, are the values shown before
 (or without) a matching override key.
 
-### 3.3 Paper-Preview (Type `5378751847309657042`)
+### 3.3 Paper-Preview (Type `34456`)
 
 Always plain, unwrapped, present on every code carrying this payload
 (§5.1).
@@ -233,7 +236,7 @@ Always plain, unwrapped, present on every code carrying this payload
 | 47 | `key_material` | bytes (32, opt) | Decryption key for other content (§9) — **Note: uses key 47 here, not key 33 as on Content-Preview.** Paper-Preview's key 33 is `signer_id` (§10), so `key_material`/`retain_key` occupy the next available odd slots (47/49) to avoid collision. See §9 for the full encryption design. |
 | 49 | `retain_key` | bool (opt, default `true`) | Whether the app should remember `key_material` across sessions (§9) |
 
-### 3.4 Paper-Body (Type `3791774695141159602`)
+### 3.4 Paper-Body (Type `58984`)
 
 Optionally Compress-wrapped and/or Split-wrapped, same as Content-Body. A
 Paper has no `content` of its own — its body is entirely directory data.
@@ -1858,7 +1861,21 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 5** (current) — QDEF-SPEC.md §3.5's namespace discriminator
+**Version 6** (current) — all four Type IDs shrunk from 64-bit CSPRNG
+values to small self-allocated even values (`48250`/`56990`/`34456`/
+`58984`, §2.1), using QDEF-SPEC.md §2/§3.5's now-formalized guidance that
+an application carrying QDEF content under its own URI scheme — as
+`tagdrop:` already does — has no need for the collision margin a large
+random Type ID exists to buy, since the scheme itself already isolates
+TagDrop's Records from every other app's decoder. Saves 6 bytes per
+Type-ID occurrence (10 bytes → 4), with no offsetting cost anywhere,
+unlike namespace-scoping's per-code Type-0 tax (declined for that reason,
+CLAUDE.md's backlog). Value-only change — no field/key changes within any
+Record Type's own table (§3.1-§3.4). Also resolves a Kotlin-port blocker
+noted in §15: `MiniCbor.kt`'s 32-bit-uint limitation is no longer a gap
+for Type IDs specifically, since all four now fit in 16 bits.
+
+**Version 5** — QDEF-SPEC.md §3.5's namespace discriminator
 became mandatory on any carrier using the magic header (previously
 optional, zero cost when absent). Byte-mode QR/JABCode framing (§2, §13)
 grows from 4 to 5 bytes accordingly — coincidentally the same total as
@@ -1980,7 +1997,7 @@ responsibilities below stay accurate either way.
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
   - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
-  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742). Currently limited to 32-bit unsigned integers — 64-bit support (needed for QDEF Record Type IDs) is a known gap.
+  - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742). Currently limited to 32-bit unsigned integers — no longer a gap for QDEF Record Type IDs specifically, now that all four fit in 16 bits (§2.1, version 6); still a real limitation for any future 64-bit-scale field.
   - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `(type, cache_id)` groups concurrently
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<domain>/<slug>` and `tagdrop://[<domain>]@<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
   - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark

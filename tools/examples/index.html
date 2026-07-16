@@ -368,10 +368,10 @@ function cborRecord(typeId, fields) {
 // under Number.MAX_SAFE_INTEGER); the four TagDrop Type IDs are BigInt
 // (SPEC.md §2.1 — 64-bit CSPRNG values in QDEF's private-use tier).
 const TYPE_SPLIT = 2, TYPE_COMPRESS = 3;
-const TYPE_CONTENT_PREVIEW = 11040522420225562824n;
-const TYPE_CONTENT_BODY = 16141970035994251452n;
-const TYPE_PAPER_PREVIEW = 5378751847309657042n;
-const TYPE_PAPER_BODY = 3791774695141159602n;
+const TYPE_CONTENT_PREVIEW = 48250;
+const TYPE_CONTENT_BODY = 56990;
+const TYPE_PAPER_PREVIEW = 34456;
+const TYPE_PAPER_BODY = 58984;
 
 // QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 3) — wraps `bytes`
 // DEFLATE-compressed. Async: zlibCompress uses CompressionStream.
