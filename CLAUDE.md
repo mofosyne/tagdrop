@@ -330,30 +330,39 @@ again or a concrete need emerges.
   action beyond the version-5 framing update; no reason found to reopen
   the namespace-scoping decision above.
 - ~~**QDEF own-URI-scheme Type ID isolation**~~ — **done** (SPEC.md
-  version 6). A genuinely different mechanism from the namespace-scoping
-  entry above, not a reopening of it — QDEF-SPEC.md §2/§3.5 now formalize
-  that an app carrying QDEF content under its own URI scheme (`tagdrop:`,
-  in TagDrop's case) already provides the collision isolation a declared
-  namespace exists to buy, so its Type IDs can be small, self-allocated
-  even values (the `32768`+ tier) with **no** namespace machinery and
-  **no** per-code repetition cost — the exact cost namespace-scoping
-  couldn't clear for TagDrop's multi-code case. Adopted: all four Type
-  IDs re-minted from 64-bit CSPRNG values to small even ones
-  (`48250`/`56990`/`34456`/`58984`), saving 6 bytes per occurrence with
-  no offsetting cost anywhere. Surfaced a real implementation bug along
-  the way, not just a spec update: the reader/generator/examples/test
-  scripts declared these Type IDs as JS `BigInt` (needed when they were
-  64-bit, since they exceed `Number.MAX_SAFE_INTEGER`), but the CBOR
-  decoder returns a plain `Number` for values in the 256–65535 range —
-  `48250 !== 48250n` under strict equality silently broke every Type-ID
-  comparison once the values shrank. Fixed by dropping the `BigInt`
-  suffix now that the values safely fit in a `Number` (matching how
-  QDEF's own stdlib Wrapper Type IDs, `TYPE_SPLIT`/`TYPE_COMPRESS`, were
-  already declared) — verified via the full regression suite plus all
-  Playwright cross-tool scripts, which caught it immediately. Also
-  resolves a Kotlin-port item: `MiniCbor.kt`'s 32-bit-uint limitation
-  (SPEC.md §15) is no longer a gap for Type IDs specifically, since all
-  four now fit in 16 bits.
+  version 6, corrected in version 7). A genuinely different mechanism
+  from the namespace-scoping entry above, not a reopening of it —
+  QDEF-SPEC.md §2/§3.5 now formalize that an app carrying QDEF content
+  under its own URI scheme (`tagdrop:`, in TagDrop's case) already
+  provides the collision isolation a declared namespace exists to buy —
+  **but only on carriers that actually have that external dispatch
+  context.** Adopted: all four Type IDs re-minted from 64-bit CSPRNG
+  values to small even ones (`48250`/`56990`/`34456`/`58984`), saving 6
+  bytes per occurrence on `tagdrop:` URI and NFC NDEF, with no offsetting
+  cost on either. Version 6's first pass claimed this held with **no**
+  offsetting cost *anywhere* — wrong, caught in review: byte-mode
+  QR/JABCode has no scheme or MIME type to isolate it, so it's exactly
+  the case that needs a declared namespace after all. Version 7 fixed
+  this by declaring TagDrop's namespace (`SHA-256("io.github.mofosyne.
+  tagdrop")[0:4]`, SPEC.md §2.1a) on that one carrier specifically — 4
+  bytes more framing there, still nothing on `tagdrop:`/NFC, and the
+  Type ID values themselves stay unchanged (even IDs are valid with or
+  without a namespace, so only the outer framing differs per carrier).
+  Byte-mode QR isn't implemented in any codec yet, so this was a
+  documentation-only fix. Separately, version 6 surfaced a real
+  implementation bug, not just a spec update: the reader/generator/
+  examples/test scripts declared these Type IDs as JS `BigInt` (needed
+  when they were 64-bit, since they exceed `Number.MAX_SAFE_INTEGER`),
+  but the CBOR decoder returns a plain `Number` for values in the
+  256–65535 range — `48250 !== 48250n` under strict equality silently
+  broke every Type-ID comparison once the values shrank. Fixed by
+  dropping the `BigInt` suffix now that the values safely fit in a
+  `Number` (matching how QDEF's own stdlib Wrapper Type IDs,
+  `TYPE_SPLIT`/`TYPE_COMPRESS`, were already declared) — verified via the
+  full regression suite plus all Playwright cross-tool scripts, which
+  caught it immediately. Also resolves a Kotlin-port item: `MiniCbor.kt`'s
+  32-bit-uint limitation (SPEC.md §15) is no longer a gap for Type IDs
+  specifically, since all four now fit in 16 bits.
 - ~~**Paper "homepage" via `index` slug convention**~~ — **done.** A file
   whose `slug` is `index`, `index.html`, or `index.md` is now highlighted as
   the paper's primary "Open" action: `tools/reader/index.html`'s
