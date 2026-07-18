@@ -1021,6 +1021,16 @@ function stripKeys(mapBytes, keysToStrip) {
     // major 0/1/7 carry no payload beyond the argument readArg already consumed
     // (including a float64's 8 bytes, per readArg's info-27 case above).
   }
+
+  // QDEF-SPEC.md §3: a Record may start with a bare uint typeId prefix (major 0)
+  // before the field map (major 5). Skip the prefix if present so we strip from the map.
+  let prefixEnd = 0;
+  const first = mapBytes[0];
+  if ((first >> 5) === 0) {
+    skipValue();
+    prefixEnd = pos;
+  }
+
   const head = rb();
   if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
   const count = readArg(head & 0x1F);
@@ -1035,7 +1045,10 @@ function stripKeys(mapBytes, keysToStrip) {
   }
   const newHeader = [];
   writeHead(newHeader, 5, survivors.length);
-  return concatBytes(new Uint8Array(newHeader), ...survivors);
+  const mapResult = concatBytes(new Uint8Array(newHeader), ...survivors);
+  // Re-prepend the typeId prefix if we skipped one above.
+  if (prefixEnd > 0) return concatBytes(mapBytes.slice(0, prefixEnd), mapResult);
+  return mapResult;
 }
 
 const CONTENT_PREVIEW_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
