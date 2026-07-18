@@ -20,27 +20,31 @@ class SectorAssemblerTest {
     private fun previewBytes(
         cacheId: ByteArray?, hint: String?, mimeType: String = "text/plain", filename: String? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null, preferDeclaredLocation: Boolean = false
-    ): ByteArray = MiniCbor.encodeMap(listOf(
-        0 to 1, 1 to cacheId, 3 to hint, 5 to mimeType, 7 to filename,
+    ): ByteArray = MiniCbor.encodeUInt(1) + MiniCbor.encodeMap(listOf(
+        1 to cacheId, 3 to hint, 5 to mimeType, 7 to filename,
         23 to lat, 25 to lng, 27 to radiusM, 29 to (true.takeIf { preferDeclaredLocation })
     ))
 
     /** A minimal Content-Body Record (Type 3, SPEC §3.2) carrying [content]. */
-    private fun bodyBytes(content: ByteArray): ByteArray = MiniCbor.encodeMap(listOf(0 to 3, 1 to content))
+    private fun bodyBytes(content: ByteArray): ByteArray = MiniCbor.encodeUInt(3) + MiniCbor.encodeMap(listOf(1 to content))
 
     /** A Compress Wrapper Record (Type 8, QDEF-SPEC.md §4.1) DEFLATE-wrapping [inner]. */
-    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeMap(listOf(0 to 8, 2 to TagDropCodec.compress(inner)))
+    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeUInt(8) + MiniCbor.encodeMap(listOf(2 to TagDropCodec.compress(inner)))
 
     @Suppress("UNCHECKED_CAST")
-    private fun recordOf(previewRaw: ByteArray, secondRaw: ByteArray?): ScannedRecord =
-        ScannedRecord(
-            PayloadKind.CONTENT, previewRaw, MiniCbor.decodeMap(previewRaw),
-            secondRaw, secondRaw?.let { MiniCbor.decodeMap(it) }
-        )
+    private fun recordOf(previewRaw: ByteArray, secondRaw: ByteArray?): ScannedRecord {
+        val previewResult = MiniCbor.decodeSequencePrefix(previewRaw, 2)
+        val previewTypeId = (previewResult.items[0] as? Int) ?: (previewResult.items[0] as? Long)?.toInt() ?: 0
+        val previewMap = previewResult.items[1] as? Map<Int, Any> ?: MiniCbor.decodeMap(previewRaw)
+        val secondResult = secondRaw?.let { MiniCbor.decodeSequencePrefix(it, 2) }
+        val secondTypeId = secondResult?.items?.getOrNull(0)?.let { (it as? Int) ?: (it as? Long)?.toInt() }
+        val secondMap = secondResult?.items?.getOrNull(1) as? Map<Int, Any> ?: secondRaw?.let { MiniCbor.decodeMap(it) }
+        return ScannedRecord(PayloadKind.CONTENT, previewRaw, previewMap, secondTypeId, secondRaw, secondMap)
+    }
 
     /** A Split Wrapper Record (Type 2, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes. */
     private fun splitFragmentBytes(groupId: ByteArray, index: Int, count: Int, data: ByteArray, total: Int, parity: Boolean = false): ByteArray =
-        MiniCbor.encodeMap(listOf(0 to 2, 2 to groupId, 4 to index, 6 to count, 8 to data, 9 to total, 11 to (1.takeIf { parity })))
+        MiniCbor.encodeUInt(2) + MiniCbor.encodeMap(listOf(2 to groupId, 4 to index, 6 to count, 8 to data, 9 to total, 11 to (1.takeIf { parity })))
 
     /**
      * Splits [bodyRaw] into [chunkCount]-many Split Wrapper fragment [ScannedRecord]s sharing
@@ -111,7 +115,7 @@ class SectorAssemblerTest {
 
     @Test fun keyOnlyCodeHasNoBody() {
         val key = TagDropCodec.generateKeyMaterial()
-        val preview = MiniCbor.encodeMap(listOf(0 to 1, 3 to "key hint", 33 to key))
+        val preview = MiniCbor.encodeUInt(1) + MiniCbor.encodeMap(listOf(3 to "key hint", 33 to key))
         val state = SectorAssembler().add(recordOf(preview, null)) as SectorAssembler.State.ContentReady
         assertTrue(state.content.isEmpty())
         assertArrayEquals(key, state.keyMaterial)
@@ -264,7 +268,7 @@ class SectorAssemblerTest {
     @Test fun failedStateWhenBodyTypeIdIsWrong() {
         // A well-formed Record, but not a Content-Body (Type 3) — decodeRaw would happily hand
         // this to the assembler (only the Preview's Type ID gates the initial scan dispatch).
-        val bogusBody = MiniCbor.encodeMap(listOf(0 to 999, 1 to "not content-body".toByteArray()))
+        val bogusBody = MiniCbor.encodeUInt(999) + MiniCbor.encodeMap(listOf(1 to "not content-body".toByteArray()))
         val record = recordOf(previewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), null), bogusBody)
         val state = SectorAssembler().add(record)
         assertTrue(state is SectorAssembler.State.Failed)

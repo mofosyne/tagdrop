@@ -156,7 +156,7 @@ class SectorAssembler {
             val previewRaw = group.previewRaw ?: continue
             val preview = group.preview ?: continue
             val wrapped = reassemble(group) ?: continue
-            val record = ScannedRecord(group.kind, previewRaw, preview, null, null)
+            val record = ScannedRecord(group.kind, previewRaw, preview, null, null, null)
             val parsed = TagDropCodec.parseContentStream(record, wrapped) as? TagDropCodec.ContentParse.Ok ?: continue
             val slot = parsed.content.content
             if (slot.size < TagDropCodec.OVERRIDE_BLOB_MIN_BYTES) continue
@@ -187,7 +187,7 @@ class SectorAssembler {
             if (!sha256(wrapped).copyOf(8).contentEquals(group.groupId)) return State.HashMismatch
             val previewRaw = group.previewRaw ?: return State.Failed
             val preview = group.preview ?: return State.Failed
-            val record = ScannedRecord(group.kind, previewRaw, preview, null, null)
+            val record = ScannedRecord(group.kind, previewRaw, preview, null, null, null)
             return if (group.kind == PayloadKind.PAPER) {
                 finishPaper(record, wrapped)
             } else {

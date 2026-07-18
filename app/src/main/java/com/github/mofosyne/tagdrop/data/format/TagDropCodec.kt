@@ -211,22 +211,23 @@ object TagDropCodec {
     private val PAPER_BODY_SIGNATURE_KEYS      = setOf(PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
 
     // Known-key sets for SPEC §2.2's even/odd criticality rule (see [checkRecordKeys]).
-    private val KNOWN_CONTENT_PREVIEW = setOf(0,
+    // Key 0 (typeId) is no longer inside the field map — it's a QDEF prefix item (§3).
+    private val KNOWN_CONTENT_PREVIEW = setOf(
         PK_CACHE_ID, PK_HINT, PK_MIME, PK_FILENAME, PK_TITLE, PK_DESCRIPTION,
         PK_COLLECTION_ID, PK_COLLECTION_LABEL, PK_COLLECTION_TAG, PK_ICON, PK_PIXEL_ART,
         PK_LAT, PK_LNG, PK_RADIUS_M, PK_PREFER_DECLARED_LOCATION, PK_LOCATION_LABEL,
         PK_KEY_MATERIAL, PK_RETAIN_KEY, PK_ENCRYPTION, PK_KDF_ALG, PK_KDF_SALT, PK_KDF_ITERS,
         PK_SIGNATURE_ALGORITHM, PK_SIGNER_ID, PK_SIGNER_LABEL, PK_IN_REPLY_TO, PK_CREATED_AT, PK_SOURCE_URL)
-    private val KNOWN_CONTENT_BODY = setOf(0, BK_CONTENT, BK_SIGNATURE, BK_SIGNER_PUBKEY)
-    private val KNOWN_PAPER_PREVIEW = setOf(0,
+    private val KNOWN_CONTENT_BODY = setOf(BK_CONTENT, BK_SIGNATURE, BK_SIGNER_PUBKEY)
+    private val KNOWN_PAPER_PREVIEW = setOf(
         PPK_ROOT_HASH, PPK_HINT, PPK_SET, PPK_SLUG, PPK_DOMAIN, PPK_STEP,
         PPK_COLLECTION_ID, PPK_COLLECTION_LABEL, PPK_COLLECTION_TAG, PPK_ICON,
         PPK_LAT, PPK_LNG, PPK_RADIUS_M, PPK_PREFER_DECLARED_LOCATION, PPK_LOCATION_LABEL,
         PPK_SIGNATURE_ALGORITHM, PPK_SIGNER_ID, PPK_SIGNER_LABEL, PPK_IN_REPLY_TO, PPK_CREATED_AT,
         PPK_SOURCE_URL, PPK_TITLE, PPK_DESCRIPTION, PPK_KEY_MATERIAL, PPK_RETAIN_KEY)
-    private val KNOWN_PAPER_BODY = setOf(0, PBK_FILES, PBK_RELATED, PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
-    private val KNOWN_SPLIT = setOf(0, SK_GROUP_ID, SK_INDEX, SK_COUNT, SK_DATA, SK_TOTAL, SK_PARITY)
-    private val KNOWN_COMPRESS = setOf(0, CK_PAYLOAD)
+    private val KNOWN_PAPER_BODY = setOf(PBK_FILES, PBK_RELATED, PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
+    private val KNOWN_SPLIT = setOf(SK_GROUP_ID, SK_INDEX, SK_COUNT, SK_DATA, SK_TOTAL, SK_PARITY)
+    private val KNOWN_COMPRESS = setOf(CK_PAYLOAD)
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -344,11 +345,11 @@ object TagDropCodec {
         return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
     }
 
-    // ── QDEF Records (SPEC.md §2's "Relationship to QDEF") ─────────────────────
+    // ── QDEF Records (QDEF-SPEC.md §3: bare uint typeId prefix + field map) ──────
 
-    /** A QDEF Record: an ordinary CBOR map with `typeId` at key 0. Fields sort ascending (SPEC §2.2). */
+    /** A QDEF Record: a bare uint typeId prefix followed by a CBOR field map (no key 0). Fields sort ascending (SPEC §2.2). */
     private fun cborRecord(typeId: Int, fields: List<Pair<Int, Any?>>): ByteArray =
-        MiniCbor.encodeMap(listOf<Pair<Int, Any?>>(0 to typeId).plus(fields).sortedBy { it.first })
+        MiniCbor.encodeUInt(typeId.toLong()) + MiniCbor.encodeMap(fields.sortedBy { it.first })
 
     /** QDEF Compress Wrapper (Type 8, QDEF-SPEC.md §4.1) — DEFLATEs [bodyBytes] as its `payload` field. */
     private fun compressWrap(bodyBytes: ByteArray): ByteArray =
@@ -823,18 +824,23 @@ object TagDropCodec {
      */
     fun decodeRaw(bytes: ByteArray): TagDropScan? = recordScanResult(bytes)?.let { TagDropScan.RecordScan(it) }
 
+    /** Internal decode result: typeId (QDEF prefix item) + field map + raw bytes + trailing. */
+    private data class DecodedRecord(val typeId: Int, val record: Map<Int, Any>, val raw: ByteArray, val trailing: ByteArray)
+
     /**
-     * Decodes one QDEF Record (a CBOR map with a Type ID at key 0) from the head of [bytes].
-     * Returns `(record, raw, trailing)` — `raw` is the Record's own exact byte range (what
-     * signature/group-id hashes are computed over), `trailing` whatever follows in the
-     * Sequence — or null if the head of [bytes] isn't a well-formed Record.
+     * Decodes one QDEF Record (QDEF-SPEC.md §3: bare uint typeId prefix + field map)
+     * from the head of [bytes].
+     * Returns `(typeId, record, raw, trailing)` — `raw` is the Record's own exact byte range
+     * (typeId prefix + field map; what signature/group-id hashes are computed over),
+     * `trailing` whatever follows in the Sequence — or null if the head of [bytes]
+     * isn't a well-formed Record.
      */
     @Suppress("UNCHECKED_CAST")
-    private fun decodeRecordPrefix(bytes: ByteArray): Triple<Map<Int, Any>, ByteArray, ByteArray>? = runCatching {
-        val (items, trailing) = MiniCbor.decodeSequencePrefix(bytes, 1)
-        val record = items[0] as? Map<Int, Any> ?: return@runCatching null
-        if (record[0] == null) return@runCatching null
-        Triple(record, bytes.copyOfRange(0, bytes.size - trailing.size), trailing)
+    private fun decodeRecordPrefix(bytes: ByteArray): DecodedRecord? = runCatching {
+        val (items, trailing) = MiniCbor.decodeSequencePrefix(bytes, 2)
+        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: return@runCatching null
+        val record = items[1] as? Map<Int, Any> ?: return@runCatching null
+        DecodedRecord(typeId, record, bytes.copyOfRange(0, bytes.size - trailing.size), trailing)
     }.getOrNull()
 
     /** SPEC §2.2 even/odd criticality: an unrecognized EVEN key means this decoder can't
@@ -843,8 +849,8 @@ object TagDropCodec {
         record.keys.all { it in known || it % 2 != 0 }
 
     private fun recordScanResult(bytes: ByteArray): ScannedRecord? {
-        val (first, firstRaw, trailing) = decodeRecordPrefix(bytes) ?: return null
-        val typeId = (first[0] as? Int) ?: (first[0] as? Long)?.toInt() ?: return null
+        val first = decodeRecordPrefix(bytes) ?: return null
+        val typeId = first.typeId
         val kind: PayloadKind
         val known: Set<Int>
         when (typeId) {
@@ -852,12 +858,12 @@ object TagDropCodec {
             TYPE_PAPER_PREVIEW   -> { kind = PayloadKind.PAPER; known = KNOWN_PAPER_PREVIEW }
             else -> return null
         }
-        if (!checkRecordKeys(first, known)) return null
-        var second: Triple<Map<Int, Any>, ByteArray, ByteArray>? = null
-        if (trailing.isNotEmpty()) {
-            second = decodeRecordPrefix(trailing) ?: return null
+        if (!checkRecordKeys(first.record, known)) return null
+        var second: DecodedRecord? = null
+        if (first.trailing.isNotEmpty()) {
+            second = decodeRecordPrefix(first.trailing) ?: return null
         }
-        return ScannedRecord(kind, firstRaw, first, second?.second, second?.first)
+        return ScannedRecord(kind, first.raw, first.record, second?.typeId, second?.raw, second?.record)
     }
 
     /**
@@ -867,20 +873,16 @@ object TagDropCodec {
      */
     private fun unwrapBody(bodyWireBytes: ByteArray, isPaper: Boolean): Pair<Map<Int, Any>, ByteArray>? {
         var cur = decodeRecordPrefix(bodyWireBytes) ?: return null
-        val (curRecord0, _, _) = cur
-        val typeId0 = (curRecord0[0] as? Int) ?: (curRecord0[0] as? Long)?.toInt()
-        if (typeId0 == TYPE_COMPRESS) {
-            if (!checkRecordKeys(curRecord0, KNOWN_COMPRESS)) return null
-            val payload = curRecord0[CK_PAYLOAD] as? ByteArray ?: return null
+        if (cur.typeId == TYPE_COMPRESS) {
+            if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
+            val payload = cur.record[CK_PAYLOAD] as? ByteArray ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = decodeRecordPrefix(inflated) ?: return null
         }
-        val (record, raw, _) = cur
-        val typeId = (record[0] as? Int) ?: (record[0] as? Long)?.toInt()
         val expectedType = if (isPaper) TYPE_PAPER_BODY else TYPE_CONTENT_BODY
         val expectedKeys = if (isPaper) KNOWN_PAPER_BODY else KNOWN_CONTENT_BODY
-        if (typeId != expectedType || !checkRecordKeys(record, expectedKeys)) return null
-        return record to raw
+        if (cur.typeId != expectedType || !checkRecordKeys(cur.record, expectedKeys)) return null
+        return cur.record to cur.raw
     }
 
     // ── Reassembly primitives used by SectorAssembler ───────────────────────────
@@ -1057,14 +1059,13 @@ object TagDropCodec {
 
     /**
      * Reads one Split fragment's own fields ([SplitFragment]) from [record]'s `second` (must
-     * already be `TYPE_SPLIT`, per [ScannedRecord.second]'s own Type ID at key 0). Returns
+     * already be `TYPE_SPLIT`, per [SectorAssembler]'s own Type ID check). Returns
      * null if malformed or missing a required field.
      */
     @Suppress("UNCHECKED_CAST")
     fun splitFragmentOf(record: ScannedRecord): SplitFragment? {
         val frag = record.second ?: return null
-        val typeId = (frag[0] as? Int) ?: (frag[0] as? Long)?.toInt()
-        if (typeId != TYPE_SPLIT || !checkRecordKeys(frag, KNOWN_SPLIT)) return null
+        if (!checkRecordKeys(frag, KNOWN_SPLIT)) return null
         val groupId = frag.bytesOrNull(SK_GROUP_ID) ?: return null
         val index = frag.uint(SK_INDEX)?.toInt() ?: 0
         val count = frag.uint(SK_COUNT)?.toInt() ?: 1
@@ -1087,10 +1088,8 @@ object TagDropCodec {
         unwrapBody(bodyWireBytes, isPaper)?.second
 
     /** Whether [record]'s second Record (if any) is a Split Wrapper fragment rather than a plain/Compress-wrapped Body. */
-    fun isSplitFragment(record: ScannedRecord): Boolean {
-        val typeId = (record.second?.get(0) as? Int) ?: (record.second?.get(0) as? Long)?.toInt()
-        return typeId == TYPE_SPLIT
-    }
+    fun isSplitFragment(record: ScannedRecord): Boolean =
+        record.secondTypeId == TYPE_SPLIT
 
     // ── Compression helpers ───────────────────────────────────────────────────
 
@@ -1119,7 +1118,7 @@ object TagDropCodec {
 
     // ── Debug ─────────────────────────────────────────────────────────────────
 
-    private val PREVIEW_KEY_NAMES = mapOf(
+    private val CONTENT_PREVIEW_KEY_NAMES = mapOf(
         PK_CACHE_ID to "cache_id", PK_HINT to "hint", PK_MIME to "mime_type", PK_FILENAME to "filename",
         PK_TITLE to "title", PK_DESCRIPTION to "description",
         PK_COLLECTION_ID to "collection_id", PK_COLLECTION_LABEL to "collection_label", PK_COLLECTION_TAG to "collection_tag",
@@ -1131,12 +1130,42 @@ object TagDropCodec {
         PK_SIGNATURE_ALGORITHM to "signature_algorithm", PK_SIGNER_ID to "signer_id", PK_SIGNER_LABEL to "signer_label",
         PK_IN_REPLY_TO to "in_reply_to", PK_CREATED_AT to "created_at", PK_SOURCE_URL to "source_url"
     )
-    private val BODY_KEY_NAMES = mapOf(BK_CONTENT to "content", BK_SIGNATURE to "signature", BK_SIGNER_PUBKEY to "signer_pubkey")
+    private val CONTENT_BODY_KEY_NAMES = mapOf(BK_CONTENT to "content", BK_SIGNATURE to "signature", BK_SIGNER_PUBKEY to "signer_pubkey")
+    private val PAPER_PREVIEW_KEY_NAMES = mapOf(
+        PPK_ROOT_HASH to "root_hash", PPK_HINT to "hint", PPK_SET to "set", PPK_SLUG to "slug",
+        PPK_DOMAIN to "domain", PPK_STEP to "step",
+        PPK_COLLECTION_ID to "collection_id", PPK_COLLECTION_LABEL to "collection_label", PPK_COLLECTION_TAG to "collection_tag",
+        PPK_ICON to "icon",
+        PPK_LAT to "lat", PPK_LNG to "lng", PPK_RADIUS_M to "radius_m",
+        PPK_PREFER_DECLARED_LOCATION to "prefer_declared_location", PPK_LOCATION_LABEL to "location_label",
+        PPK_SIGNATURE_ALGORITHM to "signature_algorithm", PPK_SIGNER_ID to "signer_id", PPK_SIGNER_LABEL to "signer_label",
+        PPK_IN_REPLY_TO to "in_reply_to", PPK_CREATED_AT to "created_at", PPK_SOURCE_URL to "source_url",
+        PPK_TITLE to "title", PPK_DESCRIPTION to "description",
+        PPK_KEY_MATERIAL to "key_material", PPK_RETAIN_KEY to "retain_key"
+    )
+    private val PAPER_BODY_KEY_NAMES = mapOf(
+        PBK_FILES to "files", PBK_RELATED to "related",
+        PBK_SIGNATURE to "signature", PBK_SIGNER_PUBKEY to "signer_pubkey"
+    )
+    private val SPLIT_KEY_NAMES = mapOf(
+        SK_GROUP_ID to "group_id", SK_INDEX to "index", SK_COUNT to "count",
+        SK_DATA to "data", SK_TOTAL to "total_bytes", SK_PARITY to "parity"
+    )
+    private val COMPRESS_KEY_NAMES = mapOf(CK_PAYLOAD to "compressed_payload")
+
+    private val FILE_ENTRY_KEY_NAMES = mapOf(
+        KF_SLUG to "slug", KF_MIME to "mime_type", KF_FILE_ID to "file_id",
+        KF_DESCRIPTION to "description", KF_PIXEL_ART to "pixel_art"
+    )
+    private val RELATED_ENTRY_KEY_NAMES = mapOf(
+        KR_HINT to "hint", KR_SET to "set", KR_SLUG to "slug", KR_PAPER_ID to "paper_id",
+        KR_LAT to "lat", KR_LNG to "lng", KR_RADIUS_M to "radius_m",
+        KR_KEY_MATERIAL to "key_material", KR_RETAIN_KEY to "retain_key", KR_STEP to "step"
+    )
 
     /**
      * Pretty-prints a raw TagDrop code's CBOR Record Sequence for the on-device debug view: a
-     * hex dump, then each Record's Type ID and fields by name (SPEC §2, §3.1-§3.2 — Content
-     * only; a Paper or wrapped/Split code prints its raw field map without named keys).
+     * hex dump, then each Record's Type ID and fields by name (SPEC §2, §3.1–§3.4).
      */
     @Suppress("UNCHECKED_CAST")
     fun describeCbor(cbor: ByteArray): String = buildString {
@@ -1145,13 +1174,31 @@ object TagDropCodec {
         appendLine()
         runCatching {
             val items = MiniCbor.decodeSequence(cbor)
-            for ((i, item) in items.withIndex()) {
-                val record = item as? Map<Int, Any> ?: continue
-                val typeId = (record[0] as? Int) ?: (record[0] as? Long)?.toInt()
-                appendLine("Record $i — Type $typeId:")
+            var idx = 0
+            while (idx < items.size) {
+                // QDEF-SPEC.md §3: bare uint typeId prefix + field map = 2 items per Record
+                val typeId = (items[idx] as? Int) ?: (items[idx] as? Long)?.toInt() ?: run { idx++; continue }
+                val record = items.getOrNull(idx + 1) as? Map<Int, Any> ?: run { idx++; continue }
+                idx += 2
+                val typeName = when (typeId) {
+                    TYPE_CONTENT_PREVIEW -> "Content-Preview"
+                    TYPE_CONTENT_BODY -> "Content-Body"
+                    TYPE_PAPER_PREVIEW -> "Paper-Preview"
+                    TYPE_PAPER_BODY -> "Paper-Body"
+                    TYPE_SPLIT -> "Split Wrapper"
+                    TYPE_COMPRESS -> "Compress Wrapper"
+                    else -> null
+                }
+                val i = (idx - 2) / 2
+                val label = if (typeName != null) "Record $i — $typeName ($typeId)" else "Record $i — Type $typeId"
+                appendLine("$label:")
                 val keyNames = when (typeId) {
-                    TYPE_CONTENT_PREVIEW -> PREVIEW_KEY_NAMES
-                    TYPE_CONTENT_BODY    -> BODY_KEY_NAMES
+                    TYPE_CONTENT_PREVIEW -> CONTENT_PREVIEW_KEY_NAMES
+                    TYPE_CONTENT_BODY -> CONTENT_BODY_KEY_NAMES
+                    TYPE_PAPER_PREVIEW -> PAPER_PREVIEW_KEY_NAMES
+                    TYPE_PAPER_BODY -> PAPER_BODY_KEY_NAMES
+                    TYPE_SPLIT -> SPLIT_KEY_NAMES
+                    TYPE_COMPRESS -> COMPRESS_KEY_NAMES
                     else -> emptyMap()
                 }
                 describeMap(record, 1, this, keyNames)

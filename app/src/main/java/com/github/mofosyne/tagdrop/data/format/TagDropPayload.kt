@@ -185,6 +185,7 @@ data class ScannedRecord(
     val kind: PayloadKind,
     val previewRaw: ByteArray,
     val preview: Map<Int, Any>,
+    val secondTypeId: Int?,
     val secondRaw: ByteArray?,
     val second: Map<Int, Any>?
 ) {
@@ -193,6 +194,7 @@ data class ScannedRecord(
         if (other !is ScannedRecord) return false
         if (kind != other.kind) return false
         if (!previewRaw.contentEquals(other.previewRaw)) return false
+        if (secondTypeId != other.secondTypeId) return false
         if (secondRaw == null != (other.secondRaw == null)) return false
         if (secondRaw != null && other.secondRaw != null && !secondRaw.contentEquals(other.secondRaw)) return false
         return true
@@ -201,6 +203,7 @@ data class ScannedRecord(
     override fun hashCode(): Int {
         var result = kind.hashCode()
         result = 31 * result + previewRaw.contentHashCode()
+        result = 31 * result + (secondTypeId ?: 0)
         result = 31 * result + (secondRaw?.contentHashCode() ?: 0)
         return result
     }

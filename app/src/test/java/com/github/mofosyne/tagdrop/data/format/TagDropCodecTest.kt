@@ -295,8 +295,8 @@ class TagDropCodecTest {
         val victim = records[1]
         val frag = TagDropCodec.splitFragmentOf(victim)!!
         val tamperedData = frag.data.copyOf().also { it[0] = (it[0].toInt() xor 0xFF).toByte() }
-        val tamperedRaw = MiniCbor.encodeMap(listOf(
-            0 to 2, 2 to frag.groupId, 4 to frag.index, 6 to frag.count, 8 to tamperedData, 9 to frag.total
+        val tamperedRaw = MiniCbor.encodeUInt(2) + MiniCbor.encodeMap(listOf(
+            2 to frag.groupId, 4 to frag.index, 6 to frag.count, 8 to tamperedData, 9 to frag.total
         ))
         val tamperedFull = victim.previewRaw + tamperedRaw
         val tamperedRecord = (TagDropCodec.decodeRaw(tamperedFull) as TagDropScan.RecordScan).record
@@ -458,20 +458,22 @@ class TagDropCodecTest {
 
     @Test fun decodeIgnoresUnknownOddKey() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val (items, trailing) = MiniCbor.decodeSequencePrefix(build.previewRaw, 1)
+        val (items, trailing) = MiniCbor.decodeSequencePrefix(build.previewRaw, 2)
         @Suppress("UNCHECKED_CAST")
-        val fields = (items[0] as Map<Int, Any>).toList() + (9001 to "unknown but odd")
-        val tamperedPreview = MiniCbor.encodeMap(fields)
+        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: 0
+        val fields = (items[1] as Map<Int, Any>).toList() + (9001 to "unknown but odd")
+        val tamperedPreview = MiniCbor.encodeUInt(typeId) + MiniCbor.encodeMap(fields)
         val record = TagDropCodec.decodeRaw(tamperedPreview + trailing + (build.bodyRaw)) as? TagDropScan.RecordScan
         assertNotNull("an unknown ODD key must be safely ignored, not rejected", record)
     }
 
     @Test fun decodeRejectsUnknownEvenKey() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 1)
+        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 2)
         @Suppress("UNCHECKED_CAST")
-        val fields = (items[0] as Map<Int, Any>).toList() + (9002 to "unknown and even")
-        val tamperedPreview = MiniCbor.encodeMap(fields)
+        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: 0
+        val fields = (items[1] as Map<Int, Any>).toList() + (9002 to "unknown and even")
+        val tamperedPreview = MiniCbor.encodeUInt(typeId) + MiniCbor.encodeMap(fields)
         val scan = TagDropCodec.decodeRaw(tamperedPreview + build.bodyRaw)
         assertNull("an unknown EVEN key must reject the whole Record (forward-compat safety valve)", scan)
     }
@@ -654,11 +656,12 @@ class TagDropCodecTest {
         // A forged Preview claiming a root_hash that doesn't match the real Preview'||Body' hash.
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
         val build = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files)
-        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 1)
+        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 2)
         @Suppress("UNCHECKED_CAST")
-        val fields = (items[0] as Map<Int, Any>).toMutableMap()
+        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: 0
+        val fields = (items[1] as Map<Int, Any>).toMutableMap()
         fields[1] = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0) // forged root_hash
-        val forgedPreview = MiniCbor.encodeMap(fields.toList())
+        val forgedPreview = MiniCbor.encodeUInt(typeId) + MiniCbor.encodeMap(fields.toList())
         val record = (TagDropCodec.decodeRaw(forgedPreview + build.bodyRaw) as TagDropScan.RecordScan).record
         assertNull(TagDropCodec.parsePaperStream(record, build.bodyRaw))
     }

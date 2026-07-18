@@ -629,13 +629,14 @@ const PPK = {
 const PBK = { FILES:1, RELATED:3, SIGNATURE:5, SIGNER_PUBKEY:7 };
 
 // Known-key sets for the even/odd criticality rule below.
+// Key 0 (typeId) is no longer inside the field map — it's a QDEF prefix item (§3).
 const KNOWN_KEYS = {
-  CONTENT_PREVIEW: new Set([0, ...Object.values(PK)]),
-  CONTENT_BODY:    new Set([0, ...Object.values(BK)]),
-  PAPER_PREVIEW:   new Set([0, ...Object.values(PPK)]),
-  PAPER_BODY:      new Set([0, ...Object.values(PBK)]),
-  SPLIT:           new Set([0, ...Object.values(SK)]),
-  COMPRESS:        new Set([0, ...Object.values(CK)]),
+  CONTENT_PREVIEW: new Set(Object.values(PK)),
+  CONTENT_BODY:    new Set(Object.values(BK)),
+  PAPER_PREVIEW:   new Set(Object.values(PPK)),
+  PAPER_BODY:      new Set(Object.values(PBK)),
+  SPLIT:           new Set(Object.values(SK)),
+  COMPRESS:        new Set(Object.values(CK)),
 };
 
 // SPEC.md §2.2 even/odd criticality: an unrecognised EVEN key means this decoder can't
@@ -649,17 +650,19 @@ function checkRecordKeys(record, known) {
 }
 
 /**
- * Decodes one QDEF Record (a CBOR map with a Type ID at key 0) from the head of `bytes`.
- * Returns { record, raw, trailing } — `raw` is the record's own exact byte range (what
- * signature/group hashes are computed over), `trailing` whatever follows in the sequence —
- * or null if the head of `bytes` isn't a well-formed Record.
+ * Decodes one QDEF Record (QDEF-SPEC.md §3: bare uint typeId prefix + field map)
+ * from the head of `bytes`.
+ * Returns { typeId, record, raw, trailing } — `raw` is the record's own exact byte range
+ * (typeId prefix + field map; what signature/group hashes are computed over), `trailing`
+ * whatever follows in the sequence — or null if the head of `bytes` isn't a well-formed Record.
  */
 function decodeRecordPrefix(bytes) {
   try {
-    const { items, trailing } = cborDecodeSequencePrefix(bytes, 1);
-    const record = items[0];
-    if (!isCborMap(record) || record[0] == null) return null;
-    return { record, raw: bytes.slice(0, bytes.length - trailing.length), trailing };
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 2);
+    const typeId = items[0];
+    const record = items[1];
+    if (typeof typeId !== 'number' || !isCborMap(record)) return null;
+    return { typeId, record, raw: bytes.slice(0, bytes.length - trailing.length), trailing };
   } catch (e) {
     return null;
   }
@@ -967,13 +970,15 @@ const KEY_NAMES = {
 };
 const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
 const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key', [KR.STEP]:'step' };
-const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
+// Old-format keys (15=files, 16=related) and new QDEF Paper-Body keys (1=files, 3=related).
+const SUB_KEY_NAMES = { 1: FILE_ENTRY_KEY_NAMES, 3: RELATED_ENTRY_KEY_NAMES, 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 // New-format (QDEF Record) field-name tables — keyed by String(typeId) since TagDrop's
 // Type IDs decode as BigInt, which can't be a plain object key.
+// Type ID is a QDEF prefix item (§3), not a map key — no key 0 in field maps.
 const RECORD_TYPE_INFO = new Map([
   [String(TYPE_CONTENT_PREVIEW), { name: 'Content-Preview', keyNames: {
-    0:'type_id', [PK.CACHE_ID]:'cache_id', [PK.HINT]:'hint', [PK.MIME]:'mime_type',
+    [PK.CACHE_ID]:'cache_id', [PK.HINT]:'hint', [PK.MIME]:'mime_type',
     [PK.FILENAME]:'filename', [PK.TITLE]:'title', [PK.DESCRIPTION]:'description',
     [PK.COLLECTION_ID]:'collection_id', [PK.COLLECTION_LABEL]:'collection_label',
     [PK.COLLECTION_TAG]:'collection_tag', [PK.ICON]:'icon', [PK.PIXEL_ART]:'pixel_art',
@@ -986,10 +991,10 @@ const RECORD_TYPE_INFO = new Map([
     [PK.CREATED_AT]:'created_at', [PK.SOURCE_URL]:'source_url',
   } }],
   [String(TYPE_CONTENT_BODY), { name: 'Content-Body', keyNames: {
-    0:'type_id', [BK.CONTENT]:'content', [BK.SIGNATURE]:'signature', [BK.SIGNER_PUBKEY]:'signer_pubkey',
+    [BK.CONTENT]:'content', [BK.SIGNATURE]:'signature', [BK.SIGNER_PUBKEY]:'signer_pubkey',
   } }],
   [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
-    0:'type_id', [PPK.ROOT_HASH]:'root_hash', [PPK.HINT]:'hint', [PPK.SET]:'set',
+    [PPK.ROOT_HASH]:'root_hash', [PPK.HINT]:'hint', [PPK.SET]:'set',
     [PPK.SLUG]:'slug', [PPK.DOMAIN]:'domain', [PPK.STEP]:'step',
     [PPK.COLLECTION_ID]:'collection_id', [PPK.COLLECTION_LABEL]:'collection_label',
     [PPK.COLLECTION_TAG]:'collection_tag', [PPK.ICON]:'icon',
@@ -999,17 +1004,18 @@ const RECORD_TYPE_INFO = new Map([
     [PPK.SIGNER_LABEL]:'signer_label', [PPK.IN_REPLY_TO]:'in_reply_to',
     [PPK.CREATED_AT]:'created_at', [PPK.SOURCE_URL]:'source_url',
     [PPK.TITLE]:'title', [PPK.DESCRIPTION]:'description',
+    [PPK.KEY_MATERIAL]:'key_material', [PPK.RETAIN_KEY]:'retain_key',
   } }],
   [String(TYPE_PAPER_BODY), { name: 'Paper-Body', keyNames: {
-    0:'type_id', [PBK.FILES]:'files', [PBK.RELATED]:'related',
+    [PBK.FILES]:'files', [PBK.RELATED]:'related',
     [PBK.SIGNATURE]:'signature', [PBK.SIGNER_PUBKEY]:'signer_pubkey',
   } }],
   [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
-    0:'type_id', [SK.GROUP_ID]:'group_id', [SK.INDEX]:'index', [SK.COUNT]:'count',
+    [SK.GROUP_ID]:'group_id', [SK.INDEX]:'index', [SK.COUNT]:'count',
     [SK.DATA]:'data', [SK.TOTAL]:'total_bytes', [SK.PARITY]:'parity',
   } }],
   [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {
-    0:'type_id', [CK.PAYLOAD]:'compressed_payload',
+    [CK.PAYLOAD]:'compressed_payload',
   } }],
 ]);
 
@@ -1029,8 +1035,8 @@ function describeRecords(bytes) {
       out += 'trailing bytes (not a Record): ' + toHexDump(rest) + '\n';
       break;
     }
-    const info = RECORD_TYPE_INFO.get(String(decoded.record[0]));
-    out += 'Record ' + (++n) + ': ' + (info ? info.name : 'unknown type ' + decoded.record[0]) +
+    const info = RECORD_TYPE_INFO.get(String(decoded.typeId));
+    out += 'Record ' + (++n) + ': ' + (info ? info.name : 'unknown type ' + decoded.typeId) +
       ' (' + decoded.raw.length + ' bytes)\n';
     out += describeMap(decoded.record, 1, info ? info.keyNames : {});
     out += '\n';
@@ -1046,7 +1052,7 @@ function describeRecords(bytes) {
  *  core_meta_item/bulky_meta_item/content split of its reassembled stream). */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
-  if (bytes.length > 0 && (bytes[0] >> 5) === 5) {
+  if (bytes.length > 0 && (bytes[0] >> 5) === 0) {
     return out + describeRecords(bytes);
   }
   try {
@@ -1221,7 +1227,7 @@ function parsePaperPreviewFields(record) {
 function recordScanResult(bytes) {
   const first = decodeRecordPrefix(bytes);
   if (!first) return { type: 'invalid' };
-  const typeId = first.record[0];
+  const typeId = first.typeId;
   let kind, knownKeys;
   if (typeId === TYPE_CONTENT_PREVIEW) {
     kind = 'content'; knownKeys = KNOWN_KEYS.CONTENT_PREVIEW;
@@ -1250,7 +1256,8 @@ function recordScanResult(bytes) {
  * Content is no longer readable (see the version-policy note at TYPE_CONTENT above).
  */
 function sectorScanResult(bytes) {
-  if (bytes.length > 0 && (bytes[0] >> 5) === 5) return recordScanResult(bytes);
+  // QDEF Record Sequence starts with a bare uint typeId prefix (major type 0).
+  if (bytes.length > 0 && (bytes[0] >> 5) === 0) return recordScanResult(bytes);
   const sector = decodeSector(bytes);
   if (!sector || sector.type !== TYPE_PAPER) return { type: 'invalid' };
   return { type: 'sector', sector, cbor: bytes };
@@ -1515,7 +1522,7 @@ class RecordAssembler {
 
     // No second Record (key-only code) or an unwrapped/Compress-wrapped Body: single-code
     // payload, complete right away.
-    if (!second || second.record[0] !== TYPE_SPLIT) {
+    if (!second || second.typeId !== TYPE_SPLIT) {
       if (kind === 'paper') return this._finishPaper(preview, previewRaw, second ? second.raw : null);
       return this._finishBody(preview, previewRaw, second ? second.raw : null, null);
     }
@@ -1632,7 +1639,7 @@ class RecordAssembler {
   async _unwrapBody(bodyWireBytes, isPaper = false) {
     let cur = decodeRecordPrefix(bodyWireBytes);
     if (!cur) return null;
-    if (cur.record[0] === TYPE_COMPRESS) {
+    if (cur.typeId === TYPE_COMPRESS) {
       if (!checkRecordKeys(cur.record, KNOWN_KEYS.COMPRESS)) return null;
       const payload = cur.record[CK.PAYLOAD];
       if (!(payload instanceof Uint8Array)) return null;
@@ -1643,7 +1650,7 @@ class RecordAssembler {
     }
     const expectedType = isPaper ? TYPE_PAPER_BODY : TYPE_CONTENT_BODY;
     const expectedKeys = isPaper ? KNOWN_KEYS.PAPER_BODY : KNOWN_KEYS.CONTENT_BODY;
-    if (cur.record[0] !== expectedType) return null;
+    if (cur.typeId !== expectedType) return null;
     if (!checkRecordKeys(cur.record, expectedKeys)) return null;
     return { body: cur.record, bodyRaw: cur.raw };
   }
