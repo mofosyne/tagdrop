@@ -1,6 +1,8 @@
-# QDEF — Quick Data Exchange Format
-
 **This is a copy of https://github.com/mofosyne/tagdrop/blob/master/SPEC.md, DESIGN.md not copied over to this repo as it's not needed for implementation**
+
+---
+
+# QDEF — Quick Data Exchange Format
 
 **Status: Draft. Validated by two throwaway prototypes — a Node round-trip
 prototype covering the full design ([`/prototype`](../prototype)) and a
@@ -91,23 +93,27 @@ arbitrary byte chunks).
 +----------------------+------------------------+----------------------------------+
 ```
 
-A minimal Record is at minimum a typeID prefix (a bare uint, or a
-namespace-pairing array, §3.1) followed by a field Map:
+Every Record is itself exactly one definite-length CBOR array — a
+minimal Record is at minimum a typeID followed by a field Map, both as
+elements of that one array:
 
 ```
-+---------------------------+-------------------------------+
-|  typeID prefix (1 item)   |   field Map (CBOR map)        |
-+---------------------------+-------------------------------+
-|  100                      |  { 0: "SSID", 2: 2 }         |
-+---------------------------+-------------------------------+
++------------------------------------------------------+
+|  Record array: [ typeID, field Map ]                  |
++------------------------------------------------------+
+|  [ 100, { 0: "SSID", 2: 2 } ]                         |
++------------------------------------------------------+
 ```
 
-The map acts as the record delimiter in the Sequence — the parser knows a
-Record ends when it reaches the first Map. An optional bare text string
-may follow the typeID (the NDEF-ID-equivalent, §3.1), and unknown items
-may appear between the typeID and the map (forward-compat padding for
-future QDEF evolution), but the minimum viable Record is just typeID +
-map.
+A Record's own array header (its CBOR element count) is what bounds it —
+a decoder can always skip an entire Record generically, using nothing
+but ordinary CBOR array-skipping, without any Record-grammar knowledge
+at all. An optional byte string namespace may lead the array (§3.1), an
+optional bare text string may follow the typeID (the NDEF-ID-equivalent,
+§3.1), unknown items may appear before the map (forward-compat padding
+for future QDEF evolution), and any elements after the map are
+subrecords (§3.1) — but the minimum viable Record is just
+`[typeID, map]`.
 
 For NFC, the magic prefix is redundant: NDEF's own MIME-type field already
 identifies the payload. An NDEF record carrying QDEF content uses MIME type
@@ -131,16 +137,13 @@ for why these fields were deliberately left out.
 
 ## 3. The Record Architecture
 
-Every Record is a sequence of CBOR items terminated by a CBOR Map — one
-typeID-bearing item (a bare uint, or a namespace-pairing array),
-optionally one NDEF-ID-equivalent text string, zero or more unknown items
-(forward-compat padding for future QDEF evolution), then a field Map as
-the record delimiter. Using a Wi-Fi Record (Type `100`, see
-[EXAMPLES.md](EXAMPLES.md)) as the example (this is where §3.2's even/odd
-rule applies):
+Every Record is exactly one definite-length CBOR array:
+`[namespace?, typeId, ndefId?, map, subrecord*]`. Using a Wi-Fi Record
+(Type `100`, see [EXAMPLES.md](EXAMPLES.md)) as the example (this is
+where §3.2's even/odd rule applies):
 
 ```
-Prefix: 100                                  // typeID (uint 100)
+Record: [ 100, { 0: "My Coffee Shop", 2: "guest123", 4: 2, 1: true } ]
 
 Map:
 +-----+------------------------+-------+----------+-----------------------------+
@@ -154,32 +157,79 @@ Map:
 ```
 
 Every Record — a plain content Record like this one or a standard record
-type Wrapper Record (§4.1) — has exactly this shape: a typeID-bearing
-item, optionally an NDEF-ID, followed by a Map. Field values may be any
+type Wrapper Record (§4.1) — has exactly this shape: its own array,
+holding an optional namespace, a typeID-bearing item, optionally an
+NDEF-ID, a Map, and zero or more subrecords. Field values may be any
 well-formed CBOR item now, not just scalars and strings (§3.2) — the
 "never needs recursion" property §3.3 describes still holds, just via a
 bounded explicit stack (the same one already used to skip unrecognized
 prefix items) rather than a shape restriction.
 
-The parser uses a two-phase loop to find each Record's boundaries:
-Phase 1 recognizes the Record's single typeID-bearing item (a bare uint,
-or a namespace-pairing array), then its optional NDEF-ID text string.
-Phase 2 skips any non-map items (forward-compat padding) until it
-reaches the first Map, which serves as the record delimiter.
+The parser first determines this Record's total byte span generically —
+skipping its whole array as one well-formed CBOR item, independent of
+whether the array's own contents turn out to be valid Record grammar —
+then walks that bounded span with a two-phase loop to find the Record's
+own structure within it: Phase 1 recognizes the Record's optional
+namespace and its single typeID-bearing item, then its optional NDEF-ID
+text string. Phase 2 skips any non-map items (forward-compat padding)
+until it reaches the first Map, which serves as the field delimiter;
+everything remaining in the array past the Map is subrecords (§3.1).
+Because the Record's total span is already known before this walk
+begins, a Record whose own contents fail to parse as valid grammar still
+cannot corrupt discovery of the next sibling Record — only Record grammar
+within the (already-known-well-formed) span is uncertain, never where
+that span ends.
 
-### 3.1 Record Type ID (prefix item) and the NDEF-ID-equivalent
+### 3.1 The Record array: namespace, Type ID, NDEF-ID-equivalent, and subrecords
 
-Every Record begins with exactly one typeID-bearing item — a bare uint
-(major type 0), or a namespace-pairing array (below) — before the field
-Map, optionally followed by exactly one bare text string (the
-NDEF-ID-equivalent, below). There is no backup-typeID mechanism and no
+Every Record is exactly one definite-length CBOR array (major type 4).
+Its elements, in order: an optional namespace, exactly one typeID-
+bearing item, an optional NDEF-ID-equivalent text string, exactly one
+field Map, and zero or more subrecords.
+
+```
+[ namespace?, typeId, ndefId?, map, subrecord* ]
+```
+
+A Record's own array header (its declared element count) bounds it
+generically — any decoder can skip a whole Record it doesn't care about
+using nothing but ordinary CBOR array-skipping, with no Record-grammar
+knowledge at all. There is no backup-typeID mechanism and no
 decentralized (byte string) or Named (text string) Type ID form. See
-DESIGN.md and FINDINGS.md for why these were retired.
+DESIGN.md and FINDINGS.md for why these were retired, and for why every
+Record became array-wrapped.
 
-A Record with no typeID-bearing item before the map cannot be routed and
-MUST be marked as ignored (§3.2's well-formed-but-unroutable case).
+**Namespace.** The array's first element is a namespace (a byte string,
+the only valid Namespace ID shape, §3.5) if and only if it is a byte
+string immediately followed by a valid typeId; a decoder MUST NOT
+commit to treating the first element as a namespace unless the second
+element also validates as a typeId. When present, it scopes this
+Record's own typeId, overriding the container's ambient namespace
+(§3.5) for this one Record only — a purely local override; every other
+Record is unaffected.
 
-The typeID's CBOR major type determines its classification:
+```
+[ h'a9d6e1f30b7c4482', 1, { ... } ]    // this Record's own namespace,
+                                        //   paired with a scoped typeID
+```
+
+An even `typeId` alongside a namespace is vacuous — even uints are
+always globally interpreted regardless of any declared namespace
+(§3.5), unconditionally. A namespace only affects an odd (scoped)
+typeId.
+
+A namespace is paid fresh on every Record that carries one — unlike the
+container discriminator, there is no amortization. A Record happy with
+the container's ambient namespace should omit it. See DESIGN.md's
+"Multiple namespaces per container" for the byte-cost comparison.
+
+**Type ID.** Exactly one typeID-bearing item is mandatory: a bare uint
+(major type 0). No other major type is valid there — a byte string,
+text string, or array in this position is not recognized as a typeId at
+all, and the Record has no typeID (§3.2's well-formed-but-unroutable
+case, MUST be marked as ignored).
+
+The typeID's parity determines its classification:
 
 ```
 +------------------+-------------------+------------------+-----------------------+
@@ -201,51 +251,19 @@ namespace, so standard record type mechanisms (§4) work unconditionally
 inside any namespaced container. Odd uints require a declared namespace;
 without one, the Record MUST abort.
 
-**TypeID form boundary.** A bare typeID item is only ever CBOR major
-type 0. Major type 4 (array) is valid at the typeID position only as a
-definite-length 2-element namespace-pairing item (below); any other
-array shape at that position falls through to Phase 2's forward-compat
-skip. No other major type is valid there.
-
 **Even/odd vocabulary reuse note.** §3.2's even/odd also governs map
 *keys* (critical vs. optional) — a distinct axis from typeID *value*
 parity here; the two never overlap.
 
-**Namespace-pairing prefix item.** In place of a bare typeID, a
-Record's prefix MAY instead hold a **namespace-pairing item**: a
-definite-length CBOR array of exactly 2 elements, `[namespace, typeId]`,
-where `namespace` is a byte string (the only valid Namespace ID shape,
-§3.5) and `typeId` is a uint. A uint in the `namespace` slot is not
-recognized as a pairing item; the array falls through as an unrecognized
-prefix item, and the Record has no typeID. When present, the array's
-second element becomes the Record's routing typeID, scoped against the
-array's first element instead of the container's ambient namespace
-(§3.5) — a purely local override; every other Record is unaffected.
-
-```
-Prefix: [h'a9d6e1f30b7c4482', 1]    // this Record's own namespace,
-                                     //   paired with a scoped typeID
-```
-
-An even `typeId` inside a pairing is vacuous — even uints are always
-globally interpreted regardless of any declared namespace (§3.5),
-unconditionally. Pairing only affects odd (scoped) typeIds.
-
-A namespace-pairing item is paid fresh on every Record that carries
-one — unlike the container discriminator, there is no amortization. A
-Record happy with the container's ambient namespace should use a bare
-typeID instead. See DESIGN.md's "Multiple namespaces per container" for
-the byte-cost comparison.
-
 **NDEF-ID-equivalent.** A Record MAY carry a stable, type-independent
 external reference, mirroring NDEF's own `ID` field: immediately
-following the typeID-bearing item, a Record's prefix MAY hold exactly
-one bare CBOR text string (major type 3). It never affects routing;
-absent, it costs nothing; present without a recognized typeID before
-it, the whole Record is unroutable and ignored, not treated as an ID.
+following the typeID-bearing item, exactly one bare CBOR text string
+(major type 3). It never affects routing; absent, it costs nothing;
+present without a recognized typeID before it, the whole Record is
+unroutable and ignored, not treated as an ID.
 
 ```
-Prefix: 100, "wifi-record-1"    // typeID 100, NDEF-ID "wifi-record-1"
+[ 100, "wifi-record-1", { ... } ]    // typeID 100, NDEF-ID "wifi-record-1"
 ```
 
 **Implementer caution for uint Type IDs:** a uint Type ID MUST be
@@ -257,6 +275,30 @@ that some CBOR library is present. See FINDINGS.md #14.
 definite-length CBOR text string. Comparison, if an application layer
 does any, is exact and byte-for-byte over the raw UTF-8 encoding — no
 Unicode normalization, case-folding, or whitespace trimming.
+
+**Subrecords.** Every array element following the field Map is itself a
+nested Record, recursively the same `[namespace?, typeId, ndefId?, map,
+subrecord*]` grammar defined in this section — there is no separate
+grammar for "a Record when it's nested," only this one, reused, and no
+separate wrapper array needed to bound them: the outer Record's own
+array is already self-bounded, so "everything after the map" is
+unambiguous without an extra length prefix.
+
+```
+[ 20,
+  { 0: "image/png", 3: "map.png" },
+  [ 2, { 0: h'<group_id>', 2: 0, 4: 3, 6: h'<fragment>', 7: 9 } ]
+]
+```
+
+Each subrecord dispatches independently by its own typeID, exactly like
+a top-level sibling Record — never by position or array index.
+
+**Implementer caution for subrecords.** A subrecord's own contents
+failing to parse as valid Record grammar MUST NOT prevent a decoder
+from continuing to the next sibling — of the parent Record or of the
+subrecord itself — since each Record's total byte span is already known
+before its contents are interpreted (see §3's parser description).
 
 ### 3.2 The Extensibility Rule (Even/Odd Keys)
 
@@ -310,13 +352,17 @@ canonical-encoding requirement (definite-length forms only) is
 unchanged for encoders; this is decoder-side tolerance only.
 
 **Precondition on "the whole stream is unaffected":** this isolation
-guarantee assumes the Record is at least well-formed CBOR — a parser
-needs the Record's byte length to find where the next Record starts. A
-Record that fails to route (no typeID in prefix, §3.1) is still
-well-formed and isolable this way. A Record that is malformed CBOR
-(including a malformed indefinite-length chunk sequence) is a stronger
-failure: the parser cannot determine that boundary and cannot safely
-resume the Sequence at all.
+guarantee assumes the Record's own array is at least well-formed CBOR —
+a parser needs the array's byte length to find where the next Record
+starts, and determines that length generically (skipping the whole
+array as one item) before attempting to interpret what's inside it
+(§3.1). A Record that fails to route (no typeID, §3.1) or whose own
+contents otherwise fail to parse as valid Record grammar is still
+well-formed CBOR and isolable this way — only that one Record is
+affected, never its siblings. A Record whose own array is not even
+well-formed CBOR (including a malformed indefinite-length chunk
+sequence within it) is a stronger failure: the parser cannot determine
+that boundary at all and cannot safely resume the Sequence.
 
 ### 3.3 Conformance Levels
 
@@ -339,11 +385,16 @@ just to support the *container*:
   registered Record Type does internally.
 
 A conformant core parser never needs *true* recursion: a Record is
-always exactly `typeID-item → (NDEF-ID)? → Map`, and skipping any
-well-formed CBOR item at any depth — an unrecognized field, or a whole
-unrecognized Record — uses a bounded explicit stack instead of the call
-stack. Validated in [`rust/qdef-core`](../rust/qdef-core); see
-FINDINGS.md for the mechanism (`skip_any_item`).
+always exactly one array, `[namespace? → typeID-item → (NDEF-ID)? →
+Map → subrecord*]`, and skipping any well-formed CBOR item at any
+depth — an unrecognized field, a whole unrecognized Record, or a whole
+Record's worth of subrecords — uses a bounded explicit stack instead of
+the call stack. A Record's own total byte span is always determined
+this same generic way, before any attempt to interpret its contents, so
+routing or skipping a Record never depends on whether that Record's own
+grammar happens to be valid. Validated in
+[`rust/qdef-core`](../rust/qdef-core); see FINDINGS.md for the
+mechanism (`skip_any_item`).
 
 ### 3.4 Canonical Encoding
 
@@ -477,12 +528,19 @@ declared.** When the discriminator declares namespace `N`, a Record's
 odd Type ID `T` is looked up as the compound key `(N, T)`, not the bare
 value `T` — the same pattern as a Bluetooth short UUID paired with its
 Base UUID. `N` is normally the container's ambient namespace, but a
-Record MAY instead pair its own typeID with a different namespace
-inline (§3.1's namespace-pairing item), overriding `N` for that one
-Record only.
+Record MAY instead lead its own array with a different namespace
+inline (§3.1), overriding `N` for that one Record only.
 
 **Odd uint Type ID with no declared namespace MUST cause the Record to
 abort** — there is no collision-safety source without one.
+
+**A namespace cascades to subrecords.** A subrecord (§3.1) with no
+namespace of its own resolves against its *immediate parent's* own
+effective namespace (the parent's own override, if it declared one,
+otherwise whatever it inherited), not directly against the container's
+ambient one — recursively, at any nesting depth. A Record that leads
+its own array with a namespace therefore scopes its own subrecords too,
+without each one needing to repeat the same declaration.
 
 **Correctness obligation on any decoder implementing namespace-scoped
 semantics:** it MUST check for a declared namespace before applying its
@@ -544,6 +602,12 @@ instead: a small, curated set of Record Types any application can pull
 in — writing no reassembly code, no cipher code, no fallback-routing
 code of its own.
 
+**Notation.** Throughout this section, `Type N: { ... }` is shorthand
+for that Record Type's own array (§3.1): `[N, { ... }]`, or
+`[namespace, N, { ... }]` when namespace-scoped. The brace-only form is
+used here purely for readability; the wire shape is always the full
+array.
+
 **Standard record type IDs:** even numbers `2`–`98` are reserved for
 these standard record types, maintained alongside the QDEF spec itself.
 Even numbers `100` and above are open for applications to register their
@@ -558,6 +622,7 @@ subsection below:
 +------+------------------+---------+---------------------------------+
 | ID   | Record Type      | Section | Notes                          |
 +------+------------------+---------+---------------------------------+
+|  0   | (unassigned)     | —       | Not reserved; see DESIGN.md    |
 |  2   | Split            | §4.1    | Fragment reassembly / parity    |
 |  4   | Encrypt          | §4.1    | AEAD (e.g. AES-256-GCM)         |
 |  6   | Media Payload    | §4.3    | Typed binary content            |
@@ -935,12 +1000,11 @@ one Record Type ID and carry that payload unchanged, byte-for-byte, as an
 opaque blob under a single key:
 
 ```
-// prefix typeID: N
-{
+[ N, {
   0: h'<existing payload bytes>'  // CRITICAL: raw bytes, unchanged from
                                    //   whatever that application already
                                    //   defines — QDEF never looks inside
-}
+} ]
 ```
 
 This lets a QDEF-aware scanner dispatch a single byte-mode QR or NFC tag
@@ -999,10 +1063,9 @@ codes are only ever scanned by its own app, never clicked or typed — so per
 Registers one Record Type, say `950`, for the plain secret-key bytes:
 
 ```
-// prefix typeID: 950
-{
+[ 950, {
   0: h'<raw secret key packet bytes>'  // CRITICAL
-}
+} ]
 ```
 
 Because the key material is sensitive and may not fit one code, the app
