@@ -296,8 +296,15 @@ function cborFloat64(out, v) {
 // Wraps a number so cborValue encodes it as a float64 instead of a uint.
 function cfloat(v) { return { __float64: true, value: v }; }
 
+// Splices already-encoded CBOR bytes into an array as one item, unwrapped — used for
+// a Record's own field map (already-sorted, §2.2) and its subrecords (§3.1), neither
+// of which should be re-wrapped as a CBOR byte-string value the way a plain Uint8Array
+// field value is.
+function craw(bytes) { return { __raw: true, bytes }; }
+
 function cborValue(out, v) {
   if (v === null || v === undefined) return;
+  if (v && v.__raw) { v.bytes.forEach(b => out.push(b)); return; }
   if (v && v.__float64) { cborFloat64(out, v.value); }
   else if (typeof v === 'boolean') { out.push(v ? 0xF5 : 0xF4); } // true (0xf5) / false (0xf4)
   else if (typeof v === 'bigint') { writeHead(out, 0, v); }
@@ -359,23 +366,29 @@ function cborFieldMap(fields) {
   return new Uint8Array(out);
 }
 
-// A QDEF Record (QDEF-SPEC.md §3): bare uint typeId prefix + field map (no key 0 inside the map).
-function cborRecord(typeId, fields) {
-  const prefix = [];
-  writeHead(prefix, 0, typeId);
+// A QDEF Record (QDEF-SPEC.md §3.1): a self-delimited CBOR array,
+// [typeId, map, subrecord*] — every Record is its own array now, not a bare
+// typeId-then-map CBOR Sequence pair. TagDrop's own carriers imply the
+// namespace (SPEC.md §2.1a) and never use the optional NDEF-ID slot, so
+// those two optional array elements are always omitted here. `subrecords`
+// are already-encoded [typeId, map, ...] byte sequences (each built by a
+// nested cborRecord call), spliced in raw as their own array items.
+function cborRecord(typeId, fields, subrecords = []) {
   const map = cborFieldMap(fields);
-  const out = new Uint8Array(prefix.length + map.length);
-  out.set(new Uint8Array(prefix), 0);
-  out.set(map, prefix.length);
-  return out;
+  const items = [typeId, craw(map), ...subrecords.map(craw)];
+  const out = [];
+  writeHead(out, 4, items.length);
+  items.forEach(item => cborValue(out, item));
+  return new Uint8Array(out);
 }
 
-// QDEF Record Type IDs. SPLIT/COMPRESS stay plain Numbers (small, well
-// under Number.MAX_SAFE_INTEGER); the four TagDrop Type IDs are BigInt
-// (SPEC.md §2.1 — 64-bit CSPRNG values in QDEF's private-use tier).
+// QDEF Record Type IDs. SPLIT/COMPRESS/MEDIA_PREVIEW/MEDIA_PAYLOAD are QDEF
+// standard (even, globally-interpreted) types; the four TagDrop Type IDs are
+// small odd values under TagDrop's implied namespace (SPEC.md §2.1).
 const TYPE_SPLIT = 2, TYPE_COMPRESS = 8;
-const TYPE_CONTENT_PREVIEW = 1;
-const TYPE_CONTENT_BODY = 3;
+const TYPE_MEDIA_PAYLOAD = 6, TYPE_MEDIA_PREVIEW = 14;
+const TYPE_CONTENT_EXTENSION = 1;
+const TYPE_CONTENT_SIGNATURE = 3;
 const TYPE_PAPER_PREVIEW = 5;
 const TYPE_PAPER_BODY = 7;
 
@@ -392,8 +405,11 @@ async function compressWrap(bytes) {
  * (a content hash of `bytes`, computed by the caller) and, if `withParity`,
  * one appended full-XOR parity fragment at index == fragmentCount that
  * recovers any single lost fragment (SPEC.md §5's redundancy scheme).
+ * `extraSubrecords` (SPEC.md §3.1a) is attached to every fragment Record
+ * unwrapped and repeated — used to carry Content's Media Preview alongside
+ * a Split-wrapped Media Payload; Paper has none, so it's `[]` by default.
  */
-function splitFragments(bytes, groupId, fragmentCount, withParity) {
+function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecords = []) {
   const total = bytes.length;
   const chunkLen = Math.ceil(total / fragmentCount);
   const fragments = [];
@@ -403,7 +419,7 @@ function splitFragments(bytes, groupId, fragmentCount, withParity) {
     fragments.push(cborRecord(TYPE_SPLIT, {
       2: groupId, 4: i, 6: fragmentCount, 8: bytes.slice(start, end),
       9: total, 11: withParity ? 1 : undefined,
-    }));
+    }, extraSubrecords));
   }
   if (withParity) {
     const parity = new Uint8Array(chunkLen);
@@ -413,7 +429,7 @@ function splitFragments(bytes, groupId, fragmentCount, withParity) {
       const slice = bytes.slice(start, end);
       for (let j = 0; j < slice.length; j++) parity[j] ^= slice[j];
     }
-    fragments.push(cborRecord(TYPE_SPLIT, { 2: groupId, 4: fragmentCount, 6: fragmentCount, 8: parity, 9: total, 11: 1 }));
+    fragments.push(cborRecord(TYPE_SPLIT, { 2: groupId, 4: fragmentCount, 6: fragmentCount, 8: parity, 9: total, 11: 1 }, extraSubrecords));
   }
   return fragments;
 }
@@ -427,9 +443,12 @@ function encodeCode(code) {
 
 // Content-Preview / Content-Body Records (SPEC.md §3.1-§3.2).
 // Content-Preview's full field set (SPEC.md §3.1).
-function buildContentPreview(f) {
-  return cborRecord(TYPE_CONTENT_PREVIEW, {
-    1: f.cacheId, 3: f.hint, 5: f.mimeType, 7: f.filename, 9: f.title, 11: f.description,
+// Content Extension (Type 1) — TagDrop-specific fields only; file
+// identification (cache_id/mime_type/filename/title) moved to Media
+// Preview, and the large signing fields moved to Content Signature.
+function buildContentExtension(f) {
+  return cborRecord(TYPE_CONTENT_EXTENSION, {
+    3: f.hint, 11: f.description,
     13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag, 19: f.icon,
     21: f.pixelArt, 23: f.lat != null ? cfloat(f.lat) : undefined, 25: f.lng != null ? cfloat(f.lng) : undefined,
     27: f.radiusM != null ? cfloat(f.radiusM) : undefined, 29: f.preferDeclaredLocation, 31: f.locationLabel,
@@ -439,8 +458,34 @@ function buildContentPreview(f) {
     51: f.inReplyTo, 53: f.createdAt, 55: f.sourceUrl,
   });
 }
-function buildContentBody(f) {
-  return cborRecord(TYPE_CONTENT_BODY, { 1: f.content, 3: f.signature, 5: f.signerPubkey });
+
+// Media Preview (QDEF standard Type 14, SPEC.md §3.1a) — file identification.
+// `contentHash` is multihash-style: a 1-byte function code (0x12 = sha2-256)
+// prepended to the 8-byte digest TagDrop already computes elsewhere.
+// `subrecords` carries Media Payload when it fits nested here (single-code
+// case) or is omitted (multi-code case, where Media Preview itself becomes
+// Split's subrecord instead — SPEC.md §5.1).
+function buildMediaPreview(f, subrecords = []) {
+  return cborRecord(TYPE_MEDIA_PREVIEW, {
+    0: f.mediaType,
+    1: f.contentHash ? concatBytes(new Uint8Array([0x12]), f.contentHash) : undefined,
+    3: f.filename, 5: f.label,
+  }, subrecords);
+}
+
+// Media Payload (QDEF standard Type 6, SPEC.md §3.1a) — the content bytes.
+// `subrecords` carries Content Signature (Type 3) when the payload is
+// signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
+// own bytes travel (nested once, not repeated per code — SPEC.md §3.1).
+function buildMediaPayload(f, subrecords = []) {
+  return cborRecord(TYPE_MEDIA_PAYLOAD, { 0: f.mediaType, 2: f.content }, subrecords);
+}
+
+// Content Signature (Type 3, TagDrop-scoped, SPEC.md §3.1a) — signature/
+// signer_pubkey for a signed Content payload, nested as Media Payload's own
+// subrecord. Absent entirely (no Record at all) when unsigned.
+function buildContentSignature(f) {
+  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey });
 }
 
 // Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4).
@@ -464,77 +509,138 @@ function buildPaperBody(f) {
   });
 }
 
-/**
- * Re-encodes [mapBytes] (a definite-length CBOR map, starting at its own head byte) with
- * every pair whose key is in [keysToStrip] removed, regardless of position — walks and keeps
- * every surviving pair by its own byte range. cborFieldMap/cborRecord (used by the new
- * Content-Preview/Content-Body builders) always sort keys ascending (SPEC.md §2.2's fixed
- * key-encoding order), so a higher-numbered field can legitimately sort after the signature
- * fields — the trailing-run assumption doesn't hold there.
- */
-function stripKeys(mapBytes, keysToStrip) {
-  let pos = 0;
-  function rb() { return mapBytes[pos++]; }
+// ── Low-level CBOR item-boundary walkers (encoder-side stripping only). Used
+// by stripKeys/stripSubrecordType below to locate byte ranges within an
+// already-encoded Record's own array/map without a full recursive decode.
+
+// Advances `cur.pos` past exactly one well-formed CBOR item at `cur.pos`,
+// recursing into arrays/maps as needed to find where they end. `cur` is a
+// mutable {bytes, pos} cursor.
+function cborSkipItem(cur) {
+  function rb() { return cur.bytes[cur.pos++]; }
   function readArg(info) {
     if (info <= 23) return info;
     if (info === 24) return rb();
     if (info === 25) return rb() * 256 + rb();
     if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    // 8-byte argument: a uint64, or a float64's raw payload (major 7) — either way,
+    // consume the 8 bytes here so no float special case is needed below.
     if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
-  function skipValue() {
-    const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
-    if (major === 2 || major === 3) { pos += a; }
-    else if (major === 4) { for (let i = 0; i < a; i++) skipValue(); }
-    else if (major === 5) { for (let i = 0; i < a; i++) { skipValue(); skipValue(); } }
-    else if (major === 7 && (b & 0x1F) === 27) { pos += 8; }
-  }
-
-  // QDEF-SPEC.md §3: a Record may start with a bare uint typeId prefix (major 0)
-  // before the field map (major 5). Skip the prefix if present so we strip from the map.
-  let prefixEnd = 0;
-  const first = mapBytes[0];
-  if ((first >> 5) === 0) {
-    skipValue();
-    prefixEnd = pos;
-  }
-
-  const head = rb();
-  if (head >> 5 !== 5) throw new Error('Expected CBOR map (major 5), got major ' + (head >> 5));
-  const count = readArg(head & 0x1F);
-
-  const survivors = [];
-  for (let i = 0; i < count; i++) {
-    const pairStart = pos;
-    const keyByte = rb(), keyMajor = keyByte >> 5, key = readArg(keyByte & 0x1F);
-    if (keyMajor !== 0) throw new Error('Expected uint map key, got major ' + keyMajor);
-    skipValue();
-    if (!keysToStrip.has(key)) survivors.push(mapBytes.slice(pairStart, pos));
-  }
-  const newHeader = [];
-  writeHead(newHeader, 5, survivors.length);
-  const mapResult = concatBytes(new Uint8Array(newHeader), ...survivors);
-  // Re-prepend the typeId prefix if we skipped one above.
-  if (prefixEnd > 0) return concatBytes(mapBytes.slice(0, prefixEnd), mapResult);
-  return mapResult;
+  const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+  if (major === 2 || major === 3) { cur.pos += a; }
+  else if (major === 4) { for (let i = 0; i < a; i++) cborSkipItem(cur); }
+  else if (major === 5) { for (let i = 0; i < a; i++) { cborSkipItem(cur); cborSkipItem(cur); } }
+  // major 0/1/7 carry no payload beyond the argument readArg already consumed.
 }
 
-const CONTENT_PREVIEW_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
-const CONTENT_BODY_SIGNATURE_KEYS = new Set([3, 5]); // signature, signer_pubkey
+// Reads a definite-length array (major 4) or map (major 5) header at `cur.pos`
+// and returns the byte range of each child item — for a map, key and value
+// ranges are flattened into one array (2 per pair) — advancing `cur.pos` past
+// the whole array/map. Map keys in TagDrop's own encodings are always small
+// (well under 2 bytes), so only additional-info 0-25 are handled.
+function cborItemRanges(cur, expectedMajor) {
+  const head = cur.bytes[cur.pos++];
+  const major = head >> 5;
+  if (major !== expectedMajor) throw new Error('Expected CBOR major ' + expectedMajor + ', got ' + major);
+  const info = head & 0x1F;
+  let count;
+  if (info <= 23) count = info;
+  else if (info === 24) count = cur.bytes[cur.pos++];
+  else if (info === 25) { count = cur.bytes[cur.pos] * 256 + cur.bytes[cur.pos + 1]; cur.pos += 2; }
+  else throw new Error('Unsupported CBOR array/map length encoding');
+  const n = expectedMajor === 5 ? count * 2 : count;
+  const ranges = [];
+  for (let i = 0; i < n; i++) {
+    const start = cur.pos;
+    cborSkipItem(cur);
+    ranges.push([start, cur.pos]);
+  }
+  return ranges;
+}
+
+// Decodes a bare CBOR uint (major 0) at `cur.pos`, advancing past it.
+function cborReadUint(cur) {
+  const b = cur.bytes[cur.pos++];
+  if ((b >> 5) !== 0) throw new Error('Expected uint, got major ' + (b >> 5));
+  const info = b & 0x1F;
+  if (info <= 23) return info;
+  if (info === 24) return cur.bytes[cur.pos++];
+  if (info === 25) { const v = cur.bytes[cur.pos] * 256 + cur.bytes[cur.pos + 1]; cur.pos += 2; return v; }
+  throw new Error('Unsupported CBOR uint encoding');
+}
+
+/**
+ * Re-encodes [recordBytes] (a Record's own array, QDEF-SPEC.md §3.1:
+ * [typeId, map, subrecord*]) with every field-map pair whose key is in
+ * [keysToStrip] removed, regardless of position. cborFieldMap/cborRecord
+ * always sort keys ascending (SPEC.md §2.2's fixed key-encoding order), so
+ * a higher-numbered field (e.g. `source_url`, key 55) can legitimately sort
+ * after the signature fields (45/47/49) — this walks and keeps every
+ * surviving pair by its own byte range rather than assuming the stripped
+ * keys form a truncatable trailing run. Subrecords, if any, are carried
+ * through byte-for-byte, untouched.
+ */
+function stripKeys(recordBytes, keysToStrip) {
+  const cur = { bytes: recordBytes, pos: 0 };
+  const [typeIdRange, mapRange, ...subrecordRanges] = cborItemRanges(cur, 4);
+  const mapCur = { bytes: recordBytes, pos: mapRange[0] };
+  const pairRanges = cborItemRanges(mapCur, 5);
+  const survivors = [];
+  for (let i = 0; i < pairRanges.length; i += 2) {
+    const keyRange = pairRanges[i], valueRange = pairRanges[i + 1];
+    const key = cborReadUint({ bytes: recordBytes, pos: keyRange[0] });
+    if (!keysToStrip.has(key)) survivors.push(recordBytes.slice(keyRange[0], valueRange[1]));
+  }
+  const mapHeader = [];
+  writeHead(mapHeader, 5, survivors.length);
+  const newMap = concatBytes(new Uint8Array(mapHeader), ...survivors);
+  const items = [recordBytes.slice(...typeIdRange), newMap, ...subrecordRanges.map(r => recordBytes.slice(...r))];
+  const arrHeader = [];
+  writeHead(arrHeader, 4, items.length);
+  return concatBytes(new Uint8Array(arrHeader), ...items);
+}
+
+/**
+ * Re-encodes [recordBytes] (a Record's own array) with any *direct* subrecord
+ * whose own typeId is [typeIdToStrip] removed entirely — not a field-map key
+ * strip, a whole-subrecord removal. Used to build "what an unsigned Media
+ * Payload would contain" (no Content Signature subrecord at all, SPEC.md v9
+ * §10) from a placeholder-signed build.
+ */
+function stripSubrecordType(recordBytes, typeIdToStrip) {
+  const cur = { bytes: recordBytes, pos: 0 };
+  const [typeIdRange, mapRange, ...subrecordRanges] = cborItemRanges(cur, 4);
+  const keptSubrecords = subrecordRanges.filter(r => {
+    const subCur = { bytes: recordBytes, pos: r[0] };
+    const [subTypeIdRange] = cborItemRanges(subCur, 4);
+    return cborReadUint({ bytes: recordBytes, pos: subTypeIdRange[0] }) !== typeIdToStrip;
+  });
+  const items = [recordBytes.slice(...typeIdRange), recordBytes.slice(...mapRange), ...keptSubrecords.map(r => recordBytes.slice(...r))];
+  const arrHeader = [];
+  writeHead(arrHeader, 4, items.length);
+  return concatBytes(new Uint8Array(arrHeader), ...items);
+}
+
+const CONTENT_EXTENSION_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
 
 const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([1, 31, 33, 35]); // root_hash, signature_algorithm, signer_id, signer_label
 const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]); // signature, signer_pubkey
 
 /**
- * SPEC.md §10's "signed message" for a Content payload: SHA-256(Preview' || Body'), with
- * §10's own fields stripped from each — the identical computation whether or not this
- * payload ends up signed (§10: "signing happens last and feeds back into nothing").
+ * Content's signed message hash (SPEC.md §10): SHA-256(MediaPreview' ||
+ * MediaPayload'' || Extension'). `mediaPreview` has nothing to strip (it
+ * never carries a signature field); `mediaPayload` has its own Content
+ * Signature subrecord (Type 3), if present, removed entirely; `extension`
+ * has its three small signature fields stripped. All three are the LOGICAL
+ * (pre-Compress, pre-Split, pre-wire-nesting) Record bytes — never the
+ * compressed/fragmented wire bytes.
  */
-function contentSignedMessageHash(preview, bodyPlain) {
-  const unsignedPreview = stripKeys(preview, CONTENT_PREVIEW_SIGNATURE_KEYS);
-  const unsignedBody = stripKeys(bodyPlain, CONTENT_BODY_SIGNATURE_KEYS);
-  return sha256(concatBytes(unsignedPreview, unsignedBody));
+function contentSignedMessageHash(extension, mediaPreview, mediaPayload) {
+  const unsignedExtension = stripKeys(extension, CONTENT_EXTENSION_SIGNATURE_KEYS);
+  const unsignedMediaPayload = stripSubrecordType(mediaPayload, TYPE_CONTENT_SIGNATURE);
+  return sha256(concatBytes(mediaPreview, unsignedMediaPayload, unsignedExtension));
 }
 
 /**
@@ -653,16 +759,22 @@ const KEY_NAMES = {
 // Type IDs decode as BigInt, which can't be a plain object key. Mirrors ../reader/index.html.
 // Type ID is a QDEF prefix item (§3), not a map key — no key 0 in field maps.
 const RECORD_TYPE_INFO = new Map([
-  [String(TYPE_CONTENT_PREVIEW), { name: 'Content-Preview', keyNames: {
-    1:'cache_id', 3:'hint', 5:'mime_type', 7:'filename', 9:'title', 11:'description',
+  [String(TYPE_CONTENT_EXTENSION), { name: 'Content Extension', keyNames: {
+    3:'hint', 11:'description',
     13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon', 21:'pixel_art',
     23:'lat', 25:'lng', 27:'radius_m', 29:'prefer_declared_location', 31:'location_label',
     33:'key_material', 35:'retain_key', 37:'encryption', 39:'kdf_alg', 41:'kdf_salt', 43:'kdf_iters',
     45:'signature_algorithm', 47:'signer_id', 49:'signer_label',
     51:'in_reply_to', 53:'created_at', 55:'source_url',
   } }],
-  [String(TYPE_CONTENT_BODY), { name: 'Content-Body', keyNames: {
-    1:'content', 3:'signature', 5:'signer_pubkey',
+  [String(TYPE_CONTENT_SIGNATURE), { name: 'Content Signature', keyNames: {
+    3:'signature', 5:'signer_pubkey',
+  } }],
+  [String(TYPE_MEDIA_PREVIEW), { name: 'Media Preview', keyNames: {
+    0:'mediaType', 1:'contentHash', 3:'filename', 5:'label',
+  } }],
+  [String(TYPE_MEDIA_PAYLOAD), { name: 'Media Payload', keyNames: {
+    0:'mediaType', 2:'content',
   } }],
   [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
     1:'root_hash', 3:'hint', 5:'set', 7:'slug', 9:'domain', 11:'step',
@@ -693,31 +805,64 @@ function isCborMap(v) {
   return v !== null && typeof v === 'object' && !(v instanceof Uint8Array) && !Array.isArray(v);
 }
 
+// Reinterprets an already-decoded JS array (from cborDecodeSequencePrefix's readVal,
+// which recursively decodes nested arrays/maps already) as a QDEF Record: [typeId, map,
+// subrecord*] (QDEF-SPEC.md §3.1) — recursively, since a subrecord is itself the same
+// shape. Returns null if `arr` doesn't match that shape at all.
+function interpretRecordArray(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return null;
+  const typeId = arr[0];
+  const record = arr[1];
+  if (typeof typeId !== 'number' || !isCborMap(record)) return null;
+  const subrecords = arr.slice(2).map(interpretRecordArray).filter(x => x !== null);
+  return { typeId, record, subrecords };
+}
+
+/**
+ * Decodes one QDEF Record (QDEF-SPEC.md §3.1: a self-delimited CBOR array,
+ * [typeId, map, subrecord*]) from the head of `bytes`.
+ * Returns { typeId, record, subrecords, raw, trailing } — `raw` is the record's own
+ * exact byte range, `trailing` whatever follows in the sequence — or null if the head
+ * of `bytes` isn't a well-formed Record.
+ */
+function decodeRecordPrefix(bytes) {
+  try {
+    const { items, trailing } = cborDecodeSequencePrefix(bytes, 1);
+    const interpreted = interpretRecordArray(items[0]);
+    if (!interpreted) return null;
+    return { ...interpreted, raw: bytes.slice(0, bytes.length - trailing.length), trailing };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Pretty-prints one decoded Record (as returned by decodeRecordPrefix/interpretRecordArray)
+ *  and, recursively indented, any subrecords it carries. */
+function describeOneRecord(rec, indent, label) {
+  const info = RECORD_TYPE_INFO.get(String(rec.typeId));
+  const pad = '  '.repeat(indent);
+  let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + '\n';
+  out += describeMap(rec.record, indent + 1, info ? info.keyNames : {});
+  for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
+  return out;
+}
+
 /** New-format half of describeCbor below: walks a QDEF Record Sequence, naming each
- *  Record's type and fields per RECORD_TYPE_INFO. Mirrors ../reader/index.html. */
+ *  top-level Record's type and fields (and any subrecords it carries) per
+ *  RECORD_TYPE_INFO. Mirrors ../reader/index.html. */
 function describeRecords(bytes) {
   let out = '';
   let rest = bytes;
   let n = 0;
   while (rest.length > 0) {
-    let typeId, record, raw, trailing;
-    try {
-      const decoded = cborDecodeSequencePrefix(rest, 2);
-      typeId = decoded.items[0];
-      record = decoded.items[1];
-      trailing = decoded.trailing;
-      raw = rest.slice(0, rest.length - trailing.length);
-    } catch (e) { record = null; }
-    if (typeof typeId !== 'number' || !isCborMap(record)) {
+    const decoded = decodeRecordPrefix(rest);
+    if (!decoded) {
       out += 'trailing bytes (not a Record): ' + toHexDump(rest) + '\n';
       break;
     }
-    const info = RECORD_TYPE_INFO.get(String(typeId));
-    out += 'Record ' + (++n) + ': ' + (info ? info.name : 'unknown type ' + typeId) +
-      ' (' + raw.length + ' bytes)\n';
-    out += describeMap(record, 1, info ? info.keyNames : {});
+    out += describeOneRecord(decoded, 0, 'Record ' + (++n) + ' (' + decoded.raw.length + ' bytes): ');
     out += '\n';
-    rest = trailing;
+    rest = decoded.trailing;
   }
   return out;
 }
@@ -764,7 +909,7 @@ async function splitReassembledStream(stream) {
  */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
-  if (bytes.length > 0 && (bytes[0] >> 5) === 0) {
+  if (bytes.length > 0 && (bytes[0] >> 5) === 4) {
     return out + describeRecords(bytes);
   }
   try {
@@ -974,27 +1119,32 @@ async function encryptOverrideMap(override, key, compression) {
 }
 
 /**
- * Builds the code(s) of a Content payload — mirrors Kotlin TagDropCodec, plus a
- * web-only `kdfPassphrase` mode. Builds Content-Preview + Content-Body (SPEC.md
- * §3.1-§3.2, §4.1); Body is Compress-wrapped if `compress`, then Split-wrapped
- * (§5) — with an optional appended parity fragment (`parity`) — whenever it
- * doesn't fit `maxSectorDataBytes` alongside Preview on one code. Preview is
- * repeated identically on every returned code (§5.1).
+ * Builds the code(s) of a Content payload (SPEC.md v9 §3.1/§3.1a/§4.1) — mirrors
+ * Kotlin TagDropCodec, plus a web-only `kdfPassphrase` mode. Builds Content
+ * Extension (Type 1), Media Preview (Type 14), and Media Payload (Type 6); Media
+ * Payload is Compress-wrapped if `compress`, then Split-wrapped (§5) — with an
+ * optional appended parity fragment (`parity`) — whenever it doesn't fit
+ * `maxSectorDataBytes` alongside the small always-repeated part (Content
+ * Extension + Media Preview) on one code. That small part is repeated
+ * identically on every returned code (§5.1); Media Payload nests as Media
+ * Preview's own subrecord when unsplit, or Media Preview becomes Split's own
+ * repeated subrecord when it isn't (§3.1a).
  *
- * `hint`/`filename`/`mimeType`/`rawBytes` are Preview's own fields / Body's
- * plain `content` — shown until a hidden override map, if any, is unlocked
- * (SPEC §9). They may be a cover story, a decoy, or genuine unremarkable
- * content with no relation to `override`.
+ * `hint`/`filename`/`mimeType`/`rawBytes` are the small part's own fields /
+ * Media Payload's plain `content` — shown until a hidden override map, if any,
+ * is unlocked (SPEC §9). They may be a cover story, a decoy, or genuine
+ * unremarkable content with no relation to `override`.
  *
- * If `override` is given, it's AES-256-GCM-encrypted into Body's `content`
- * field (SPEC §9); `cacheId` becomes random rather than content-addressed,
- * and the outer Body is never also Compress-wrapped (the encrypted blob is
- * already high-entropy).
+ * If `override` is given, it's AES-256-GCM-encrypted into Media Payload's
+ * `content` field (SPEC §9); `cacheId` becomes random rather than
+ * content-addressed, and Media Payload is never also Compress-wrapped (the
+ * encrypted blob is already high-entropy).
  *
- * Returns `{codes, preview, bodyPlain, cacheId}` where `codes` is an array of
- * `{raw, cacheId, totalBytes, index, count, isParity}` — `raw` is one code's
- * complete Record-Sequence bytes (encodeCode(code) turns it into a `tagdrop:`
- * URI). A single-code payload is just a one-element array.
+ * Returns `{codes, contentExtension, mediaPreview, mediaPayload, cacheId}` —
+ * each code is `{raw, cacheId, totalBytes, index, count, isParity}`, `raw`
+ * being one code's complete Record-Sequence bytes (encodeCode(code) turns it
+ * into a `tagdrop:` URI). A single-code payload is just a one-element `codes`
+ * array.
  */
 async function createContentSectors({
   hint, filename, mimeType, rawBytes, compress,
@@ -1024,8 +1174,8 @@ async function createContentSectors({
     cacheId = await sha256first8(rawBytes);
   }
 
-  const preview = buildContentPreview({
-    cacheId, hint: hint || undefined, filename: filename || undefined, mimeType,
+  const contentExtension = buildContentExtension({
+    hint: hint || undefined,
     collectionId: collectionId || undefined, collectionLabel: collectionLabel || undefined,
     collectionTag: collectionTag || undefined, icon: icon || undefined,
     keyMaterial: keyMaterial || undefined, retainKey: (keyMaterial && !retainKey) ? false : undefined,
@@ -1033,33 +1183,43 @@ async function createContentSectors({
     kdfAlg: kdfAlg || undefined, kdfSalt: kdfSalt || undefined, kdfIters: kdfIters || undefined,
     lat, lng, radiusM, preferDeclaredLocation: preferDeclaredLocation ? true : undefined,
     locationLabel: locationLabel || undefined,
-    inReplyTo: inReplyTo || undefined, title: title || undefined, createdAt: createdAt || undefined,
+    inReplyTo: inReplyTo || undefined, createdAt: createdAt || undefined,
     pixelArt: pixelArt ? true : undefined,
     signatureAlgorithm: signatureAlgorithm || undefined, signerId: signerId || undefined, signerLabel: signerLabel || undefined,
   });
 
-  const bodyPlain = buildContentBody({ content: contentSlot, signature, signerPubkey });
+  const previewFields = { contentHash: cacheId, mediaType: mimeType, filename: filename || undefined, label: title || undefined };
+  const mediaPreview = buildMediaPreview(previewFields);
+
+  const contentSignature = (signature != null) ? buildContentSignature({ signature, signerPubkey }) : null;
+  const mediaPayload = buildMediaPayload({ mediaType: mimeType, content: contentSlot }, contentSignature ? [contentSignature] : []);
   // An encrypted override blob is already high-entropy — Compress-wrapping it
   // on top would waste a wrapper layer for nothing (DEFLATE doesn't shrink it).
-  const bodyForWire = (compress && !override) ? await compressWrap(bodyPlain) : bodyPlain;
+  const mediaPayloadForWire = (compress && !override) ? await compressWrap(mediaPayload) : mediaPayload;
 
-  const totalBytes = bodyForWire.length;
+  const totalBytes = mediaPayloadForWire.length;
   if (totalBytes <= maxSectorDataBytes) {
+    // Single code: Media Payload (or its Compress Wrapper) nests as Media Preview's
+    // own subrecord (§3.1a) — not a separate sibling Record.
+    const wireMediaPreview = buildMediaPreview(previewFields, [mediaPayloadForWire]);
     return {
-      codes: [{ raw: concatBytes(preview, bodyForWire), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
-      preview, bodyPlain, cacheId,
+      codes: [{ raw: concatBytes(contentExtension, wireMediaPreview), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
+      contentExtension, mediaPreview, mediaPayload, cacheId,
     };
   }
 
   const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
-  const groupId = await sha256first8(bodyForWire);
-  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
+  const groupId = await sha256first8(mediaPayloadForWire);
+  // Media Preview becomes Split's own repeated subrecord in the multi-code case
+  // (§3.1a) — Content Extension stays a separate top-level Record, repeated per
+  // code exactly as in the single-code case above.
+  const fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, parity, [mediaPreview]);
   return {
     codes: fragments.map((frag, i) => ({
-      raw: concatBytes(preview, frag), cacheId, totalBytes,
+      raw: concatBytes(contentExtension, frag), cacheId, totalBytes,
       index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
     })),
-    preview, bodyPlain, cacheId,
+    contentExtension, mediaPreview, mediaPayload, cacheId,
   };
 }
 
@@ -1078,15 +1238,14 @@ async function createContentSectorsAutoSized(args, targetSectorBytes = DEFAULT_S
 }
 
 /**
- * Builds a single "key-only" Content-Preview code (SPEC §9): carries
- * `keyMaterial` for other content, with no content/mime_type of its own and —
- * referencing no content to address — no `cache_id` either, and no Body Record
- * at all. Per SPEC §9's "discovery, not declaration", no field says which
- * content this key unlocks — a reader tries it against any encrypted content
- * it has cached.
+ * Builds a single "key-only" Content Extension code (SPEC §9): carries
+ * `keyMaterial` for other content, with no Media Preview or Media Payload at
+ * all — referencing no content to address, so no `contentHash` either. Per
+ * SPEC §9's "discovery, not declaration", no field says which content this
+ * key unlocks — a reader tries it against any encrypted content it has cached.
  */
 function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
-  const raw = buildContentPreview({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false });
+  const raw = buildContentExtension({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false });
   return { raw, cacheId: null, totalBytes: raw.length, index: 0, count: 1, isParity: false };
 }
 
