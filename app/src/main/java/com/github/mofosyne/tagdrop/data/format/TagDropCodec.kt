@@ -13,23 +13,33 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Encodes and decodes TagDrop codes — the wire-format codec (SPEC.md §2-§5, §9, §10, v8).
+ * Encodes and decodes TagDrop codes — the wire-format codec (SPEC.md §2-§5, §9, §10, v9).
  *
  * Encoding URI scheme:  tagdrop:<base41-cbor-sequence>
- *   <base41-cbor-sequence> = Base41( CBOR Sequence of 1-2 QDEF Records )
- * A code always carries a Preview Record (Content-Preview Type 1, or Paper-Preview Type 5)
- * and, if the payload has a body, either the complete Body Record (Content-Body Type 3, or
- * Paper-Body Type 7 — optionally Compress-wrapped, QDEF Type 8) or one Split-Wrapper-wrapped
- * (QDEF Type 2) Body fragment for a multi-code payload. No magic header, no namespace
- * discriminator on this carrier (or on NFC NDEF) — the `tagdrop:` scheme itself is both the
- * dispatch signal and (implicitly, never transmitted) TagDrop's fixed namespace, the same
- * value declared explicitly on the byte-mode QR carrier this app doesn't implement (SPEC §2.1a).
+ *   <base41-cbor-sequence> = Base41( CBOR Sequence of QDEF Records )
+ * Every Record is its own self-delimited CBOR array, `[typeId, map, subrecord*]`
+ * (QDEF-SPEC.md §3.1) — not a bare typeId-then-map pair. A code always carries the small,
+ * always-plain part of whatever payload it's part of (Paper: Preview; Content: Content
+ * Extension + Media Preview, §3.1/§3.1a) and, if the payload has a large part, either that
+ * part complete (single code) or one Split-Wrapper-wrapped (QDEF Type 2) fragment of it
+ * (multi-code). No magic header, no namespace discriminator on this carrier (or on NFC
+ * NDEF) — the `tagdrop:` scheme itself is both the dispatch signal and (implicitly, never
+ * transmitted) TagDrop's fixed namespace, the same value declared explicitly on the
+ * byte-mode QR carrier this app doesn't implement (SPEC §2.1a).
  *
- * Preview is always plain, unwrapped, and — for a multi-code payload — repeated identically
- * on every code (SPEC §5.1): a decoder scanning any single code already knows the payload's
- * identity and can show a usable preview regardless of scan order or how much of Body has
- * arrived. [decode]/[decodeRaw] return a [TagDropScan]; feed each [ScannedRecord] to
- * [SectorAssembler] to reassemble and parse the payload it belongs to.
+ * Content (SPEC §3.1/§3.1a, §5.1): Content Extension (Type 1, TagDrop-scoped) carries
+ * hint/collection/location/small-signing fields and is always whole, unwrapped, and repeated
+ * on every code. Media Preview (QDEF standard Type 14) carries file identification
+ * (mediaType/contentHash/filename/label). Media Payload (QDEF standard Type 6) carries the
+ * content bytes — nested as Media Preview's own subrecord when the payload fits on one code,
+ * or Split-wrapped (with Media Preview becoming *Split's* subrecord instead) when it doesn't.
+ * Content Signature (Type 3, TagDrop-scoped), present only when signed, nests as Media
+ * Payload's own subrecord, so `signature`/`signer_pubkey` travel once per payload regardless
+ * of how many codes it spans. [decode]/[decodeRaw] return a [TagDropScan]; feed each
+ * [ScannedRecord] to [SectorAssembler] to reassemble and parse the payload it belongs to.
+ *
+ * Paper (SPEC §3.3-§3.4) is unaffected by the v9 restructuring — still a flat Preview/Body
+ * pair (Types 5/7).
  *
  * Navigation links (NOT encoding URIs, NOT put in QR codes):
  *   tagdrop://<domain-or-@rootHash-hex>/<slug>  — see TagDropLinkResolver for the grammar
@@ -38,7 +48,7 @@ import javax.crypto.spec.SecretKeySpec
  *
  * CBOR map integer keys — see SPEC.md §3.1-§3.4 for the authoritative tables. Each Record
  * Type has its own independent key namespace; `files[]`/`related[]` sub-maps (inside
- * Paper-Body) and the encrypted override map (inside Content-Body's `content`) each have
+ * Paper-Body) and the encrypted override map (inside Media Payload's `content`) each have
  * their own independent local numbering too.
  */
 object TagDropCodec {
@@ -88,55 +98,61 @@ object TagDropCodec {
     private const val SCHEME          = "tagdrop:"
     private const val NAV_LINK_PREFIX = "tagdrop://"
 
-    // ── QDEF Record Type IDs (SPEC.md §2.1) — all small, even, self-allocated (32768+ tier
-    // is NOT used here: these are small enough to embed in a single CBOR byte, safe on
-    // tagdrop:/NFC via TagDrop's own-URI-scheme isolation and implied namespace, SPEC §2.1a) ──
-    const val TYPE_CONTENT_PREVIEW = 1
-    const val TYPE_CONTENT_BODY    = 3
-    const val TYPE_PAPER_PREVIEW   = 5
-    const val TYPE_PAPER_BODY      = 7
+    // ── QDEF Record Type IDs (SPEC.md §2.1) — TagDrop's four are small odd values under its
+    // implied namespace (§2.1a); Split/Compress/Media Preview/Media Payload are QDEF's small
+    // well-known even (globally-interpreted) types ──
+    const val TYPE_CONTENT_EXTENSION = 1
+    const val TYPE_CONTENT_SIGNATURE = 3
+    const val TYPE_PAPER_PREVIEW     = 5
+    const val TYPE_PAPER_BODY        = 7
 
-    // QDEF stdlib Wrapper Record Type IDs (QDEF-SPEC.md §4.1) — always-global, even.
-    private const val TYPE_SPLIT    = 2
-    private const val TYPE_COMPRESS = 8
+    private const val TYPE_MEDIA_PAYLOAD = 6
+    private const val TYPE_MEDIA_PREVIEW = 14
+    private const val TYPE_SPLIT         = 2
+    private const val TYPE_COMPRESS      = 8
 
-    // ── Content-Preview field keys (SPEC.md §3.1) ──────────────────────────────
-    private const val PK_CACHE_ID     = 1
-    private const val PK_HINT         = 3
-    private const val PK_MIME         = 5
-    private const val PK_FILENAME     = 7
-    private const val PK_TITLE        = 9
-    private const val PK_DESCRIPTION  = 11
-    private const val PK_COLLECTION_ID    = 13
-    private const val PK_COLLECTION_LABEL = 15
-    private const val PK_COLLECTION_TAG   = 17
-    private const val PK_ICON         = 19
-    private const val PK_PIXEL_ART    = 21
-    private const val PK_LAT          = 23
-    private const val PK_LNG          = 25
-    private const val PK_RADIUS_M     = 27
-    private const val PK_PREFER_DECLARED_LOCATION = 29
-    private const val PK_LOCATION_LABEL = 31
-    private const val PK_KEY_MATERIAL = 33
-    private const val PK_RETAIN_KEY   = 35
-    private const val PK_ENCRYPTION   = 37
-    private const val PK_KDF_ALG      = 39
-    private const val PK_KDF_SALT     = 41
-    private const val PK_KDF_ITERS    = 43
-    private const val PK_SIGNATURE_ALGORITHM = 45
-    private const val PK_SIGNER_ID    = 47
-    private const val PK_SIGNER_LABEL = 49
-    private const val PK_IN_REPLY_TO  = 51
-    private const val PK_CREATED_AT   = 53
-    private const val PK_SOURCE_URL   = 55
+    // ── Content Extension field keys (SPEC.md §3.1) ────────────────────────────
+    private const val EK_HINT         = 3
+    private const val EK_DESCRIPTION  = 11
+    private const val EK_COLLECTION_ID    = 13
+    private const val EK_COLLECTION_LABEL = 15
+    private const val EK_COLLECTION_TAG   = 17
+    private const val EK_ICON         = 19
+    private const val EK_PIXEL_ART    = 21
+    private const val EK_LAT          = 23
+    private const val EK_LNG          = 25
+    private const val EK_RADIUS_M     = 27
+    private const val EK_PREFER_DECLARED_LOCATION = 29
+    private const val EK_LOCATION_LABEL = 31
+    private const val EK_KEY_MATERIAL = 33
+    private const val EK_RETAIN_KEY   = 35
+    private const val EK_ENCRYPTION   = 37
+    private const val EK_KDF_ALG      = 39
+    private const val EK_KDF_SALT     = 41
+    private const val EK_KDF_ITERS    = 43
+    private const val EK_SIGNATURE_ALGORITHM = 45
+    private const val EK_SIGNER_ID    = 47
+    private const val EK_SIGNER_LABEL = 49
+    private const val EK_IN_REPLY_TO  = 51
+    private const val EK_CREATED_AT   = 53
+    private const val EK_SOURCE_URL   = 55
 
-    // ── Content-Body field keys (SPEC.md §3.2) ─────────────────────────────────
-    private const val BK_CONTENT       = 1
-    private const val BK_SIGNATURE     = 3
-    private const val BK_SIGNER_PUBKEY = 5
+    // ── Media Preview field keys (QDEF standard Type 14, SPEC.md §3.1a) ────────
+    private const val MPK_MEDIA_TYPE   = 0
+    private const val MPK_CONTENT_HASH = 1
+    private const val MPK_FILENAME     = 3
+    private const val MPK_LABEL        = 5
 
-    // Content-Body's `content` may be a hidden encrypted override map (SPEC §9) — its own
-    // independent local key namespace, unrelated to Content-Preview's numbering.
+    // ── Media Payload field keys (QDEF standard Type 6, SPEC.md §3.1a) ─────────
+    private const val MYK_MEDIA_TYPE = 0
+    private const val MYK_CONTENT    = 2
+
+    // ── Content Signature field keys (TagDrop-scoped Type 3, SPEC.md §3.1a) ────
+    private const val CSK_SIGNATURE     = 3
+    private const val CSK_SIGNER_PUBKEY = 5
+
+    // Media Payload's `content` may be a hidden encrypted override map (SPEC §9) — its own
+    // independent local key namespace, unrelated to any Record's own numbering.
     private const val OK_HINT     = 1
     private const val OK_MIME     = 3
     private const val OK_CONTENT  = 5
@@ -205,20 +221,19 @@ object TagDropCodec {
 
     // SPEC §10 signature-field key sets, per Record Type — what the placeholder-then-strip
     // discipline strips before hashing (contentSignedMessageHash/paperSignedMessageHash).
-    private val CONTENT_PREVIEW_SIGNATURE_KEYS = setOf(PK_SIGNATURE_ALGORITHM, PK_SIGNER_ID, PK_SIGNER_LABEL)
-    private val CONTENT_BODY_SIGNATURE_KEYS    = setOf(BK_SIGNATURE, BK_SIGNER_PUBKEY)
-    private val PAPER_PREVIEW_SIGNATURE_KEYS   = setOf(PPK_ROOT_HASH, PPK_SIGNATURE_ALGORITHM, PPK_SIGNER_ID, PPK_SIGNER_LABEL)
-    private val PAPER_BODY_SIGNATURE_KEYS      = setOf(PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
+    private val CONTENT_EXTENSION_SIGNATURE_KEYS = setOf(EK_SIGNATURE_ALGORITHM, EK_SIGNER_ID, EK_SIGNER_LABEL)
+    private val PAPER_PREVIEW_SIGNATURE_KEYS = setOf(PPK_ROOT_HASH, PPK_SIGNATURE_ALGORITHM, PPK_SIGNER_ID, PPK_SIGNER_LABEL)
+    private val PAPER_BODY_SIGNATURE_KEYS    = setOf(PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
 
     // Known-key sets for SPEC §2.2's even/odd criticality rule (see [checkRecordKeys]).
-    // Key 0 (typeId) is no longer inside the field map — it's a QDEF prefix item (§3).
-    private val KNOWN_CONTENT_PREVIEW = setOf(
-        PK_CACHE_ID, PK_HINT, PK_MIME, PK_FILENAME, PK_TITLE, PK_DESCRIPTION,
-        PK_COLLECTION_ID, PK_COLLECTION_LABEL, PK_COLLECTION_TAG, PK_ICON, PK_PIXEL_ART,
-        PK_LAT, PK_LNG, PK_RADIUS_M, PK_PREFER_DECLARED_LOCATION, PK_LOCATION_LABEL,
-        PK_KEY_MATERIAL, PK_RETAIN_KEY, PK_ENCRYPTION, PK_KDF_ALG, PK_KDF_SALT, PK_KDF_ITERS,
-        PK_SIGNATURE_ALGORITHM, PK_SIGNER_ID, PK_SIGNER_LABEL, PK_IN_REPLY_TO, PK_CREATED_AT, PK_SOURCE_URL)
-    private val KNOWN_CONTENT_BODY = setOf(BK_CONTENT, BK_SIGNATURE, BK_SIGNER_PUBKEY)
+    private val KNOWN_CONTENT_EXTENSION = setOf(
+        EK_HINT, EK_DESCRIPTION, EK_COLLECTION_ID, EK_COLLECTION_LABEL, EK_COLLECTION_TAG, EK_ICON,
+        EK_PIXEL_ART, EK_LAT, EK_LNG, EK_RADIUS_M, EK_PREFER_DECLARED_LOCATION, EK_LOCATION_LABEL,
+        EK_KEY_MATERIAL, EK_RETAIN_KEY, EK_ENCRYPTION, EK_KDF_ALG, EK_KDF_SALT, EK_KDF_ITERS,
+        EK_SIGNATURE_ALGORITHM, EK_SIGNER_ID, EK_SIGNER_LABEL, EK_IN_REPLY_TO, EK_CREATED_AT, EK_SOURCE_URL)
+    private val KNOWN_MEDIA_PREVIEW = setOf(MPK_MEDIA_TYPE, MPK_CONTENT_HASH, MPK_FILENAME, MPK_LABEL)
+    private val KNOWN_MEDIA_PAYLOAD = setOf(MYK_MEDIA_TYPE, MYK_CONTENT)
+    private val KNOWN_CONTENT_SIGNATURE = setOf(CSK_SIGNATURE, CSK_SIGNER_PUBKEY)
     private val KNOWN_PAPER_PREVIEW = setOf(
         PPK_ROOT_HASH, PPK_HINT, PPK_SET, PPK_SLUG, PPK_DOMAIN, PPK_STEP,
         PPK_COLLECTION_ID, PPK_COLLECTION_LABEL, PPK_COLLECTION_TAG, PPK_ICON,
@@ -236,12 +251,12 @@ object TagDropCodec {
 
     // ── Content addressing (IPFS-inspired, SPEC §4.4) ─────────────────────────
 
-    /** `cache_id` = SHA-256(uncompressed content)[0:8] — same bytes, same ID, everywhere. */
+    /** `contentHash` = SHA-256(uncompressed content)[0:8] — same bytes, same ID, everywhere. */
     fun contentId(content: ByteArray): ByteArray = sha256(content).copyOf(8)
 
     /**
-     * 8 random bytes — `cache_id` for a Content code carrying a hidden override map (SPEC §9),
-     * so the ID itself can't be used as a content-equality oracle against a known plaintext.
+     * 8 random bytes — `contentHash` for a Content code carrying a hidden override map (SPEC
+     * §9), so the ID itself can't be used as a content-equality oracle against a known plaintext.
      */
     fun randomCacheId(): ByteArray = ByteArray(8).also { SecureRandom().nextBytes(it) }
 
@@ -345,15 +360,11 @@ object TagDropCodec {
         return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
     }
 
-    // ── QDEF Records (QDEF-SPEC.md §3: bare uint typeId prefix + field map) ──────
-
-    /** A QDEF Record: a bare uint typeId prefix followed by a CBOR field map (no key 0). Fields sort ascending (SPEC §2.2). */
-    private fun cborRecord(typeId: Int, fields: List<Pair<Int, Any?>>): ByteArray =
-        MiniCbor.encodeUInt(typeId.toLong()) + MiniCbor.encodeMap(fields.sortedBy { it.first })
+    // ── QDEF Records (QDEF-SPEC.md §3.1: array-wrapped [typeId, map, subrecord*]) ─────
 
     /** QDEF Compress Wrapper (Type 8, QDEF-SPEC.md §4.1) — DEFLATEs [bodyBytes] as its `payload` field. */
     private fun compressWrap(bodyBytes: ByteArray): ByteArray =
-        cborRecord(TYPE_COMPRESS, listOf(CK_PAYLOAD to compress(bodyBytes)))
+        MiniCbor.encodeRecord(TYPE_COMPRESS, listOf(CK_PAYLOAD to compress(bodyBytes)))
 
     /**
      * Fragments [bytes] into [fragmentCount] QDEF Split Wrapper Records (Type 2, QDEF-SPEC.md
@@ -361,20 +372,25 @@ object TagDropCodec {
      * length), stamped with [groupId] (a content hash of [bytes], computed by the caller). If
      * [withParity], appends one more fragment at `index == count`: the byte-wise XOR of every
      * data fragment, each implicitly zero-padded to the widest — SPEC §5's single-loss
-     * redundancy scheme.
+     * redundancy scheme. [extraSubrecords] (SPEC §3.1a) is attached to every fragment Record,
+     * unwrapped and repeated — used to carry Content's Media Preview alongside a Split-wrapped
+     * Media Payload; Paper has none, so it's empty by default.
      */
-    private fun splitFragments(bytes: ByteArray, groupId: ByteArray, fragmentCount: Int, withParity: Boolean): List<ByteArray> {
+    private fun splitFragments(
+        bytes: ByteArray, groupId: ByteArray, fragmentCount: Int, withParity: Boolean,
+        extraSubrecords: List<ByteArray> = emptyList()
+    ): List<ByteArray> {
         val total = bytes.size
         val chunkLen = (total + fragmentCount - 1) / fragmentCount
         val fragments = mutableListOf<ByteArray>()
         for (i in 0 until fragmentCount) {
             val start = minOf(i * chunkLen, total)
             val end = minOf(start + chunkLen, total)
-            fragments.add(cborRecord(TYPE_SPLIT, listOf(
+            fragments.add(MiniCbor.encodeRecord(TYPE_SPLIT, listOf(
                 SK_GROUP_ID to groupId, SK_INDEX to i, SK_COUNT to fragmentCount,
                 SK_DATA to bytes.copyOfRange(start, end), SK_TOTAL to total,
                 SK_PARITY to (1.takeIf { withParity })
-            )))
+            ), extraSubrecords))
         }
         if (withParity) {
             val parity = ByteArray(chunkLen)
@@ -383,22 +399,22 @@ object TagDropCodec {
                 val end = minOf(start + chunkLen, total)
                 for (j in start until end) parity[j - start] = (parity[j - start].toInt() xor bytes[j].toInt()).toByte()
             }
-            fragments.add(cborRecord(TYPE_SPLIT, listOf(
+            fragments.add(MiniCbor.encodeRecord(TYPE_SPLIT, listOf(
                 SK_GROUP_ID to groupId, SK_INDEX to fragmentCount, SK_COUNT to fragmentCount,
                 SK_DATA to parity, SK_TOTAL to total, SK_PARITY to 1
-            )))
+            ), extraSubrecords))
         }
         return fragments
     }
 
     /**
-     * Builds the codes for one payload: [preview] repeated on every code (SPEC §5.1), plus
-     * either [body] directly (single code, if it and [preview] together fit within
-     * [maxFragmentDataBytes]), or [body] Split-wrapped across as many codes as needed. Shared
-     * by [createContentSectors] and [createPaper] — the only difference between them is what
-     * [preview]/[body] contain. `group_id` is `SHA-256(body)[0:8]` (the wrapped — Compress-
-     * wrapped if [compress], not the raw plain — bytes, SPEC §5.1), computed once and reused
-     * across every fragment of the group.
+     * Builds the codes for one Paper payload: [preview] repeated on every code (SPEC §5.1),
+     * plus either [body] directly (single code, if it and [preview] together fit within
+     * [maxFragmentDataBytes]), or [body] Split-wrapped across as many codes as needed.
+     * `group_id` is `SHA-256(body)[0:8]` (the wrapped — Compress-wrapped if [compressBody], not
+     * the raw plain — bytes, SPEC §5.1), computed once and reused across every fragment of the
+     * group. Content doesn't use this — its single-code/multi-code nesting differs (§3.1a), see
+     * [createContentSectors].
      */
     private fun buildCodes(
         preview: ByteArray, body: ByteArray, compressBody: Boolean, withParity: Boolean, maxFragmentDataBytes: Int
@@ -412,21 +428,31 @@ object TagDropCodec {
         return splitFragments(wrapped, groupId, fragmentCount, withParity).map { preview + it }
     }
 
-    // ── Content: build (SPEC §3.1-§3.2) ─────────────────────────────────────────
+    // ── Content: build (SPEC §3.1/§3.1a) ────────────────────────────────────────
 
     /**
      * The result of building a Content payload's code(s): [codes] are the final wire bytes
-     * (Split/Compress-wrapped as needed) to encode/render; [previewRaw]/[bodyRaw] are the
-     * LOGICAL (unwrapped, unsplit) Preview/Body Record bytes — not reconstructable from [codes]
-     * alone once Split/Compress-wrapped — exposed so a signer can hash them directly
-     * (`contentSignedMessageHash`, `data/signing/SigningIdentity.kt`) without re-decoding a code.
+     * (Split/Compress-wrapped as needed) to encode/render; [extensionRaw]/[mediaPreviewRaw]/
+     * [mediaPayloadRaw] are the LOGICAL (unwrapped, unsplit, pre-wire-nesting) Record bytes —
+     * not reconstructable from [codes] alone once Split/Compress-wrapped or nested — exposed
+     * so a signer can hash them directly ([contentSignedMessageHash],
+     * `data/signing/SigningIdentity.kt`) without re-decoding a code.
      */
-    data class ContentBuild(val codes: List<ByteArray>, val previewRaw: ByteArray, val bodyRaw: ByteArray, val cacheId: ByteArray?)
+    data class ContentBuild(
+        val codes: List<ByteArray>,
+        val extensionRaw: ByteArray,
+        val mediaPreviewRaw: ByteArray,
+        val mediaPayloadRaw: ByteArray,
+        val cacheId: ByteArray?
+    )
 
     /**
-     * Builds the code(s) for a Content payload. A Preview Record (Content-Preview, Type 1) is
-     * repeated on every code; a Body Record (Content-Body, Type 3, optionally Compress- and
-     * Split-wrapped) carries `content` plus the large signature fields, when there is one.
+     * Builds the code(s) for a Content payload. A Content Extension Record (Type 1) is
+     * repeated on every code; Media Preview (QDEF Type 14) is likewise repeated on every code
+     * (nested as Split's subrecord in the multi-code case). Media Payload (QDEF Type 6,
+     * optionally Compress- and Split-wrapped) carries `content` plus, if signed, a nested
+     * Content Signature subrecord (Type 3) — nested inside Media Preview when the payload fits
+     * on one code, or Split-wrapped when it doesn't (SPEC §3.1a, §5.1).
      *
      * [hint]/[filename]/[mimeType]/[rawContent] become the **clear** view — shown until a
      * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a
@@ -434,7 +460,7 @@ object TagDropCodec {
      *
      * If [override] is given (with [encryptionKey], 32 bytes — see [generateKeyMaterial]),
      * the content slot IS the AES-256-GCM-encrypted override blob (SPEC §9) rather than
-     * [rawContent]; `cacheId` becomes random (see [randomCacheId]), and `encryption` is set
+     * [rawContent]; `contentHash` becomes random (see [randomCacheId]), and `encryption` is set
      * to the AES-256-GCM hint unless [declareEncryption] is false (the hint is cosmetic).
      *
      * [lat]/[lng] are the author's own declared coordinates for this content's physical
@@ -450,12 +476,13 @@ object TagDropCodec {
      * human-readable, non-coordinate location description (e.g. "🚋 Tram 40"); it may also be
      * present alongside coordinates, simply as descriptive text.
      *
-     * [inReplyTo] is the `cache_id`/`root_hash` of a single parent this content is replying to
-     * (SPEC §7, "Replies and threading") — omit for a new, unprompted message.
+     * [inReplyTo] is the `contentHash`/`root_hash` of a single parent this content is replying
+     * to (SPEC §7, "Replies and threading") — omit for a new, unprompted message.
      *
-     * [title] is an optional short subject/caption, kept separate from [hint]'s existing role.
-     * [description] is an optional content teaser or message body — e.g. a postcard's message
-     * when [rawContent] is spoken for by an attachment instead (SPEC §7, "Postcards").
+     * [title] is an optional short subject/caption, kept separate from [hint]'s existing role —
+     * carried on Media Preview's `label` field (SPEC §3.1a). [description] is an optional
+     * content teaser or message body — e.g. a postcard's message when [rawContent] is spoken
+     * for by an attachment instead (SPEC §7, "Postcards").
      *
      * [createdAt] is an optional author-declared Unix timestamp (seconds since epoch) recording
      * when this payload was authored — the authoring device's clock at encode time, not an
@@ -491,13 +518,13 @@ object TagDropCodec {
         withParity: Boolean = false,
         maxSectorDataBytes: Int = Int.MAX_VALUE
     ): ContentBuild {
-        // Compression is never applied to `rawContent` directly — matching the web generator's
-        // createContentSectors, an encrypted override blob is already high-entropy (DEFLATE-ing
-        // it wastes a wrapper layer for nothing) and gets its own inner compression instead
-        // (compressed before encryption, inside encryptOverrideMap); a plain content slot is
-        // compressed, if requested, by Compress-wrapping the whole Body Record (QDEF Type 8,
-        // see buildCodes's compressBody), not by pre-compressing the field's bytes here.
-        val cacheId: ByteArray?
+        // Compression is never applied to `rawContent` directly — an encrypted override blob is
+        // already high-entropy (DEFLATE-ing it wastes a wrapper layer for nothing) and gets its
+        // own inner compression instead (compressed before encryption, inside
+        // encryptOverrideMap); a plain content slot is compressed, if requested, by
+        // Compress-wrapping the whole Media Payload Record (QDEF Type 8), not by pre-compressing
+        // the field's bytes here.
+        val cacheId: ByteArray
         val contentSlot: ByteArray
         val encryption: Int
         if (override != null) {
@@ -512,25 +539,57 @@ object TagDropCodec {
             encryption = ENCRYPTION_NONE
         }
 
-        val preview = cborRecord(TYPE_CONTENT_PREVIEW, listOf(
-            PK_CACHE_ID to cacheId, PK_HINT to hint, PK_MIME to mimeType, PK_FILENAME to filename,
-            PK_TITLE to title, PK_DESCRIPTION to description,
-            PK_COLLECTION_ID to collectionId, PK_COLLECTION_LABEL to collectionLabel, PK_COLLECTION_TAG to collectionTag,
-            PK_ICON to icon, PK_PIXEL_ART to (true.takeIf { pixelArt }),
-            PK_LAT to lat, PK_LNG to lng, PK_RADIUS_M to radiusM,
-            PK_PREFER_DECLARED_LOCATION to (true.takeIf { preferDeclaredLocation }), PK_LOCATION_LABEL to locationLabel,
-            PK_KEY_MATERIAL to keyMaterial, PK_RETAIN_KEY to (false.takeIf { keyMaterial != null && !retainKey }),
-            PK_ENCRYPTION to (encryption.takeIf { it != ENCRYPTION_NONE }),
-            PK_KDF_ALG to null, PK_KDF_SALT to null, PK_KDF_ITERS to null,
-            PK_SIGNATURE_ALGORITHM to (signatureAlgorithm.takeIf { it != SIGNATURE_ALG_NONE }),
-            PK_SIGNER_ID to signerId, PK_SIGNER_LABEL to signerLabel,
-            PK_IN_REPLY_TO to inReplyTo, PK_CREATED_AT to createdAt, PK_SOURCE_URL to null
+        val extensionRaw = MiniCbor.encodeRecord(TYPE_CONTENT_EXTENSION, listOf(
+            EK_HINT to hint, EK_DESCRIPTION to description,
+            EK_COLLECTION_ID to collectionId, EK_COLLECTION_LABEL to collectionLabel, EK_COLLECTION_TAG to collectionTag,
+            EK_ICON to icon, EK_PIXEL_ART to (true.takeIf { pixelArt }),
+            EK_LAT to lat, EK_LNG to lng, EK_RADIUS_M to radiusM,
+            EK_PREFER_DECLARED_LOCATION to (true.takeIf { preferDeclaredLocation }), EK_LOCATION_LABEL to locationLabel,
+            EK_KEY_MATERIAL to keyMaterial, EK_RETAIN_KEY to (false.takeIf { keyMaterial != null && !retainKey }),
+            EK_ENCRYPTION to (encryption.takeIf { it != ENCRYPTION_NONE }),
+            EK_KDF_ALG to null, EK_KDF_SALT to null, EK_KDF_ITERS to null,
+            EK_SIGNATURE_ALGORITHM to (signatureAlgorithm.takeIf { it != SIGNATURE_ALG_NONE }),
+            EK_SIGNER_ID to signerId, EK_SIGNER_LABEL to signerLabel,
+            EK_IN_REPLY_TO to inReplyTo, EK_CREATED_AT to createdAt, EK_SOURCE_URL to null
         ))
-        val body = cborRecord(TYPE_CONTENT_BODY, listOf(
-            BK_CONTENT to contentSlot, BK_SIGNATURE to signature, BK_SIGNER_PUBKEY to signerPubkey
-        ))
-        val codes = buildCodes(preview, body, compressBody = compress && override == null, withParity = withParity, maxFragmentDataBytes = maxSectorDataBytes)
-        return ContentBuild(codes, preview, body, cacheId)
+
+        fun buildMediaPreview(subrecords: List<ByteArray> = emptyList()) = MiniCbor.encodeRecord(TYPE_MEDIA_PREVIEW, listOf(
+            MPK_MEDIA_TYPE to mimeType,
+            MPK_CONTENT_HASH to (byteArrayOf(0x12) + cacheId),
+            MPK_FILENAME to filename, MPK_LABEL to title
+        ), subrecords)
+        // The LOGICAL (bare) Media Preview bytes — for hashing/return, and reused unwrapped as
+        // Split's own repeated subrecord in the multi-code case (§3.1a).
+        val mediaPreviewRaw = buildMediaPreview()
+
+        val contentSignatureRecord = if (signature != null) {
+            MiniCbor.encodeRecord(TYPE_CONTENT_SIGNATURE, listOf(CSK_SIGNATURE to signature, CSK_SIGNER_PUBKEY to signerPubkey))
+        } else null
+        val mediaPayloadRaw = MiniCbor.encodeRecord(
+            TYPE_MEDIA_PAYLOAD, listOf(MYK_MEDIA_TYPE to mimeType, MYK_CONTENT to contentSlot),
+            if (contentSignatureRecord != null) listOf(contentSignatureRecord) else emptyList()
+        )
+        // An encrypted override blob is already high-entropy — Compress-wrapping it on top would
+        // waste a wrapper layer for nothing (DEFLATE doesn't shrink it).
+        val mediaPayloadForWire = if (compress && override == null) compressWrap(mediaPayloadRaw) else mediaPayloadRaw
+
+        val totalBytes = mediaPayloadForWire.size
+        if (totalBytes <= maxSectorDataBytes) {
+            // Single code: Media Payload (or its Compress Wrapper) nests as Media Preview's own
+            // subrecord (§3.1a) — not a separate sibling Record.
+            val wireMediaPreview = buildMediaPreview(listOf(mediaPayloadForWire))
+            val code = extensionRaw + wireMediaPreview
+            return ContentBuild(listOf(code), extensionRaw, mediaPreviewRaw, mediaPayloadRaw, cacheId)
+        }
+
+        val fragmentCount = (totalBytes + maxSectorDataBytes - 1) / maxSectorDataBytes
+        val groupId = sha256(mediaPayloadForWire).copyOf(8)
+        // Media Preview becomes Split's own repeated subrecord in the multi-code case (§3.1a) —
+        // Content Extension stays a separate top-level Record, repeated per code exactly as in
+        // the single-code case above.
+        val fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, withParity, listOf(mediaPreviewRaw))
+        val codes = fragments.map { extensionRaw + it }
+        return ContentBuild(codes, extensionRaw, mediaPreviewRaw, mediaPayloadRaw, cacheId)
     }
 
     /**
@@ -580,31 +639,33 @@ object TagDropCodec {
     }
 
     /**
-     * Builds a single "key-only" code (SPEC §9): a Content-Preview Record carrying
-     * [keyMaterial] for other content, with no Body Record at all.
+     * Builds a single "key-only" code (SPEC §9): a Content Extension Record carrying
+     * [keyMaterial] for other content, with no Media Preview/Payload at all.
      */
     fun createKeyCodeSector(keyMaterial: ByteArray, retainKey: Boolean = true, hint: String? = null): ByteArray {
         require(keyMaterial.size == AES_KEY_BYTES) { "key_material must be $AES_KEY_BYTES bytes" }
-        return cborRecord(TYPE_CONTENT_PREVIEW, listOf(
-            PK_HINT to hint, PK_KEY_MATERIAL to keyMaterial, PK_RETAIN_KEY to (false.takeIf { !retainKey })
+        return MiniCbor.encodeRecord(TYPE_CONTENT_EXTENSION, listOf(
+            EK_HINT to hint, EK_KEY_MATERIAL to keyMaterial, EK_RETAIN_KEY to (false.takeIf { !retainKey })
         ))
     }
 
     /**
-     * SPEC §10's Content signed-message hash: `SHA-256(Preview' || Body')`, where `Preview'`
-     * strips [CONTENT_PREVIEW_SIGNATURE_KEYS] and `Body'` strips [CONTENT_BODY_SIGNATURE_KEYS]
-     * — the hash an *unsigned* build would have produced, computed from the **logical**
-     * (already Compress-unwrapped, if applicable) Record bytes. Works whether [previewRaw]/
-     * [bodyRaw] are already signed (the common verification case) or never signed at all
-     * (nothing to strip). [bodyRaw] null (a key-only code, SPEC §9: Preview only, no Body at
-     * all) contributes empty bytes, not a skipped/absent term. Used both by the encode-side
-     * "hash the placeholder build, then sign" step (`data/signing/SigningIdentity.kt`) and the
-     * decode-side verify step (`data/signing/SignatureVerifier.kt`).
+     * SPEC §10's Content signed-message hash: `SHA-256(MediaPreview' || MediaPayload'' ||
+     * Extension')`, where `MediaPreview'` is Media Preview's canonical bytes (nothing to strip
+     * — it never carries a signature field), `MediaPayload''` is Media Payload's canonical bytes
+     * with its own Content Signature subrecord (Type 3) omitted entirely if present, and
+     * `Extension'` is Content Extension's canonical bytes with [CONTENT_EXTENSION_SIGNATURE_KEYS]
+     * stripped — the hash an *unsigned* build would have produced, computed from the **logical**
+     * (already Compress-unwrapped/un-nested, if applicable) Record bytes. [mediaPreviewRaw]/
+     * [mediaPayloadRaw] null (a key-only code, SPEC §9: Extension only, nothing else) contributes
+     * empty bytes for that term, not a skipped one. Used both by the encode-side "hash the
+     * placeholder build, then sign" step (`data/signing/SigningIdentity.kt`) and the decode-side
+     * verify step (`data/signing/SignatureVerifier.kt`).
      */
-    fun contentSignedMessageHash(previewRaw: ByteArray, bodyRaw: ByteArray?): ByteArray {
-        val unsignedPreview = MiniCbor.stripKeys(previewRaw, CONTENT_PREVIEW_SIGNATURE_KEYS)
-        val unsignedBody = bodyRaw?.let { MiniCbor.stripKeys(it, CONTENT_BODY_SIGNATURE_KEYS) } ?: ByteArray(0)
-        return sha256(unsignedPreview + unsignedBody)
+    fun contentSignedMessageHash(extensionRaw: ByteArray, mediaPreviewRaw: ByteArray?, mediaPayloadRaw: ByteArray?): ByteArray {
+        val unsignedExtension = MiniCbor.stripKeys(extensionRaw, CONTENT_EXTENSION_SIGNATURE_KEYS)
+        val unsignedMediaPayload = mediaPayloadRaw?.let { MiniCbor.stripSubrecordType(it, TYPE_CONTENT_SIGNATURE) } ?: ByteArray(0)
+        return sha256((mediaPreviewRaw ?: ByteArray(0)) + unsignedMediaPayload + unsignedExtension)
     }
 
     // ── Paper: build (SPEC §3.3-§3.4, §4.4) ─────────────────────────────────────
@@ -664,11 +725,11 @@ object TagDropCodec {
             ))
         })
 
-        fun buildBody(sig: ByteArray?, pubkey: ByteArray?) = cborRecord(TYPE_PAPER_BODY, listOf(
+        fun buildBody(sig: ByteArray?, pubkey: ByteArray?) = MiniCbor.encodeRecord(TYPE_PAPER_BODY, listOf(
             PBK_FILES to filesCbor, PBK_RELATED to relatedCbor,
             PBK_SIGNATURE to sig, PBK_SIGNER_PUBKEY to pubkey
         ))
-        fun buildPreview(rootHash: ByteArray?, sigAlg: Int?, sId: ByteArray?, sLabel: String?) = cborRecord(TYPE_PAPER_PREVIEW, listOf(
+        fun buildPreview(rootHash: ByteArray?, sigAlg: Int?, sId: ByteArray?, sLabel: String?) = MiniCbor.encodeRecord(TYPE_PAPER_PREVIEW, listOf(
             PPK_ROOT_HASH to rootHash, PPK_HINT to label, PPK_SET to set, PPK_SLUG to slug, PPK_DOMAIN to domain,
             PPK_STEP to step,
             PPK_COLLECTION_ID to collectionId, PPK_COLLECTION_LABEL to collectionLabel, PPK_COLLECTION_TAG to collectionTag,
@@ -820,142 +881,196 @@ object TagDropCodec {
     /**
      * Decodes a [ScannedRecord] straight from its raw CBOR Record Sequence, with no
      * `tagdrop:`/Base41 text wrapper — the carrier already supports raw bytes (SPEC §13: NFC
-     * NDEF). Returns null for an unrecognized Preview Type ID or malformed sequence.
+     * NDEF). Returns null for an unrecognized leading Type ID or malformed sequence.
      */
     fun decodeRaw(bytes: ByteArray): TagDropScan? = recordScanResult(bytes)?.let { TagDropScan.RecordScan(it) }
-
-    /** Internal decode result: typeId (QDEF prefix item) + field map + raw bytes + trailing. */
-    private data class DecodedRecord(val typeId: Int, val record: Map<Int, Any>, val raw: ByteArray, val trailing: ByteArray)
-
-    /**
-     * Decodes one QDEF Record (QDEF-SPEC.md §3: bare uint typeId prefix + field map)
-     * from the head of [bytes].
-     * Returns `(typeId, record, raw, trailing)` — `raw` is the Record's own exact byte range
-     * (typeId prefix + field map; what signature/group-id hashes are computed over),
-     * `trailing` whatever follows in the Sequence — or null if the head of [bytes]
-     * isn't a well-formed Record.
-     */
-    @Suppress("UNCHECKED_CAST")
-    private fun decodeRecordPrefix(bytes: ByteArray): DecodedRecord? = runCatching {
-        val (items, trailing) = MiniCbor.decodeSequencePrefix(bytes, 2)
-        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: return@runCatching null
-        val record = items[1] as? Map<Int, Any> ?: return@runCatching null
-        DecodedRecord(typeId, record, bytes.copyOfRange(0, bytes.size - trailing.size), trailing)
-    }.getOrNull()
 
     /** SPEC §2.2 even/odd criticality: an unrecognized EVEN key means this decoder can't
      *  safely use the Record — reject it; an unrecognized ODD key is optional and ignored. */
     private fun checkRecordKeys(record: Map<Int, Any>, known: Set<Int>): Boolean =
         record.keys.all { it in known || it % 2 != 0 }
 
+    /**
+     * Decodes a new-format code (SPEC.md v9 §2, §5.1). Paper: a Paper-Preview Record,
+     * optionally followed by one more Record — the Body itself, a Compress Wrapper around it,
+     * or one Split fragment of it (unchanged from before v9). Content (§3.1/§3.1a): a Content
+     * Extension Record, optionally followed by one more top-level Record — either Media Preview
+     * (single-code case, with Media Payload nested as its own subrecord) or Split (multi-code
+     * case, with Media Preview nested as *its* subrecord instead). Either way, Media Preview's
+     * own fields are extracted here so a single scan is self-identifying regardless of
+     * reassembly progress (§5.1).
+     */
+    @Suppress("UNCHECKED_CAST")
     private fun recordScanResult(bytes: ByteArray): ScannedRecord? {
-        val first = decodeRecordPrefix(bytes) ?: return null
-        val typeId = first.typeId
-        val kind: PayloadKind
-        val known: Set<Int>
-        when (typeId) {
-            TYPE_CONTENT_PREVIEW -> { kind = PayloadKind.CONTENT; known = KNOWN_CONTENT_PREVIEW }
-            TYPE_PAPER_PREVIEW   -> { kind = PayloadKind.PAPER; known = KNOWN_PAPER_PREVIEW }
-            else -> return null
+        val first = MiniCbor.decodeRecordPrefix(bytes) ?: return null
+        return when (first.typeId) {
+            TYPE_CONTENT_EXTENSION -> contentScanResult(first)
+            TYPE_PAPER_PREVIEW -> paperScanResult(first)
+            else -> null
         }
-        if (!checkRecordKeys(first.record, known)) return null
-        var second: DecodedRecord? = null
-        if (first.trailing.isNotEmpty()) {
-            second = decodeRecordPrefix(first.trailing) ?: return null
-        }
-        return ScannedRecord(kind, first.raw, first.record, second?.typeId, second?.raw, second?.record)
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun contentScanResult(first: MiniCbor.DecodedRecord): ScannedRecord.Content? {
+        if (!checkRecordKeys(first.record, KNOWN_CONTENT_EXTENSION)) return null
+        if (first.trailing.isEmpty()) {
+            // Key-only code (SPEC §9): Extension only, no Media Preview/Payload at all.
+            return ScannedRecord.Content(first.raw, first.record, null, null, null, null, null)
+        }
+        val second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
+        if (second.typeId == TYPE_MEDIA_PREVIEW) {
+            // Single-code case: Media Payload is Media Preview's own (sole) subrecord.
+            if (!checkRecordKeys(second.record, KNOWN_MEDIA_PREVIEW) || second.subrecords.size != 1) return null
+            val mediaPreviewRaw = MiniCbor.stripAllSubrecords(second.raw)
+            return ScannedRecord.Content(first.raw, first.record, second.record, mediaPreviewRaw, null, second.subrecords[0].raw, second.raw)
+        }
+        if (second.typeId == TYPE_SPLIT) {
+            // Multi-code case: Media Preview is Split's own subrecord instead.
+            if (!checkRecordKeys(second.record, KNOWN_SPLIT)) return null
+            val mediaPreviewSub = second.subrecords.find { it.typeId == TYPE_MEDIA_PREVIEW } ?: return null
+            if (!checkRecordKeys(mediaPreviewSub.record, KNOWN_MEDIA_PREVIEW)) return null
+            return ScannedRecord.Content(first.raw, first.record, mediaPreviewSub.record, mediaPreviewSub.raw, second.record, null, second.raw)
+        }
+        return null
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun paperScanResult(first: MiniCbor.DecodedRecord): ScannedRecord.Paper? {
+        if (!checkRecordKeys(first.record, KNOWN_PAPER_PREVIEW)) return null
+        var second: MiniCbor.DecodedRecord? = null
+        if (first.trailing.isNotEmpty()) {
+            second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
+        }
+        return ScannedRecord.Paper(first.raw, first.record, second?.typeId, second?.raw, second?.record)
+    }
+
+    /** Outcome of unwrapping a (possibly Compress-wrapped) Media Payload byte sequence. */
+    private data class UnwrappedMediaPayload(val body: Map<Int, Any>, val bodyRaw: ByteArray, val contentSignature: Map<Int, Any>?)
+
     /**
-     * Unwraps a (possibly Compress-wrapped) Body byte sequence into its Body Record's own
-     * `(record, raw)` — `raw` being the LOGICAL Record bytes SPEC §10's signature formula
-     * covers, i.e. after any Compress unwrap — or null if malformed.
+     * Unwraps a (possibly Compress-wrapped) Media Payload byte sequence into its own
+     * `(record, raw, contentSignature)` — [UnwrappedMediaPayload.bodyRaw] being the LOGICAL
+     * Media Payload Record bytes SPEC §10's signature formula covers (i.e. after any Compress
+     * unwrap, WITH its own Content Signature subrecord, if any, still present — the caller
+     * strips that separately when hashing), [UnwrappedMediaPayload.contentSignature] the
+     * decoded Content Signature subrecord if present — or null if malformed.
      */
-    private fun unwrapBody(bodyWireBytes: ByteArray, isPaper: Boolean): Pair<Map<Int, Any>, ByteArray>? {
-        var cur = decodeRecordPrefix(bodyWireBytes) ?: return null
+    @Suppress("UNCHECKED_CAST")
+    private fun unwrapMediaPayload(bodyWireBytes: ByteArray): UnwrappedMediaPayload? {
+        var cur = MiniCbor.decodeRecordPrefix(bodyWireBytes) ?: return null
         if (cur.typeId == TYPE_COMPRESS) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
             val payload = cur.record[CK_PAYLOAD] as? ByteArray ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
-            cur = decodeRecordPrefix(inflated) ?: return null
+            cur = MiniCbor.decodeRecordPrefix(inflated) ?: return null
         }
-        val expectedType = if (isPaper) TYPE_PAPER_BODY else TYPE_CONTENT_BODY
-        val expectedKeys = if (isPaper) KNOWN_PAPER_BODY else KNOWN_CONTENT_BODY
-        if (cur.typeId != expectedType || !checkRecordKeys(cur.record, expectedKeys)) return null
+        if (cur.typeId != TYPE_MEDIA_PAYLOAD || !checkRecordKeys(cur.record, KNOWN_MEDIA_PAYLOAD)) return null
+        var contentSignature: Map<Int, Any>? = null
+        val cs = cur.subrecords.find { it.typeId == TYPE_CONTENT_SIGNATURE }
+        if (cs != null) {
+            if (!checkRecordKeys(cs.record, KNOWN_CONTENT_SIGNATURE)) return null
+            contentSignature = cs.record
+        }
+        return UnwrappedMediaPayload(cur.record, cur.raw, contentSignature)
+    }
+
+    /**
+     * Unwraps a (possibly Compress-wrapped) Paper-Body byte sequence into its own
+     * `(record, raw)` — `raw` being the LOGICAL Record bytes SPEC §10's signature formula
+     * covers, i.e. after any Compress unwrap — or null if malformed.
+     */
+    private fun unwrapPaperBody(bodyWireBytes: ByteArray): Pair<Map<Int, Any>, ByteArray>? {
+        var cur = MiniCbor.decodeRecordPrefix(bodyWireBytes) ?: return null
+        if (cur.typeId == TYPE_COMPRESS) {
+            if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
+            val payload = cur.record[CK_PAYLOAD] as? ByteArray ?: return null
+            val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
+            cur = MiniCbor.decodeRecordPrefix(inflated) ?: return null
+        }
+        if (cur.typeId != TYPE_PAPER_BODY || !checkRecordKeys(cur.record, KNOWN_PAPER_BODY)) return null
         return cur.record to cur.raw
     }
 
     // ── Reassembly primitives used by SectorAssembler ───────────────────────────
 
-    /** Outcome of parsing a Content payload's reassembled Body (SPEC §5 steps 3-5). */
+    /** Outcome of parsing a Content payload's reassembled Media Payload (SPEC §5 steps 3-5). */
     sealed class ContentParse {
         /**
-         * Parsed and (if reassembled from a Split group) `group_id`-verified. [bodyRaw] is the
-         * LOGICAL (Compress-unwrapped, if applicable) Body Record bytes SPEC §10's signature
-         * formula covers — null for a key-only code (no Body at all).
+         * Parsed and (if reassembled from a Split group) `group_id`-verified. [mediaPayloadRaw]
+         * is the LOGICAL (Compress-unwrapped, if applicable) Media Payload Record bytes SPEC
+         * §10's signature formula covers — null for a key-only code (no Media Payload at all).
          */
-        data class Ok(val content: TagDropPayload.Content, val bodyRaw: ByteArray?) : ContentParse()
+        data class Ok(val content: TagDropPayload.Content, val mediaPayloadRaw: ByteArray?) : ContentParse()
         /** `group_id` was checked and did not match — incomplete or corrupt assembly. */
         object HashMismatch : ContentParse()
-        /** The bytes aren't a well-formed Content Preview+Body pair. */
+        /** The bytes aren't a well-formed Content Extension+Media Payload set. */
         object Malformed : ContentParse()
     }
 
     /**
-     * Resolves a scanned Content [record] whose Body (if any) is already fully in hand — either
-     * `record.second` directly (single-code payload) or externally reassembled Split-fragment
-     * data (multi-code payload, passed as [reassembledBody]). `record.second`/[reassembledBody]
-     * both null means a key-only code (SPEC §9): Preview only, empty content.
+     * Resolves a scanned Content [record] whose Media Payload (if any) is already fully in hand
+     * — either [record]'s own single-code wire bytes directly, or externally reassembled Split-
+     * fragment data (multi-code payload, passed as [reassembledMediaPayloadWireBytes]). Both
+     * null means a key-only code (SPEC §9): Extension only, empty content.
      */
     @Suppress("UNCHECKED_CAST")
-    fun parseContentStream(record: ScannedRecord, reassembledBody: ByteArray? = null): ContentParse {
-        val bodyWireBytes = reassembledBody ?: record.secondRaw
-        val preview = record.preview
+    fun parseContentStream(record: ScannedRecord.Content, reassembledMediaPayloadWireBytes: ByteArray? = null): ContentParse {
+        val bodyWireBytes = reassembledMediaPayloadWireBytes ?: record.mediaPayloadWireRaw
         if (bodyWireBytes == null) {
-            return ContentParse.Ok(contentFromParts(record.previewRaw, preview, null, ByteArray(0)), bodyRaw = null)
+            return ContentParse.Ok(contentFromParts(record.extension, null, ByteArray(0), null), mediaPayloadRaw = null)
         }
-        val (body, bodyRaw) = unwrapBody(bodyWireBytes, isPaper = false) ?: return ContentParse.Malformed
-        val slot = body[BK_CONTENT] as? ByteArray ?: ByteArray(0)
-        return ContentParse.Ok(contentFromParts(record.previewRaw, preview, bodyRaw, slot, body), bodyRaw = bodyRaw)
+        val unwrapped = unwrapMediaPayload(bodyWireBytes) ?: return ContentParse.Malformed
+        val slot = unwrapped.body[MYK_CONTENT] as? ByteArray ?: ByteArray(0)
+        return ContentParse.Ok(
+            contentFromParts(record.extension, record.mediaPreview, slot, unwrapped.contentSignature),
+            mediaPayloadRaw = unwrapped.bodyRaw
+        )
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun contentFromParts(previewRaw: ByteArray, preview: Map<Int, Any>, bodyRaw: ByteArray?, slot: ByteArray, body: Map<Int, Any>? = null): TagDropPayload.Content =
-        TagDropPayload.Content(
-            cacheId         = preview.bytesOrNull(PK_CACHE_ID),
-            hint            = preview.text(PK_HINT),
-            filename        = preview.text(PK_FILENAME),
-            mimeType        = preview.text(PK_MIME) ?: "",
+    private fun contentFromParts(
+        extension: Map<Int, Any>, mediaPreview: Map<Int, Any>?, slot: ByteArray, contentSignature: Map<Int, Any>?
+    ): TagDropPayload.Content {
+        val rawHash = mediaPreview?.get(MPK_CONTENT_HASH) as? ByteArray
+        // contentHash is multihash-style on the wire (1-byte function-code prefix, §4.4) —
+        // stripped back to the plain 8-byte digest this app's cacheId convention uses elsewhere.
+        val cacheId = if (rawHash != null && rawHash.size > 1) rawHash.copyOfRange(1, rawHash.size) else null
+        return TagDropPayload.Content(
+            cacheId         = cacheId,
+            hint            = extension.text(EK_HINT),
+            filename        = mediaPreview?.text(MPK_FILENAME),
+            mimeType        = mediaPreview?.text(MPK_MEDIA_TYPE) ?: "",
             compression     = COMPRESSION_NONE, // Compress Wrapper presence is transient (unwrapped already); not re-declared on TagDropPayload
             content         = slot,
             overrideBlob    = slot.takeIf { it.size >= OVERRIDE_BLOB_MIN_BYTES },
-            encryption      = preview.uint(PK_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
-            keyMaterial     = preview.bytesOrNull(PK_KEY_MATERIAL),
-            retainKey       = preview.boolOrNull(PK_RETAIN_KEY) ?: true,
-            collectionId    = preview.bytesOrNull(PK_COLLECTION_ID),
-            collectionLabel = preview.text(PK_COLLECTION_LABEL),
-            collectionTag   = preview.text(PK_COLLECTION_TAG),
-            icon            = preview.text(PK_ICON),
-            kdfAlg          = preview.uint(PK_KDF_ALG)?.toInt() ?: KDF_NONE,
-            kdfSalt         = preview.bytesOrNull(PK_KDF_SALT),
-            kdfIters        = preview.uint(PK_KDF_ITERS)?.toInt() ?: DEFAULT_KDF_ITERS,
-            lat             = preview.doubleOrNull(PK_LAT),
-            lng             = preview.doubleOrNull(PK_LNG),
-            radiusM         = preview.doubleOrNull(PK_RADIUS_M),
-            preferDeclaredLocation = preview.boolOrNull(PK_PREFER_DECLARED_LOCATION) ?: false,
-            locationLabel   = preview.text(PK_LOCATION_LABEL),
-            inReplyTo       = preview.bytesOrNull(PK_IN_REPLY_TO),
-            title           = preview.text(PK_TITLE),
-            description     = preview.text(PK_DESCRIPTION),
-            createdAt       = preview.uint(PK_CREATED_AT),
-            pixelArt        = preview.boolOrNull(PK_PIXEL_ART) ?: false,
-            sourceUrl       = preview.text(PK_SOURCE_URL),
-            signatureAlgorithm = preview.uint(PK_SIGNATURE_ALGORITHM)?.toInt() ?: SIGNATURE_ALG_NONE,
-            signature       = body?.bytesOrNull(BK_SIGNATURE),
-            signerPubkey    = body?.bytesOrNull(BK_SIGNER_PUBKEY),
-            signerId        = preview.bytesOrNull(PK_SIGNER_ID),
-            signerLabel     = preview.text(PK_SIGNER_LABEL)
+            encryption      = extension.uint(EK_ENCRYPTION)?.toInt() ?: ENCRYPTION_NONE,
+            keyMaterial     = extension.bytesOrNull(EK_KEY_MATERIAL),
+            retainKey       = extension.boolOrNull(EK_RETAIN_KEY) ?: true,
+            collectionId    = extension.bytesOrNull(EK_COLLECTION_ID),
+            collectionLabel = extension.text(EK_COLLECTION_LABEL),
+            collectionTag   = extension.text(EK_COLLECTION_TAG),
+            icon            = extension.text(EK_ICON),
+            kdfAlg          = extension.uint(EK_KDF_ALG)?.toInt() ?: KDF_NONE,
+            kdfSalt         = extension.bytesOrNull(EK_KDF_SALT),
+            kdfIters        = extension.uint(EK_KDF_ITERS)?.toInt() ?: DEFAULT_KDF_ITERS,
+            lat             = extension.doubleOrNull(EK_LAT),
+            lng             = extension.doubleOrNull(EK_LNG),
+            radiusM         = extension.doubleOrNull(EK_RADIUS_M),
+            preferDeclaredLocation = extension.boolOrNull(EK_PREFER_DECLARED_LOCATION) ?: false,
+            locationLabel   = extension.text(EK_LOCATION_LABEL),
+            inReplyTo       = extension.bytesOrNull(EK_IN_REPLY_TO),
+            title           = mediaPreview?.text(MPK_LABEL),
+            description     = extension.text(EK_DESCRIPTION),
+            createdAt       = extension.uint(EK_CREATED_AT),
+            pixelArt        = extension.boolOrNull(EK_PIXEL_ART) ?: false,
+            sourceUrl       = extension.text(EK_SOURCE_URL),
+            signatureAlgorithm = extension.uint(EK_SIGNATURE_ALGORITHM)?.toInt() ?: SIGNATURE_ALG_NONE,
+            signature       = contentSignature?.bytesOrNull(CSK_SIGNATURE),
+            signerPubkey    = contentSignature?.bytesOrNull(CSK_SIGNER_PUBKEY),
+            signerId        = extension.bytesOrNull(EK_SIGNER_ID),
+            signerLabel     = extension.text(EK_SIGNER_LABEL)
         )
+    }
 
     /**
      * Parses a fully-reassembled Paper Preview+Body pair into a [TagDropPayload.Paper] (SPEC
@@ -964,9 +1079,9 @@ object TagDropCodec {
      * reassembled). Returns null if malformed or `root_hash` doesn't verify against
      * [record]'s declared value (when present).
      */
-    fun parsePaperStream(record: ScannedRecord, bodyWireBytes: ByteArray?): TagDropPayload.Paper? {
+    fun parsePaperStream(record: ScannedRecord.Paper, bodyWireBytes: ByteArray?): TagDropPayload.Paper? {
         if (bodyWireBytes == null) return null
-        val (body, bodyRaw) = unwrapBody(bodyWireBytes, isPaper = true) ?: return null
+        val (body, bodyRaw) = unwrapPaperBody(bodyWireBytes) ?: return null
         val computedRootHash = paperSignedMessageHash(record.previewRaw, bodyRaw).copyOf(8)
         val declaredRootHash = record.preview.bytesOrNull(PPK_ROOT_HASH)
         if (declaredRootHash != null && !declaredRootHash.contentEquals(computedRootHash)) return null
@@ -979,8 +1094,7 @@ object TagDropCodec {
      * re-read a scanned paper's directory for navigation/display.
      */
     fun decodePaperStream(stream: ByteArray): TagDropPayload.Paper? {
-        val scan = recordScanResult(stream) ?: return null
-        if (scan.kind != PayloadKind.PAPER) return null
+        val scan = recordScanResult(stream) as? ScannedRecord.Paper ?: return null
         return parsePaperStream(scan, scan.secondRaw)
     }
 
@@ -1058,13 +1172,16 @@ object TagDropCodec {
     }
 
     /**
-     * Reads one Split fragment's own fields ([SplitFragment]) from [record]'s `second` (must
-     * already be `TYPE_SPLIT`, per [SectorAssembler]'s own Type ID check). Returns
-     * null if malformed or missing a required field.
+     * Reads one Split fragment's own fields ([SplitFragment]) from [record]'s large part (must
+     * already be `TYPE_SPLIT`, per [isSplitFragment]). Returns null if malformed or missing a
+     * required field.
      */
     @Suppress("UNCHECKED_CAST")
     fun splitFragmentOf(record: ScannedRecord): SplitFragment? {
-        val frag = record.second ?: return null
+        val frag = when (record) {
+            is ScannedRecord.Content -> record.splitFragment ?: return null
+            is ScannedRecord.Paper -> record.second?.takeIf { record.secondTypeId == TYPE_SPLIT } ?: return null
+        }
         if (!checkRecordKeys(frag, KNOWN_SPLIT)) return null
         val groupId = frag.bytesOrNull(SK_GROUP_ID) ?: return null
         val index = frag.uint(SK_INDEX)?.toInt() ?: 0
@@ -1075,21 +1192,40 @@ object TagDropCodec {
         return SplitFragment(groupId, index, count, data, total, isParity = index >= count)
     }
 
-    /** Unwraps [record]'s Body into its Body Record's wire bytes, for a single-code (non-Split) payload. */
-    fun unwrappedBodyBytes(record: ScannedRecord): ByteArray? = record.secondRaw
+    /**
+     * [record]'s complete (single-code, non-Split) large-part wire bytes — Media Payload's own
+     * wire bytes for Content, or Paper-Body's for Paper — or null for a key-only code / a
+     * malformed Paper scan with no second Record at all.
+     */
+    fun unwrappedBodyBytes(record: ScannedRecord): ByteArray? = when (record) {
+        is ScannedRecord.Content -> record.mediaPayloadWireRaw
+        is ScannedRecord.Paper -> record.secondRaw
+    }
 
     /**
-     * The LOGICAL Body Record bytes — after any Compress Wrapper (QDEF Type 8) unwrap — that
-     * SPEC §10's signature formula (`contentSignedMessageHash`/`paperSignedMessageHash`) covers,
-     * given [bodyWireBytes] (a complete, possibly Compress-wrapped, possibly externally
-     * Split-reassembled Body byte sequence). Returns null if malformed.
+     * The LOGICAL Paper-Body Record bytes — after any Compress Wrapper (QDEF Type 8) unwrap —
+     * that [paperSignedMessageHash] covers, given [bodyWireBytes] (a complete, possibly
+     * Compress-wrapped, possibly externally Split-reassembled Paper-Body byte sequence).
+     * Returns null if malformed.
      */
-    fun logicalBodyBytes(bodyWireBytes: ByteArray, isPaper: Boolean): ByteArray? =
-        unwrapBody(bodyWireBytes, isPaper)?.second
+    fun logicalPaperBodyBytes(bodyWireBytes: ByteArray): ByteArray? = unwrapPaperBody(bodyWireBytes)?.second
 
-    /** Whether [record]'s second Record (if any) is a Split Wrapper fragment rather than a plain/Compress-wrapped Body. */
-    fun isSplitFragment(record: ScannedRecord): Boolean =
-        record.secondTypeId == TYPE_SPLIT
+    /** Whether [record]'s large part (if any) is a Split Wrapper fragment rather than a plain/Compress-wrapped body. */
+    fun isSplitFragment(record: ScannedRecord): Boolean = when (record) {
+        is ScannedRecord.Content -> record.splitFragment != null
+        is ScannedRecord.Paper -> record.secondTypeId == TYPE_SPLIT
+    }
+
+    /** [record]'s small, always-repeated identity for UI display before full reassembly (SPEC §5.1) — `(cacheId/rootHash, hint)`. */
+    @Suppress("UNCHECKED_CAST")
+    fun previewIdentity(record: ScannedRecord): Pair<ByteArray?, String?> = when (record) {
+        is ScannedRecord.Content -> {
+            val rawHash = record.mediaPreview?.get(MPK_CONTENT_HASH) as? ByteArray
+            val cacheId = if (rawHash != null && rawHash.size > 1) rawHash.copyOfRange(1, rawHash.size) else null
+            cacheId to record.extension.text(EK_HINT)
+        }
+        is ScannedRecord.Paper -> record.preview.bytesOrNull(PPK_ROOT_HASH) to record.preview.text(PPK_HINT)
+    }
 
     // ── Compression helpers ───────────────────────────────────────────────────
 
@@ -1118,19 +1254,29 @@ object TagDropCodec {
 
     // ── Debug ─────────────────────────────────────────────────────────────────
 
-    private val CONTENT_PREVIEW_KEY_NAMES = mapOf(
-        PK_CACHE_ID to "cache_id", PK_HINT to "hint", PK_MIME to "mime_type", PK_FILENAME to "filename",
-        PK_TITLE to "title", PK_DESCRIPTION to "description",
-        PK_COLLECTION_ID to "collection_id", PK_COLLECTION_LABEL to "collection_label", PK_COLLECTION_TAG to "collection_tag",
-        PK_ICON to "icon", PK_PIXEL_ART to "pixel_art",
-        PK_LAT to "lat", PK_LNG to "lng", PK_RADIUS_M to "radius_m",
-        PK_PREFER_DECLARED_LOCATION to "prefer_declared_location", PK_LOCATION_LABEL to "location_label",
-        PK_KEY_MATERIAL to "key_material", PK_RETAIN_KEY to "retain_key", PK_ENCRYPTION to "encryption",
-        PK_KDF_ALG to "kdf_alg", PK_KDF_SALT to "kdf_salt", PK_KDF_ITERS to "kdf_iters",
-        PK_SIGNATURE_ALGORITHM to "signature_algorithm", PK_SIGNER_ID to "signer_id", PK_SIGNER_LABEL to "signer_label",
-        PK_IN_REPLY_TO to "in_reply_to", PK_CREATED_AT to "created_at", PK_SOURCE_URL to "source_url"
+    private val TYPE_NAMES = mapOf(
+        TYPE_CONTENT_EXTENSION to "Content Extension", TYPE_CONTENT_SIGNATURE to "Content Signature",
+        TYPE_MEDIA_PREVIEW to "Media Preview", TYPE_MEDIA_PAYLOAD to "Media Payload",
+        TYPE_PAPER_PREVIEW to "Paper-Preview", TYPE_PAPER_BODY to "Paper-Body",
+        TYPE_SPLIT to "Split Wrapper", TYPE_COMPRESS to "Compress Wrapper"
     )
-    private val CONTENT_BODY_KEY_NAMES = mapOf(BK_CONTENT to "content", BK_SIGNATURE to "signature", BK_SIGNER_PUBKEY to "signer_pubkey")
+
+    private val CONTENT_EXTENSION_KEY_NAMES = mapOf(
+        EK_HINT to "hint", EK_DESCRIPTION to "description",
+        EK_COLLECTION_ID to "collection_id", EK_COLLECTION_LABEL to "collection_label", EK_COLLECTION_TAG to "collection_tag",
+        EK_ICON to "icon", EK_PIXEL_ART to "pixel_art",
+        EK_LAT to "lat", EK_LNG to "lng", EK_RADIUS_M to "radius_m",
+        EK_PREFER_DECLARED_LOCATION to "prefer_declared_location", EK_LOCATION_LABEL to "location_label",
+        EK_KEY_MATERIAL to "key_material", EK_RETAIN_KEY to "retain_key", EK_ENCRYPTION to "encryption",
+        EK_KDF_ALG to "kdf_alg", EK_KDF_SALT to "kdf_salt", EK_KDF_ITERS to "kdf_iters",
+        EK_SIGNATURE_ALGORITHM to "signature_algorithm", EK_SIGNER_ID to "signer_id", EK_SIGNER_LABEL to "signer_label",
+        EK_IN_REPLY_TO to "in_reply_to", EK_CREATED_AT to "created_at", EK_SOURCE_URL to "source_url"
+    )
+    private val MEDIA_PREVIEW_KEY_NAMES = mapOf(
+        MPK_MEDIA_TYPE to "mediaType", MPK_CONTENT_HASH to "contentHash", MPK_FILENAME to "filename", MPK_LABEL to "label"
+    )
+    private val MEDIA_PAYLOAD_KEY_NAMES = mapOf(MYK_MEDIA_TYPE to "mediaType", MYK_CONTENT to "content")
+    private val CONTENT_SIGNATURE_KEY_NAMES = mapOf(CSK_SIGNATURE to "signature", CSK_SIGNER_PUBKEY to "signer_pubkey")
     private val PAPER_PREVIEW_KEY_NAMES = mapOf(
         PPK_ROOT_HASH to "root_hash", PPK_HINT to "hint", PPK_SET to "set", PPK_SLUG to "slug",
         PPK_DOMAIN to "domain", PPK_STEP to "step",
@@ -1153,58 +1299,42 @@ object TagDropCodec {
     )
     private val COMPRESS_KEY_NAMES = mapOf(CK_PAYLOAD to "compressed_payload")
 
-    private val FILE_ENTRY_KEY_NAMES = mapOf(
-        KF_SLUG to "slug", KF_MIME to "mime_type", KF_FILE_ID to "file_id",
-        KF_DESCRIPTION to "description", KF_PIXEL_ART to "pixel_art"
-    )
-    private val RELATED_ENTRY_KEY_NAMES = mapOf(
-        KR_HINT to "hint", KR_SET to "set", KR_SLUG to "slug", KR_PAPER_ID to "paper_id",
-        KR_LAT to "lat", KR_LNG to "lng", KR_RADIUS_M to "radius_m",
-        KR_KEY_MATERIAL to "key_material", KR_RETAIN_KEY to "retain_key", KR_STEP to "step"
+    private val KEY_NAMES_BY_TYPE = mapOf(
+        TYPE_CONTENT_EXTENSION to CONTENT_EXTENSION_KEY_NAMES, TYPE_CONTENT_SIGNATURE to CONTENT_SIGNATURE_KEY_NAMES,
+        TYPE_MEDIA_PREVIEW to MEDIA_PREVIEW_KEY_NAMES, TYPE_MEDIA_PAYLOAD to MEDIA_PAYLOAD_KEY_NAMES,
+        TYPE_PAPER_PREVIEW to PAPER_PREVIEW_KEY_NAMES, TYPE_PAPER_BODY to PAPER_BODY_KEY_NAMES,
+        TYPE_SPLIT to SPLIT_KEY_NAMES, TYPE_COMPRESS to COMPRESS_KEY_NAMES
     )
 
     /**
      * Pretty-prints a raw TagDrop code's CBOR Record Sequence for the on-device debug view: a
-     * hex dump, then each Record's Type ID and fields by name (SPEC §2, §3.1–§3.4).
+     * hex dump, then each top-level Record's Type ID and fields by name, recursing into
+     * subrecords (SPEC §2, §3.1-§3.4).
      */
-    @Suppress("UNCHECKED_CAST")
     fun describeCbor(cbor: ByteArray): String = buildString {
         appendLine("${cbor.size} bytes")
         appendLine(cbor.toHexDump())
         appendLine()
         runCatching {
-            val items = MiniCbor.decodeSequence(cbor)
-            var idx = 0
-            while (idx < items.size) {
-                // QDEF-SPEC.md §3: bare uint typeId prefix + field map = 2 items per Record
-                val typeId = (items[idx] as? Int) ?: (items[idx] as? Long)?.toInt() ?: run { idx++; continue }
-                val record = items.getOrNull(idx + 1) as? Map<Int, Any> ?: run { idx++; continue }
-                idx += 2
-                val typeName = when (typeId) {
-                    TYPE_CONTENT_PREVIEW -> "Content-Preview"
-                    TYPE_CONTENT_BODY -> "Content-Body"
-                    TYPE_PAPER_PREVIEW -> "Paper-Preview"
-                    TYPE_PAPER_BODY -> "Paper-Body"
-                    TYPE_SPLIT -> "Split Wrapper"
-                    TYPE_COMPRESS -> "Compress Wrapper"
-                    else -> null
-                }
-                val i = (idx - 2) / 2
-                val label = if (typeName != null) "Record $i — $typeName ($typeId)" else "Record $i — Type $typeId"
-                appendLine("$label:")
-                val keyNames = when (typeId) {
-                    TYPE_CONTENT_PREVIEW -> CONTENT_PREVIEW_KEY_NAMES
-                    TYPE_CONTENT_BODY -> CONTENT_BODY_KEY_NAMES
-                    TYPE_PAPER_PREVIEW -> PAPER_PREVIEW_KEY_NAMES
-                    TYPE_PAPER_BODY -> PAPER_BODY_KEY_NAMES
-                    TYPE_SPLIT -> SPLIT_KEY_NAMES
-                    TYPE_COMPRESS -> COMPRESS_KEY_NAMES
-                    else -> emptyMap()
-                }
-                describeMap(record, 1, this, keyNames)
+            var rest = cbor
+            var i = 0
+            while (rest.isNotEmpty()) {
+                val rec = MiniCbor.decodeRecordPrefix(rest) ?: break
+                appendLine("Record $i:")
+                describeRecord(rec, 1, this)
                 appendLine()
+                rest = rec.trailing
+                i++
             }
         }.onFailure { append("Failed to decode as CBOR sequence: ${it.message}") }
+    }
+
+    private fun describeRecord(rec: MiniCbor.DecodedRecord, indent: Int, out: StringBuilder) {
+        val pad = "  ".repeat(indent - 1)
+        val typeName = TYPE_NAMES[rec.typeId]
+        out.appendLine("$pad${if (typeName != null) "$typeName (${rec.typeId})" else "Type ${rec.typeId}"}:")
+        describeMap(rec.record, indent + 1, out, KEY_NAMES_BY_TYPE[rec.typeId] ?: emptyMap())
+        for (sub in rec.subrecords) describeRecord(sub, indent + 1, out)
     }
 
     @Suppress("UNCHECKED_CAST")

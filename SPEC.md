@@ -1784,23 +1784,20 @@ before — Preview-side fields in Paper-Preview, Body-side fields in
 Paper-Body.
 
 **Implementation status:** both reference implementations (the web tools
-and the Kotlin app) currently sign and verify Content against **version
-8**'s key layout — Content-Preview (Type 1) carries
-`signature_algorithm`/`signer_id`/`signer_label`, and the old
-Content-Body (Type 3) carries `signature`/`signer_pubkey`, stripped for
-hashing via `contentSignedMessageHash()`/its Kotlin equivalent, with the
-Compress/Split Wrapper layer sitting outside the signed region. Neither
-implementation has been ported to version 9's Content Extension/Media
-Preview/Media Payload/Content Signature layout yet — that port,
-including moving `signature`/`signer_pubkey` onto the new Content
-Signature Record (Type 3, repurposed from the old Content-Body — §3.1a),
-is the pending work this version of the spec exists to support. Paper
+and the Kotlin app) now sign and verify Content against **version 9**'s
+key layout — `signature_algorithm`/`signer_id`/`signer_label` live on
+Content Extension (Type 1), and `signature`/`signer_pubkey` live on the
+Content Signature Record (Type 3, repurposed from the old Content-Body),
+nested as Media Payload's own subrecord — stripped for hashing via
+`contentSignedMessageHash()`/its Kotlin equivalent (now three arguments:
+Media Preview, Media Payload, Content Extension — §3.1a), with the
+Compress/Split Wrapper layer sitting outside the signed region. Paper
 signing (Paper-Preview/Paper-Body, Types 5/7) is unaffected by this
-version and needs no changes in either implementation. The rest of this
-implementation-status note describes what's already proven to work at
-version 8, which remains true of the underlying mechanism (ML-DSA-44
-sign/verify, TOFU caching) independent of which version's field layout
-it operates on: the web tools do real ML-DSA-44
+version and needed no changes in either implementation. The rest of this
+implementation-status note describes what was already proven to work at
+version 8 and remains equally true at version 9 — the underlying
+mechanism (ML-DSA-44 sign/verify, TOFU caching) is independent of which
+version's field layout it operates on: the web tools do real ML-DSA-44
 sign/verify via
 [`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum),
 dynamically imported from a CDN like the generator's other optional
@@ -2276,17 +2273,17 @@ field-level changes.
 
 **Status:** both the web tools (generator, reader, examples) and the
 Kotlin Android app encode and decode Content and Paper using **version
-8**'s QDEF Record wire shape (Content-Preview/Content-Body split,
-Compress Wrapper, Split Wrapper, §2-§5) — no wire format left on the old
-version-1 `core_meta_item`/`bulky_meta_item`/`part_meta` envelope in
-either implementation (a small old-format decode path is deliberately
-kept in the web reader only, for backward compatibility with codes
-scanned before the port). Signing (§10) uses version 8's key layout —
-`signature`/`signer_pubkey` in the old Content-Body (Type 3) — in both
-implementations. **Neither implementation has been ported to version
-9's restructured Content shape yet** (Content Extension/Media
-Preview/Media Payload/Content Signature, §3.1/§3.1a) — that port is
-tracked follow-up work; Paper is unaffected by version 9 and needs no
+9**'s QDEF Record wire shape — array-wrapped Records with subrecords
+(§2, §3.1's Content Extension/Media Preview/Media Payload/Content
+Signature restructuring), Compress Wrapper, Split Wrapper (§2-§5) — no
+wire format left on the old version-1 `core_meta_item`/`bulky_meta_item`/
+`part_meta` envelope, and no version-8 Content-Preview/Content-Body shape
+left, in either implementation (a small old-format decode path is
+deliberately kept in the web reader only, for backward compatibility
+with codes scanned before the version-8 port). Signing (§10) uses
+version 9's key layout — `signature`/`signer_pubkey` on the Content
+Signature Record (Type 3), nested as Media Payload's own subrecord — in
+both implementations. Paper is unaffected by version 9 and needed no
 changes. File paths and high-level responsibilities below stay accurate
 either way.
 

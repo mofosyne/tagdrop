@@ -305,9 +305,12 @@ class ReceiveActivity : AppCompatActivity() {
     private fun inspectLastScannedCbor() {
         val record = lastScannedRecord ?: return
         val fragment = TagDropCodec.splitFragmentOf(record)
-        val identity = (record.preview[1] as? ByteArray)?.toHex() ?: "key-only"
+        val identity = TagDropCodec.previewIdentity(record).first?.toHex() ?: "key-only"
         val title = identity + (fragment?.let { " #${it.index + 1}" } ?: "")
-        val raw = record.previewRaw + (record.secondRaw ?: ByteArray(0))
+        val raw = when (record) {
+            is ScannedRecord.Content -> record.extensionRaw + (record.secondRaw ?: ByteArray(0))
+            is ScannedRecord.Paper -> record.previewRaw + (record.secondRaw ?: ByteArray(0))
+        }
         showCborDebugDialog(raw, title)
     }
 
@@ -611,7 +614,7 @@ class ReceiveActivity : AppCompatActivity() {
             state.signatureAlgorithm, state.signature,
             state.signerPubkey, state.signerId, state.signerLabel,
             AppDatabase.get(this).signerDao()
-        ) { TagDropCodec.contentSignedMessageHash(state.previewRaw, state.bodyRaw) }
+        ) { TagDropCodec.contentSignedMessageHash(state.extensionRaw, state.mediaPreviewRaw, state.mediaPayloadRaw) }
 
         val override = blob?.let { b ->
             retainedKeys().firstNotNullOfOrNull { key ->
@@ -800,7 +803,7 @@ class ReceiveActivity : AppCompatActivity() {
             state.signatureAlgorithm, state.signature,
             state.signerPubkey, state.signerId, state.signerLabel,
             AppDatabase.get(this).signerDao()
-        ) { TagDropCodec.contentSignedMessageHash(state.previewRaw, state.bodyRaw) }
+        ) { TagDropCodec.contentSignedMessageHash(state.extensionRaw, state.mediaPreviewRaw, state.mediaPayloadRaw) }
         completeSingle(
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,

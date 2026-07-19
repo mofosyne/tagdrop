@@ -7,10 +7,10 @@ import java.security.MessageDigest
  * `tools/reader/index.html`'s `RecordAssembler` — the settled JS reference this Kotlin port
  * targets.
  *
- * Groups are keyed by Split Wrapper `group_id` (SPEC §5.1), not `(type, cache_id)`: a lone
- * Preview (key-only code) or a Preview + plain/Compress-wrapped Body (single-code payload)
- * completes immediately on its first [add]. A Preview + Split-fragment accumulates by
- * `group_id` until every fragment `0..count-1` is in (an optional XOR parity fragment, at
+ * Groups are keyed by Split Wrapper `group_id` (SPEC §5.1), not `(type, cacheId)`: a lone
+ * Extension (key-only code) or a small-part + plain/Compress-wrapped large-part (single-code
+ * payload) completes immediately on its first [add]. A small-part + Split-fragment accumulates
+ * by `group_id` until every fragment `0..count-1` is in (an optional XOR parity fragment, at
  * index `== count`, can reconstruct one missing data fragment).
  *
  * Thread-safety: not thread-safe; call from a single thread (main thread).
@@ -20,10 +20,33 @@ class SectorAssembler {
     private class Group(val kind: PayloadKind, val groupId: ByteArray, val count: Int, val total: Int) {
         val data = mutableMapOf<Int, ByteArray>()
         var parity: ByteArray? = null
+        // Content (SPEC §3.1/§3.1a) — Content Extension repeats on every code; Media Preview is
+        // known as soon as any code in the group has been scanned (§5.1).
+        var extensionRaw: ByteArray? = null
+        var extension: Map<Int, Any>? = null
+        var mediaPreview: Map<Int, Any>? = null
+        var mediaPreviewRaw: ByteArray? = null
+        // Paper (SPEC §3.3) — unaffected by v9, still a flat Preview.
         var previewRaw: ByteArray? = null
         var preview: Map<Int, Any>? = null
         /** Set once a `key_material` (SPEC §9) decrypts this payload's content slot as an override map. */
         var resolvedOverride: TagDropPayload.OverrideMap? = null
+
+        /** A synthetic [ScannedRecord] carrying this group's latest-seen small/always-repeated
+         *  part, with the large-part fields nulled out — used to hand off to
+         *  [TagDropCodec.parseContentStream]/[TagDropCodec.parsePaperStream]/
+         *  [TagDropCodec.previewIdentity] once the real (possibly externally-reassembled) large
+         *  part is available separately. Null while the small part hasn't been seen yet. */
+        fun toScannedRecord(): ScannedRecord? = when (kind) {
+            PayloadKind.PAPER -> {
+                val pr = previewRaw; val p = preview
+                if (pr == null || p == null) null else ScannedRecord.Paper(pr, p, null, null, null)
+            }
+            PayloadKind.CONTENT -> {
+                val er = extensionRaw; val e = extension
+                if (er == null || e == null) null else ScannedRecord.Content(er, e, mediaPreview, mediaPreviewRaw, null, null, null)
+            }
+        }
     }
 
     private val groups = mutableMapOf<String, Group>()
@@ -44,18 +67,19 @@ class SectorAssembler {
         ) : State()
 
         /**
-         * A Content payload's Preview+Body fully reassembled (SPEC §5, §9). [content] is the
-         * content slot's bytes exactly as carried — for an override-map payload (SPEC §9) this
-         * IS the encrypted blob unless [pendingOverrideBlob] has already been resolved by a
-         * matching key ([wasEncrypted] true, [content] the decrypted override reading). There is
-         * no separate "awaiting key" state: a still-locked payload is fully "ready" with
-         * [pendingOverrideBlob] set, exactly like the web reader — the caller shows [content] as
-         * the clear/cover reading and offers key trial for [pendingOverrideBlob] in the
-         * background ([SectorAssembler.tryKey]).
+         * A Content payload's Extension+Media Preview+Media Payload fully reassembled (SPEC §5,
+         * §9). [content] is the content slot's bytes exactly as carried — for an override-map
+         * payload (SPEC §9) this IS the encrypted blob unless [pendingOverrideBlob] has already
+         * been resolved by a matching key ([wasEncrypted] true, [content] the decrypted override
+         * reading). There is no separate "awaiting key" state: a still-locked payload is fully
+         * "ready" with [pendingOverrideBlob] set, exactly like the web reader — the caller shows
+         * [content] as the clear/cover reading and offers key trial for [pendingOverrideBlob] in
+         * the background ([SectorAssembler.tryKey]).
          */
         data class ContentReady(
-            val previewRaw: ByteArray,
-            val bodyRaw: ByteArray?,
+            val extensionRaw: ByteArray,
+            val mediaPreviewRaw: ByteArray?,
+            val mediaPayloadRaw: ByteArray?,
             val cacheId: ByteArray?,
             val hint: String?,
             val filename: String?,
@@ -116,18 +140,28 @@ class SectorAssembler {
     /** Adds a scanned [record], matching it to (or starting) its payload group, and returns that group's state. */
     fun add(record: ScannedRecord): State {
         if (!TagDropCodec.isSplitFragment(record)) {
-            return if (record.kind == PayloadKind.PAPER) {
-                finishPaper(record, TagDropCodec.unwrappedBodyBytes(record))
-            } else {
-                finishContent(record, TagDropCodec.unwrappedBodyBytes(record), resolvedOverride = null)
+            return when (record) {
+                is ScannedRecord.Paper -> finishPaper(record, TagDropCodec.unwrappedBodyBytes(record))
+                is ScannedRecord.Content -> finishContent(record, TagDropCodec.unwrappedBodyBytes(record), resolvedOverride = null)
             }
         }
         val frag = TagDropCodec.splitFragmentOf(record) ?: return State.Failed
         val key = frag.groupId.toHex()
         val group = groups.getOrPut(key) { Group(record.kind, frag.groupId, frag.count, frag.total) }
-        // Preview repeats identically on every code (SPEC §5.1) — keep the latest scan's copy.
-        group.previewRaw = record.previewRaw
-        group.preview = record.preview
+        // The small/always-repeated part repeats identically on every code (SPEC §5.1) — keep
+        // the latest scan's copy.
+        when (record) {
+            is ScannedRecord.Content -> {
+                group.extensionRaw = record.extensionRaw
+                group.extension = record.extension
+                group.mediaPreview = record.mediaPreview
+                group.mediaPreviewRaw = record.mediaPreviewRaw
+            }
+            is ScannedRecord.Paper -> {
+                group.previewRaw = record.previewRaw
+                group.preview = record.preview
+            }
+        }
         if (frag.isParity) group.parity = frag.data else group.data[frag.index] = frag.data
         lastGroupKey = key
         val state = computeState(group)
@@ -153,10 +187,8 @@ class SectorAssembler {
         while (iterator.hasNext()) {
             val (_, group) = iterator.next()
             if (group.kind != PayloadKind.CONTENT || group.resolvedOverride != null) continue
-            val previewRaw = group.previewRaw ?: continue
-            val preview = group.preview ?: continue
+            val record = group.toScannedRecord() as? ScannedRecord.Content ?: continue
             val wrapped = reassemble(group) ?: continue
-            val record = ScannedRecord(group.kind, previewRaw, preview, null, null, null)
             val parsed = TagDropCodec.parseContentStream(record, wrapped) as? TagDropCodec.ContentParse.Ok ?: continue
             val slot = parsed.content.content
             if (slot.size < TagDropCodec.OVERRIDE_BLOB_MIN_BYTES) continue
@@ -182,42 +214,37 @@ class SectorAssembler {
     private fun computeState(group: Group): State {
         val wrapped = reassemble(group)
         if (wrapped != null) {
-            // group_id is SHA-256(wrapped Body)[0:8] (SPEC §5.1) — the reassembly integrity
-            // check over the bytes exactly as transmitted (after Compress-wrap, if applicable).
+            // group_id is SHA-256(wrapped fragment bytes)[0:8] (SPEC §5.1) — the reassembly
+            // integrity check over the bytes exactly as transmitted (after Compress-wrap, if
+            // applicable).
             if (!sha256(wrapped).copyOf(8).contentEquals(group.groupId)) return State.HashMismatch
-            val previewRaw = group.previewRaw ?: return State.Failed
-            val preview = group.preview ?: return State.Failed
-            val record = ScannedRecord(group.kind, previewRaw, preview, null, null, null)
-            return if (group.kind == PayloadKind.PAPER) {
-                finishPaper(record, wrapped)
-            } else {
-                finishContent(record, wrapped, group.resolvedOverride)
+            val record = group.toScannedRecord() ?: return State.Failed
+            return when (record) {
+                is ScannedRecord.Paper -> finishPaper(record, wrapped)
+                is ScannedRecord.Content -> finishContent(record, wrapped, group.resolvedOverride)
             }
         }
         val missing = (0 until group.count).filterNot { group.data.containsKey(it) }
-        val preview = group.preview
-        return State.Collecting(
-            group.data.size, group.count, group.kind,
-            preview?.let { identityOf(it) }, preview?.let { hintOf(it) }, missing
-        )
+        val (cacheId, hint) = group.toScannedRecord()?.let { TagDropCodec.previewIdentity(it) } ?: (null to null)
+        return State.Collecting(group.data.size, group.count, group.kind, cacheId, hint, missing)
     }
 
-    /** Completes a payload whose full (wire-form) Body bytes are in hand — or a key-only code with no Body at all ([bodyWireBytes] null). */
-    private fun finishContent(record: ScannedRecord, bodyWireBytes: ByteArray?, resolvedOverride: TagDropPayload.OverrideMap?): State =
+    /** Completes a Content payload whose full (wire-form) Media Payload bytes are in hand — or a key-only code with no Media Payload at all ([bodyWireBytes] null). */
+    private fun finishContent(record: ScannedRecord.Content, bodyWireBytes: ByteArray?, resolvedOverride: TagDropPayload.OverrideMap?): State =
         when (val parsed = TagDropCodec.parseContentStream(record, bodyWireBytes)) {
             is TagDropCodec.ContentParse.Malformed -> State.Failed
             is TagDropCodec.ContentParse.HashMismatch -> State.HashMismatch
-            is TagDropCodec.ContentParse.Ok -> contentState(record, parsed.bodyRaw, resolvedOverride, parsed.content)
+            is TagDropCodec.ContentParse.Ok -> contentState(record, parsed.mediaPayloadRaw, resolvedOverride, parsed.content)
         }
 
     /** Resolves a parsed Content into a ready state: an already-unlocked override reading, or the clear/cover reading with the candidate blob (if any) left pending. */
     private fun contentState(
-        record: ScannedRecord, bodyRaw: ByteArray?,
+        record: ScannedRecord.Content, mediaPayloadRaw: ByteArray?,
         resolvedOverride: TagDropPayload.OverrideMap?, content: TagDropPayload.Content
     ): State {
         if (resolvedOverride != null) {
             return readyState(
-                record.previewRaw, bodyRaw, content,
+                record.extensionRaw, record.mediaPreviewRaw, mediaPayloadRaw, content,
                 resolvedOverride.hint ?: content.hint, resolvedOverride.filename ?: content.filename,
                 resolvedOverride.mimeType ?: content.mimeType, resolvedOverride.content ?: ByteArray(0),
                 pendingBlob = null, wasEncrypted = true
@@ -230,18 +257,19 @@ class SectorAssembler {
         val declared = pendingBlob != null &&
             (content.encryption == TagDropCodec.ENCRYPTION_AES256GCM || content.kdfAlg != TagDropCodec.KDF_NONE)
         return readyState(
-            record.previewRaw, bodyRaw, content, content.hint, content.filename, content.mimeType, content.content,
+            record.extensionRaw, record.mediaPreviewRaw, mediaPayloadRaw, content, content.hint, content.filename, content.mimeType, content.content,
             pendingBlob = pendingBlob, wasEncrypted = declared, declared = declared
         )
     }
 
     private fun readyState(
-        previewRaw: ByteArray, bodyRaw: ByteArray?, content: TagDropPayload.Content,
+        extensionRaw: ByteArray, mediaPreviewRaw: ByteArray?, mediaPayloadRaw: ByteArray?, content: TagDropPayload.Content,
         hint: String?, filename: String?, mimeType: String,
         resolved: ByteArray, pendingBlob: ByteArray?, wasEncrypted: Boolean, declared: Boolean = false
     ) = State.ContentReady(
-        previewRaw = previewRaw,
-        bodyRaw = bodyRaw,
+        extensionRaw = extensionRaw,
+        mediaPreviewRaw = mediaPreviewRaw,
+        mediaPayloadRaw = mediaPayloadRaw,
         cacheId = content.cacheId,
         hint = hint,
         filename = filename,
@@ -278,10 +306,10 @@ class SectorAssembler {
     )
 
     /** Paper-specific counterpart to [finishContent]: [bodyWireBytes] null means malformed (a Paper always has a Body). */
-    private fun finishPaper(record: ScannedRecord, bodyWireBytes: ByteArray?): State {
+    private fun finishPaper(record: ScannedRecord.Paper, bodyWireBytes: ByteArray?): State {
         if (bodyWireBytes == null) return State.Failed
         val paper = TagDropCodec.parsePaperStream(record, bodyWireBytes) ?: return State.Failed
-        val bodyRaw = TagDropCodec.logicalBodyBytes(bodyWireBytes, isPaper = true) ?: return State.Failed
+        val bodyRaw = TagDropCodec.logicalPaperBodyBytes(bodyWireBytes) ?: return State.Failed
         return State.PaperReady(paper, record.previewRaw, bodyRaw, record.previewRaw + bodyRaw)
     }
 
@@ -321,9 +349,6 @@ class SectorAssembler {
         if (realLen < 0 || realLen > x.size) return null
         return x.copyOf(realLen)
     }
-
-    private fun identityOf(preview: Map<Int, Any>): ByteArray? = preview[1] as? ByteArray
-    private fun hintOf(preview: Map<Int, Any>): String? = preview[3] as? String
 
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 

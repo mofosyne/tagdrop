@@ -208,9 +208,10 @@ class WriteNfcTagActivity : AppCompatActivity() {
         if (fitsCapacity(single.codes.first())) return single.codes
         if (includeStandardRecord) return null
 
-        // Wrapped (post-compress, if applicable) Body size — the actual bytes Split divides —
-        // recovered as this single unsplit code's length minus its (always-plain) Preview.
-        val total = single.codes.first().size - single.previewRaw.size
+        // Wrapped (post-compress, if applicable) Media Payload size — the actual bytes Split
+        // divides — recovered as this single unsplit code's length minus its (always-plain)
+        // Content Extension.
+        val total = single.codes.first().size - single.extensionRaw.size
         for (count in 2..MAX_SECTOR_PROBES) {
             val candidate = build((total + count - 1) / count)
             if (fitsCapacity(candidate.codes.first())) return candidate.codes

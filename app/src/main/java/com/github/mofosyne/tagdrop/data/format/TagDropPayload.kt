@@ -161,53 +161,114 @@ sealed class TagDropPayload {
     data class Legacy(val dataUri: String) : TagDropPayload()
 }
 
-/** Which payload kind a scanned code's Preview Record belongs to (its own Type ID, SPEC §2.1). */
+/** Which payload kind a scanned code's small, always-repeated Record belongs to (SPEC §2.1). */
 enum class PayloadKind { CONTENT, PAPER }
 
 /**
- * One scanned/printed code, decoded down to its Preview Record plus whatever came after it
- * (SPEC §2, §5.1) — mirrors tools/reader/index.html's recordScanResult()/RecordAssembler
- * design, the settled JS reference implementation this Kotlin port targets.
+ * One scanned/printed code, decoded down to its small always-repeated Record(s) plus whatever
+ * carries the large part (SPEC §2, §5.1) — mirrors tools/reader/index.html's
+ * `recordScanResult()`/`RecordAssembler` design (SPEC.md v9), the settled JS reference
+ * implementation this Kotlin port targets.
  *
- * Preview is always plain and unwrapped, and — for a multi-code payload — MUST be repeated
- * identically on every code in the group (SPEC §5.1): a decoder scanning any single code
- * already knows the payload's identity and can show a usable preview. [second] is:
- *   - `null` for a key-only code (SPEC §9) — Preview only, nothing else.
- *   - the complete (optionally Compress-wrapped) Body Record for a single-code payload.
- *   - one Split-Wrapper-wrapped (QDEF Type 2) Body fragment for a multi-code payload.
- *
- * [preview]/[second] are MiniCbor's decoded `Map<Int, Any>` field maps (the Record's own
- * Type ID sits at key 0) — kept as raw maps, not further typed here, so field extraction
- * stays in [com.github.mofosyne.tagdrop.data.format.TagDropCodec] alongside the key tables
- * it already owns, the same division of responsibility the pre-QDEF format used.
+ * A [Paper] scan is unchanged in shape from before v9 (still a flat Preview/Body pair, Types
+ * 5/7). A [Content] scan reflects SPEC.md v9's restructuring (§3.1/§3.1a): Content Extension
+ * (Type 1) is always present and repeated on every code in a group; Media Preview (QDEF Type
+ * 14) is known as soon as ANY code in the group has been scanned — either directly (single-code
+ * case, nesting Media Payload as its own subrecord) or via Split's own subrecord (multi-code
+ * case) — which is what lets a single isolated scan already show `hint`/`contentHash`/etc
+ * regardless of reassembly progress, same as Paper's Preview always has. Field maps are kept as
+ * raw `Map<Int, Any>` (each Record Type's own independent key namespace, SPEC §3), not further
+ * typed here, so field extraction stays in [com.github.mofosyne.tagdrop.data.format.TagDropCodec]
+ * alongside the key tables it already owns.
  */
-data class ScannedRecord(
-    val kind: PayloadKind,
-    val previewRaw: ByteArray,
-    val preview: Map<Int, Any>,
-    val secondTypeId: Int?,
-    val secondRaw: ByteArray?,
-    val second: Map<Int, Any>?
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is ScannedRecord) return false
-        if (kind != other.kind) return false
-        if (!previewRaw.contentEquals(other.previewRaw)) return false
-        if (secondTypeId != other.secondTypeId) return false
-        if (secondRaw == null != (other.secondRaw == null)) return false
-        if (secondRaw != null && other.secondRaw != null && !secondRaw.contentEquals(other.secondRaw)) return false
-        return true
+sealed class ScannedRecord {
+    /**
+     * A scanned Content code (SPEC.md v9 §3.1/§3.1a). [mediaPreview]/[mediaPreviewRaw] are
+     * `null` only for a key-only code (SPEC §9) — [extension] alone, no Media Preview/Payload
+     * at all. Exactly one of [splitFragment] (multi-code case) / [mediaPayloadWireRaw]
+     * (single-code case) is non-null when [mediaPreview] is non-null; both are null for a
+     * key-only code.
+     */
+    data class Content(
+        /** Content Extension's (Type 1) own exact byte range — repeated on every code (§5.1). */
+        val extensionRaw: ByteArray,
+        /** Content Extension's own decoded field map. */
+        val extension: Map<Int, Any>,
+        /** Media Preview's (QDEF Type 14) own decoded field map, once known. */
+        val mediaPreview: Map<Int, Any>?,
+        /** Media Preview's own bare (subrecord-stripped) canonical bytes — SPEC §10's `MediaPreview'` term. */
+        val mediaPreviewRaw: ByteArray?,
+        /** Split Wrapper's (QDEF Type 2) own field map (group_id/index/count/data/total) — multi-code case only. */
+        val splitFragment: Map<Int, Any>?,
+        /** Media Payload's (QDEF Type 6) own wire bytes (possibly Compress-wrapped; Content Signature nested if signed) — single-code case only. */
+        val mediaPayloadWireRaw: ByteArray?,
+        /**
+         * The exact byte range of whatever Record followed Content Extension on this scanned
+         * code — the wire-nested Media Preview (single-code case) or the Split fragment with
+         * Media Preview as its own subrecord (multi-code case) — null only for a key-only code.
+         * Debug/display use only (e.g. "Inspect CBOR"); reassembly logic uses the other fields.
+         */
+        val secondRaw: ByteArray?
+    ) : ScannedRecord() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Content) return false
+            if (!extensionRaw.contentEquals(other.extensionRaw)) return false
+            if ((mediaPreviewRaw == null) != (other.mediaPreviewRaw == null)) return false
+            if (mediaPreviewRaw != null && other.mediaPreviewRaw != null && !mediaPreviewRaw.contentEquals(other.mediaPreviewRaw)) return false
+            if ((mediaPayloadWireRaw == null) != (other.mediaPayloadWireRaw == null)) return false
+            if (mediaPayloadWireRaw != null && other.mediaPayloadWireRaw != null && !mediaPayloadWireRaw.contentEquals(other.mediaPayloadWireRaw)) return false
+            if ((splitFragment == null) != (other.splitFragment == null)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = extensionRaw.contentHashCode()
+            result = 31 * result + (mediaPreviewRaw?.contentHashCode() ?: 0)
+            result = 31 * result + (mediaPayloadWireRaw?.contentHashCode() ?: 0)
+            result = 31 * result + (splitFragment?.hashCode() ?: 0)
+            return result
+        }
     }
 
-    override fun hashCode(): Int {
-        var result = kind.hashCode()
-        result = 31 * result + previewRaw.contentHashCode()
-        result = 31 * result + (secondTypeId ?: 0)
-        result = 31 * result + (secondRaw?.contentHashCode() ?: 0)
-        return result
+    /**
+     * A scanned Paper code — unchanged in shape from before v9 (SPEC §3.3-§3.4). [second] is:
+     *   - `null` for a malformed code (a Paper always has a Body — SPEC §4.1).
+     *   - the complete (optionally Compress-wrapped) Body Record for a single-code payload.
+     *   - one Split-Wrapper-wrapped (QDEF Type 2) Body fragment for a multi-code payload.
+     */
+    data class Paper(
+        val previewRaw: ByteArray,
+        val preview: Map<Int, Any>,
+        val secondTypeId: Int?,
+        val secondRaw: ByteArray?,
+        val second: Map<Int, Any>?
+    ) : ScannedRecord() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Paper) return false
+            if (!previewRaw.contentEquals(other.previewRaw)) return false
+            if (secondTypeId != other.secondTypeId) return false
+            if ((secondRaw == null) != (other.secondRaw == null)) return false
+            if (secondRaw != null && other.secondRaw != null && !secondRaw.contentEquals(other.secondRaw)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = previewRaw.contentHashCode()
+            result = 31 * result + (secondTypeId ?: 0)
+            result = 31 * result + (secondRaw?.contentHashCode() ?: 0)
+            return result
+        }
     }
 }
+
+/** Which [PayloadKind] a [ScannedRecord] belongs to. */
+val ScannedRecord.kind: PayloadKind
+    get() = when (this) {
+        is ScannedRecord.Content -> PayloadKind.CONTENT
+        is ScannedRecord.Paper -> PayloadKind.PAPER
+    }
 
 /**
  * A Split Wrapper fragment's own wire fields (QDEF-SPEC.md §4.1 Type 2, SPEC §5) — [second]/

@@ -51,6 +51,80 @@ Content and Paper payloads:
    encryption) passes green. A full Android Studio build (Room codegen,
    resource linking, the 15 caller Activities/Fragments) remains the
    honest verification gap.
+
+   **Update: ported to SPEC.md v9's array-wrapped Records + Content
+   restructuring**, following the JS side's earlier v9 port (below).
+   `MiniCbor.kt` gained array-wrapped Record support mirroring the JS
+   `cborRecord`/`craw` design: `encodeRecord(typeId, fields, subrecords)`,
+   `decodeRecordPrefix()` (a `DecodedRecord(typeId, record, raw,
+   subrecords, trailing)` data class, byte-range-aware via new private
+   `Cursor`/`skipItem`/`itemRanges`/`readUintAt` primitives mirroring the
+   JS `cborSkipItem`/`cborItemRanges`/`cborReadUint`), and a
+   record-array-aware rewrite of `stripKeys()` plus new
+   `stripSubrecordType()`/`stripAllSubrecords()` — the old map-level
+   `stripKeys(mapBytes, ...)` (which expected a bare CBOR map, not an
+   array-wrapped Record) was removed outright since its only caller,
+   `TagDropCodec.kt`, was being rewritten in the same change; the
+   trailing-run-specific `stripTrailingKeys()` is untouched (unrelated,
+   pre-QDEF era, still exercised by its own `MiniCborTest.kt` cases).
+   `TagDropCodec.kt`'s Content side was fully rebuilt around Content
+   Extension (Type 1) + Media Preview (QDEF Type 14) + Media Payload
+   (QDEF Type 6) + Content Signature (Type 3, nested as Media Payload's
+   subrecord when signed) — `ContentBuild` now exposes `extensionRaw`/
+   `mediaPreviewRaw`/`mediaPayloadRaw` instead of the v8 `previewRaw`/
+   `bodyRaw` pair, and `contentSignedMessageHash` takes three args
+   (`SHA-256(MediaPreview' || MediaPayload'' || Extension')`, SPEC §10)
+   instead of two. Paper (`createPaper`/`parsePaperStream`/
+   `paperSignedMessageHash`) is semantically unchanged by v9 but now
+   flows through the same `MiniCbor.encodeRecord`/`decodeRecordPrefix`
+   array-wrapped primitives instead of the old bare-prefix ones.
+   `TagDropPayload.kt`'s `ScannedRecord` became a sealed class
+   (`ScannedRecord.Content`/`ScannedRecord.Paper`) rather than one flat
+   data class — Content's small-part fields (Content Extension) and
+   large-part fields (Media Preview, once known; a Split Wrapper field
+   map in the multi-code case; Media Payload's own wire bytes in the
+   single-code case) live in their own Record Type's independent key
+   namespace, so a single merged `Map<Int, Any>` (workable pre-v9, when
+   Content only ever had one small/large Record pair) would have
+   silently collided key numbers across two now-separate Records — this
+   is also why `TagDropCodec.previewIdentity()` was added, a small
+   accessor SectorAssembler/ReceiveActivity use instead of ever poking a
+   raw preview map's key `1`/`3` directly (which, post-v9, would read
+   the wrong Record for Content: cache-identity now lives in Media
+   Preview, not Content Extension). `SectorAssembler.kt`'s `Group` and
+   `SectorAssembler.State.ContentReady` were updated to match (`Group`
+   tracks `extensionRaw`/`extension`/`mediaPreview`/`mediaPreviewRaw`
+   instead of one `previewRaw`/`preview` pair; `ContentReady` exposes
+   `extensionRaw`/`mediaPreviewRaw`/`mediaPayloadRaw`). `data/signing/
+   SigningIdentity.kt`/`SignatureVerifier.kt`'s Content signing/
+   verification calls were updated to the new 3-arg hash function; Paper
+   signing is untouched. Caller fixes: `ReceiveActivity.kt` (the
+   `contentSignedMessageHash` call sites and the "Inspect CBOR" debug
+   dialog's identity lookup), `WriteNfcTagActivity.kt` (a
+   `previewRaw`→`extensionRaw` rename in its own two-pass NFC capacity
+   probe). Verified the same way as the v8 port, using the *same*
+   standalone `kotlinc` 2.0.21 + JUnit4 jars already cached under `/tmp`
+   from that earlier verification pass (this environment resets its
+   filesystem between sessions, but reused the identical fetch this
+   time round): the full `data/format`+`data/signing` package set
+   compiles clean, and both `TagDropCodecTest.kt` (Content-side cases
+   rewritten for the new field names/3-arg hash; two hand-tampered-CBOR
+   tests — even/odd key criticality, `group_id` mismatch — rewritten for
+   array-wrapped framing) and `SectorAssemblerTest.kt` (its own
+   hand-built-CBOR helpers rewritten from bare-prefix Content-Preview/
+   Content-Body framing to array-wrapped Content
+   Extension/Media-Preview/Media-Payload/Split framing, since that file
+   deliberately builds wire bytes by hand rather than through
+   `TagDropCodec`'s own encoders, to isolate `SectorAssembler`'s
+   reassembly logic from the codec's encode-side field layout) pass
+   green — 123 tests total across `TagDropCodecTest`/
+   `SectorAssemblerTest`/`MiniCborTest` combined, including real
+   ML-DSA-44 sign/verify against the new 3-Record hash formula. Not yet
+   done: `tools/test-qdef-roundtrip.mjs` (the separate, CI-gated Node
+   port of this same wire format) is still on v8's Content-Preview/
+   Content-Body shape — porting it to v9 is tracked as follow-up work,
+   same as the still-outstanding full Android Studio build gap noted
+   above.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
    `tools/examples/index.html` (encode side), `tools/reader/index.html`
    (decode side). SHA-256 via `crypto.subtle`, DEFLATE via

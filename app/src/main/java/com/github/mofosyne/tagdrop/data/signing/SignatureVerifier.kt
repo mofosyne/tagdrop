@@ -65,15 +65,18 @@ suspend fun verifySignatureCommon(
 }
 
 /**
- * Verifies a scanned Content's Verified Authorship fields against its LOGICAL [previewRaw]/
- * [bodyRaw] (SPEC §10) — [bodyRaw] null for a key-only code (Preview only, no Body at all;
- * [TagDropCodec.contentSignedMessageHash] treats that as an empty-bytes contribution, same as
- * the web reader).
+ * Verifies a scanned Content's Verified Authorship fields against its LOGICAL [extensionRaw]/
+ * [mediaPreviewRaw]/[mediaPayloadRaw] (SPEC §10) — [mediaPreviewRaw]/[mediaPayloadRaw] null for
+ * a key-only code (Extension only, nothing else; [TagDropCodec.contentSignedMessageHash] treats
+ * that as an empty-bytes contribution, same as the web reader).
  */
-suspend fun verifyContentSignature(previewRaw: ByteArray, bodyRaw: ByteArray?, content: TagDropPayload.Content, signerDao: SignerDao): SignatureVerification =
+suspend fun verifyContentSignature(
+    extensionRaw: ByteArray, mediaPreviewRaw: ByteArray?, mediaPayloadRaw: ByteArray?,
+    content: TagDropPayload.Content, signerDao: SignerDao
+): SignatureVerification =
     verifySignatureCommon(
         content.signatureAlgorithm, content.signature, content.signerPubkey, content.signerId, content.signerLabel, signerDao
-    ) { TagDropCodec.contentSignedMessageHash(previewRaw, bodyRaw) }
+    ) { TagDropCodec.contentSignedMessageHash(extensionRaw, mediaPreviewRaw, mediaPayloadRaw) }
 
 /** Verifies a scanned Paper's Verified Authorship fields against its LOGICAL [previewRaw]/[bodyRaw] (SPEC §10). */
 suspend fun verifyPaperSignature(previewRaw: ByteArray, bodyRaw: ByteArray, paper: TagDropPayload.Paper, signerDao: SignerDao): SignatureVerification =

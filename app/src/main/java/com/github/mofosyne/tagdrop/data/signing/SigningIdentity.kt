@@ -105,8 +105,9 @@ object SigningIdentityStore {
  * and feeds back into nothing"). Building signed-with-a-placeholder first makes every sizing
  * decision exactly what the final signed build will need;
  * [TagDropCodec.contentSignedMessageHash] then strips the placeholder's signature fields back
- * out (over the LOGICAL, pre-wrap [TagDropCodec.ContentBuild.previewRaw]/
- * [TagDropCodec.ContentBuild.bodyRaw] — same operation a verifier performs) to get the correct
+ * out (over the LOGICAL, pre-wrap [TagDropCodec.ContentBuild.extensionRaw]/
+ * [TagDropCodec.ContentBuild.mediaPreviewRaw]/[TagDropCodec.ContentBuild.mediaPayloadRaw] —
+ * same operation a verifier performs) to get the correct
  * hash to sign. Swapping the placeholder for the real signature afterward can't change any
  * sizing decision, since ML-DSA-44 signatures are fixed-length — same bytes in, same bytes out,
  * everywhere except the signature itself. Mirrors the web generator's `signContentSectors`.
@@ -119,7 +120,7 @@ fun signContentSectors(
     val pubkeyArg = if (includePubkey) identity.publicKey else null
     val placeholderSignature = ByteArray(MLDSA44.SIGNATURE_BYTES)
     val placeholder = build(TagDropCodec.SIGNATURE_ALG_MLDSA44, placeholderSignature, pubkeyArg, identity.signerId, identity.label)
-    val hash = TagDropCodec.contentSignedMessageHash(placeholder.previewRaw, placeholder.bodyRaw)
+    val hash = TagDropCodec.contentSignedMessageHash(placeholder.extensionRaw, placeholder.mediaPreviewRaw, placeholder.mediaPayloadRaw)
     val signature = MLDSA44.sign(hash, identity.secretKey)
     return build(TagDropCodec.SIGNATURE_ALG_MLDSA44, signature, pubkeyArg, identity.signerId, identity.label)
 }

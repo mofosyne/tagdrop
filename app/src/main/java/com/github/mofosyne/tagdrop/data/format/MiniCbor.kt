@@ -257,39 +257,6 @@ object MiniCbor {
     }
 
     /**
-     * Re-encodes [mapBytes] (a definite-length CBOR map, major type 5, starting at its own
-     * head byte) with every pair whose key is in [keysToStrip] removed, regardless of
-     * position — unlike [stripTrailingKeys], which assumes the stripped keys form a trailing
-     * run (true only when a caller lists them last by convention). QDEF Record field lists
-     * (Content-Preview/Content-Body/Paper-Preview/Paper-Body, SPEC.md §3.1-§3.4) always sort
-     * keys ascending — a higher-numbered field (e.g. `source_url`, key 55) can legitimately
-     * sort after the signature fields (45/47/49), so the trailing-run assumption doesn't hold
-     * for these Records the way it did for the old envelope's `core_meta_item`; this walks and
-     * keeps every surviving pair by its own byte range instead of truncating a suffix.
-     */
-    fun stripKeys(mapBytes: ByteArray, keysToStrip: Set<Int>): ByteArray {
-        val stream = ByteArrayInputStream(mapBytes)
-        val head = readByte(stream)
-        require(head ushr 5 == 5) { "Expected CBOR map (major 5), got major ${head ushr 5}" }
-        val count = readArg(head and 0x1F, stream).toInt()
-
-        val survivors = mutableListOf<ByteArray>()
-        repeat(count) {
-            val pairStart = mapBytes.size - stream.available()
-            val key = readValue(stream)
-            readValue(stream) // value bytes only need to be skipped, not interpreted
-            val pairEnd = mapBytes.size - stream.available()
-            if (!(key is Long && key.toInt() in keysToStrip)) {
-                survivors.add(mapBytes.copyOfRange(pairStart, pairEnd))
-            }
-        }
-        val out = ByteArrayOutputStream()
-        writeHead(out, 5, survivors.size.toLong())
-        for (pair in survivors) out.write(pair)
-        return out.toByteArray()
-    }
-
-    /**
      * Raw major-4 CBOR array encoding of [items] — the array's bytes UNWRAPPED. Mirrors the JS
      * reference's `cborArrayBytes` (used for QDEF Record fields whose value is an array of
      * sub-maps, e.g. Paper-Body's `files`/`related`, SPEC §3.4's field-value-shape rule: arrays
@@ -305,6 +272,225 @@ object MiniCbor {
         writeHead(out, 4, items.size.toLong())
         for (item in items) out.write(encodeValue(item))
         return out.toByteArray()
+    }
+
+    // ── QDEF array-wrapped Records (QDEF-SPEC.md §3.1, SPEC.md v9 §2) ──────────
+    // Every Record is its own self-delimited CBOR array, [typeId, map, subrecord*] — not a
+    // bare typeId-then-map pair. `subrecords` are already-encoded [typeId, map, ...] byte
+    // sequences (each itself built by a nested encodeRecord call), spliced in as their own
+    // array items. Mirrors the JS reference's cborRecord/craw pattern (tools/generator/
+    // index.html).
+
+    /** Encodes a QDEF Record: `[typeId, map, subrecord*]` as one CBOR array (major type 4). Fields sort ascending (SPEC §2.2). */
+    fun encodeRecord(typeId: Int, fields: List<Pair<Int, Any?>>, subrecords: List<ByteArray> = emptyList()): ByteArray {
+        val items = mutableListOf(encodeUInt(typeId.toLong()), encodeMap(fields.sortedBy { it.first }))
+        items.addAll(subrecords)
+        val out = ByteArrayOutputStream()
+        writeHead(out, 4, items.size.toLong())
+        for (item in items) out.write(item)
+        return out.toByteArray()
+    }
+
+    /** One decoded QDEF Record (QDEF-SPEC.md §3.1) — see [decodeRecordPrefix]. */
+    data class DecodedRecord(
+        /** The Record's own Type ID (the array's first element). */
+        val typeId: Int,
+        /** The Record's decoded field map (its array's second element). */
+        val record: Map<Int, Any>,
+        /** This Record's own exact byte range — typeId + map + all subrecords — what signature/group-id hashes are computed over. */
+        val raw: ByteArray,
+        /** Nested Records carried after this Record's own map, each with [raw] relative to the ORIGINAL top-level bytes passed to the outermost [decodeRecordPrefix] call. */
+        val subrecords: List<DecodedRecord>,
+        /** Whatever follows this Record in the CBOR Sequence. */
+        val trailing: ByteArray
+    )
+
+    /**
+     * Decodes one QDEF Record (a self-delimited CBOR array, `[typeId, map, subrecord*]`) from
+     * the head of [bytes] — see [DecodedRecord]. Returns null if the head of [bytes] isn't a
+     * well-formed Record.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun decodeRecordPrefix(bytes: ByteArray): DecodedRecord? = try {
+        val cur = Cursor(bytes, 0)
+        val ranges = itemRanges(cur, 4)
+        if (ranges.size < 2) null else {
+            val (typeIdStart, typeIdEnd) = ranges[0]
+            val (mapStart, mapEnd) = ranges[1]
+            val typeIdVal = decodeSequencePrefix(bytes.copyOfRange(typeIdStart, typeIdEnd), 1).first[0]
+            val typeId = (typeIdVal as? Long)?.toInt()
+            val record = decodeSequencePrefix(bytes.copyOfRange(mapStart, mapEnd), 1).first[0] as? Map<Int, Any>
+            if (typeId == null || record == null) null else {
+                val subrecords = mutableListOf<DecodedRecord>()
+                var failed = false
+                for (i in 2 until ranges.size) {
+                    val (s, e) = ranges[i]
+                    val sub = decodeRecordPrefix(bytes.copyOfRange(s, e))
+                    if (sub == null) { failed = true; break }
+                    subrecords.add(sub)
+                }
+                if (failed) null
+                else DecodedRecord(typeId, record, bytes.copyOfRange(0, cur.pos), subrecords, bytes.copyOfRange(cur.pos, bytes.size))
+            }
+        }
+    } catch (e: Exception) { null }
+
+    /**
+     * Re-encodes [recordBytes] (a Record's own array, `[typeId, map, subrecord*]`) with every
+     * field-map pair whose key is in [keysToStrip] removed, regardless of position — SPEC
+     * §2.2's fixed ascending key-encoding order means a higher-numbered field (e.g.
+     * `source_url`, key 55) can legitimately sort after the ones being stripped (e.g. the
+     * signature fields, 45/47/49), so this walks and keeps every surviving pair by its own
+     * byte range rather than assuming the stripped keys form a truncatable trailing run.
+     * Subrecords, if any, are carried through byte-for-byte, untouched. Mirrors the JS
+     * reference's `stripKeys`.
+     */
+    fun stripKeys(recordBytes: ByteArray, keysToStrip: Set<Int>): ByteArray {
+        val cur = Cursor(recordBytes, 0)
+        val ranges = itemRanges(cur, 4)
+        val (typeIdStart, typeIdEnd) = ranges[0]
+        val (mapStart, _) = ranges[1]
+        val subrecordRanges = ranges.drop(2)
+        val pairRanges = itemRanges(Cursor(recordBytes, mapStart), 5)
+        val survivors = mutableListOf<ByteArray>()
+        var i = 0
+        while (i < pairRanges.size) {
+            val (keyStart, _) = pairRanges[i]
+            val (_, valueEnd) = pairRanges[i + 1]
+            val key = readUintAt(recordBytes, keyStart)
+            if (key.toInt() !in keysToStrip) survivors.add(recordBytes.copyOfRange(keyStart, valueEnd))
+            i += 2
+        }
+        val mapOut = ByteArrayOutputStream()
+        writeHead(mapOut, 5, survivors.size.toLong())
+        for (s in survivors) mapOut.write(s)
+        val items = mutableListOf(recordBytes.copyOfRange(typeIdStart, typeIdEnd), mapOut.toByteArray())
+        for ((s, e) in subrecordRanges) items.add(recordBytes.copyOfRange(s, e))
+        val out = ByteArrayOutputStream()
+        writeHead(out, 4, items.size.toLong())
+        for (item in items) out.write(item)
+        return out.toByteArray()
+    }
+
+    /**
+     * Re-encodes [recordBytes] (a Record's own array) with any *direct* subrecord whose own
+     * typeId is [typeIdToStrip] removed entirely — not a field-map key strip, a whole-subrecord
+     * removal. Used to build "what an unsigned Media Payload would contain" (no Content
+     * Signature subrecord at all, SPEC.md v9 §10) from a placeholder-signed build or a
+     * reassembled/decoded signed Media Payload. Mirrors the JS reference's `stripSubrecordType`.
+     */
+    fun stripSubrecordType(recordBytes: ByteArray, typeIdToStrip: Int): ByteArray {
+        val cur = Cursor(recordBytes, 0)
+        val ranges = itemRanges(cur, 4)
+        val (typeIdStart, typeIdEnd) = ranges[0]
+        val (mapStart, mapEnd) = ranges[1]
+        val kept = ranges.drop(2).filter { (s, _) ->
+            val subCur = Cursor(recordBytes, s)
+            val subRanges = itemRanges(subCur, 4)
+            readUintAt(recordBytes, subRanges[0].first).toInt() != typeIdToStrip
+        }
+        val items = mutableListOf(recordBytes.copyOfRange(typeIdStart, typeIdEnd), recordBytes.copyOfRange(mapStart, mapEnd))
+        for ((s, e) in kept) items.add(recordBytes.copyOfRange(s, e))
+        val out = ByteArrayOutputStream()
+        writeHead(out, 4, items.size.toLong())
+        for (item in items) out.write(item)
+        return out.toByteArray()
+    }
+
+    /**
+     * Re-encodes [recordBytes] (a Record's own array) with ALL of its direct subrecords removed
+     * — used to recover a Record's own bare bytes (e.g. a scanned Media Preview with Media
+     * Payload nested inside it for wire transmission, single-code case, SPEC.md v9 §3.1a) for
+     * hashing purposes (§10), where only the OWN Record's canonical bytes belong in the signed
+     * message, not whatever happens to be nested inside it on the wire.
+     */
+    fun stripAllSubrecords(recordBytes: ByteArray): ByteArray {
+        val cur = Cursor(recordBytes, 0)
+        val ranges = itemRanges(cur, 4)
+        val (typeIdStart, typeIdEnd) = ranges[0]
+        val (mapStart, mapEnd) = ranges[1]
+        val items = listOf(recordBytes.copyOfRange(typeIdStart, typeIdEnd), recordBytes.copyOfRange(mapStart, mapEnd))
+        val out = ByteArrayOutputStream()
+        writeHead(out, 4, items.size.toLong())
+        for (item in items) out.write(item)
+        return out.toByteArray()
+    }
+
+    // ── Low-level CBOR item-boundary walkers ────────────────────────────────────
+    // QDEF-SPEC.md §3.1's array-wrapped Records need byte-range tracking through nested
+    // subrecords — the generic recursive value-decoder above ([readValue]) doesn't track byte
+    // positions, only values. Used by [decodeRecordPrefix]/[stripKeys]/[stripSubrecordType]/
+    // [stripAllSubrecords] above. Mirrors the JS reference's cborSkipItem/cborItemRanges/
+    // cborReadUint.
+
+    private class Cursor(val bytes: ByteArray, var pos: Int)
+
+    /** Advances [cur]'s position past exactly one well-formed CBOR item, recursing into arrays/maps as needed. */
+    private fun skipItem(cur: Cursor) {
+        fun rb(): Int = cur.bytes[cur.pos++].toInt() and 0xFF
+        fun readArgLocal(info: Int): Long = when {
+            info <= 23 -> info.toLong()
+            info == 24 -> rb().toLong()
+            info == 25 -> { var n = 0L; repeat(2) { n = (n shl 8) or rb().toLong() }; n }
+            info == 26 -> { var n = 0L; repeat(4) { n = (n shl 8) or rb().toLong() }; n }
+            info == 27 -> { var n = 0L; repeat(8) { n = (n shl 8) or rb().toLong() }; n }
+            else -> throw IllegalArgumentException("Unsupported CBOR additional info: $info")
+        }
+        val b = rb()
+        val major = b ushr 5
+        val a = readArgLocal(b and 0x1F)
+        when (major) {
+            2, 3 -> cur.pos += a.toInt()
+            4 -> repeat(a.toInt()) { skipItem(cur) }
+            5 -> repeat(a.toInt()) { skipItem(cur); skipItem(cur) }
+            // major 0/1/7 carry no payload beyond the argument readArgLocal already consumed.
+        }
+    }
+
+    /**
+     * Reads a definite-length array (major 4) or map (major 5) header at [cur]'s position and
+     * returns the byte range of each child item — for a map, key and value ranges are
+     * flattened into one list (2 per pair) — advancing [cur]'s position past the whole
+     * array/map. Map keys in TagDrop's own encodings are always small (well under 2 bytes), so
+     * only additional-info 0-25 are handled.
+     */
+    private fun itemRanges(cur: Cursor, expectedMajor: Int): List<Pair<Int, Int>> {
+        val head = cur.bytes[cur.pos++].toInt() and 0xFF
+        val major = head ushr 5
+        require(major == expectedMajor) { "Expected CBOR major $expectedMajor, got $major" }
+        val info = head and 0x1F
+        val count = when {
+            info <= 23 -> info
+            info == 24 -> cur.bytes[cur.pos++].toInt() and 0xFF
+            info == 25 -> {
+                val v = ((cur.bytes[cur.pos].toInt() and 0xFF) shl 8) or (cur.bytes[cur.pos + 1].toInt() and 0xFF)
+                cur.pos += 2
+                v
+            }
+            else -> throw IllegalArgumentException("Unsupported CBOR array/map length encoding")
+        }
+        val n = if (expectedMajor == 5) count * 2 else count
+        val ranges = mutableListOf<Pair<Int, Int>>()
+        repeat(n) {
+            val start = cur.pos
+            skipItem(cur)
+            ranges.add(start to cur.pos)
+        }
+        return ranges
+    }
+
+    /** Decodes a bare CBOR uint (major 0) at [pos] within [bytes]. */
+    private fun readUintAt(bytes: ByteArray, pos: Int): Long {
+        var p = pos
+        val b = bytes[p++].toInt() and 0xFF
+        require(b ushr 5 == 0) { "Expected uint, got major ${b ushr 5}" }
+        val info = b and 0x1F
+        return when {
+            info <= 23 -> info.toLong()
+            info == 24 -> (bytes[p].toInt() and 0xFF).toLong()
+            info == 25 -> (((bytes[p].toInt() and 0xFF) shl 8) or (bytes[p + 1].toInt() and 0xFF)).toLong()
+            else -> throw IllegalArgumentException("Unsupported CBOR uint encoding")
+        }
     }
 
     // ── Debug ─────────────────────────────────────────────────────────────────

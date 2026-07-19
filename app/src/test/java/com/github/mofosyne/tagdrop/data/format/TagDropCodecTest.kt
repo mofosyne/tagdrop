@@ -5,12 +5,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Tests TagDropCodec against the QDEF Record wire format (SPEC.md v8): Content-Preview/
- * Content-Body (Type 1/3) and Paper-Preview/Paper-Body (Type 5/7), Split Wrapper (Type 2) and
- * Compress Wrapper (Type 8). Mirrors `tools/test-qdef-roundtrip.mjs`'s adversarial coverage
- * (tamper detection via group_id/root_hash recomputation, SPEC §2.2 even/odd key criticality,
- * key-only codes, the placeholder-then-strip signing round trip) rather than porting the old
- * version-1 envelope's byte-layout assertions, which no longer apply.
+ * Tests TagDropCodec against the QDEF array-wrapped Record wire format (SPEC.md v9): Content
+ * Extension (Type 1) + Media Preview (QDEF Type 14) + Media Payload (QDEF Type 6, nested as
+ * Media Preview's subrecord, or Split's when multi-code) + Content Signature (Type 3, nested as
+ * Media Payload's subrecord when signed), and Paper-Preview/Paper-Body (Type 5/7, unaffected by
+ * the v9 Content restructuring), Split Wrapper (Type 2) and Compress Wrapper (Type 8). Mirrors
+ * `tools/test-qdef-roundtrip.mjs`'s adversarial coverage (tamper detection via group_id/
+ * root_hash recomputation, SPEC §2.2 even/odd key criticality, key-only codes, the
+ * placeholder-then-strip signing round trip) rather than porting the old version-1 envelope's
+ * byte-layout assertions, which no longer apply.
  */
 class TagDropCodecTest {
 
@@ -177,8 +180,8 @@ class TagDropCodecTest {
 
     @Test fun contentSignedMessageHashOfUnsignedIsDeterministic() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val h1 = TagDropCodec.contentSignedMessageHash(build.previewRaw, build.bodyRaw)
-        val h2 = TagDropCodec.contentSignedMessageHash(build.previewRaw, build.bodyRaw)
+        val h1 = TagDropCodec.contentSignedMessageHash(build.extensionRaw, build.mediaPreviewRaw, build.mediaPayloadRaw)
+        val h2 = TagDropCodec.contentSignedMessageHash(build.extensionRaw, build.mediaPreviewRaw, build.mediaPayloadRaw)
         assertArrayEquals(h1, h2)
         assertEquals(32, h1.size)
     }
@@ -192,8 +195,8 @@ class TagDropCodecTest {
             signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
             signature = ByteArray(2420), signerPubkey = ByteArray(1312), signerId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
         )
-        val unsignedHash = TagDropCodec.contentSignedMessageHash(unsigned.previewRaw, unsigned.bodyRaw)
-        val signedHash = TagDropCodec.contentSignedMessageHash(signed.previewRaw, signed.bodyRaw)
+        val unsignedHash = TagDropCodec.contentSignedMessageHash(unsigned.extensionRaw, unsigned.mediaPreviewRaw, unsigned.mediaPayloadRaw)
+        val signedHash = TagDropCodec.contentSignedMessageHash(signed.extensionRaw, signed.mediaPreviewRaw, signed.mediaPayloadRaw)
         assertArrayEquals(unsignedHash, signedHash)
     }
 
@@ -201,8 +204,8 @@ class TagDropCodecTest {
         val a = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
         val b = TagDropCodec.createContentSectors(null, null, "text/plain", "ho".toByteArray())
         assertFalse(
-            TagDropCodec.contentSignedMessageHash(a.previewRaw, a.bodyRaw)
-                .contentEquals(TagDropCodec.contentSignedMessageHash(b.previewRaw, b.bodyRaw))
+            TagDropCodec.contentSignedMessageHash(a.extensionRaw, a.mediaPreviewRaw, a.mediaPayloadRaw)
+                .contentEquals(TagDropCodec.contentSignedMessageHash(b.extensionRaw, b.mediaPreviewRaw, b.mediaPayloadRaw))
         )
     }
 
@@ -218,7 +221,7 @@ class TagDropCodecTest {
             signatureAlgorithm = TagDropCodec.SIGNATURE_ALG_MLDSA44,
             signature = ByteArray(MLDSA44.SIGNATURE_BYTES), signerPubkey = publicKey, signerId = signerId
         )
-        val hash = TagDropCodec.contentSignedMessageHash(placeholder.previewRaw, placeholder.bodyRaw)
+        val hash = TagDropCodec.contentSignedMessageHash(placeholder.extensionRaw, placeholder.mediaPreviewRaw, placeholder.mediaPayloadRaw)
         val signature = MLDSA44.sign(hash, secretKey)
         val final = TagDropCodec.createContentSectors(
             "signed note", null, "text/plain", "hello, signed world".toByteArray(),
@@ -226,16 +229,15 @@ class TagDropCodecTest {
             signature = signature, signerPubkey = publicKey, signerId = signerId
         )
         // Placeholder-swap must not have changed the logical bytes (fixed-length signature).
-        assertArrayEquals(placeholder.previewRaw, final.previewRaw)
+        assertArrayEquals(placeholder.extensionRaw, final.extensionRaw)
+        assertArrayEquals(placeholder.mediaPreviewRaw, final.mediaPreviewRaw)
 
         val state = assemble(roundTrip(final.codes)) as SectorAssembler.State.ContentReady
-        val verifyHash = TagDropCodec.contentSignedMessageHash(state.previewRaw, state.bodyRaw)
+        val verifyHash = TagDropCodec.contentSignedMessageHash(state.extensionRaw, state.mediaPreviewRaw, state.mediaPayloadRaw)
         assertTrue(MLDSA44.verify(state.signature!!, verifyHash, state.signerPubkey!!))
         // A signature must not verify against a different payload's hash.
-        val otherHash = TagDropCodec.contentSignedMessageHash(
-            TagDropCodec.createContentSectors(null, null, "text/plain", "different content".toByteArray()).previewRaw,
-            null
-        )
+        val other = TagDropCodec.createContentSectors(null, null, "text/plain", "different content".toByteArray())
+        val otherHash = TagDropCodec.contentSignedMessageHash(other.extensionRaw, other.mediaPreviewRaw, other.mediaPayloadRaw)
         assertFalse(MLDSA44.verify(state.signature!!, otherHash, state.signerPubkey!!))
     }
 
@@ -292,13 +294,15 @@ class TagDropCodecTest {
         val records = roundTrip(build.codes).toMutableList()
         // Corrupt one fragment's data bytes in place (same length, so it still "completes"
         // once every index is present) by re-decoding a hand-tampered raw record.
-        val victim = records[1]
+        val victim = records[1] as ScannedRecord.Content
         val frag = TagDropCodec.splitFragmentOf(victim)!!
         val tamperedData = frag.data.copyOf().also { it[0] = (it[0].toInt() xor 0xFF).toByte() }
-        val tamperedRaw = MiniCbor.encodeUInt(2) + MiniCbor.encodeMap(listOf(
+        // Multi-code Content's Split Wrapper (Type 2) carries Media Preview as its own subrecord
+        // (SPEC.md v9 §3.1a) — preserve it so the tampered fragment still decodes.
+        val tamperedSplit = MiniCbor.encodeRecord(2, listOf(
             2 to frag.groupId, 4 to frag.index, 6 to frag.count, 8 to tamperedData, 9 to frag.total
-        ))
-        val tamperedFull = victim.previewRaw + tamperedRaw
+        ), listOf(victim.mediaPreviewRaw!!))
+        val tamperedFull = victim.extensionRaw + tamperedSplit
         val tamperedRecord = (TagDropCodec.decodeRaw(tamperedFull) as TagDropScan.RecordScan).record
         records[1] = tamperedRecord
 
@@ -342,7 +346,8 @@ class TagDropCodecTest {
         assertEquals("", state.mimeType)
         assertTrue(state.content.isEmpty())
         assertNull(state.cacheId)
-        assertNull(state.bodyRaw)
+        assertNull(state.mediaPreviewRaw)
+        assertNull(state.mediaPayloadRaw)
     }
 
     @Test fun keyCodeRetainKeyFalseRoundTrip() {
@@ -458,23 +463,21 @@ class TagDropCodecTest {
 
     @Test fun decodeIgnoresUnknownOddKey() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val (items, trailing) = MiniCbor.decodeSequencePrefix(build.previewRaw, 2)
-        @Suppress("UNCHECKED_CAST")
-        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: 0
-        val fields = (items[1] as Map<Int, Any>).toList() + (9001 to "unknown but odd")
-        val tamperedPreview = MiniCbor.encodeUInt(typeId) + MiniCbor.encodeMap(fields)
-        val record = TagDropCodec.decodeRaw(tamperedPreview + trailing + (build.bodyRaw)) as? TagDropScan.RecordScan
+        val decoded = MiniCbor.decodeRecordPrefix(build.extensionRaw)!!
+        val fields = decoded.record.toList() + (9001 to "unknown but odd")
+        val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields)
+        val rest = build.codes.first().copyOfRange(build.extensionRaw.size, build.codes.first().size)
+        val record = TagDropCodec.decodeRaw(tamperedExtension + rest) as? TagDropScan.RecordScan
         assertNotNull("an unknown ODD key must be safely ignored, not rejected", record)
     }
 
     @Test fun decodeRejectsUnknownEvenKey() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
-        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 2)
-        @Suppress("UNCHECKED_CAST")
-        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: 0
-        val fields = (items[1] as Map<Int, Any>).toList() + (9002 to "unknown and even")
-        val tamperedPreview = MiniCbor.encodeUInt(typeId) + MiniCbor.encodeMap(fields)
-        val scan = TagDropCodec.decodeRaw(tamperedPreview + build.bodyRaw)
+        val decoded = MiniCbor.decodeRecordPrefix(build.extensionRaw)!!
+        val fields = decoded.record.toList() + (9002 to "unknown and even")
+        val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields)
+        val rest = build.codes.first().copyOfRange(build.extensionRaw.size, build.codes.first().size)
+        val scan = TagDropCodec.decodeRaw(tamperedExtension + rest)
         assertNull("an unknown EVEN key must reject the whole Record (forward-compat safety valve)", scan)
     }
 
@@ -656,13 +659,11 @@ class TagDropCodecTest {
         // A forged Preview claiming a root_hash that doesn't match the real Preview'||Body' hash.
         val files = listOf(TagDropPayload.FileEntry("index", "text/html", byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
         val build = TagDropCodec.createPaper("Trail Stop 3", "sunset-trail", "oak-tree", files)
-        val (items, _) = MiniCbor.decodeSequencePrefix(build.previewRaw, 2)
-        @Suppress("UNCHECKED_CAST")
-        val typeId = (items[0] as? Int) ?: (items[0] as? Long)?.toInt() ?: 0
-        val fields = (items[1] as Map<Int, Any>).toMutableMap()
+        val decoded = MiniCbor.decodeRecordPrefix(build.previewRaw)!!
+        val fields = decoded.record.toMutableMap()
         fields[1] = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0) // forged root_hash
-        val forgedPreview = MiniCbor.encodeUInt(typeId) + MiniCbor.encodeMap(fields.toList())
-        val record = (TagDropCodec.decodeRaw(forgedPreview + build.bodyRaw) as TagDropScan.RecordScan).record
+        val forgedPreview = MiniCbor.encodeRecord(decoded.typeId, fields.toList())
+        val record = (TagDropCodec.decodeRaw(forgedPreview + build.bodyRaw) as TagDropScan.RecordScan).record as ScannedRecord.Paper
         assertNull(TagDropCodec.parsePaperStream(record, build.bodyRaw))
     }
 
