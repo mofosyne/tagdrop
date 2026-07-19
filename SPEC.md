@@ -1,8 +1,11 @@
 # TagDrop Encoding Specification
 
 **Version:** 9 (Content format restructured for generic QDEF compatibility —
-Media Preview + Media Payload for file content, TagDrop-specific extension
-Record for signing/collections/location; see §14 "Version history")
+Media Preview + Media Payload for file content, a TagDrop-specific
+Content Extension Record for hint/collections/location/small signing
+fields, and a Content Signature Record nested under Media Payload so
+`signature`/`signer_pubkey` are carried once per payload, not once per
+code; see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -57,7 +60,7 @@ TagDrop registers four QDEF Record Type IDs, each with its own independent key n
 | Type ID | Record | Contains |
 |---|---|---|
 | `1` | Content Extension | TagDrop-specific Content fields — hint, location, collection, encryption/signing metadata. See §3.1. |
-| `3` | *(deprecated)* | Former Content-Body. Content bytes now travel in Media Payload (QDEF Type 6) subrecords. |
+| `3` | Content Signature | `signature`/`signer_pubkey` for a signed Content payload — travels as Media Payload's own subrecord (QDEF Type 6), never repeated per code. Absent entirely when unsigned. See §3.1a. |
 | `5` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
 | `7` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
 
@@ -238,13 +241,27 @@ reads this Extension Record for the full feature set.
 | 51 | `in_reply_to` | bytes (8, opt) | `contentHash`/`root_hash` of the single parent this replies to; see §7 |
 | 53 | `created_at` | uint (opt) | Author-declared Unix timestamp; not independently verified |
 | 55 | `source_url` | text (opt) | See §17 |
-| 57 | `signature` | bytes (2420, opt) | See §10 — moved from old Content-Body (Type 3) |
-| 59 | `signer_pubkey` | bytes (1312, opt) | See §10 — moved from old Content-Body (Type 3) |
 
 **Removed fields (now in Media Preview, Type 14):** `cache_id` (key 1),
 `mime_type` (key 5), `filename` (key 7), `title` (key 9). These are
 standard QDEF fields that belong in Media Preview's own field table
 (§3.1a), not in TagDrop's extension Record.
+
+**`signature`/`signer_pubkey` deliberately do NOT live here.** Content
+Extension is repeated whole on every code in a multi-code group (§5.1) —
+fine for `signature_algorithm`/`signer_id`/`signer_label` (a few bytes
+each, and `signer_id` is what lets a scanner show "signed by X" from a
+single isolated scan, before the rest of the group arrives), but
+`signature` (2420 bytes) and `signer_pubkey` (1312 bytes) are not needed
+until the full payload is reassembled anyway — verification can't happen
+any earlier — so repeating them per code would only add dead weight,
+scaling with group size. They travel instead in the Content Signature
+Record (Type 3, §3.1a), nested as Media Payload's own subrecord, which
+means they're carried exactly once per payload regardless of how many
+codes it spans — split-fragmented together with `content` itself when
+Split-wrapped, same as the old Content-Body design already did before
+this port. See §10 for the field table and the corrected signed-message
+formula.
 
 ### 3.1a Media Preview + Media Payload (Types `14` / `6`)
 
@@ -269,9 +286,46 @@ namespace-scoped — any QDEF-aware decoder can read them.
 | 0 | `mediaType` | uint or text | CRITICAL — same mediaType as Media Preview |
 | 2 | `content` | bytes | CRITICAL — the payload bytes |
 
-**When Split is present, Split is outermost** (QDEF-SPEC.md §4.5).
-Media Preview + Media Payload travel as Split's subrecord. TagDrop's
-Content Extension Record (Type 1) is repeated on every code in the group.
+**Content Signature (Type 3, TagDrop-scoped) field map** — present only
+when the payload is signed (§10), nested as Media Payload's own
+subrecord (see nesting rules below), never as a bare top-level Record:
+
+| Key | Field | Type | Notes |
+|---|---|---|---|
+| 3 | `signature` | bytes (2420) | See §10 |
+| 5 | `signer_pubkey` | bytes (1312, opt) | See §10 — omittable once the verifier already has this `signer_id` cached |
+
+**Nesting: single code vs. Split-wrapped.** The base shape is Media
+Payload nested as Media Preview's own subrecord — `[14, {mediaType,
+contentHash, ...}, [6, {mediaType, content}]]` — with Content Signature,
+if the payload is signed, nested one level deeper, as Media Payload's
+*own* subrecord: `[14, {...}, [6, {mediaType, content}, [3, {signature,
+signer_pubkey}]]]`. This is the whole shape when it fits on one code.
+
+**When Split is needed** (QDEF-SPEC.md §4.1/§4.5), the nesting inverts:
+**Split is outermost**, wrapping the canonical bytes of the `[6, {...},
+[3, {...}]?]` array — Media Payload *and* its own Content Signature
+subrecord, if present — as its opaque, fragmented `fragment` field;
+Media Preview becomes *Split's* subrecord instead, unwrapped and
+repeated identically on every code in the group, exactly like Content
+Extension:
+
+```
+[ 2, { 0: h'<group_id>', 2: <index>, 4: <count>, 6: h'<fragment bytes>', 7: <total> },
+  [ 14, { 0: "image/png", 1: h'<contentHash>', 3: "photo.png" } ] ]
+```
+
+Because Content Signature travels *inside* the bytes Split fragments —
+not as a separate repeated Record — `signature`/`signer_pubkey` are
+carried exactly once per payload and reassembled together with
+`content` itself, regardless of how many codes the group spans. This is
+what §3.1's "deliberately do NOT live here" note (above) relies on: had
+`signature`/`signer_pubkey` instead been fields on the always-repeated
+Content Extension or Media Preview Records, they would have been paid
+again on every code in the group. TagDrop's Content Extension Record
+(Type 1) is a separate, top-level sibling Record — never nested inside
+Split or Media Preview — and is repeated on every code in the group,
+same as before.
 
 **Encrypted override map.** Media Payload's `content` may be a
 self-contained AES-256-GCM blob (§9) that, once decrypted, is itself a
@@ -390,19 +444,26 @@ numbering.
 
 ### 4.1 Preview and Body
 
-Every Content payload is exactly one **Media Preview** Record (Type 14) with
-one **Media Payload** Record (Type 6) as its subrecord, plus one **Content
-Extension** Record (Type 1) carrying TagDrop-specific fields. For Paper,
-the structure is one **Paper-Preview** Record (Type 5) plus one **Paper-Body**
-Record (Type 7). Preview is always small, always plain (never Compress- or
-Split-wrapped), and — per §5.1 — repeated on every physical code that carries
-this payload, so a single isolated scan always identifies what it found and
-shows a usable preview, regardless of whether the Body has been fully
-reassembled yet. Body carries whatever doesn't need to be in that early
-preview: `content` (Content, via Media Payload subrecord) or `files[]`/
-`related[]` (Paper, via Paper-Body), plus the large signature fields —
-optionally Compress-wrapped (QDEF-SPEC.md §4.1 Type 8), and Split-wrapped
-(§5) when it doesn't fit alongside Preview in one code.
+Every Content payload is one **Media Preview** Record (Type 14), one
+**Media Payload** Record (Type 6) carrying the actual content bytes
+(nested as Media Preview's subrecord when the payload fits on one code,
+or as Split's wrapped, fragmented content when it doesn't — see §3.1a
+for the exact nesting in each case, §5.1 for which Records go on which
+physical code), plus one **Content Extension** Record (Type 1) carrying
+TagDrop-specific fields. For Paper, the structure is one **Paper-Preview**
+Record (Type 5) plus one **Paper-Body** Record (Type 7). Whichever of
+these is the small, always-plain, never-Compress-or-Split-wrapped one for
+each payload type (Content Extension + Media Preview for Content;
+Paper-Preview for Paper) is — per §5.1 — repeated on every physical code
+that carries this payload, so a single isolated scan always identifies
+what it found and shows a usable preview, regardless of whether the rest
+has been fully reassembled yet. The large part carries whatever doesn't
+need to be in that early preview: `content` plus, if signed, the Content
+Signature subrecord (Content, via Media Payload, §3.1a) or `files[]`/
+`related[]` (Paper, via Paper-Body), plus (Paper only) the large signature
+fields — optionally Compress-wrapped (QDEF-SPEC.md §4.1 Type 8), and
+Split-wrapped (§5) when it doesn't fit alongside the small part in one
+code.
 
 For Content, a generic QDEF decoder reads Media Preview + Media Payload to
 extract the file content; TagDrop's own decoder also reads the Content
@@ -474,14 +535,17 @@ rather than falling back to a live GPS fix. `location_label`, when present,
 is independent of that triple and is carried/stored alongside it regardless
 of whether a fixed point was resolved.
 
-**`bulky_meta_item`** holds whatever doesn't need to be in the early preview
-but isn't raw content — for a Paper, that's `files[]` and `related[]`; for
-either payload kind, any large fixed-size field regardless of category, e.g.
-`signature` and `signer_pubkey` (§10), which are "identity" fields by
-category but bulky by size in practice. Placement here is about size, not
-meaning. May be compressed per `bulky_meta_compression` (§8); if so,
-`bulky_meta_compressed_bytes` marks exactly where it ends and content
-begins (§3).
+**The large part of a payload** (Paper-Body for Paper; Media Payload,
+plus its Content Signature subrecord when signed, for Content — §4.1,
+§3.1a) holds whatever doesn't need to be in the early preview but isn't
+raw content either: for a Paper, `files[]` and `related[]`, plus
+`signature`/`signer_pubkey` directly on Paper-Body (§10); for Content,
+`signature`/`signer_pubkey` are "identity" fields by category but bulky
+by size in practice, which is why they're placed in the nested Content
+Signature Record rather than on the always-repeated Content Extension
+(§3.1). Placement is about size (and, for Content specifically,
+per-code repetition cost), not meaning. May be Compress-wrapped (QDEF-
+SPEC.md §4.1 Type 8, §8) before Split-wrapping.
 
 **Body's `content`** is the actual bytes (Media Payload key 2): a Content
 payload's cache (raw or Compress-wrapped), or absent entirely for a Paper,
@@ -495,16 +559,6 @@ random-`contentHash`-style exception).
 Example — a Content payload, single code:
 
 ```
-Media Preview (Type 14) {
-  0: "text/html",              // mediaType — CRITICAL, even key
-  1: h'12<h8 of SHA-256>',    // contentHash — multihash-style, §3.1a
-  3: "poem.html",              // filename
-  5: "Spring poem",            // label
-}
-Media Payload (Type 6) {
-  0: "text/html",              // mediaType — must match Media Preview
-  2: h'<page bytes>',          // content — raw or Compress-wrapped
-}
 Content Extension (Type 1) {
   3: "under the bridge",       // hint
   13: h'<8 random bytes>',     // collection_id — optional, §7 Collections
@@ -512,6 +566,16 @@ Content Extension (Type 1) {
   17: "springtrail2026",       // collection_tag — optional, §7 Collections
   19: "🌳",                     // icon — optional, §7 Icons
 }
+Media Preview (Type 14) {
+  0: "text/html",              // mediaType — CRITICAL, even key
+  1: h'12<h8 of SHA-256>',    // contentHash — multihash-style, §3.1a
+  3: "poem.html",              // filename
+  5: "Spring poem",            // label
+}
+  Media Payload (Type 6, Media Preview's subrecord — §3.1a) {
+    0: "text/html",            // mediaType — must match Media Preview
+    2: h'<page bytes>',        // content — raw or Compress-wrapped
+  }
 ```
 
 Example — a Paper, single code:
@@ -638,10 +702,10 @@ The TagDrop app intercepts these links and resolves them from the local database
 **No more practical size limit (issue #37):** Previously, `files[]`/
 `related[]` entries competed for space against the ~800-byte budget of a
 single code, capping a Paper at roughly 15–20 files or 8–12 related entries
-before it had to be split into multiple linked papers. Because `bulky_meta_item`
-(§4.2) can now span as many sectors as it needs, that ceiling is gone — a
-Paper with hundreds of files is just a Paper with a larger `sector_count`,
-not a different shape.
+before it had to be split into multiple linked papers. Because Paper-Body
+(§4.2) can now be Split-wrapped (§5) across as many codes as it needs,
+that ceiling is gone — a Paper with hundreds of files is just a Paper with
+a larger fragment `count`, not a different shape.
 
 ### 4.4 Content-Addressed IDs (IPFS-inspired)
 
@@ -727,11 +791,14 @@ TagDrop uses it, not a new protocol.
 
 ### 5.1 What goes on which code
 
+**Paper** (unchanged from the pre-QDEF-restructuring design — Paper is
+still a flat Preview/Body pair, Types 5/7):
+
 - **Preview is always whole and unwrapped**, and — for a multi-code
   payload — MUST be repeated identically on **every** code in the group,
   not just a "first" one. This is what makes cross-code correlation work
   with no extra field: a decoder scanning any single code already has
-  Preview's `contentHash`/`root_hash` (§4.4) and therefore already knows which
+  Preview's `root_hash` (§4.4) and therefore already knows which
   payload group this code belongs to and can show a usable preview,
   regardless of scan order or how much of Body has arrived. (This is a
   strict improvement over the old design, where only a sector actually
@@ -748,24 +815,68 @@ TagDrop uses it, not a new protocol.
   FINDINGS.md #5) and reject a mismatch, exactly as the old design required
   for `content_sha256`/`bulky_meta_sha256`, which `group_id` supersedes.
 
+**Content** (three Records instead of Paper's two — Content Extension,
+Media Preview, Media Payload; see §3.1/§3.1a for their field tables and
+exact nesting):
+
+- **Content Extension (Type 1) and Media Preview (Type 14) are always
+  whole and unwrapped**, and — for a multi-code payload — MUST both be
+  repeated identically on **every** code in the group, the same
+  "no extra field needed, any single scan is self-identifying" property
+  Paper's Preview has above. A decoder scanning any single code already
+  has Media Preview's `contentHash` (§4.4) and Content Extension's
+  `hint`/collection/location fields, regardless of scan order or how much
+  of Media Payload has arrived.
+- **Media Payload (Type 6) — plus its own Content Signature subrecord
+  (Type 3), if the payload is signed — travels alone or Split-wrapped**,
+  exactly mirroring Paper's Body above, with one nesting difference:
+  when it fits on the same code as the small part, Media Payload nests as
+  *Media Preview's own subrecord* rather than sitting alongside it as a
+  separate top-level Record (§3.1a) — `[1, {ext fields}], [14, {preview
+  fields}, [6, {mediaType, content}, [3, {sig}]?]]` as a two-item CBOR
+  Sequence. When it doesn't fit, Media Payload (with its Content Signature
+  subrecord embedded, if present) is Split-wrapped (QDEF-SPEC.md §4.1 Type
+  2) into `count` fragments; each of those codes carries Content Extension
+  plus Media Preview (now Split's own subrecord instead of Media Payload's
+  parent — §3.1a) plus one fragment. `group_id` is a content hash of the
+  fully reassembled, unwrapped `[6, {...}, [3, {...}]?]` bytes — decoders
+  MUST verify it after reassembly (QDEF-SPEC.md FINDINGS.md #5) and reject
+  a mismatch, same as Paper's `group_id` above.
+- **Why Content Signature isn't just "part of Body" the way Paper's
+  signature fields are part of Paper-Body:** it doesn't need its own
+  Record Type at all conceptually — it exists only so `signature`/
+  `signer_pubkey` can nest specifically under Media Payload (whichever of
+  Media Preview's subrecord or Split's wrapped bytes that turns out to
+  be) rather than under the always-repeated Content Extension or Media
+  Preview, which is what keeps those two multi-KB fields from being paid
+  once per code instead of once per payload (§3.1's "deliberately do NOT
+  live here" note).
+
 ### 5.2 Reassembly
 
-1. **Scan codes** in any order, any session. Each code's Preview identifies
-   the payload (§4.4, §5.1) regardless of which code arrives first.
-2. If a code's second Record is a plain Body (not Split-wrapped), Body is
-   already complete — skip to step 4.
+1. **Scan codes** in any order, any session. Each code's small,
+   always-repeated part (Paper: Preview; Content: Content Extension +
+   Media Preview, §5.1) identifies the payload (§4.4, §5.1) regardless of
+   which code arrives first.
+2. If a code's large part (Paper: Body; Content: Media Payload, nested
+   under Media Preview, §5.1) is plain, not Split-wrapped, it's already
+   complete — skip to step 4.
 3. Otherwise, track Split fragments by `group_id` until all `count` are
    collected (QDEF-SPEC.md §4.1's fixed `chunkLen = ceil(total_bytes/count)`
    chunking rule), independently of any fragment at index `≥ count`
    (parity — see below). When complete, reassemble and verify `group_id` as
-   required above.
-4. Content: Body's `content` may be a hidden encrypted override map — if
-   `content` is ≥ 28 bytes, try AES-256-GCM decryption as `nonce(12) ||
-   ciphertext || tag(16)` (§9) against every known `key_material`. If one
-   authenticates, CBOR-decode the plaintext as the override map (§9) —
-   merge it onto Preview (override map's keys win) to get the final
-   `hint`/`mime_type`/`content`/`filename`. Otherwise, Preview's fields are
-   final as-is.
+   required above. For Content, reassembly yields Media Payload's own
+   bytes — decode that as one Record to recover `content` and, if the
+   payload is signed, its nested Content Signature subrecord (§3.1a).
+4. Content: Media Payload's `content` may be a hidden encrypted override
+   map — if `content` is ≥ 28 bytes, try AES-256-GCM decryption as
+   `nonce(12) || ciphertext || tag(16)` (§9) against every known
+   `key_material`. If one authenticates, CBOR-decode the plaintext as the
+   override map (§9) — merge it onto Content Extension/Media Preview
+   (override map's keys win) to get the final `hint` (→ Content
+   Extension), `mime_type`/`filename` (→ Media Preview), and `content`
+   (→ Media Payload). Otherwise, those Records' own fields are final
+   as-is.
 5. Deliver MIME-typed content to the viewer (Content payloads), or render the
    directory (Paper payloads, §4.3).
 
@@ -1403,25 +1514,26 @@ single-code one's.
 holds, try AES-256-GCM decryption of the candidate blob using its first 12
 bytes as the nonce. If the authentication tag checks out, decompress the
 remaining plaintext (if it was compressed before encryption) and CBOR-decode
-it as the override map, then merge it onto Content Extension — its
-`hint`/`mime_type`/`filename` are overridden by the override map's
-same-purpose keys, and the override map's `content` becomes the final
-content, replacing whatever Media Payload's `content` field decoded to plainly. If no
-key has yet succeeded (or the code carries no such blob at all),
-Content Extension's fields and the plainly-decoded `content` *are* the final
-view, exactly as in §4.1.
+it as the override map, then merge it onto Content Extension and Media
+Preview — `hint` (Content Extension) and `mime_type`/`filename` (Media
+Preview) are overridden by the override map's same-purpose keys, and the
+override map's `content` becomes the final content, replacing whatever
+Media Payload's `content` field decoded to plainly. If no key has yet
+succeeded (or the code carries no such blob at all), Content Extension's
+and Media Preview's fields and the plainly-decoded `content` *are* the
+final view, exactly as in §4.1.
 
 ```
 Content Extension {
   37: 1,                   // encryption — optional "🔒 Locked" hint
 }
 Media Payload {
-  1: h'<12-byte nonce>' || h'<ciphertext of (compressed) override map>' || h'<16-byte tag>',
+  2: h'<12-byte nonce>' || h'<ciphertext of (compressed) override map>' || h'<16-byte tag>',
 }
 ```
 
-**Cover stories, or no story at all:** Content Extension's `hint`,
-`mime_type`, and `filename`, plus whatever `content` decodes to plainly,
+**Cover stories, or no story at all:** Content Extension's `hint`, Media
+Preview's `mediaType`/`filename`, plus whatever `content` decodes to plainly,
 are shown (and used) until a matching key is found. They MAY be a generic
 "locked" placeholder, a believable **decoy** (different hint/MIME/
 content/filename than what's really there), or — since `encryption` need
@@ -1479,9 +1591,9 @@ used directly with no passphrase or key-derivation step. It can appear:
   "scanning this paper reveals a key for the related paper," for trails
   meant to be discovered in sequence.
 
-A Content payload carrying `key_material` may omit `mime_type` entirely,
-and carries no Media Payload at all — a code can be *just a key*, with no
-displayable content of its own:
+A Content payload carrying `key_material` carries no Media Preview or
+Media Payload at all — a code can be *just a key*, with no displayable
+content of its own:
 
 ```
 Content Extension {
@@ -1652,31 +1764,43 @@ need no signature at all.
 | 1 | ML-DSA-44 (Dilithium2, FIPS 204) |
 | 2–255 | Reserved |
 
-| Field | Content Extension key | Paper-Preview key | Paper-Body key |
-|---|---|---|---|
-| `signature_algorithm` | 45 | 31 | — |
-| `signer_id` | 47 | 33 | — |
-| `signer_label` | 49 | 35 | — |
-| `signature` | 57 | — | 5 |
-| `signer_pubkey` | 59 | — | 7 |
+| Field | Content Extension key | Content Signature key | Paper-Preview key | Paper-Body key |
+|---|---|---|---|---|
+| `signature_algorithm` | 45 | — | 31 | — |
+| `signer_id` | 47 | — | 33 | — |
+| `signer_label` | 49 | — | 35 | — |
+| `signature` | — | 3 | — | 5 |
+| `signer_pubkey` | — | 5 | — | 7 |
 
-For Content: `signature_algorithm`/`signer_id`/`signer_label` are in the
-Content Extension Record (Type 1); `signature`/`signer_pubkey` are also
-in the Extension Record (keys 57/59, moved from old Content-Body Type 3).
-For Paper: same split as before — Preview-side fields in Paper-Preview,
-Body-side fields in Paper-Body.
+For Content: `signature_algorithm`/`signer_id`/`signer_label` are small
+and go in the always-repeated Content Extension Record (Type 1);
+`signature`/`signer_pubkey` are large (~3.7 KB combined) and go in the
+Content Signature Record (Type 3, §3.1a), nested as Media Payload's own
+subrecord so they're carried once per payload — not once per code — when
+Split-wrapped. This is the same size-based placement principle Paper
+already uses below, and the same one TagDrop's original Content-Preview/
+Content-Body split used before this port. For Paper: same split as
+before — Preview-side fields in Paper-Preview, Body-side fields in
+Paper-Body.
 
-**Implementation status:** the web tools (generator and reader) now sign
-and verify Content using the new QDEF key layout described above —
-Preview signature fields (keys 45/47/49) are stripped for hashing via
-`contentSignedMessageHash()`, and the Compress/Split Wrapper layer sits
-outside the signed region. The Kotlin Android app still signs using the
-old key numbering (32–36 in a shared `core_meta_item`/`bulky_meta_item`)
-and will need updating when its Content codec is ported to QDEF Records.
-The rest of this implementation-status note describes what's already
-proven to work, which remains true of the underlying mechanism (ML-DSA-44
-sign/verify, TOFU caching) even though the field layout it operates on
-differs between implementations: the web tools do real ML-DSA-44
+**Implementation status:** both reference implementations (the web tools
+and the Kotlin app) currently sign and verify Content against **version
+8**'s key layout — Content-Preview (Type 1) carries
+`signature_algorithm`/`signer_id`/`signer_label`, and the old
+Content-Body (Type 3) carries `signature`/`signer_pubkey`, stripped for
+hashing via `contentSignedMessageHash()`/its Kotlin equivalent, with the
+Compress/Split Wrapper layer sitting outside the signed region. Neither
+implementation has been ported to version 9's Content Extension/Media
+Preview/Media Payload/Content Signature layout yet — that port,
+including moving `signature`/`signer_pubkey` onto the new Content
+Signature Record (Type 3, repurposed from the old Content-Body — §3.1a),
+is the pending work this version of the spec exists to support. Paper
+signing (Paper-Preview/Paper-Body, Types 5/7) is unaffected by this
+version and needs no changes in either implementation. The rest of this
+implementation-status note describes what's already proven to work at
+version 8, which remains true of the underlying mechanism (ML-DSA-44
+sign/verify, TOFU caching) independent of which version's field layout
+it operates on: the web tools do real ML-DSA-44
 sign/verify via
 [`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum),
 dynamically imported from a CDN like the generator's other optional
@@ -1719,7 +1843,7 @@ overhead; for content already spanning multiple codes (§5) — e.g. an essay
 of a few KB — a constant ~2.4 KB signature is proportionally minor, and the
 public key (§ below) is amortized across an entire trail or collection.
 
-**Signed message for Content:** `SHA-256(MediaPreview' || MediaPayload' || Extension')` (full, untruncated 32 bytes), where `MediaPreview'` is Media Preview's canonical CBOR bytes (Type 14), `MediaPayload'` is Media Payload's canonical CBOR bytes (Type 6), and `Extension'` is the Content Extension Record's canonical CBOR bytes (Type 1) with `signature_algorithm`/`signer_id`/`signer_label`/`signature`/`signer_pubkey` (this section's own fields) omitted — i.e. the SHA-256 of exactly what an unsigned payload's three Records would contain. Compress/Split Wrapper layers sit outside the signed region. The formula covers all three Records because the signature must bind the TagDrop-specific metadata (in the Extension Record) to the file content (in Media Preview + Media Payload).
+**Signed message for Content:** `SHA-256(MediaPreview' || MediaPayload'' || Extension')` (full, untruncated 32 bytes), where `MediaPreview'` is Media Preview's canonical CBOR bytes (Type 14, nothing to strip — it never carries a signature field), `MediaPayload''` is Media Payload's canonical CBOR bytes (Type 6) with its own Content Signature subrecord (Type 3, §3.1a) omitted entirely if present, and `Extension'` is the Content Extension Record's canonical CBOR bytes (Type 1) with `signature_algorithm`/`signer_id`/`signer_label` (its only signing-related fields now — `signature`/`signer_pubkey` no longer live here, §3.1) omitted — i.e. the SHA-256 of exactly what an unsigned payload's three Records would contain. Compress/Split Wrapper layers sit outside the signed region. The formula covers all three Records because the signature must bind the TagDrop-specific metadata (in the Extension Record) to the file content (in Media Preview + Media Payload).
 
 **Signed message for Paper:** `SHA-256(Preview' || Body')` (full, untruncated 32 bytes), same formula as before — `Preview'` is Paper-Preview's canonical CBOR bytes with signature fields omitted, `Body'` is Paper-Body's canonical CBOR bytes with signature/signer_pubkey omitted. For a Paper, `root_hash` already strips exactly these same fields before hashing, so computing `root_hash` and computing the signed message are **one and the same SHA-256 call**: compute it once, take the first 8 bytes for `root_hash`, and feed the full 32 bytes to `Sign`/`Verify`. There is no separate bootstrapping step or ordering question beyond what §4.4 already requires for `root_hash` alone.
 
@@ -1738,11 +1862,29 @@ independently-produced passes" discipline this project's own history
 self-reference (`root_hash` and the signature) with one shared build step
 instead of treating them as separate concerns.
 
-**Verification:** a verifier strips this section's fields from Preview and
-Body, recomputes the same full SHA-256, and checks `signature` against
-that hash using `signer_pubkey` via ML-DSA-44 `Verify`. `signer_id` =
-`SHA-256(signer_pubkey)[0:8]` — the same truncated-SHA-256-prefix
-convention as `contentHash`/`collection_id`/`paper_id` (§3).
+**Building a signed Content payload** needs the same placeholder
+discipline, minus Paper's self-reference step (`contentHash` isn't
+computed over Media Preview/Extension the way `root_hash` is over
+Preview/Body, §4.4): (1) build Media Preview, Media Payload (with no
+Content Signature subrecord), and Content Extension with this section's
+fields absent, (2) decide Compress/Split-wrapping based on that
+unsigned size, (3) compute the shared hash over the wrapping-independent
+logical bytes, (4) if signing, build the final Media Payload with a
+Content Signature subrecord holding the real `signature`/`signer_pubkey`,
+and the final Content Extension with `signature_algorithm`/`signer_id`/
+`signer_label` filled in, then re-decide Compress/Split-wrapping against
+this larger *signed* size — adding a ~3.7 KB Content Signature subrecord
+can itself push a payload from single- to multi-code, the same class of
+bug CLAUDE.md's "placeholder-then-strip" note already warns about for
+`root_hash`/`content_sha256`.
+
+**Verification:** a verifier strips this section's fields from Preview
+and Body (Paper) or from Media Payload's Content Signature subrecord and
+Content Extension (Content), recomputes the same full SHA-256, and checks
+`signature` against that hash using `signer_pubkey` via ML-DSA-44
+`Verify`. `signer_id` = `SHA-256(signer_pubkey)[0:8]` — the same
+truncated-SHA-256-prefix convention as `contentHash`/`collection_id`/
+`paper_id` (§3).
 
 **Key caching (amortizing the ~3.7 KB first-use cost):** `signer_id` is
 present on every signed payload, but `signer_pubkey` (1312 bytes) only needs
@@ -1789,17 +1931,23 @@ Verified Authorship and §9's privacy properties are intended as alternative
 use cases of the same format, not a combination.
 
 ```
-Content Extension {
-  5: "text/markdown",
-  45: 1,                            // signature_algorithm: ML-DSA-44
+Content Extension (Type 1) {
+  45: 1,                             // signature_algorithm: ML-DSA-44
   47: h'<8-byte signer_id>',
   49: "Alice's Trail",               // optional human-readable label
-  57: h'<2420-byte signature>',
-  59: h'<1312-byte public key>',     // only on first code from this signer
 }
-Media Payload {
-  1: h'<content bytes>',
+Media Preview (Type 14) {
+  0: "text/markdown",                // mediaType
+  1: h'12<contentHash>',             // multihash-style contentHash, §4.4
 }
+  Media Payload (Type 6, Media Preview's subrecord) {
+    0: "text/markdown",              // mediaType, same as Media Preview
+    2: h'<content bytes>',
+  }
+    Content Signature (Type 3, Media Payload's own subrecord) {
+      3: h'<2420-byte signature>',
+      5: h'<1312-byte public key>',  // only on first code from this signer
+    }
 ```
 
 ---
@@ -1937,18 +2085,30 @@ directly above it:
 **Version 9** (current) — Content format restructured for generic QDEF
 compatibility. Content payloads now use QDEF's standard Media Preview
 (Type 14) + Media Payload (Type 6) for file identification and content
-bytes, with TagDrop-specific features (signing, collections, location,
-etc.) in a separate namespace-scoped Content Extension Record (Type 1).
-This lets any QDEF-aware decoder extract file content from a TagDrop
-code, while TagDrop's own decoder reads the full feature set from the
-extension Record. Content-Body (Type 3) is no longer used for Content;
-the content bytes travel as a Media Payload subrecord of Media Preview.
-The signed message formula (§10) now covers three Records: Media Preview,
-Media Payload, and Content Extension (with signature fields stripped from
-the extension). Paper format is unchanged (still Paper-Preview/Body,
-Types 5/7). Field key numbering within the Content Extension Record is
-unchanged from the old Content-Preview — only the Record Type ID and the
-content-bytes location change.
+bytes, with TagDrop-specific features (hint, collections, location,
+encryption, and the small signing fields) in a separate namespace-scoped
+Content Extension Record (Type 1). This lets any QDEF-aware decoder
+extract file content from a TagDrop code, while TagDrop's own decoder
+reads the full feature set from the Extension Record. Content-Body's old
+Type ID (`3`) is repurposed as **Content Signature** — `signature`/
+`signer_pubkey`, nested as *Media Payload's own subrecord* rather than
+placed on the always-repeated Content Extension, so those two large
+(~3.7 KB combined) fields are carried once per payload, not once per
+code (§3.1, §3.1a, §5.1). Nesting differs by whether Split is in use:
+unsplit, Media Payload nests as Media Preview's subrecord; Split-wrapped,
+Media Preview becomes Split's own (repeated) subrecord instead, and
+Media Payload — with its Content Signature subrecord embedded, if
+present — is what Split's fragments actually carry, reassembling to
+exactly one copy (§3.1a). The signed message formula (§10) now covers
+three Records: `SHA-256(MediaPreview' || MediaPayload'' || Extension')`,
+where `MediaPayload''` has its Content Signature subrecord omitted and
+`Extension'` has `signature_algorithm`/`signer_id`/`signer_label`
+omitted. Paper format is unchanged (still Paper-Preview/Body, Types
+5/7). Field key numbering within the Content Extension Record is
+unchanged from the old Content-Preview for every field it keeps — only
+`cache_id`/`mime_type`/`filename`/`title` (moved to Media Preview) and
+`signature`/`signer_pubkey` (moved to Content Signature) are gone from
+it.
 
 **Version 8** — all four Type IDs shrink again, from small even
 values to small sequential odd ones (`1`/`3`/`5`/`7`), under a single
@@ -2114,24 +2274,27 @@ field-level changes.
 
 ## 15. Reference Implementations
 
-**Status:** the web tools (generator, reader, examples) encode and
-decode both Content and Paper using the current QDEF Record wire shape
-(Preview/Body split, Compress Wrapper, Split Wrapper, §2-§5) — no wire
-format left on the old envelope in any of the three web tools (a small
-old-format decode path is deliberately kept in the reader only, for
-backward compatibility with codes scanned before the port). The Kotlin
-Android app is the one implementation still on version 1's
-`core_meta_item`/`bulky_meta_item`/`part_meta` envelope for both payload
-types — porting it is tracked follow-up work. Signing (§10) uses the new
-QDEF key layout for both Content and Paper in the web tools; the Kotlin
-app still signs with the old key layout. File paths and high-level
-responsibilities below stay accurate either way.
+**Status:** both the web tools (generator, reader, examples) and the
+Kotlin Android app encode and decode Content and Paper using **version
+8**'s QDEF Record wire shape (Content-Preview/Content-Body split,
+Compress Wrapper, Split Wrapper, §2-§5) — no wire format left on the old
+version-1 `core_meta_item`/`bulky_meta_item`/`part_meta` envelope in
+either implementation (a small old-format decode path is deliberately
+kept in the web reader only, for backward compatibility with codes
+scanned before the port). Signing (§10) uses version 8's key layout —
+`signature`/`signer_pubkey` in the old Content-Body (Type 3) — in both
+implementations. **Neither implementation has been ported to version
+9's restructured Content shape yet** (Content Extension/Media
+Preview/Media Payload/Content Signature, §3.1/§3.1a) — that port is
+tracked follow-up work; Paper is unaffected by version 9 and needs no
+changes. File paths and high-level responsibilities below stay accurate
+either way.
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
   - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
   - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742). Currently limited to 32-bit unsigned integers — no longer a gap for QDEF Record Type IDs specifically, now that all four fit in 16 bits (§2.1, version 6); still a real limitation for any future 64-bit-scale field.
-  - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `(type, contentHash)` groups concurrently
+  - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `group_id` groups concurrently (Split Wrapper `group_id`, §5.1 — not the old version-1 `(type, cache_id)` keying)
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<domain>/<slug>` and `tagdrop://[<domain>]@<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
   - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark
 
