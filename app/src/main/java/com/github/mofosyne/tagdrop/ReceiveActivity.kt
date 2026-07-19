@@ -16,6 +16,7 @@ import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
@@ -225,6 +226,10 @@ class ReceiveActivity : AppCompatActivity() {
 
         binding.buttonClear.setOnClickListener  { clearState() }
         binding.buttonLaunch.setOnClickListener { launchLegacyContent() }
+        binding.buttonPasteUri.setOnClickListener { decodePastedUri() }
+        binding.editPasteUri.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_GO) { decodePastedUri(); true } else false
+        }
 
         binding.barcodeScanner.statusView.visibility = View.GONE
         binding.barcodeScanner.barcodeView.decoderFactory =
@@ -274,6 +279,26 @@ class ReceiveActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_inspect_cbor -> { inspectLastScannedCbor(); true }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    /**
+     * Lets a `tagdrop:` URI be typed/pasted directly instead of requiring a camera/NFC scan —
+     * feeds [processScanned] exactly like a scanned code, so it decodes Preview-only, multi-code
+     * Split, and Paper URIs identically (pasting a multi-code group's codes one at a time works
+     * the same way scanning them in sequence does), and "Inspect CBOR" lights up on the result
+     * the same way it does for a real scan. Rejects non-`tagdrop:` text up front rather than
+     * letting it fall through to [completeRawScan]'s catch-all, which would silently cache
+     * pasted garbage as standalone content.
+     */
+    private fun decodePastedUri() {
+        val text = binding.editPasteUri.text?.toString()?.trim().orEmpty()
+        if (text.isEmpty()) return
+        if (!text.startsWith("tagdrop:")) {
+            toast(getString(R.string.paste_uri_not_tagdrop))
+            return
+        }
+        processScanned(text)
+        binding.editPasteUri.setText("")
     }
 
     /** Shows the raw CBOR of the most recently scanned code, as decoded — pre-reassembly/storage. */
