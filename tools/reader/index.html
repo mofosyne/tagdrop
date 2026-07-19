@@ -90,6 +90,10 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
 .img-dropzone.dragover { border-color: #1a1a2e; background: #f0f0ff; color: #1a1a2e; }
 .img-dropzone label { cursor: pointer; display: block; }
 
+.uri-paste { margin: 12px auto 0; max-width: 360px; display: flex; gap: 6px; }
+.uri-paste input { flex: 1; min-width: 0; padding: 8px 10px; font-size: 0.85rem;
+                    border: 1px solid #ccc; border-radius: 6px; font-family: monospace; }
+
 /* Message bar */
 #msgBar { padding: 10px 14px; border-radius: 6px; margin-bottom: 12px;
           font-size: 0.9rem; }
@@ -275,6 +279,10 @@ main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
         <input type="file" id="imgFileInput" accept="image/*" style="display:none">
         Drop a QR image here, paste from clipboard (Ctrl+V), or <u>choose file</u>
       </label>
+    </div>
+    <div class="uri-paste">
+      <input type="text" id="uriPasteInput" placeholder="Or paste a tagdrop: URI" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="btnPasteUri" class="secondary">Decode</button>
     </div>
   </section>
 
@@ -3109,6 +3117,32 @@ async function decodeQrFromFile(file) {
     const file = e.dataTransfer?.files[0];
     if (file) decodeQrFromFile(file);
   });
+})();
+
+// Manual "paste a tagdrop: URI" entry — same path as a scanned alphanumeric QR symbol
+// (handleScanned's ASCII-text detection), so Preview-only, multi-code Split, Paper, and
+// nav-link (tagdrop://) URIs are all handled identically whether typed, pasted, or scanned.
+// Feeds any well-formed tagdrop: URI through the exact same reassembly/CBOR-viewer pipeline
+// as a camera/image scan — including pasting a multi-code Paper's codes one at a time.
+(function () {
+  const input = document.getElementById('uriPasteInput');
+  const btn = document.getElementById('btnPasteUri');
+
+  async function decodeTyped() {
+    const text = input.value.trim();
+    if (!text) return;
+    if (!text.startsWith('tagdrop:')) {
+      showMsg("Not a tagdrop: URI — expected it to start with \"tagdrop:\".", 'err');
+      return;
+    }
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+    await handleScanned(bytes);
+    input.value = '';
+  }
+
+  btn.addEventListener('click', decodeTyped);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') decodeTyped(); });
 })();
 
 // Clipboard paste — works where tab-to-tab drag doesn't (browser security blocks it).
