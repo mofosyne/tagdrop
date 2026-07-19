@@ -1,12 +1,14 @@
 /**
- * QDEF wire-shape validation suite: builds TagDrop's version-2 wire shape
- * (SPEC.md §2-§5) — Preview/Body Records, QDEF Split/Compress Wrapper
- * Records, the root_hash/signed-message placeholder-then-strip discipline —
- * and round-trips it through encode → decode → reassemble → verify, entirely
- * in-memory (no QR rendering, no Base41, no real ML-DSA-44 — signatures here
- * are fixed-length mock bytes, standing in only to exercise the *byte
- * layout* discipline SPEC.md §10 requires, not the cryptography itself,
- * which is proven separately by the real sign/verify implementations in
+ * QDEF wire-shape validation suite: builds TagDrop's version-9 wire shape
+ * (SPEC.md §2-§5) — array-wrapped Records with subrecords, Content Extension/
+ * Media Preview/Media Payload/Content Signature, Paper-Preview/Paper-Body,
+ * QDEF Split/Compress Wrapper Records, the root_hash/signed-message
+ * placeholder-then-strip discipline — and round-trips it through
+ * encode → decode → reassemble → verify, entirely in-memory (no QR
+ * rendering, no Base41, no real ML-DSA-44 — signatures here are
+ * fixed-length mock bytes, standing in only to exercise the *byte layout*
+ * discipline SPEC.md §10 requires, not the cryptography itself, which is
+ * proven separately by the real sign/verify implementations in
  * tools/generator+reader/index.html and the Kotlin app).
  *
  * Originally written as a throwaway shape-prototyping tool (find bugs in the
@@ -19,9 +21,8 @@
  * not malformed/adversarial input), so it's kept as a permanent part of the
  * test suite and gated in CI (.github/workflows/ci.yml) rather than deleted
  * now that the real JS ports (Content and Paper, both generator and reader)
- * have landed. The Kotlin port, when it happens, should get this same
- * adversarial coverage in its own JUnit suite rather than relying on this
- * file, which only exercises the JS-side byte layout.
+ * and the Kotlin port (app/src/test/.../TagDropCodecTest.kt +
+ * SectorAssemblerTest.kt) have all landed on version 9.
  *
  * Run with:
  *   cd tools
@@ -32,19 +33,20 @@ import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
-// ── Record Type IDs (SPEC.md §2.1, §4.1's Split/Compress from QDEF-SPEC.md §4.1) ──
-// SPLIT/COMPRESS stay plain Numbers (small values, decoder returns Number);
-// the four TagDrop Type IDs stay BigInt (exceed Number.MAX_SAFE_INTEGER,
-// decoder returns BigInt) - see decodeItem's majorType-0 branch. Mixing
-// these up is exactly the Number/BigInt equality trap that fix guards
-// against elsewhere; the constants themselves have to match it too.
+// ── Record Type IDs (SPEC.md §2.1, §3.1a; Split/Compress from QDEF-SPEC.md §4.1) ──
+// All eight values fit in one CBOR byte (0-23) — no BigInt handling needed
+// anywhere in this file; decodeItem's own BigInt-downgrade-when-safe logic
+// (majorType-0 branch) is generic decoder infrastructure, not something
+// these specific values ever actually exercise.
 const TYPE = {
   SPLIT: 2,
   COMPRESS: 8,
-  CONTENT_PREVIEW: 1,
-  CONTENT_BODY: 3,
+  CONTENT_EXTENSION: 1,
+  CONTENT_SIGNATURE: 3,
   PAPER_PREVIEW: 5,
   PAPER_BODY: 7,
+  MEDIA_PREVIEW: 14,
+  MEDIA_PAYLOAD: 6,
 };
 
 // ── Minimal CBOR (RFC 8949) — maps, uints, byte/text strings, arrays, float64 ──
@@ -120,8 +122,14 @@ function encodeRecord(fields) {
   return Buffer.concat(parts);
 }
 
-function encodeRecordWithTypeId(typeId, fields) {
-  return Buffer.concat([encodeUInt(typeId, 0), encodeRecord(fields)]);
+// A QDEF Record (QDEF-SPEC.md §3.1): a self-delimited CBOR array,
+// [typeId, map, subrecord*] — every Record is its own array now, not a bare
+// typeId-then-map pair. `subrecords` are already-encoded array-Record byte
+// sequences (each itself built by a nested encodeArrayRecord call), spliced
+// in as their own array items.
+function encodeArrayRecord(typeId, fields, subrecords = []) {
+  const map = encodeRecord(fields);
+  return encodeArray([encodeUInt(typeId, 0), map, ...subrecords]);
 }
 
 // Decoder: returns { value, rest } pairs, walking one CBOR item at a time.
@@ -153,8 +161,8 @@ function decodeItem(buf, offset) {
     // Downgrade to a plain Number whenever it's safe (matches the encoder,
     // which accepts either) - keeps arithmetic/equality ergonomic for the
     // overwhelming majority of small fields, while still round-tripping the
-    // rare genuinely-large value (e.g. a 64-bit Record Type ID) as BigInt
-    // rather than silently losing precision.
+    // rare genuinely-large value as BigInt rather than silently losing
+    // precision.
     const value = arg <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(arg) : arg;
     return { value, next: argOffset };
   }
@@ -198,20 +206,52 @@ function decodeItem(buf, offset) {
   throw new Error(`decodeItem: unsupported major type ${majorType}`);
 }
 
-function decodeRecord(buf, offset = 0) {
-  // QDEF Record (§3): bare uint typeId prefix + field map (two CBOR items).
-  const typeIdItem = decodeItem(buf, offset);
-  if (typeof typeIdItem.value !== 'bigint' && typeof typeIdItem.value !== 'number') {
-    throw new Error('decodeRecord: expected a uint typeId prefix');
+/**
+ * Decodes one QDEF Record (a self-delimited CBOR array, `[typeId, map,
+ * subrecord*]`, QDEF-SPEC.md §3.1) from the head of `buf` at `offset`.
+ * Returns `{ typeId, record, raw, subrecords, next }` — `raw` is this
+ * Record's own exact byte range (what signature/group-id hashes are
+ * computed over), `subrecords` an array of the same shape (recursively —
+ * each with `raw` relative to the ORIGINAL `buf`, not sliced first), `next`
+ * the offset immediately after this Record.
+ */
+function decodeArrayRecord(buf, offset) {
+  const head = buf[offset];
+  if (head >> 5 !== 4) throw new Error('decodeArrayRecord: expected a CBOR array (major 4)');
+  const info = head & 0x1f;
+  let argOffset = offset + 1;
+  let count;
+  if (info < 24) {
+    count = info;
+  } else if (info === 24) {
+    count = buf[argOffset];
+    argOffset += 1;
+  } else if (info === 25) {
+    count = buf.readUInt16BE(argOffset);
+    argOffset += 2;
+  } else {
+    throw new Error('decodeArrayRecord: unsupported array length encoding');
   }
-  const mapItem = decodeItem(buf, typeIdItem.next);
-  if (typeof mapItem.value !== 'object' || Array.isArray(mapItem.value)) {
-    throw new Error('decodeRecord: expected a field map after typeId prefix');
+  if (count < 2) throw new Error('decodeArrayRecord: a Record needs at least [typeId, map]');
+
+  let cur = argOffset;
+  const typeIdItem = decodeItem(buf, cur);
+  cur = typeIdItem.next;
+  const mapItem = decodeItem(buf, cur);
+  cur = mapItem.next;
+
+  const subrecords = [];
+  for (let i = 2; i < count; i++) {
+    const sub = decodeArrayRecord(buf, cur);
+    subrecords.push(sub);
+    cur = sub.next;
   }
+
   const typeId = typeof typeIdItem.value === 'bigint'
     ? (typeIdItem.value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(typeIdItem.value) : typeIdItem.value)
     : typeIdItem.value;
-  return { typeId, record: mapItem.value, next: mapItem.next };
+
+  return { typeId, record: mapItem.value, raw: buf.subarray(offset, cur), subrecords, next: cur };
 }
 
 // Decode a CBOR Sequence (RFC 8742) of records from the front of buf; returns
@@ -227,31 +267,30 @@ function decodeSequence(buf) {
   return items;
 }
 
-// ── Compress Wrapper (QDEF-SPEC.md §4.1 Type 3) ──
+// ── Compress Wrapper (QDEF-SPEC.md §4.1 Type 8) ──
 function compressWrap(bytes) {
-  return encodeRecordWithTypeId(TYPE.COMPRESS, { 2: deflateRawSync(bytes) });
-}
-
-function isWrapperRecord(typeId, record) {
-  return typeId === record;
+  return encodeArrayRecord(TYPE.COMPRESS, { 2: deflateRawSync(bytes) });
 }
 
 // ── Split Wrapper (QDEF-SPEC.md §4.1 Type 2) — fragment / reassemble / XOR parity ──
-function splitFragments(bytes, groupId, fragmentCount, withParity) {
+// `subrecords` (SPEC.md §3.1a) is attached to every fragment Record unwrapped
+// and repeated — used to carry Content's Media Preview alongside a
+// Split-wrapped Media Payload; Paper has none, so it's `[]` by default.
+function splitFragments(bytes, groupId, fragmentCount, withParity, subrecords = []) {
   const totalBytes = bytes.length;
   const chunkLen = Math.ceil(totalBytes / fragmentCount);
   const fragments = [];
   for (let i = 0; i < fragmentCount; i++) {
     const slice = bytes.subarray(i * chunkLen, Math.min((i + 1) * chunkLen, totalBytes));
     fragments.push(
-      encodeRecordWithTypeId(TYPE.SPLIT, {
+      encodeArrayRecord(TYPE.SPLIT, {
         2: groupId,
         4: i,
         6: fragmentCount,
         8: slice,
         9: totalBytes,
         11: withParity ? 1 : undefined,
-      })
+      }, subrecords)
     );
   }
   if (withParity) {
@@ -263,14 +302,14 @@ function splitFragments(bytes, groupId, fragmentCount, withParity) {
       // implicit zero pad, matching QDEF-SPEC.md's zero-padding rule
     }
     fragments.push(
-      encodeRecordWithTypeId(TYPE.SPLIT, {
+      encodeArrayRecord(TYPE.SPLIT, {
         2: groupId,
         4: fragmentCount,
         6: fragmentCount,
         8: parity,
         9: totalBytes,
         11: 1,
-      })
+      }, subrecords)
     );
   }
   return fragments;
@@ -310,7 +349,7 @@ function reassembleSplit(fragmentRecords, expectedGroupId) {
   return reassembled;
 }
 
-// Recursively unwrap Compress/Split Wrapper Records until a plain Record remains.
+// Recursively unwrap a Compress Wrapper stack until a plain Record remains.
 // (Split reassembly needs all fragments up front, so this handles the
 // single-code "already a plain/Compress-wrapped Record" case; multi-code
 // reassembly is driven explicitly in the payload-level decode functions
@@ -318,7 +357,7 @@ function reassembleSplit(fragmentRecords, expectedGroupId) {
 function resolveNonSplitWrapperStack(bytes) {
   let cur = bytes;
   for (;;) {
-    const decoded = decodeRecord(cur);
+    const decoded = decodeArrayRecord(cur, 0);
     if (decoded.typeId === TYPE.COMPRESS) {
       cur = inflateRawSync(decoded.record[2]);
       continue;
@@ -331,10 +370,17 @@ function sha256(buf) {
   return createHash('sha256').update(buf).digest();
 }
 
-// ── cache_id / root_hash / signed-message (SPEC.md §4.4, §10) ──
+// ── contentHash / root_hash / signed-message (SPEC.md §4.4, §10) ──
 // Mock signing: fixed-length random bytes standing in for real ML-DSA-44,
 // per this file's header comment — exercises the placeholder-then-strip
-// byte-layout discipline, not the cryptography.
+// byte-layout discipline, not the cryptography. Because the mock signature
+// is fixed-length and its message argument is never actually checked
+// against anything, this file uses the simpler "build unsigned once (for
+// the hash), then build the final signed version" pattern rather than the
+// real codecs' same-length-placeholder-then-strip discipline — both
+// produce byte-identical unsigned fields either way (SPEC §10 "signing
+// happens last and feeds back into nothing"), so nothing here that this
+// suite actually checks would tell the two approaches apart.
 const MOCK_SIGNATURE_LEN = 2420;
 const MOCK_PUBKEY_LEN = 1312;
 
@@ -342,12 +388,14 @@ function mockSign(_message, signerId) {
   return { signature: randomBytes(MOCK_SIGNATURE_LEN), signerPubkey: randomBytes(MOCK_PUBKEY_LEN), signerId };
 }
 
-// ── Content-Preview / Content-Body (SPEC.md §3.1-§3.2) ──
-function buildContentPreview(f) {
-  return encodeRecordWithTypeId(TYPE.CONTENT_PREVIEW, {
-    1: f.cacheId,
+// ── Content Extension / Media Preview / Media Payload / Content Signature (SPEC.md v9 §3.1/§3.1a) ──
+
+// Content Extension (Type 1) — TagDrop-specific fields only; file
+// identification (contentHash/mediaType/filename/label) lives in Media
+// Preview, large signing fields in Content Signature.
+function buildContentExtension(f) {
+  return encodeArrayRecord(TYPE.CONTENT_EXTENSION, {
     3: f.hint,
-    5: f.mimeType,
     33: f.keyMaterial,
     35: f.retainKey,
     37: f.encryption,
@@ -362,8 +410,10 @@ function buildContentPreview(f) {
 // encode/decode of a current-version payload — so this needs its own
 // explicit test rather than falling out of the existing round-trips.
 const KNOWN_KEYS = {
-  CONTENT_PREVIEW: new Set([1, 3, 5, 33, 35, 37, 45, 47, 49]),
-  CONTENT_BODY: new Set([1, 3, 5]),
+  CONTENT_EXTENSION: new Set([3, 33, 35, 37, 45, 47, 49]),
+  MEDIA_PREVIEW: new Set([0, 1, 3]),
+  MEDIA_PAYLOAD: new Set([0, 2]),
+  CONTENT_SIGNATURE: new Set([3, 5]),
   PAPER_PREVIEW: new Set([1, 3, 5, 7, 31, 33, 35]),
   PAPER_BODY: new Set([1, 3, 5, 7]),
 };
@@ -371,7 +421,7 @@ const KNOWN_KEYS = {
 function assertKnownKeys(record, knownKeys, label) {
   for (const keyStr of Object.keys(record)) {
     const key = Number(keyStr);
-    if (key === 0 || knownKeys.has(key)) continue;
+    if (knownKeys.has(key)) continue;
     if (key % 2 === 0) {
       throw new Error(`${label}: unrecognized CRITICAL (even) key ${key} - must abort this Record (QDEF-SPEC.md S3.2)`);
     }
@@ -379,17 +429,38 @@ function assertKnownKeys(record, knownKeys, label) {
   }
 }
 
-function buildContentBody(f) {
-  return encodeRecordWithTypeId(TYPE.CONTENT_BODY, {
-    1: f.content,
-    3: f.signature,
-    5: f.signerPubkey,
-  });
+// Media Preview (QDEF standard Type 14, SPEC.md v9 §3.1a) — file
+// identification. `contentHash` is multihash-style: a 1-byte function code
+// (0x12 = sha2-256) prepended to the 8-byte digest. `subrecords` carries
+// Media Payload when it fits nested here (single-code case) or is omitted
+// (multi-code case, where Media Preview itself becomes Split's subrecord
+// instead — SPEC.md §5.1).
+function buildMediaPreview(f, subrecords = []) {
+  return encodeArrayRecord(TYPE.MEDIA_PREVIEW, {
+    0: f.mediaType,
+    1: f.contentHash ? Buffer.concat([Buffer.from([0x12]), f.contentHash]) : undefined,
+    3: f.filename,
+  }, subrecords);
 }
 
-// ── Paper-Preview / Paper-Body (SPEC.md §3.3-§3.4) ──
+// Media Payload (QDEF standard Type 6, SPEC.md v9 §3.1a) — the content
+// bytes. `subrecords` carries Content Signature (Type 3) when the payload
+// is signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
+// own bytes travel (nested once, not repeated per code — SPEC.md §3.1).
+function buildMediaPayload(f, subrecords = []) {
+  return encodeArrayRecord(TYPE.MEDIA_PAYLOAD, { 0: f.mediaType, 2: f.content }, subrecords);
+}
+
+// Content Signature (Type 3, TagDrop-scoped, SPEC.md v9 §3.1a) —
+// signature/signer_pubkey for a signed Content payload, nested as Media
+// Payload's own subrecord. Absent entirely (no Record at all) when unsigned.
+function buildContentSignature(f) {
+  return encodeArrayRecord(TYPE.CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey });
+}
+
+// ── Paper-Preview / Paper-Body (SPEC.md §3.3-§3.4, unaffected by v9's Content restructuring) ──
 function buildPaperPreview(f) {
-  return encodeRecordWithTypeId(TYPE.PAPER_PREVIEW, {
+  return encodeArrayRecord(TYPE.PAPER_PREVIEW, {
     1: f.rootHash,
     3: f.hint,
     5: f.set,
@@ -401,7 +472,7 @@ function buildPaperPreview(f) {
 }
 
 function buildPaperBody(f) {
-  return encodeRecordWithTypeId(TYPE.PAPER_BODY, {
+  return encodeArrayRecord(TYPE.PAPER_BODY, {
     1: f.files,
     3: f.related,
     5: f.signature,
@@ -414,97 +485,103 @@ function buildPaperBody(f) {
 
 function buildContentPayload({ hint, mimeType, content, maxBodyBytes = 900, split = false, compress = false, sign = false }) {
   const cacheId = sha256(content).subarray(0, 8);
-  let bodyPlain = buildContentBody({ content });
-  let bodyForWire = compress ? compressWrap(bodyPlain) : bodyPlain;
 
-  const needsSplit = split || bodyForWire.length > maxBodyBytes;
+  const extension = buildContentExtension({ hint });
+  // The LOGICAL (bare, no subrecord) Media Preview bytes — for hashing, and
+  // reused unwrapped as Split's own repeated subrecord in the multi-code case.
+  const mediaPreviewBare = buildMediaPreview({ mediaType: mimeType, contentHash: cacheId });
+
+  const mediaPayloadBare = buildMediaPayload({ mediaType: mimeType, content });
+  const mediaPayloadForWire = compress ? compressWrap(mediaPayloadBare) : mediaPayloadBare;
+
+  const needsSplit = split || mediaPayloadForWire.length > maxBodyBytes;
 
   if (!needsSplit) {
-    let preview = buildContentPreview({ cacheId, hint, mimeType });
     if (sign) {
-      // SPEC.md S10/S4.4: sign the LOGICAL (uncompressed) bytes, not the
-      // wire-transmitted (possibly Compress-wrapped) ones — bodyPlain here,
-      // never bodyForWire, so the signature is independent of whether/how
-      // this payload happens to be compressed on the wire.
-      const message = sha256(Buffer.concat([preview, bodyPlain]));
+      // SPEC.md §10: sign SHA-256(MediaPreview' || MediaPayload'' || Extension'),
+      // the LOGICAL (uncompressed, no Content Signature subrecord, no signing
+      // fields) bytes — never the wire-transmitted (possibly Compress-wrapped,
+      // possibly-already-signed) ones.
+      const message = sha256(Buffer.concat([mediaPreviewBare, mediaPayloadBare, extension]));
       const { signature, signerPubkey, signerId } = mockSign(message, randomBytes(8));
-      preview = buildContentPreview({
-        cacheId, hint, mimeType,
-        signatureAlgorithm: 1, signerId, signerLabel: 'Test Signer',
-      });
-      const signedBody = buildContentBody({ content, signature, signerPubkey });
-      const signedBodyForWire = compress ? compressWrap(signedBody) : signedBody;
-      return [Buffer.concat([preview, signedBodyForWire])];
+      const signedExtension = buildContentExtension({ hint, signatureAlgorithm: 1, signerId, signerLabel: 'Test Signer' });
+      const contentSignature = buildContentSignature({ signature, signerPubkey });
+      const signedMediaPayloadBare = buildMediaPayload({ mediaType: mimeType, content }, [contentSignature]);
+      const signedMediaPayloadForWire = compress ? compressWrap(signedMediaPayloadBare) : signedMediaPayloadBare;
+      const wireMediaPreview = buildMediaPreview({ mediaType: mimeType, contentHash: cacheId }, [signedMediaPayloadForWire]);
+      return [Buffer.concat([signedExtension, wireMediaPreview])];
     }
-    return [Buffer.concat([preview, bodyForWire])];
+    // Single code: Media Payload (or its Compress Wrapper) nests as Media
+    // Preview's own subrecord (§3.1a) — not a separate sibling Record.
+    const wireMediaPreview = buildMediaPreview({ mediaType: mimeType, contentHash: cacheId }, [mediaPayloadForWire]);
+    return [Buffer.concat([extension, wireMediaPreview])];
   }
 
-  // multi-code: Split-wrap bodyForWire, repeat Preview on every code
+  // multi-code: Split-wrap mediaPayloadForWire; Media Preview becomes Split's
+  // own repeated subrecord instead (§3.1a); Content Extension stays a
+  // separate top-level Record, repeated per code exactly as in the
+  // single-code case above.
   assert.ok(!sign, 'multi-code signing not exercised in this prototype (single-code path already covers the placeholder/strip discipline; multi-code adds only Split framing on top, orthogonal to signing)');
-  const preview = buildContentPreview({ cacheId, hint, mimeType });
-  const fragmentCount = Math.ceil(bodyForWire.length / maxBodyBytes);
-  const groupId = sha256(bodyForWire).subarray(0, 8);
-  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, true);
-  return fragments.map((frag) => Buffer.concat([preview, frag]));
-}
-
-function encodedPreviewBytesFor(typeId, knownKeys, record) {
-  const fields = {};
-  for (const k of knownKeys) if (record[k] !== undefined) fields[k] = record[k];
-  return encodeRecordWithTypeId(typeId, fields);
+  const fragmentCount = Math.ceil(mediaPayloadForWire.length / maxBodyBytes);
+  const groupId = sha256(mediaPayloadForWire).subarray(0, 8);
+  const fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, true, [mediaPreviewBare]);
+  return fragments.map((frag) => Buffer.concat([extension, frag]));
 }
 
 function decodeContentPayload(codes) {
-  let preview;
-  let previewBytesForComparison;
+  let extension;
+  let extensionRawForComparison;
   const fragmentRecords = [];
-  let plainBodyBytes = null;
+  let mediaPreviewRecord;
+  let plainMediaPayloadWireRaw = null;
 
   for (const code of codes) {
-    const items = decodeSequence(code);
-    // QDEF Record Sequence: pairs of [typeId uint, field map]
-    assert.ok(items.length === 4, 'each code must carry exactly Preview + one Body-shaped Record (4 items: typeId+map, typeId+map)');
-    const previewTypeId = items[0];
-    const previewRecord = items[1];
-    const secondTypeId = items[2];
-    const second = items[3];
-    assert.equal(Number(previewTypeId), TYPE.CONTENT_PREVIEW, 'first Record must be Content-Preview');
-    assertKnownKeys(previewRecord, KNOWN_KEYS.CONTENT_PREVIEW, 'Content-Preview');
+    const first = decodeArrayRecord(code, 0);
+    assert.equal(first.typeId, TYPE.CONTENT_EXTENSION, 'first Record must be Content Extension');
+    assertKnownKeys(first.record, KNOWN_KEYS.CONTENT_EXTENSION, 'Content Extension');
 
-    // SPEC.md §5.1: Preview MUST be identical on every code in a group —
-    // verify by re-encoding, not just "a Preview was present."
-    const thisPreviewBytes = encodedPreviewBytesFor(TYPE.CONTENT_PREVIEW, KNOWN_KEYS.CONTENT_PREVIEW, previewRecord);
-    if (previewBytesForComparison) {
-      assert.ok(thisPreviewBytes.equals(previewBytesForComparison), 'Preview must be byte-identical on every code in the group');
+    // SPEC.md §5.1: Content Extension MUST be byte-identical on every code
+    // in a group — verify by comparing raw wire bytes directly.
+    if (extensionRawForComparison) {
+      assert.ok(first.raw.equals(extensionRawForComparison), 'Content Extension must be byte-identical on every code in the group');
     }
-    previewBytesForComparison = thisPreviewBytes;
-    preview = previewRecord;
+    extensionRawForComparison = first.raw;
+    extension = first.record;
 
-    if (Number(secondTypeId) === TYPE.SPLIT) {
-      fragmentRecords.push({ typeId: secondTypeId, record: second });
+    assert.ok(first.next < code.length, 'a Content code must carry a second Record after Content Extension');
+    const second = decodeArrayRecord(code, first.next);
+
+    if (second.typeId === TYPE.MEDIA_PREVIEW) {
+      // Single-code case: Media Payload is Media Preview's own (sole) subrecord.
+      assertKnownKeys(second.record, KNOWN_KEYS.MEDIA_PREVIEW, 'Media Preview');
+      assert.equal(second.subrecords.length, 1, 'single-code Media Preview must nest exactly one subrecord');
+      mediaPreviewRecord = second.record;
+      plainMediaPayloadWireRaw = second.subrecords[0].raw;
+    } else if (second.typeId === TYPE.SPLIT) {
+      // Multi-code case: Media Preview is Split's own subrecord instead.
+      fragmentRecords.push(second.record);
+      const mp = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW);
+      assert.ok(mp, 'multi-code Split fragment must carry Media Preview as its own subrecord');
+      assertKnownKeys(mp.record, KNOWN_KEYS.MEDIA_PREVIEW, 'Media Preview');
+      mediaPreviewRecord = mp.record;
     } else {
-      plainBodyBytes = { typeId: secondTypeId, record: second };
+      throw new Error(`decodeContentPayload: unexpected second Record type ${second.typeId}`);
     }
   }
 
-  let body;
+  let mediaPayloadWireBytes;
   if (fragmentRecords.length > 0) {
-    const groupId = fragmentRecords[0].record[2];
-    const reassembled = reassembleSplit(fragmentRecords.map(fr => fr.record), groupId);
-    const decoded = resolveNonSplitWrapperStack(reassembled);
-    body = decoded.record;
+    const groupId = fragmentRecords[0][2];
+    mediaPayloadWireBytes = reassembleSplit(fragmentRecords, groupId);
   } else {
-    const { typeId: secondTypeId, record: secondRecord } = plainBodyBytes;
-    if (Number(secondTypeId) === TYPE.COMPRESS) {
-      const decoded = decodeRecord(inflateRawSync(secondRecord[2]));
-      body = decoded.record;
-    } else {
-      body = secondRecord;
-    }
+    mediaPayloadWireBytes = plainMediaPayloadWireRaw;
   }
-  assertKnownKeys(body, KNOWN_KEYS.CONTENT_BODY, 'Content-Body');
 
-  return { preview, body };
+  const unwrapped = resolveNonSplitWrapperStack(mediaPayloadWireBytes);
+  assert.equal(unwrapped.typeId, TYPE.MEDIA_PAYLOAD, 'reassembled bytes must decode as Media Payload');
+  assertKnownKeys(unwrapped.record, KNOWN_KEYS.MEDIA_PAYLOAD, 'Media Payload');
+
+  return { extension, mediaPreview: mediaPreviewRecord, mediaPayload: unwrapped.record };
 }
 
 // ── Test vectors ──
@@ -512,22 +589,32 @@ function decodeContentPayload(codes) {
 function testSingleCodeContent() {
   const codes = buildContentPayload({ hint: 'under the bridge', mimeType: 'text/html', content: Buffer.from('<p>hello</p>') });
   assert.equal(codes.length, 1, 'small content must fit one code');
-  const { preview, body } = decodeContentPayload(codes);
-  assert.equal(preview[3], 'under the bridge');
-  assert.equal(preview[5], 'text/html');
-  assert.ok(body[1].equals(Buffer.from('<p>hello</p>')));
+  const { extension, mediaPreview, mediaPayload } = decodeContentPayload(codes);
+  assert.equal(extension[3], 'under the bridge');
+  assert.equal(mediaPreview[0], 'text/html');
+  assert.ok(mediaPayload[2].equals(Buffer.from('<p>hello</p>')));
   return { name: 'single-code-content', codes: codes.map((c) => c.toString('hex')) };
 }
 
 function testSingleCodeSignedContent() {
   const codes = buildContentPayload({ hint: 'signed note', mimeType: 'text/plain', content: Buffer.from('hello, signed world'), sign: true });
   assert.equal(codes.length, 1);
-  const { preview, body } = decodeContentPayload(codes);
-  assert.equal(preview[45], 1, 'signature_algorithm must be present');
-  assert.equal(preview[47].length, 8, 'signer_id must be 8 bytes');
-  assert.equal(body[3].length, MOCK_SIGNATURE_LEN, 'signature field must be the fixed ML-DSA-44 length');
-  assert.equal(body[5].length, MOCK_PUBKEY_LEN, 'signer_pubkey field must be the fixed ML-DSA-44 length');
-  assert.ok(body[1].equals(Buffer.from('hello, signed world')), 'content must survive alongside the signature fields, unmodified');
+  const { extension, mediaPayload } = decodeContentPayload(codes);
+  assert.equal(extension[45], 1, 'signature_algorithm must be present');
+  assert.equal(extension[47].length, 8, 'signer_id must be 8 bytes');
+
+  // Content Signature travels as Media Payload's own subrecord (SPEC.md v9
+  // §3.1a) — re-locate it from the raw wire bytes directly, since
+  // decodeContentPayload's returned `mediaPayload` is just the field map
+  // (subrecords aren't map values).
+  const codeFirst = decodeArrayRecord(codes[0], 0);
+  const mediaPreviewRec = decodeArrayRecord(codes[0], codeFirst.next);
+  const contentSignatureRec = mediaPreviewRec.subrecords[0].subrecords.find((s) => s.typeId === TYPE.CONTENT_SIGNATURE);
+  assert.ok(contentSignatureRec, 'Content Signature subrecord must be present on a signed payload');
+  assertKnownKeys(contentSignatureRec.record, KNOWN_KEYS.CONTENT_SIGNATURE, 'Content Signature');
+  assert.equal(contentSignatureRec.record[3].length, MOCK_SIGNATURE_LEN, 'signature field must be the fixed ML-DSA-44 length');
+  assert.equal(contentSignatureRec.record[5].length, MOCK_PUBKEY_LEN, 'signer_pubkey field must be the fixed ML-DSA-44 length');
+  assert.ok(mediaPayload[2].equals(Buffer.from('hello, signed world')), 'content must survive alongside the signature fields, unmodified');
   return { name: 'single-code-signed-content', codes: codes.map((c) => c.toString('hex')) };
 }
 
@@ -544,16 +631,16 @@ function testMultiCodeContentSplitCompressParity() {
   assert.ok(codes.length > 1, 'large content must split across multiple codes');
 
   // full reassembly
-  const { preview, body } = decodeContentPayload(codes);
-  assert.equal(preview[3], 'a long essay');
-  assert.ok(body[1].equals(bigContent), 'reassembled+decompressed content must match the original exactly');
+  const { extension, mediaPayload } = decodeContentPayload(codes);
+  assert.equal(extension[3], 'a long essay');
+  assert.ok(mediaPayload[2].equals(bigContent), 'reassembled+decompressed content must match the original exactly');
 
   // drop one data fragment (not the parity one) and confirm recovery
   const droppedIndex = 1;
   const codesWithOneDropped = codes.filter((_, i) => i !== droppedIndex);
   assert.ok(codesWithOneDropped.length < codes.length);
   const recovered = decodeContentPayload(codesWithOneDropped);
-  assert.ok(recovered.body[1].equals(bigContent), 'XOR parity must recover the missing fragment exactly');
+  assert.ok(recovered.mediaPayload[2].equals(bigContent), 'XOR parity must recover the missing fragment exactly');
 
   return {
     name: 'multi-code-content-split-compress-parity',
@@ -589,47 +676,36 @@ function buildPaperPayload({ hint, set, slug, files, related, maxBodyBytes = 900
 
 function decodePaperPayload(codes) {
   let preview;
-  let previewBytesForComparison;
+  let previewRawForComparison;
   const fragmentRecords = [];
-  let plainBodyBytes = null;
+  let plainBodyRaw = null;
 
   for (const code of codes) {
-    const items = decodeSequence(code);
-    // QDEF Record Sequence: pairs of [typeId uint, field map]
-    assert.ok(items.length === 4, 'each code must carry exactly Preview + one Body-shaped Record (4 items: typeId+map, typeId+map)');
-    const previewTypeId = items[0];
-    const previewRecord = items[1];
-    const secondTypeId = items[2];
-    const second = items[3];
-    assert.equal(Number(previewTypeId), TYPE.PAPER_PREVIEW, 'first Record must be Paper-Preview');
-    assertKnownKeys(previewRecord, KNOWN_KEYS.PAPER_PREVIEW, 'Paper-Preview');
+    const first = decodeArrayRecord(code, 0);
+    assert.equal(first.typeId, TYPE.PAPER_PREVIEW, 'first Record must be Paper-Preview');
+    assertKnownKeys(first.record, KNOWN_KEYS.PAPER_PREVIEW, 'Paper-Preview');
 
-    const thisPreviewBytes = encodedPreviewBytesFor(TYPE.PAPER_PREVIEW, KNOWN_KEYS.PAPER_PREVIEW, previewRecord);
-    if (previewBytesForComparison) {
-      assert.ok(thisPreviewBytes.equals(previewBytesForComparison), 'Preview must be byte-identical on every code in the group');
+    if (previewRawForComparison) {
+      assert.ok(first.raw.equals(previewRawForComparison), 'Preview must be byte-identical on every code in the group');
     }
-    previewBytesForComparison = thisPreviewBytes;
-    preview = previewRecord;
+    previewRawForComparison = first.raw;
+    preview = first.record;
 
-    if (Number(secondTypeId) === TYPE.SPLIT) fragmentRecords.push({ typeId: secondTypeId, record: second });
-    else plainBodyBytes = { typeId: secondTypeId, record: second };
+    const second = decodeArrayRecord(code, first.next);
+    if (second.typeId === TYPE.SPLIT) fragmentRecords.push(second.record);
+    else plainBodyRaw = second.raw;
   }
 
-  let body;
+  let bodyWireBytes;
   if (fragmentRecords.length > 0) {
-    const groupId = fragmentRecords[0].record[2];
-    const reassembled = reassembleSplit(fragmentRecords.map(fr => fr.record), groupId);
-    const decoded = resolveNonSplitWrapperStack(reassembled);
-    body = decoded.record;
+    const groupId = fragmentRecords[0][2];
+    bodyWireBytes = reassembleSplit(fragmentRecords, groupId);
   } else {
-    const { typeId: secondTypeId, record: secondRecord } = plainBodyBytes;
-    if (Number(secondTypeId) === TYPE.COMPRESS) {
-      const decoded = decodeRecord(inflateRawSync(secondRecord[2]));
-      body = decoded.record;
-    } else {
-      body = secondRecord;
-    }
+    bodyWireBytes = plainBodyRaw;
   }
+  const unwrapped = resolveNonSplitWrapperStack(bodyWireBytes);
+  assert.equal(unwrapped.typeId, TYPE.PAPER_BODY, 'reassembled bytes must decode as Paper-Body');
+  const body = unwrapped.record;
   assertKnownKeys(body, KNOWN_KEYS.PAPER_BODY, 'Paper-Body');
 
   // Verify root_hash independently of however this payload happened to be
@@ -680,10 +756,10 @@ function testMultiCodePaper() {
   assert.ok(codes.length > 1, '60 files must not fit one code even compressed');
 
   // Preview repeated on every code (SPEC.md §5.1) — verify identically, not just "present"
-  const previews = codes.map((c) => decodeSequence(c)[0]);
-  const firstPreviewBytes = encodeRecordWithTypeId(TYPE.PAPER_PREVIEW, { 1: previews[0][1], 3: previews[0][3], 5: previews[0][5], 7: previews[0][7] });
+  const previews = codes.map((c) => decodeArrayRecord(c, 0).record);
+  const firstPreviewBytes = encodeArrayRecord(TYPE.PAPER_PREVIEW, { 1: previews[0][1], 3: previews[0][3], 5: previews[0][5], 7: previews[0][7] });
   for (const p of previews.slice(1)) {
-    const pBytes = encodeRecordWithTypeId(TYPE.PAPER_PREVIEW, { 1: p[1], 3: p[3], 5: p[5], 7: p[7] });
+    const pBytes = encodeArrayRecord(TYPE.PAPER_PREVIEW, { 1: p[1], 3: p[3], 5: p[5], 7: p[7] });
     assert.ok(pBytes.equals(firstPreviewBytes), 'Preview must be byte-identical on every code in the group');
   }
 
@@ -712,27 +788,30 @@ function testEncryptedContent() {
   const tag = cipher.getAuthTag();
   const blob = Buffer.concat([nonce, ciphertext, tag]);
 
-  // cache_id MUST be random, not content-addressed, whenever a hidden
+  // contentHash MUST be random, not content-addressed, whenever a hidden
   // override map might be present (§4.4/§9) — using the cover story's own
   // hash here would leak whether the "real" content matches a known
-  // cache_id, defeating the whole point.
+  // contentHash, defeating the whole point.
   const cacheId = randomBytes(8);
   const coverHint = 'just a locked note';
-  const preview = buildContentPreview({ cacheId, hint: coverHint, mimeType: 'text/plain', encryption: 1 });
-  const body = buildContentBody({ content: blob });
-  const codes = [Buffer.concat([preview, body])];
+  const extension = buildContentExtension({ hint: coverHint, encryption: 1 });
+  // The override blob occupies Media Payload's `content` field (key 2) — the
+  // same slot a Content payload's cache normally occupies (SPEC §9).
+  const mediaPreview = buildMediaPreview({ mediaType: 'text/plain', contentHash: cacheId }, [
+    buildMediaPayload({ mediaType: 'text/plain', content: blob }),
+  ]);
+  const codes = [Buffer.concat([extension, mediaPreview])];
 
   // Cover story is what's visible without the key.
-  const items = decodeSequence(codes[0]);
-  // QDEF Record Sequence: [typeId(uint), map, typeId(uint), map]
-  const previewRecord = items[1]; // map after first typeId prefix
-  assert.equal(previewRecord[3], coverHint, 'cover hint must be visible with no key present');
+  const first = decodeArrayRecord(codes[0], 0);
+  assert.equal(first.record[3], coverHint, 'cover hint must be visible with no key present');
 
   // Trial decryption (§9 "Discovery, not declaration") — try the candidate
   // blob against a known key_material; a wrong key must fail the GCM
   // authentication tag, not silently produce garbage plaintext.
-  const bodyRecord = items[3]; // map after second typeId prefix
-  const candidateBlob = bodyRecord[1];
+  const second = decodeArrayRecord(codes[0], first.next);
+  const mediaPayloadRecord = second.subrecords[0].record;
+  const candidateBlob = mediaPayloadRecord[2];
   const candidateNonce = candidateBlob.subarray(0, 12);
   const rest = candidateBlob.subarray(12);
   const candidateTag = rest.subarray(rest.length - 16);
@@ -773,25 +852,25 @@ function testTamperedFragmentDetected() {
   assert.ok(codes.length > 2, 'need at least two data fragments plus parity to isolate one non-parity fragment');
 
   const code = codes[1];
-  // QDEF Record Sequence: [typeId(uint), map, typeId(uint), map]
-  const previewTypeIdItem = decodeItem(code, 0);
-  const previewMapItem = decodeItem(code, previewTypeIdItem.next);
-  const rawPreviewBytes = code.subarray(0, previewMapItem.next);
-  const fragmentTypeIdItem = decodeItem(code, previewMapItem.next);
-  const fragmentMapItem = decodeItem(code, fragmentTypeIdItem.next);
-  const fragmentRecord = fragmentMapItem.value;
-  assert.equal(Number(fragmentTypeIdItem.value), TYPE.SPLIT);
+  const first = decodeArrayRecord(code, 0);
+  const rawExtensionBytes = first.raw;
+  const second = decodeArrayRecord(code, first.next);
+  assert.equal(second.typeId, TYPE.SPLIT);
+  const fragmentRecord = second.record;
+  const mediaPreviewSubRaw = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW).raw;
 
   // Flip one bit in the fragment's data, leaving its declared group_id (key
   // 2) field untouched — the tamper must be caught by recomputing the hash
   // from the actual reassembled bytes, not by comparing declared fields.
+  // Media Preview's subrecord (carried on every Split fragment, §3.1a) must
+  // be preserved so the tampered fragment still decodes.
   const tamperedFragmentBytes = Buffer.from(fragmentRecord[8]);
   tamperedFragmentBytes[0] ^= 0xff;
-  const tamperedFragmentRecordBytes = encodeRecordWithTypeId(TYPE.SPLIT, {
+  const tamperedFragmentRecordBytes = encodeArrayRecord(TYPE.SPLIT, {
     2: fragmentRecord[2], 4: fragmentRecord[4], 6: fragmentRecord[6],
     8: tamperedFragmentBytes, 9: fragmentRecord[9], 11: fragmentRecord[11],
-  });
-  const tamperedCode = Buffer.concat([rawPreviewBytes, tamperedFragmentRecordBytes]);
+  }, [mediaPreviewSubRaw]);
+  const tamperedCode = Buffer.concat([rawExtensionBytes, tamperedFragmentRecordBytes]);
   const tamperedCodes = codes.map((c, i) => (i === 1 ? tamperedCode : c));
 
   assert.throws(
@@ -809,17 +888,13 @@ function testTamperedPaperRootHashDetected() {
   const codes = buildPaperPayload({ hint: 'Tamper Test Paper', set: 'x', slug: 'y', files, related });
   assert.equal(codes.length, 1);
 
-  // QDEF Record Sequence: [typeId(uint), map, typeId(uint), map]
-  // Extract raw preview bytes (typeId prefix + map) and body record fields.
-  const previewItem = decodeItem(codes[0], 0);
-  const previewMapItem = decodeItem(codes[0], previewItem.next);
-  const rawPreviewBytes = codes[0].subarray(0, previewMapItem.next);
-  const bodyTypeIdItem = decodeItem(codes[0], previewMapItem.next);
-  const bodyMapItem = decodeItem(codes[0], bodyTypeIdItem.next);
-  const bodyRecord = bodyMapItem.value;
+  const first = decodeArrayRecord(codes[0], 0);
+  const rawPreviewBytes = first.raw;
+  const second = decodeArrayRecord(codes[0], first.next);
+  const bodyRecord = second.record;
 
   const tamperedFiles = encodeArray([encodeRecord({ 1: 'index-RENAMED', 2: 'text/html', 3: randomBytes(8) })]);
-  const tamperedBodyBytes = encodeRecordWithTypeId(TYPE.PAPER_BODY, { 1: tamperedFiles, 3: bodyRecord[3] });
+  const tamperedBodyBytes = encodeArrayRecord(TYPE.PAPER_BODY, { 1: tamperedFiles, 3: bodyRecord[3] });
   const tamperedCode = Buffer.concat([rawPreviewBytes, tamperedBodyBytes]);
 
   assert.throws(
@@ -832,20 +907,19 @@ function testTamperedPaperRootHashDetected() {
 }
 
 function testKeyOnlyCode() {
-  // SPEC.md §9 "Decryption keys": a Content-Preview carrying key_material
-  // but no Body at all — a code can be just a key, with nothing of its own
-  // to identify (no cache_id) or display.
+  // SPEC.md §9 "Decryption keys": a Content Extension carrying key_material
+  // but no Media Preview/Payload at all — a code can be just a key, with
+  // nothing of its own to identify (no contentHash) or display.
   const keyMaterial = randomBytes(32);
-  const code = buildContentPreview({ keyMaterial, retainKey: false });
+  const code = buildContentExtension({ keyMaterial, retainKey: false });
 
-  const items = decodeSequence(code);
-  // QDEF Record Sequence: [typeId uint, field map] — 2 items for a key-only code
-  assert.equal(items.length, 2, 'a key-only code carries Preview alone (2 items: typeId + map)');
-  assert.equal(Number(items[0]), TYPE.CONTENT_PREVIEW);
-  const previewRecord = items[1];
-  assert.ok(previewRecord[33].equals(keyMaterial));
-  assert.equal(previewRecord[35], false, 'retain_key must round-trip as a real boolean, not a truthy placeholder');
-  assert.equal(previewRecord[1], undefined, 'a key-only code has no cache_id — nothing of its own to identify');
+  const decoded = decodeArrayRecord(code, 0);
+  assert.equal(decoded.typeId, TYPE.CONTENT_EXTENSION);
+  assert.equal(decoded.next, code.length, 'a key-only code carries Content Extension alone, nothing after it');
+  const record = decoded.record;
+  assert.ok(record[33].equals(keyMaterial));
+  assert.equal(record[35], false, 'retain_key must round-trip as a real boolean, not a truthy placeholder');
+  assert.equal(record[1], undefined, 'Content Extension has no field 1 at all in v9 (contentHash moved to Media Preview, §3.1)');
 
   return { name: 'key-only-code', codes: [code.toString('hex')] };
 }
@@ -855,15 +929,15 @@ function testEvenOddCriticality() {
   // exercises this — every TagDrop key defined today is odd — so this
   // synthesizes a "future" field of each parity to prove the mechanism
   // itself, not just TagDrop's current (all-odd) usage of it.
-  const withUnknownOdd = encodeRecordWithTypeId(TYPE.CONTENT_PREVIEW, { 1: randomBytes(8), 3: 'hi', 101: 'a future optional field' });
-  const decodedOdd = decodeRecord(withUnknownOdd).record;
-  assertKnownKeys(decodedOdd, KNOWN_KEYS.CONTENT_PREVIEW, 'Content-Preview'); // must not throw
+  const withUnknownOdd = encodeArrayRecord(TYPE.CONTENT_EXTENSION, { 3: 'hi', 101: 'a future optional field' });
+  const decodedOdd = decodeArrayRecord(withUnknownOdd, 0).record;
+  assertKnownKeys(decodedOdd, KNOWN_KEYS.CONTENT_EXTENSION, 'Content Extension'); // must not throw
   assert.equal(decodedOdd[3], 'hi', 'known fields must stay readable alongside an unrecognized odd key');
 
-  const withUnknownEven = encodeRecordWithTypeId(TYPE.CONTENT_PREVIEW, { 1: randomBytes(8), 3: 'hi', 100: 'a future critical field' });
-  const decodedEven = decodeRecord(withUnknownEven).record;
+  const withUnknownEven = encodeArrayRecord(TYPE.CONTENT_EXTENSION, { 3: 'hi', 100: 'a future critical field' });
+  const decodedEven = decodeArrayRecord(withUnknownEven, 0).record;
   assert.throws(
-    () => assertKnownKeys(decodedEven, KNOWN_KEYS.CONTENT_PREVIEW, 'Content-Preview'),
+    () => assertKnownKeys(decodedEven, KNOWN_KEYS.CONTENT_EXTENSION, 'Content Extension'),
     /CRITICAL \(even\) key 100/,
     'an unrecognized even key must abort processing this Record'
   );
@@ -873,7 +947,7 @@ function testEvenOddCriticality() {
 
 function main() {
   const results = [];
-  console.log('QDEF-redesign round-trip prototype (SPEC.md v2)\n');
+  console.log('QDEF-redesign round-trip prototype (SPEC.md v9)\n');
 
   for (const test of [
     testSingleCodeContent,

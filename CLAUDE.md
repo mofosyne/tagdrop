@@ -119,12 +119,18 @@ Content and Paper payloads:
    reassembly logic from the codec's encode-side field layout) pass
    green — 123 tests total across `TagDropCodecTest`/
    `SectorAssemblerTest`/`MiniCborTest` combined, including real
-   ML-DSA-44 sign/verify against the new 3-Record hash formula. Not yet
-   done: `tools/test-qdef-roundtrip.mjs` (the separate, CI-gated Node
-   port of this same wire format) is still on v8's Content-Preview/
-   Content-Body shape — porting it to v9 is tracked as follow-up work,
-   same as the still-outstanding full Android Studio build gap noted
-   above.
+   ML-DSA-44 sign/verify against the new 3-Record hash formula.
+   `tools/test-qdef-roundtrip.mjs` (the separate, CI-gated Node port of
+   this same wire format, unrelated to the Kotlin app itself but ported
+   in the same pass) was also updated to v9's array-wrapped-Record/
+   Content-Extension-Media-Preview-Media-Payload-Content-Signature shape
+   — same `decodeArrayRecord`/`encodeArrayRecord` design as the other
+   three JS tools, `qdef-fixtures.json` regenerated — all 10 of its own
+   vectors plus `test-qr-roundtrip.mjs`'s 14 (unaffected, already on v9
+   from the earlier JS port) pass. The still-outstanding gap is a full
+   Android Studio build (Room codegen, resource linking, the 15 caller
+   Activities/Fragments) for the Kotlin side specifically, same Gradle-
+   version limitation noted above.
 2. **Browser JS** — inline `<script>` in `tools/generator/index.html` and
    `tools/examples/index.html` (encode side), `tools/reader/index.html`
    (decode side). SHA-256 via `crypto.subtle`, DEFLATE via
