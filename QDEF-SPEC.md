@@ -629,10 +629,12 @@ subsection below:
 |  8   | Compress         | §4.1    | DEFLATE                         |
 | 10   | Fallback Hint    | §4.2    | URI fallback for unaware readers|
 | 12   | App Route        | §4.4    | Application dispatch/routing    |
+| 14   | Media Preview    | §4.5    | Content identification + body   |
+|      |                  |         | subrecord                       |
 +------+------------------+---------+---------------------------------+
 ```
 
-All six sit in the `0`–`22` Standards Action tier — this spec document's
+All seven sit in the `0`–`22` Standards Action tier — this spec document's
 own publication is the authoritative declaration for them, independent
 of whether a registry authority exists yet. An adopter's own pick in
 the `100`–`32767` tier is different: provisional until a review
@@ -991,6 +993,64 @@ Both forms SHOULD stay small and plain — never Compress- or
 Split-wrapped — so a scanner can read one without reassembling anything
 else first. See DESIGN.md for the per-code-repetition cost tradeoff
 between the two forms.
+
+### 4.5 Media Preview (optional)
+
+A plain standard record type Record — not a wrapper — for identifying a
+content item (media type, content hash, filename, human-readable label)
+independently of the content bytes themselves, which travel as this
+Record's own subrecord (§3.1):
+
+```
+Type 14: {                         // Media Preview (standard record type)
+  // prefix typeID: 14
+  // field map:
+  0: "image/png",                  // CRITICAL: IANA media type (RFC 6838),
+                                    //   or a CoAP Content-Format uint —
+                                    //   same shape rule as §4.3's key 0
+  1: h'<content hash prefix>',     // OPTIONAL: a truncated content hash
+                                    //   (§3.5's derivation algorithm),
+                                    //   identifying the content
+                                    //   independent of any label
+  3: "photo.png",                  // OPTIONAL: filename or slug
+  5: "Trail photo"                 // OPTIONAL: human-readable label
+}
+```
+
+The identified content itself is carried as a subrecord, typically a
+§4.3 Media Payload:
+
+```
+[ 14, { 0: "image/png", 1: h'...', 3: "photo.png" },
+  [ 6, { 0: "image/png", 2: h'<payload bytes>' } ] ]
+```
+
+**Why not put identification fields on Media Payload's own map?** §4.3
+deliberately stays minimal (media type + bytes, nothing else) so it
+stays usable standalone wherever identification isn't needed. Media
+Preview adds the identification layer as a separate, composable Record
+instead of growing Media Payload's own field set.
+
+**When Split is present, Split MUST be outermost, with Media Preview as
+its subrecord** — not the reverse. Media Preview's typeID is even
+(critical): a decoder that doesn't recognize Type 14 aborts on that
+whole Record, including anything nested inside it. If Media Preview
+wrapped Split instead, an old Split-only decoder that has never heard
+of Media Preview would lose the ability to reassemble the fragment
+group at all. With Split outermost, that same old decoder just skips
+the unrecognized Media Preview subrecord (§3.2) and reassembles
+correctly regardless:
+
+```
+[ 2, { 0: h'<group_id>', 2: 0, 4: 3, 6: h'<fragment 0>', 7: 9 },
+  [ 14, { 0: "image/png", 1: h'...', 3: "photo.png" } ] ]
+```
+
+Identification fields repeat on every code in the group, the same as
+any other per-code metadata (§4.4's encoder-etiquette note applies
+here too).
+
+Prototyped in `prototype/test/media-preview.test.js`.
 
 ## 5. Adopting QDEF for an existing application-specific format
 
