@@ -1008,14 +1008,34 @@ Type 14: {                         // Media Preview (standard record type)
   0: "image/png",                  // CRITICAL: IANA media type (RFC 6838),
                                     //   or a CoAP Content-Format uint —
                                     //   same shape rule as §4.3's key 0
-  1: h'<content hash prefix>',     // OPTIONAL: a truncated content hash
-                                    //   (§3.5's derivation algorithm),
-                                    //   identifying the content
-                                    //   independent of any label
+  1: h'12<digest>',                // OPTIONAL: multihash-style content
+                                    //   hash -- see below
   3: "photo.png",                  // OPTIONAL: filename or slug
   5: "Trail photo"                 // OPTIONAL: human-readable label
 }
 ```
+
+**Key `1` is a multihash-style value, not raw SHA-256** (and not §3.5's
+name-string derivation, despite both being hash-based -- different
+input, different purpose): a 1-byte hash-function code from the
+[multiformats multicodec
+table](https://github.com/multiformats/multicodec/blob/master/table.csv)
+(`0x12` = sha2-256), followed by the digest, truncated or full, with no
+separate length field of its own -- the digest's length is exactly
+however many bytes remain after the function-code byte, since this
+whole value is already a length-delimited CBOR byte string (major type
+2). This differs from canonical multiformats multihash (which also
+carries its own length as a second varint byte) only by omitting that
+redundant field; recovering a byte-identical canonical multihash from
+this value is a one-byte insertion (the digest's own length, itself
+after the function code), not a reinterpretation. Identifies the
+content independently of any label, and lets an application choose a
+different hash function without QDEF needing a new key for it --
+borrowing an external registry for algorithm-agility inside one field,
+the same pattern §4.1's Encrypt uses for its own Algorithm field (key
+`3`, COSE's registry) rather than QDEF inventing its own. Adopters
+relying on this field SHOULD keep a periodic mirror of the multicodec
+table, the same caution as §4.3's CoAP Content-Formats note.
 
 The identified content itself is carried as a subrecord, typically a
 §4.3 Media Payload:
