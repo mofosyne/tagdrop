@@ -41,7 +41,7 @@ The format is designed to:
 
 ## 2. Wire Framing
 
-Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or two **Records** (QDEF terminology — each Record is a flat CBOR map, routed by its own `0` key, per QDEF-SPEC.md §3). A code always carries a **Preview** Record; a payload with a body (§4) also carries either the complete **Body** Record (if it fits alongside Preview in one code) or one **Split-Wrapper**-wrapped Body fragment (§5, multi-code case).
+Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or more **Records** (QDEF terminology — each Record is its own self-delimited CBOR array, `[namespace?, typeId, ndefId?, map, subrecord*]`, routed by its `typeId` element, per QDEF-SPEC.md §3.1; a Record MAY carry other Records nested after its own map, as subrecords). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
 
 **Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
