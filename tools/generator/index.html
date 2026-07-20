@@ -354,8 +354,8 @@
       <div style="display:flex;align-items:flex-end;padding-bottom:6px">
         <label style="margin:0">
           <input type="checkbox" id="s-binary-sectors" checked>
-          🔢 Use binary QR for sectors
-          <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only if content needs multiple QR codes</small>
+          🔢 QDEF binary QR for sectors
+          <small style="display:block;color:#888;margin-top:2px">Byte-mode QR with QDEF framing header — camera-scan only, applies when content needs multiple QR codes</small>
         </label>
       </div>
     </div>
@@ -568,8 +568,8 @@
     </label>
     <label style="margin:0 0 10px;display:block">
       <input type="checkbox" id="p-binary-sectors" checked>
-      🔢 Use binary QR for sectors
-      <small style="display:block;color:#888;margin-top:2px">Denser, camera-scan only — applies only to files/papers that need multiple QR codes</small>
+      🔢 QDEF binary QR for sectors
+      <small style="display:block;color:#888;margin-top:2px">Byte-mode QR with QDEF framing header — camera-scan only, applies to files/papers that need multiple QR codes</small>
     </label>
     <label style="margin:0 0 10px;display:block">
       <input type="checkbox" id="p-add-parity">
@@ -813,6 +813,21 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecor
 // not restructured.
 function encodeCode(code) {
   return { uri: 'tagdrop:' + base41Encode(code.raw), raw: code.raw, code };
+}
+
+// QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14): 4-byte magic +
+// 5-byte namespace discriminator (CBOR bstr h'89d414e0') = 9 bytes total,
+// prepended to the Record Sequence bytes for byte-mode QR / JABCode carriers.
+// tagdrop: URI and NFC NDEF are exempt — their own dispatch signal (scheme,
+// MIME type) already does the discriminator's job.
+const QDEF_FRAMING = new Uint8Array([
+  0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
+  0x44,                     // CBOR byte string header, length 4 (1 byte)
+  0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
+]);
+// Wraps raw Record Sequence bytes with QDEF framing for byte-mode QR.
+function qdefFrame(recordBytes) {
+  return concatBytes(QDEF_FRAMING, recordBytes);
 }
 
 // Content Extension / Media Preview / Media Payload / Content Signature
@@ -2617,13 +2632,13 @@ async function renderSectorsResult(contentResult, { encodeArgs, compress, encryp
 
   for (const code of codes) {
     const enc = encodeCode(code);
-    const qrData = useBinary ? enc.raw : enc.uri;
+    const qrData = useBinary ? qdefFrame(enc.raw) : enc.uri;
     const label = code.isParity ? 'Parity (recovery)' : `Sector ${code.index + 1} / ${count}`;
     const idSuffix = code.isParity ? 'parity' : `sector${code.index + 1}`;
     try {
       await addGeneratorQrCard(grid, {
         label,
-        sub: useBinary ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
+        sub: useBinary ? `${enc.raw.length}+9 raw bytes · binary QR` : `${enc.uri.length} chars · text QR`,
         badge: code.isParity ? 'parity' : (useBinary ? 'binary' : null),
         badgeClass: code.isParity ? 'parity' : 'binary',
         id: `${idHex}-${idSuffix}`,
@@ -3176,11 +3191,11 @@ async function generatePaper() {
   }
   for (const code of paper.codes) {
     const enc = encodeCode(code);
-    const qrData = (mCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
+    const qrData = (mCount > 1 && useBinarySectors) ? qdefFrame(enc.raw) : enc.uri;
     const suffix = code.isParity ? 'parity' : (mCount > 1 ? `code ${code.index + 1}/${dataCount}` : 'manifest');
     const mLabel = `📋 ${label || 'Manifest'} — ${suffix}`;
     const mSub = mCount > 1
-      ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
+      ? (useBinarySectors ? `${enc.raw.length}+9 raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
       : 'paper manifest';
     const mId = code.isParity ? `${rootHashHex}-parity` : (mCount > 1 ? `${rootHashHex}-code${code.index + 1}` : rootHashHex);
     const mItem = makeQrItem(mLabel, mSub, mId, enc.uri, code.isParity ? 'parity' : null, qrData, code.isParity ? 'parity' : null);
@@ -3237,12 +3252,12 @@ async function generatePaper() {
     }
     for (const code of f.codes) {
       const enc = encodeCode(code);
-      const qrData = (fDataCount > 1 && useBinarySectors) ? enc.raw : enc.uri;
+      const qrData = (fDataCount > 1 && useBinarySectors) ? qdefFrame(enc.raw) : enc.uri;
       const idSuffix = code.isParity ? 'parity' : `sector${code.index + 1}`;
       const fLabel = code.isParity ? `${f.slug} — parity`
         : (fDataCount > 1 ? `${f.slug} — sector ${code.index + 1}/${fDataCount}` : f.slug);
       const fSub = fDataCount > 1
-        ? (useBinarySectors ? `${enc.raw.length} raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
+        ? (useBinarySectors ? `${enc.raw.length}+9 raw bytes · binary QR` : `${enc.uri.length} chars · text QR`)
         : f.mimeType;
       const fId = fDataCount > 1 ? `${fIdHex}-${idSuffix}` : fIdHex;
       const fItem = code.isParity

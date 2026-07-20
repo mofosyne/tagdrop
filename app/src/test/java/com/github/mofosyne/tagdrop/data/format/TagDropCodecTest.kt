@@ -494,6 +494,30 @@ class TagDropCodecTest {
         assertNull(TagDropCodec.decodeRaw(byteArrayOf(0xFF.toByte(), 0x00, 0x11)))
     }
 
+    @Test fun decodeRawStripsQdefFraming() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hello".toByteArray())
+        val raw = build.codes.first()
+        val qdefMagic = byteArrayOf(
+            0x51, 0x44, 0x45, 0x46,  // "QDEF" magic
+            0x44,                     // CBOR byte string header, length 4
+            0x89.toByte(), 0xD4.toByte(), 0x14.toByte(), 0xE0.toByte(),  // namespace
+        )
+        val framed = qdefMagic + raw
+        val viaFramed = TagDropCodec.decodeRaw(framed)
+        val viaRaw = TagDropCodec.decodeRaw(raw)
+        assertNotNull(viaFramed)
+        assertEquals(viaRaw, viaFramed)
+    }
+
+    @Test fun decodeRawRejectsPartialQdefMagic() {
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val raw = build.codes.first()
+        // Only 4 bytes of the 9-byte QDEF magic — not enough to strip
+        val partial = byteArrayOf(0x51, 0x44, 0x45, 0x46) + raw
+        // First byte 0x51 is CBOR major type 2 (byte string), not type 4 (array) → null
+        assertNull(TagDropCodec.decodeRaw(partial))
+    }
+
     @Test fun legacyDataUriDecodesToLegacyScan() {
         val scan = TagDropCodec.decode("data:text/plain;base64,aGVsbG8=")
         assertTrue(scan is TagDropScan.LegacyScan)

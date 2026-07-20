@@ -98,6 +98,28 @@ object TagDropCodec {
     private const val SCHEME          = "tagdrop:"
     private const val NAV_LINK_PREFIX = "tagdrop://"
 
+    // ── QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14) ──────────────
+    // 4-byte magic "QDEF" + 5-byte CBOR bstr namespace discriminator
+    // h'89d414e0' (SHA-256("io.github.mofosyne.tagdrop")[0:4]) = 9 bytes total,
+    // prepended to the Record Sequence for byte-mode QR / JABCode carriers.
+    // tagdrop: URI and NFC NDEF are exempt — their own dispatch signal already
+    // does the discriminator's job.
+    private val QDEF_FRAMING_MAGIC = byteArrayOf(
+        0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
+        0x44,                     // CBOR byte string header, length 4 (1 byte)
+        0x89.toByte(), 0xD4.toByte(), 0x14.toByte(), 0xE0.toByte(),  // SHA-256(...)[0:4]
+    )
+
+    /** If [bytes] starts with the QDEF framing header, returns the inner Record
+     *  Sequence bytes (stripped of the 9-byte header); otherwise returns [bytes] unchanged. */
+    fun stripQdefFraming(bytes: ByteArray): ByteArray {
+        if (bytes.size < QDEF_FRAMING_MAGIC.size) return bytes
+        for (i in QDEF_FRAMING_MAGIC.indices) {
+            if (bytes[i] != QDEF_FRAMING_MAGIC[i]) return bytes
+        }
+        return bytes.copyOfRange(QDEF_FRAMING_MAGIC.size, bytes.size)
+    }
+
     // ── QDEF Record Type IDs (SPEC.md §2.1) — TagDrop's four are small odd values under its
     // implied namespace (§2.1a); Split/Compress/Media Preview/Media Payload are QDEF's small
     // well-known even (globally-interpreted) types ──
@@ -881,9 +903,11 @@ object TagDropCodec {
     /**
      * Decodes a [ScannedRecord] straight from its raw CBOR Record Sequence, with no
      * `tagdrop:`/Base41 text wrapper — the carrier already supports raw bytes (SPEC §13: NFC
-     * NDEF). Returns null for an unrecognized leading Type ID or malformed sequence.
+     * NDEF, byte-mode QR with optional QDEF framing). Returns null for an unrecognized
+     * leading Type ID or malformed sequence.
      */
-    fun decodeRaw(bytes: ByteArray): TagDropScan? = recordScanResult(bytes)?.let { TagDropScan.RecordScan(it) }
+    fun decodeRaw(bytes: ByteArray): TagDropScan? =
+        recordScanResult(stripQdefFraming(bytes))?.let { TagDropScan.RecordScan(it, rawWireBytes = bytes) }
 
     /** SPEC §2.2 even/odd criticality: an unrecognized EVEN key means this decoder can't
      *  safely use the Record — reject it; an unrecognized ODD key is optional and ignored. */
@@ -1315,8 +1339,31 @@ object TagDropCodec {
         appendLine("${cbor.size} bytes")
         appendLine(cbor.toHexDump())
         appendLine()
+        // Detect QDEF framing header on the wire
+        val qdefDetected = cbor.size >= QDEF_FRAMING_MAGIC.size &&
+            QDEF_FRAMING_MAGIC.indices.all { cbor[it] == QDEF_FRAMING_MAGIC[it] }
+        val bytes: ByteArray
+        if (qdefDetected) {
+            val nsHash = cbor.sliceArray(5 until 9)
+            appendLine("── QDEF framing (on wire, SPEC.md §2, §2.1a) ──")
+            appendLine("  magic: 51444546 (\"QDEF\")")
+            appendLine("  namespace: ${cbor.copyOfRange(4, 9).toHexDump()} (CBOR bstr h'${nsHash.toHexDump()}')")
+            appendLine("  framing overhead: ${QDEF_FRAMING_MAGIC.size} bytes")
+            appendLine()
+            bytes = cbor.copyOfRange(QDEF_FRAMING_MAGIC.size, cbor.size)
+        } else {
+            appendLine("── QDEF framing (implied, not on wire) ──")
+            appendLine("  magic: 51444546 (\"QDEF\")")
+            appendLine("  namespace: ${QDEF_FRAMING_MAGIC.copyOfRange(4, 9).toHexDump()} (CBOR bstr h'${QDEF_FRAMING_MAGIC.copyOfRange(5, 9).toHexDump()}')")
+            appendLine("  framing overhead saved: ${QDEF_FRAMING_MAGIC.size} bytes (tagdrop: URI / NFC NDEF)")
+            appendLine()
+            bytes = cbor
+        }
+        if (bytes.isNotEmpty()) {
+            appendLine("── Record Sequence (${bytes.size} bytes) ──")
+        }
         runCatching {
-            var rest = cbor
+            var rest = bytes
             var i = 0
             while (rest.isNotEmpty()) {
                 val rec = MiniCbor.decodeRecordPrefix(rest) ?: break
@@ -1332,7 +1379,8 @@ object TagDropCodec {
     private fun describeRecord(rec: MiniCbor.DecodedRecord, indent: Int, out: StringBuilder) {
         val pad = "  ".repeat(indent - 1)
         val typeName = TYPE_NAMES[rec.typeId]
-        out.appendLine("$pad${if (typeName != null) "$typeName (${rec.typeId})" else "Type ${rec.typeId}"}:")
+        val typeNameStr = if (typeName != null) "$typeName (${rec.typeId})" else "Type ${rec.typeId}"
+        out.appendLine("$pad$typeNameStr [${rec.raw.toHexDump()}]")
         describeMap(rec.record, indent + 1, out, KEY_NAMES_BY_TYPE[rec.typeId] ?: emptyMap())
         for (sub in rec.subrecords) describeRecord(sub, indent + 1, out)
     }

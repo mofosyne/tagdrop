@@ -60,7 +60,12 @@
   .qr-card .qr-badge.key        { background: #fff3e0; color: #e65100; }
   .qr-card .qr-badge.parity     { background: #e0f7fa; color: #00838f; }
   .qr-card .qr-badge.pixel-art  { background: #f3e5f5; color: #6a1b9a; }
+  .qr-card .qr-badge.binary     { background: #e8eaf6; color: #283593; }
+
+  /* Binary toggle in header */
+  #binary-toggle input { accent-color: #D9652B; }
   .qr-card .qr-id   { font-family: monospace; font-size: 0.65rem; color: #aaa; margin-top: 4px; word-break: break-all; }
+  .qr-card .qr-qrinfo { font-family: monospace; font-size: 0.65rem; color: #999; margin-top: 2px; }
   .qr-card .qr-uri  { margin-top: 8px; width: 100%; }
   .qr-card .qr-uri input {
     width: 100%; font-family: monospace; font-size: 0.6rem; color: #888;
@@ -132,6 +137,9 @@
       <a href="../reader/index.html">Web Reader</a>
     </nav>
   </div>
+  <label id="binary-toggle" style="margin-left:auto;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.82rem;white-space:nowrap;" title="Toggle between tagdrop: URI (text QR, alphanumeric mode) and QDEF binary QR (byte-mode with framing header)">
+    <input type="checkbox" id="binary-toggle-cb"> QDEF binary QR
+  </label>
 </header>
 
 <div class="container">
@@ -145,6 +153,22 @@
       Scan any one with the <a href="../reader/index.html">web reader</a> or the Android app.
     </p>
     <div class="qr-grid" id="standalone-grid"></div>
+  </section>
+
+  <section id="sec-binary">
+    <h2>Binary QDEF Barcode (byte-mode QR)</h2>
+    <p class="section-desc">
+      Same payload as the standalone codes above, but rendered as a <strong>binary/byte-mode QR</strong>
+      instead of a <code>tagdrop:</code> URI in alphanumeric mode. The raw CBOR Record Sequence bytes
+      are framed with a 9-byte QDEF header (4-byte "QDEF" magic + 5-byte CBOR namespace discriminator)
+      and encoded directly in the QR's byte mode — no Base41 encoding, no <code>tagdrop:</code>
+      prefix — which is denser but not human-typable or shareable as text.
+      <br><br>
+      The side-by-side comparison below shows the same content code in both carriers. The toggle above
+      switches all TagDrop codes page-wide between these two carriers.
+    </p>
+    <div class="paper-info" id="binary-info"></div>
+    <div class="qr-grid" id="binary-grid"></div>
   </section>
 
   <section id="sec-passphrase">
@@ -391,6 +415,21 @@ const TYPE_CONTENT_EXTENSION = 1;
 const TYPE_CONTENT_SIGNATURE = 3;
 const TYPE_PAPER_PREVIEW = 5;
 const TYPE_PAPER_BODY = 7;
+
+// QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14): 4-byte magic +
+// 5-byte namespace discriminator (CBOR bstr h'89d414e0') = 9 bytes total,
+// prepended to the Record Sequence bytes for byte-mode QR / JABCode carriers.
+// tagdrop: URI and NFC NDEF are exempt — their own dispatch signal (scheme,
+// MIME type) already does the discriminator's job.
+const QDEF_FRAMING = new Uint8Array([
+  0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
+  0x44,                     // CBOR byte string header, length 4 (1 byte)
+  0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
+]);
+// Wraps raw Record Sequence bytes with QDEF framing for byte-mode QR.
+function qdefFrame(recordBytes) {
+  return concatBytes(QDEF_FRAMING, recordBytes);
+}
 
 // QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 3) — wraps `bytes`
 // DEFLATE-compressed. Async: zlibCompress uses CompressionStream.
@@ -824,13 +863,26 @@ function interpretRecordArray(arr) {
  * Returns { typeId, record, subrecords, raw, trailing } — `raw` is the record's own
  * exact byte range, `trailing` whatever follows in the sequence — or null if the head
  * of `bytes` isn't a well-formed Record.
+ *
+ * Uses byte-range walking (cborItemRanges) to avoid the risk of cborDecodeSequencePrefix
+ + misinterpreting nested structure as flat sequence items.
  */
 function decodeRecordPrefix(bytes) {
   try {
-    const { items, trailing } = cborDecodeSequencePrefix(bytes, 1);
-    const interpreted = interpretRecordArray(items[0]);
-    if (!interpreted) return null;
-    return { ...interpreted, raw: bytes.slice(0, bytes.length - trailing.length), trailing };
+    const cur = { bytes, pos: 0 };
+    const itemRanges = cborItemRanges(cur, 4);
+    if (itemRanges.length < 2) return null;
+    const [typeIdRange, mapRange, ...subrecordRanges] = itemRanges;
+    const typeId = cborDecodeSequencePrefix(bytes.slice(typeIdRange[0], typeIdRange[1]), 1).items[0];
+    const record = cborDecodeSequencePrefix(bytes.slice(mapRange[0], mapRange[1]), 1).items[0];
+    if (typeof typeId !== 'number' || !isCborMap(record)) return null;
+    const subrecords = [];
+    for (const r of subrecordRanges) {
+      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]));
+      if (!sub) return null;
+      subrecords.push({ ...sub, raw: bytes.slice(r[0], r[1]) });
+    }
+    return { typeId, record, raw: bytes.slice(0, cur.pos), subrecords, trailing: bytes.slice(cur.pos) };
   } catch (e) {
     return null;
   }
@@ -841,15 +893,20 @@ function decodeRecordPrefix(bytes) {
 function describeOneRecord(rec, indent, label) {
   const info = RECORD_TYPE_INFO.get(String(rec.typeId));
   const pad = '  '.repeat(indent);
-  let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + '\n';
+  let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + ' [' + toHexDump(rec.raw) + ']\n';
   out += describeMap(rec.record, indent + 1, info ? info.keyNames : {});
-  for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
+  if (rec.subrecords) for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
   return out;
 }
 
 /** New-format half of describeCbor below: walks a QDEF Record Sequence, naming each
  *  top-level Record's type and fields (and any subrecords it carries) per
- *  RECORD_TYPE_INFO. Mirrors ../reader/index.html. */
+ *  RECORD_TYPE_INFO. Mirrors ../reader/index.html.
+ *
+ *  The Record Sequence is a flat CBOR sequence of Records (each Record being
+ *  a self-delimiting CBOR array [typeId, map, subrecord*]). Do NOT treat it as
+ *  a single outer CBOR array — that would wrap the *entire* payload in one
+ *  CBOR item, making decodeRecordPrefix misinterpret the top-level structure. */
 function describeRecords(bytes) {
   let out = '';
   let rest = bytes;
@@ -909,8 +966,31 @@ async function splitReassembledStream(stream) {
  */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  // Detect QDEF framing header: "QDEF" magic (4 bytes) + CBOR bstr namespace (5 bytes)
+  if (bytes.length >= QDEF_FRAMING.length &&
+      bytes[0] === 0x51 && bytes[1] === 0x44 && bytes[2] === 0x45 && bytes[3] === 0x46) {
+    const nsBytes = bytes.slice(4, 9);
+    const nsHash = bytes.slice(5, 9);
+    out += '── QDEF framing (on wire, SPEC.md §2, §2.1a) ──\n';
+    out += '  magic: 51444546 ("QDEF")\n';
+    out += '  namespace: ' + toHexDump(nsBytes) + ' (CBOR bstr h\'' + toHexDump(nsHash) + '\')\n';
+    out += '  framing overhead: ' + QDEF_FRAMING.length + ' bytes\n\n';
+    const inner = bytes.slice(QDEF_FRAMING.length);
+    if (inner.length > 0 && (inner[0] >> 5) === 4) {
+      out += '── Record Sequence (' + inner.length + ' bytes) ──\n';
+      return out + describeRecords(inner);
+    }
+    out += '── Inner bytes (' + inner.length + ' bytes, not a recognized Record Sequence) ──\n';
+    return out + toHexDump(inner) + '\n';
+  }
+  // No on-wire framing — show implied QDEF context (tagdrop: URI / NFC NDEF)
+  out += '── QDEF framing (implied, not on wire) ──\n';
+  out += '  magic: 51444546 ("QDEF")\n';
+  out += '  namespace: ' + toHexDump(QDEF_FRAMING.slice(4, 9)) + ' (CBOR bstr h\'' + toHexDump(QDEF_FRAMING.slice(5, 9)) + '\')\n';
+  out += '  framing overhead saved: ' + QDEF_FRAMING.length + ' bytes (tagdrop: URI / NFC NDEF)\n\n';
   if (bytes.length > 0 && (bytes[0] >> 5) === 4) {
-    return out + describeRecords(bytes);
+    out += '── Record Sequence (' + bytes.length + ' bytes) ──\n';
+    try { return out + describeRecords(bytes); } catch (e2) { out += 'Record decode error: ' + e2.message + '\n'; }
   }
   try {
     const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
@@ -946,6 +1026,7 @@ async function describeCbor(bytes) {
 }
 
 function describeMap(map, indent, keyNames = KEY_NAMES) {
+  if (!map || typeof map !== 'object') return '  '.repeat(indent) + String(map) + '\n';
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
@@ -977,6 +1058,17 @@ function describeMap(map, indent, keyNames = KEY_NAMES) {
 async function inspectCborFromUri(uri, title) {
   try {
     const bytes = base41Decode(uri.replace(/^tagdrop:/, ''));
+    document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + title;
+    document.getElementById('cborDump').textContent = await describeCbor(bytes);
+    document.getElementById('cborOverlay').classList.remove('hidden');
+  } catch (e) {
+    alert('Failed to decode CBOR: ' + e.message);
+  }
+}
+
+// Shows CBOR breakdown from raw bytes (possibly QDEF-framed) in the #cborOverlay dialog.
+async function inspectCborFromBytes(bytes, title) {
+  try {
     document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + title;
     document.getElementById('cborDump').textContent = await describeCbor(bytes);
     document.getElementById('cborOverlay').classList.remove('hidden');
@@ -2063,13 +2155,28 @@ function loadQRCode() {
   return qrcodeModulePromise;
 }
 
-async function renderQr(container, uri) {
+// Converts QR content to the form QRCode.toCanvas expects: a plain text string
+// for tagdrop: URIs, or a byte-mode segment for raw binary (Uint8Array) data —
+// mirrors ../generator/index.html's qrPayloadFor().
+function qrPayloadFor(data) {
+  return typeof data === 'string' ? data : [{ data: new Uint8ClampedArray(data), mode: 'byte' }];
+}
+
+async function renderQr(container, data) {
   const QRCode = await loadQRCode();
   return new Promise((resolve, reject) => {
-    QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width: 400 }, (err, canvas) => {
+    const payload = qrPayloadFor(data);
+    QRCode.toCanvas(payload, { errorCorrectionLevel: 'L', margin: 2, width: 400 }, (err, canvas) => {
       if (err) { reject(err); return; }
       container.appendChild(canvas);
-      resolve();
+      try {
+        const info = QRCode.create(payload, { errorCorrectionLevel: 'L' });
+        const modules = info.version * 4 + 17;
+        const sizeKb = (data.length / 1024).toFixed(1);
+        resolve({ version: info.version, modules, dataBytes: data.length, sizeKb });
+      } catch {
+        resolve(null);
+      }
     });
   });
 }
@@ -2077,24 +2184,63 @@ async function renderQr(container, uri) {
 // ── Card rendering ────────────────────────────────────────────────────────
 const messages = document.getElementById('page-messages');
 
-async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isManifest }) {
+// Binary QR toggle: when set, all TagDrop-encoded cards render as byte-mode QR
+// (raw Record Sequence bytes) instead of tagdrop: URI (alphanumeric mode).
+// Raw QR cards (vCard, URL etc.) are unaffected.
+let useBinaryQr = false;
+const qrCards = []; // { slot, uri, rawBytes, infoEl }
+
+function rerenderQrSlot(slot, data) {
+  slot.innerHTML = '';
+  return renderQr(slot, data);
+}
+
+async function rerenderAllQr() {
+  for (const card of qrCards) {
+    const data = useBinaryQr ? qdefFrame(card.rawBytes) : card.uri;
+    try {
+      const info = await rerenderQrSlot(card.slot, data);
+      if (card.infoEl && info) {
+        card.infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
+      } else if (card.infoEl) {
+        card.infoEl.textContent = '';
+      }
+    }
+    catch { card.slot.innerHTML = '<div class="err">QR render failed</div>'; }
+  }
+}
+
+document.getElementById('binary-toggle-cb').addEventListener('change', function () {
+  useBinaryQr = this.checked;
+  rerenderAllQr();
+});
+
+async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isManifest, rawBytes }) {
   const div = document.createElement('div');
   div.className = 'qr-card' + (isManifest ? ' manifest' : '');
   const qrSlot = document.createElement('div');
   div.appendChild(qrSlot);
   const mimeBadge = `<span class="qr-badge">${escHtml(mime)}</span>`;
   const extra = extraBadge ? ` <span class="qr-badge ${badgeClass || 'compress'}">${escHtml(extraBadge)}</span>` : '';
+  const infoEl = document.createElement('div');
+  infoEl.className = 'qr-qrinfo';
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
     <div>${mimeBadge}${extra}</div>
-    <div class="qr-id">${id}</div>
+    <div class="qr-id">${id}</div>`);
+  div.appendChild(infoEl);
+  div.insertAdjacentHTML('beforeend', `
     <div class="qr-uri"><input type="text" readonly value="${escHtml(uri)}"></div>
     <button class="copy-btn">Copy URI</button>
     <button class="copy-btn inspect-cbor">🔍 Inspect CBOR</button>`);
   grid.appendChild(div);
 
+  // Register for binary toggle if this is a TagDrop-encoded card (has rawBytes)
+  if (rawBytes) qrCards.push({ slot: qrSlot, uri, rawBytes, infoEl });
+
   try {
-    await renderQr(qrSlot, uri);
+    const info = await renderQr(qrSlot, useBinaryQr && rawBytes ? qdefFrame(rawBytes) : uri);
+    if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
   } catch (e) {
     qrSlot.innerHTML = '<div class="err">QR render failed</div>';
     if (!messages.dataset.warned) {
@@ -2111,7 +2257,15 @@ async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isM
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
   });
-  div.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromUri(uri, label));
+  div.querySelector('.inspect-cbor').addEventListener('click', () => {
+    if (rawBytes && useBinaryQr) {
+      inspectCborFromBytes(qdefFrame(rawBytes), label + ' (QDEF binary QR)');
+    } else if (rawBytes) {
+      inspectCborFromBytes(rawBytes, label + ' (TagDrop URI)');
+    } else {
+      inspectCborFromUri(uri, label);
+    }
+  });
 }
 
 // Renders one card per Content code (SPEC §4.2): index/count give every code
@@ -2129,6 +2283,7 @@ async function addContentSectorCards(grid, result, { baseLabel, mime, extraBadge
       mime, extraBadge, badgeClass,
       id: count > 1 ? `${idHex}-code${code.index + 1}` : idHex,
       uri: enc.uri,
+      rawBytes: enc.raw,
       isManifest: false,
     });
   }
@@ -2149,6 +2304,7 @@ async function addPaperSectorCards(grid, codes, { baseLabel }) {
       mime: 'paper manifest', extraBadge: null,
       id: count > 1 ? `${idHex}-code${code.index + 1}` : idHex,
       uri: enc.uri,
+      rawBytes: enc.raw,
       isManifest: true,
     });
   }
@@ -2163,15 +2319,20 @@ async function addRawQrCard(grid, { label, mime, rawContent, fileIdHex }) {
   div.className = 'qr-card';
   const qrSlot = document.createElement('div');
   div.appendChild(qrSlot);
+  const infoEl = document.createElement('div');
+  infoEl.className = 'qr-qrinfo';
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
     <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge parity">raw QR</span></div>
-    <div class="qr-id">${fileIdHex} (sha256 file_id)</div>
+    <div class="qr-id">${fileIdHex} (sha256 file_id)</div>`);
+  div.appendChild(infoEl);
+  div.insertAdjacentHTML('beforeend', `
     <div class="qr-uri"><input type="text" readonly value="${escHtml(rawContent)}"></div>
     <button class="copy-btn copy-raw">Copy content</button>`);
   grid.appendChild(div);
   try {
-    await renderQr(qrSlot, rawContent);
+    const info = await renderQr(qrSlot, rawContent);
+    if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
   } catch (e) {
     qrSlot.innerHTML = '<div class="err">QR render failed</div>';
   }
@@ -2183,6 +2344,44 @@ async function addRawQrCard(grid, { label, mime, rawContent, fileIdHex }) {
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
   });
+}
+
+// Renders a card for a binary/byte-mode QR code — raw Record Sequence bytes
+// encoded in QR byte mode instead of a tagdrop: URI in alphanumeric mode.
+// Shows the raw bytes as a QR code alongside a "binary QR" badge and the
+// corresponding tagdrop: URI for copy/inspect.
+async function addBinaryQrCard(grid, { label, mime, rawBytes, uri, id }) {
+  const div = document.createElement('div');
+  div.className = 'qr-card';
+  const qrSlot = document.createElement('div');
+  div.appendChild(qrSlot);
+  const infoEl = document.createElement('div');
+  infoEl.className = 'qr-qrinfo';
+  div.insertAdjacentHTML('beforeend', `
+    <div class="qr-label">${escHtml(label)}</div>
+    <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge binary">binary QR</span></div>
+    <div class="qr-id">${id} · ${rawBytes.length} raw bytes + ${QDEF_FRAMING.length} byte framing · byte mode</div>`);
+  div.appendChild(infoEl);
+  div.insertAdjacentHTML('beforeend', `
+    <div class="qr-uri"><input type="text" readonly value="${escHtml(uri)}"></div>
+    <button class="copy-btn copy-uri">Copy URI</button>
+    <button class="copy-btn inspect-cbor">🔍 Inspect CBOR</button>`);
+  grid.appendChild(div);
+  try {
+    const info = await renderQr(qrSlot, qdefFrame(rawBytes));
+    if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
+  } catch (e) {
+    qrSlot.innerHTML = '<div class="err">QR render failed</div>';
+  }
+  div.querySelector('.copy-uri').addEventListener('click', (ev) => {
+    navigator.clipboard.writeText(uri).then(() => {
+      const btn = ev.target;
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
+  });
+  div.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromBytes(qdefFrame(rawBytes), label + ' (binary QR, QDEF-framed)'));
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
@@ -2203,6 +2402,42 @@ async function main() {
       mime: ex.mimeType,
       extraBadge: ex.compress ? 'deflate' : (ex.pixelArt ? 'pixel art' : null),
       badgeClass: ex.compress ? 'compress' : (ex.pixelArt ? 'pixel-art' : undefined),
+    });
+  }
+
+  // Binary QDEF barcode example: same "Plain text" content rendered in both
+  // carriers — tagdrop: URI (alphanumeric) and raw bytes (byte-mode QR) —
+  // to demonstrate the carrier choice.
+  {
+    const ex = STANDALONE_EXAMPLES[0]; // "Plain text"
+    const rawBytes = new TextEncoder().encode(ex.content);
+    const result = await createContentSectorsAutoSized({
+      hint: ex.hint, filename: ex.filename,
+      mimeType: ex.mimeType, rawBytes, compress: ex.compress,
+    });
+    const code = result.codes[0];
+    const enc = encodeCode(code);
+    const idHex = toHex(result.cacheId);
+
+    document.getElementById('binary-info').innerHTML = `
+      <strong>${escHtml(ex.label)}</strong> — ${escHtml(ex.mimeType)}<br>
+      Cache ID: <code>${idHex}</code><br>
+      URI length: <code>${enc.uri.length}</code> chars · Raw bytes: <code>${enc.raw.length}</code> bytes (+ ${QDEF_FRAMING.length} byte QDEF framing)
+      <div class="step">① <strong>Text QR</strong> (left): <code>tagdrop:</code> + Base41-encoded bytes, QR alphanumeric mode — human-readable, copyable, typeable.</div>
+      <div class="step">② <strong>Binary QR</strong> (right): QDEF magic + namespace discriminator (9 bytes) + raw Record Sequence bytes, QR byte mode — denser, but not text-sharable.</div>
+      <div class="step">③ Both decode to the same payload. The toggle above switches all TagDrop codes between these two carriers.</div>`;
+
+    const binaryGrid = document.getElementById('binary-grid');
+    // Text QR (tagdrop: URI) — same as standalone section
+    await addCard(binaryGrid, {
+      label: ex.label, mime: ex.mimeType,
+      extraBadge: 'text QR', badgeClass: null,
+      id: idHex, uri: enc.uri, isManifest: false,
+    });
+    // Binary QR (raw bytes)
+    await addBinaryQrCard(binaryGrid, {
+      label: ex.label, mime: ex.mimeType,
+      rawBytes: enc.raw, uri: enc.uri, id: idHex,
     });
   }
 
@@ -2253,7 +2488,7 @@ async function main() {
   });
   await addCard(encryptionGrid, {
     label: 'Key code', mime: 'key_material', extraBadge: 'key', badgeClass: 'key',
-    id: toHex(randomCacheId()), uri: eeKeyEnc.uri, isManifest: false,
+    id: toHex(randomCacheId()), uri: eeKeyEnc.uri, rawBytes: eeKeyEnc.raw, isManifest: false,
   });
 
   // Multi-sector content: several equal-status codes, no separate manifest code
@@ -2289,6 +2524,7 @@ async function main() {
       extraBadge: 'parity', badgeClass: 'parity',
       id: `${toHex(mcResult.cacheId)}-parity`,
       uri: enc.uri,
+      rawBytes: enc.raw,
       isManifest: false,
     });
   }

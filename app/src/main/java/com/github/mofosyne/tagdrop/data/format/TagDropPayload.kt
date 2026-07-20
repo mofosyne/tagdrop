@@ -315,7 +315,7 @@ data class SplitFragment(
  * [TagDropPayload.Legacy].
  */
 sealed class TagDropScan {
-    data class RecordScan(val record: ScannedRecord) : TagDropScan()
+    data class RecordScan(val record: ScannedRecord, val rawWireBytes: ByteArray? = null) : TagDropScan()
     data class LegacyScan(val payload: TagDropPayload.Legacy) : TagDropScan()
 }
 

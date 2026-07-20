@@ -90,6 +90,8 @@ class ReceiveActivity : AppCompatActivity() {
 
     /** The most recently decoded record, kept for the "Inspect CBOR" diagnostic menu item. */
     private var lastScannedRecord: ScannedRecord? = null
+    /** Original wire bytes (possibly QDEF-framed) for the most recently decoded record. */
+    private var lastScannedWireBytes: ByteArray? = null
 
     /** Debounce so the same code isn't reprocessed on every camera frame it's visible in. */
     private var lastDecodedText: String? = null
@@ -307,7 +309,9 @@ class ReceiveActivity : AppCompatActivity() {
         val fragment = TagDropCodec.splitFragmentOf(record)
         val identity = TagDropCodec.previewIdentity(record).first?.toHex() ?: "key-only"
         val title = identity + (fragment?.let { " #${it.index + 1}" } ?: "")
-        val raw = when (record) {
+        // Prefer original wire bytes (with QDEF framing if present) for the inspector;
+        // fall back to reconstructed Record Sequence if wire bytes unavailable (NFC, paste).
+        val raw = lastScannedWireBytes ?: when (record) {
             is ScannedRecord.Content -> record.extensionRaw + (record.secondRaw ?: ByteArray(0))
             is ScannedRecord.Paper -> record.previewRaw + (record.secondRaw ?: ByteArray(0))
         }
@@ -416,6 +420,7 @@ class ReceiveActivity : AppCompatActivity() {
         when (scan) {
             is TagDropScan.RecordScan -> {
                 lastScannedRecord = scan.record
+                lastScannedWireBytes = scan.rawWireBytes
                 invalidateOptionsMenu()
                 handleState(assembler.add(scan.record))
             }

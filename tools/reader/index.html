@@ -1148,9 +1148,9 @@ function toHexDump(bytes) {
 function describeOneRecord(rec, indent, label) {
   const info = RECORD_TYPE_INFO.get(String(rec.typeId));
   const pad = '  '.repeat(indent);
-  let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + '\n';
+  let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + ' [' + toHexDump(rec.raw) + ']\n';
   out += describeMap(rec.record, indent + 1, info ? info.keyNames : {});
-  for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
+  if (rec.subrecords) for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
   return out;
 }
 
@@ -1182,8 +1182,25 @@ function describeRecords(bytes) {
  *  its reassembled stream). */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  // Detect on-wire QDEF framing (binary QR carrier)
+  if (bytes.length >= QDEF_FRAMING_MAGIC.length &&
+      bytes[0] === QDEF_FRAMING_MAGIC[0] && bytes[1] === QDEF_FRAMING_MAGIC[1] &&
+      bytes[2] === QDEF_FRAMING_MAGIC[2] && bytes[3] === QDEF_FRAMING_MAGIC[3]) {
+    const nsHash = bytes.slice(5, 9);
+    out += '── QDEF framing (on wire, SPEC.md §2, §2.1a) ──\n';
+    out += '  magic: 51444546 ("QDEF")\n';
+    out += '  namespace: ' + toHexDump(bytes.slice(4, 9)) + ' (CBOR bstr h\'' + toHexDump(nsHash) + '\')\n';
+    out += '  framing overhead: ' + QDEF_FRAMING_MAGIC.length + ' bytes\n\n';
+    bytes = bytes.slice(QDEF_FRAMING_MAGIC.length);
+  } else {
+    out += '── QDEF framing (implied, not on wire) ──\n';
+    out += '  magic: 51444546 ("QDEF")\n';
+    out += '  namespace: ' + toHexDump(QDEF_FRAMING_MAGIC.slice(4, 9)) + ' (CBOR bstr h\'' + toHexDump(QDEF_FRAMING_MAGIC.slice(5, 9)) + '\')\n';
+    out += '  framing overhead saved: ' + QDEF_FRAMING_MAGIC.length + ' bytes (tagdrop: URI / NFC NDEF)\n\n';
+  }
   if (bytes.length > 0 && (bytes[0] >> 5) === 4) {
-    return out + describeRecords(bytes);
+    out += '── Record Sequence (' + bytes.length + ' bytes) ──\n';
+    try { return out + describeRecords(bytes); } catch (e2) { out += 'Record decode error: ' + e2.message + '\n'; }
   }
   try {
     const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
@@ -1219,6 +1236,7 @@ async function describeCbor(bytes) {
 }
 
 function describeMap(map, indent, keyNames = KEY_NAMES) {
+  if (!map || typeof map !== 'object') return '  '.repeat(indent) + String(map) + '\n';
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
@@ -2495,9 +2513,32 @@ function bytesToBinaryString(bytes) {
 // anything else is a raw CBOR-sequence envelope carried directly in a binary/byte-mode QR
 // (SPEC.md binary-mode-chunks note) — mirrors the Android reference reader's raw byte-segment
 // fallback.
+
+// QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14): 4-byte magic +
+// 5-byte namespace discriminator (CBOR bstr h'89d414e0') = 9 bytes total,
+// prepended to the Record Sequence bytes for byte-mode QR / JABCode carriers.
+const QDEF_FRAMING_MAGIC = new Uint8Array([
+  0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
+  0x44,                     // CBOR byte string header, length 4 (1 byte)
+  0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
+]);
+
+/** If `bytes` starts with the QDEF framing header, returns the inner Record Sequence
+ *  bytes (stripped of the 9-byte header); otherwise returns `bytes` unchanged. */
+function stripQdefFraming(bytes) {
+  if (bytes.length < QDEF_FRAMING_MAGIC.length) return bytes;
+  for (let i = 0; i < QDEF_FRAMING_MAGIC.length; i++) {
+    if (bytes[i] !== QDEF_FRAMING_MAGIC[i]) return bytes;
+  }
+  return bytes.slice(QDEF_FRAMING_MAGIC.length);
+}
+
 async function parseScannedBytes(bytes) {
   const looksLikeTagdropText = TAGDROP_TEXT_PREFIX.every((b, i) => bytes[i] === b);
-  return looksLikeTagdropText ? parseUri(bytesToBinaryString(bytes)) : sectorScanResult(bytes);
+  if (looksLikeTagdropText) return parseUri(bytesToBinaryString(bytes));
+  // Strip QDEF framing if present (binary-mode QR with QDEF header)
+  const stripped = stripQdefFraming(bytes);
+  return sectorScanResult(stripped);
 }
 
 function updateCborButton() {
