@@ -37,4 +37,9 @@
         android:title="@string/button_spec"
         app:showAsAction="never" />
 
+    <item
+        android:id="@+id/action_qdef_spec"
+        android:title="@string/button_qdef_spec"
+        app:showAsAction="never" />
+
 </menu>

@@ -13,6 +13,13 @@ tasks.register("copySpecToRawRes", Copy) {
     rename { "spec.md" }
 }
 
+def qdefSpecRawResDir = layout.buildDirectory.dir("generated/qdefSpecRawRes")
+tasks.register("copyQdefSpecToRawRes", Copy) {
+    from(rootProject.file("QDEF-SPEC.md"))
+    into(qdefSpecRawResDir.map { it.dir("raw") })
+    rename { "qdef_spec.md" }
+}
+
 android {
     namespace = 'com.github.mofosyne.tagdrop'
     compileSdk = 35
@@ -32,6 +39,7 @@ android {
     sourceSets {
         main {
             res.srcDirs += specRawResDir
+            res.srcDirs += qdefSpecRawResDir
         }
     }
 
@@ -56,6 +64,7 @@ android {
 
 tasks.named("preBuild").configure {
     dependsOn("copySpecToRawRes")
+    dependsOn("copyQdefSpecToRawRes")
 }
 
 dependencies {

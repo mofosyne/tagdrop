@@ -15,9 +15,11 @@ import com.github.mofosyne.tagdrop.data.format.MarkdownRenderer
 import com.github.mofosyne.tagdrop.databinding.ActivitySpecBinding
 
 /**
- * Renders SPEC.md in-app, read from `R.raw.spec` — a copy synced from the repo-root SPEC.md
- * at build time (see the `copySpecToRawRes` task in app/build.gradle), never a
- * manually-maintained duplicate that could drift out of sync.
+ * Renders SPEC.md and/or QDEF-SPEC.md in-app, read from generated raw resources synced
+ * from the repo root at build time (see `copySpecToRawRes`/`copyQdefSpecToRawRes` in
+ * app/build.gradle), never a manually-maintained duplicate that could silently drift.
+ *
+ * Start with [EXTRA_SPEC] to choose which spec; defaults to SPEC.md.
  */
 class SpecActivity : AppCompatActivity() {
 
@@ -42,7 +44,12 @@ class SpecActivity : AppCompatActivity() {
 
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
-        title = getString(R.string.title_activity_spec)
+
+        val which = intent.getStringExtra(EXTRA_SPEC) ?: SPEC_TAGDROP
+        title = when (which) {
+            SPEC_QDEF -> getString(R.string.title_activity_qdef_spec)
+            else -> getString(R.string.title_activity_spec)
+        }
 
         // Matches the system "Font size" accessibility setting, since a WebView's text
         // otherwise ignores it (unlike a TextView, which used to scale automatically).
@@ -55,21 +62,29 @@ class SpecActivity : AppCompatActivity() {
             }
         }
 
-        val html = MarkdownRenderer.toHtmlDocument(readRaw(), SPEC_CSS)
+        val html = MarkdownRenderer.toHtmlDocument(readRaw(which), SPEC_CSS)
         binding.specWebView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
-    private fun readRaw(): String {
+    private fun readRaw(which: String): String {
+        val id = when (which) {
+            SPEC_QDEF -> R.raw.qdef_spec
+            else -> R.raw.spec
+        }
         return try {
-            resources.openRawResource(R.raw.spec).bufferedReader().use { it.readText() }
+            resources.openRawResource(id).bufferedReader().use { it.readText() }
         } catch (e: Exception) {
             ""
         }
     }
 
     companion object {
+        const val EXTRA_SPEC = "extra_spec"
+        const val SPEC_TAGDROP = "tagdrop"
+        const val SPEC_QDEF = "qdef"
+
         /** Same brand palette as ReadMeActivity's README_CSS, plus tables/code blocks for SPEC.md. */
         private const val SPEC_CSS = """
             body { margin: 16px; font-family: sans-serif; font-size: 15px; line-height: 1.5;
