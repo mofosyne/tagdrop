@@ -627,7 +627,8 @@ subsection below:
 |  4   | Encrypt          | §4.1    | AEAD (e.g. AES-256-GCM)         |
 |  6   | Media Payload    | §4.3    | Typed binary content            |
 |  8   | Compress         | §4.1    | DEFLATE                         |
-| 10   | Fallback Hint    | §4.2    | URI fallback for unaware readers|
+| 10   | Open/Hint URI    | §4.2    | URI to open, or a fallback for  |
+|      |                  |         | unaware readers                 |
 | 12   | App Route        | §4.4    | Application dispatch/routing    |
 | 14   | Media Preview    | §4.5    | Content identification + body   |
 |      |                  |         | subrecord                       |
@@ -839,15 +840,18 @@ wrapping avoids a cross-record correctness hazard. See DESIGN.md.
 so this stays strictly opt-in — a Record Type with no need for it stays
 a plain, unwrapped Record.
 
-### 4.2 Fallback Hint (optional)
+### 4.2 Open/Hint URI (optional)
 
 Unlike §4.1, this is deliberately **not** a wrapper — a plain standard record type Record
 Type meant to sit as a *sibling* alongside real content records in the same
 CBOR Sequence, carrying a URI any generic tool can follow if it doesn't
-understand anything else in the container:
+understand anything else in the container. It's not exclusively a
+fallback: the identical Record is also the right choice for a QR code
+whose *entire* content is a single URI, with nothing else to fall back
+from.
 
 ```
-Type 10: {                         // Fallback Hint (standard record type)
+Type 10: {                         // Open/Hint URI (standard record type)
   // prefix typeID: 10
   // field map:
   0: "https://example.com/open-this",  // CRITICAL: a URI a generic tool
@@ -874,8 +878,8 @@ action, `1` = save for later, `2` = open for editing). A decoder that
 doesn't recognize either still gets a fully working URI and label. See
 DESIGN.md for why these mirror NDEF Smart Poster's own fields.
 
-**Multiple languages or URIs need no new mechanism** — repeat Fallback
-Hint as an ordinary sibling Record, once per variant. Nothing in QDEF
+**Multiple languages or URIs need no new mechanism** — repeat Open/Hint
+URI as an ordinary sibling Record, once per variant. Nothing in QDEF
 restricts how many Records of the same Type appear in one Sequence.
 
 ### 4.3 Media Payload (optional)
