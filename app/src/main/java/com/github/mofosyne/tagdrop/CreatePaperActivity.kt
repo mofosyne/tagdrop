@@ -183,7 +183,7 @@ class CreatePaperActivity : AppCompatActivity() {
             val fileIdHex = hex(fileId)
             files.add(TagDropPayload.FileEntry(fileSlug, mimeType, fileId))
             fileContents.add(FileContent(fileIdHex, fileSlug, mimeType, rawContent))
-            fileEntries.addAll(sectorQrEntries(build.codes, fileSlug, mimeType, fileIdHex, addParity, build.bodyRaw.size))
+            fileEntries.addAll(sectorQrEntries(build.codes, fileSlug, mimeType, fileIdHex, addParity, build.mediaPayloadRaw.size))
         }
 
         val paperBuild = TagDropCodec.createPaperAutoSized(label, set, slug, files, createdAt = createdAt, withParity = addParity)
