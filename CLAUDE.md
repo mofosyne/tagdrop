@@ -305,18 +305,136 @@ so a fresh checkout without it still builds) — keeps the actual
 would've been.
 
 Assessed whether either new mechanism changes anything for TagDrop:
-**no action needed on either.** The bare `payload` slot is a byte-cost
-optimization for Records that carry exactly one untyped value — none of
-TagDrop's four Record Types fit that shape (Content Extension and Paper-
-Preview/Body always carry several optional fields; Media Payload's
-`{mediaType, content}` is two fields, not zero); adopting it would need a
-real Type ID or field-shape change with no clear win. Bundle (Type 0,
-`[0, [subrecord*]]`, a structural grouping wrapper with no transform
-semantics) has no TagDrop use case either — TagDrop's Record
-relationships are already specific, typed parent/child nestings (Media
-Preview's own subrecord slot for Media Payload; Split's subrecord slot
-for Media Preview) rather than an undifferentiated "group these
-Records" need Bundle exists to serve.
+**no action needed on either**, at first pass. The bare `payload` slot
+looked like a byte-cost optimization for Records that carry exactly one
+untyped value — none of TagDrop's four Record Types looked like they fit
+that shape (Content Extension and Paper-Preview/Body always carry several
+optional fields; Media Payload's `{mediaType, content}` looked like two
+fields, not zero). Bundle (Type 0, `[0, [subrecord*]]`, a structural
+grouping wrapper with no transform semantics) genuinely has no TagDrop use
+case — that conclusion held. The payload-slot conclusion didn't survive a
+closer look — see the next entry.
+
+### QDEF payload slot adopted for Compress Wrapper + Media Payload (SPEC.md version 11)
+
+Revisited the "no action needed" call above after actually asking: Media
+Payload's `content` field *is* exactly the single-value case the payload
+slot exists for — `mediaType` is metadata about the payload, not a second
+peer value. Compress Wrapper's `{0: compressed_payload}` map fits even
+more cleanly (nothing else in it, ever). Both adopted: Compress Wrapper
+becomes `[8, deflated_bytes]` (its map disappears entirely — one fewer
+CBOR item, one fewer header byte); Media Payload becomes `[6, {mediaType},
+content_bytes]`.
+
+Adopting this exposed a real design question, resolved through a relayed
+exchange with qdef bot rather than assumed: QDEF's payload shape rule
+went through two more revisions after the version this repo had last
+synced. First landed as "any well-formed CBOR item, including an
+array-shaped nested Record" — which required a new mandatory-null
+placeholder rule (an encoder MUST emit an explicit CBOR `null` in the
+payload position whenever a Record has subrecords but no real payload of
+its own), since once payload can be array-shaped, a decoder can no longer
+tell "this array is the payload" from "this array is subrecord 0" by
+major type alone. That rule would have forced a backward-incompatible
+re-encode of TagDrop's own Media Preview (nests Media Payload, no payload
+of its own) and Split Wrapper (nests Media Preview) — both had subrecords
+without a payload under the old grammar, which was fine under pure
+type-sniffing but broken under the new rule without adding the marker.
+Flagged this cost back upstream along with a structural argument (an
+array-shaped payload is byte-for-byte identical to a subrecord — same
+`[typeId, map, ...]` shape, same recursive decode — so it never bought
+anything a first subrecord didn't already give, just under a different
+name at a different array position) and it landed: payload permanently
+excludes arrays again, the mandatory-null rule is gone with it, and an
+array right after the map/typeId is unconditionally "subrecords start
+here," no marker needed. Net effect for TagDrop: **Media Preview and
+Split Wrapper need no changes at all** — their existing shape was already
+correct under the reverted rule — only Compress Wrapper and Media Payload
+change, and only because they *choose* to use the payload slot, not
+because anything requires them to.
+
+The same exchange also confirmed and extended QDEF's Common Field Keys
+registry (§3.6, negative integer keys, always odd/optional, usable on any
+Record) with two more entries backed by real TagDrop fields: `-13 Source`
+(matching `source_url`, independently duplicated across Content Extension
+and Paper-Preview before this) and `-15 Filename` (matching Media
+Preview's `filename` — and, it turned out, QDEF's own Media Preview
+Type's `filename` field independently, a stronger validation signal than
+either adopter alone). Combined with the already-existing `-11 Content
+Hash` match (Media Preview's `contentHash`) and `-7 Label` match (Media
+Preview's `label`), TagDrop migrates four fields off Type-specific keys
+onto the shared registry — a pure key-location change, no value-shape
+difference. A fifth candidate, a `Reference`/`In-Reply-To` key for
+TagDrop's own `in_reply_to`, was proposed and declined: TagDrop's field is
+a deliberately truncated, unauthenticated 8-byte pointer (SPEC.md §7),
+weaker than the full-multihash strength a shared key for this concept
+would need, and would ship with zero real adopters at its stronger shape
+— the same pattern the array-shaped-payload revert had just been fixed
+for, so not repeated here on purpose.
+
+**New primitive work, not just a renumbering.** Negative CBOR map keys
+(major type 1, RFC 8949 §3.1: argument `-(n+1)`) had never been emitted or
+parsed anywhere in either codec before this — `MiniCbor.kt`'s
+`encodeMap`/`readValue` and every JS tool's `cborFieldMap`/`decodeItem`
+equivalent needed genuine new encode/decode branches, not just changed
+key constants. Payload-slot support needed the same treatment: neither
+`MiniCbor.encodeRecord`/`decodeRecordPrefix` nor any JS tool's
+`cborRecord`/`decodeRecordPrefix`/`decodeArrayRecord` had ever modeled a
+payload item at all (only `[typeId, map, subrecord*]`) — all four
+implementations gained a shared `layoutOf`-style helper (dispatch by CBOR
+major type: map first if present, then payload if the next item isn't an
+array, then subrecords) used consistently by encode, decode, and the
+`stripKeys`/`stripSubrecordType`/`stripAllSubrecords` byte-surgery
+functions signing/hashing depends on — `stripSubrecordType`, called on
+Media Payload to strip its Content Signature subrecord before hashing,
+would otherwise have crashed trying to interpret the new payload-slot
+bytes as a malformed subrecord array.
+
+Two real bugs caught during implementation, both by running the actual
+test suites rather than by inspection alone:
+1. **Map-omission was value-dependent, not declaration-dependent, on
+   first pass.** `encodeRecord`'s "omit the map when there's nothing to
+   put in it" logic initially checked whether every *value* happened to
+   be null — which silently omits Content Extension's map whenever a
+   test (or a real minimal payload) leaves every optional field unset,
+   breaking `stripKeys` (which requires a map to exist) for any Type that
+   always *declares* fields but doesn't always *set* them. Fixed to check
+   whether the `fields` list itself is empty (a static, per-call-site
+   choice — true only for Compress Wrapper, which now passes `emptyList()`
+   /`{}` explicitly) rather than whether every value is currently unset.
+2. **A "fix" to `TagDropCodec.kt`'s Media Preview subrecord lookup — made
+   earlier in this same session, framed as replacing fragile positional
+   access (`subrecords[0]`) with type-search (`find { it.typeId ==
+   TYPE_MEDIA_PAYLOAD }`) — was itself wrong**, caught only by
+   `SectorAssemblerTest.kt`'s `failedStateWhenPayloadSubrecordTypeIsWrong`
+   regressing. Media Preview's one subrecord is Media Payload *or* a
+   Compress Wrapper around it, depending on whether the payload was
+   compressed — searching for `TYPE_MEDIA_PAYLOAD` specifically silently
+   broke the compressed case, and even fixed to search for either type,
+   it changed *when* a malformed subrecord gets rejected (at scan time
+   instead of deferred to unwrap time), contradicting a deliberately
+   lazy validation design SPEC §5.1 documents ("only the field map and
+   subrecord count are checked at scan time"). Reverted to the original
+   positional access, since the existing `subrecords.size != 1` check
+   already makes position 0 unambiguous — there was no real bug there to
+   begin with, just an incomplete read of why the original code was
+   shaped that way.
+
+Verified via the same two-track discipline as the Split/Compress fix:
+`MiniCborTest.kt` gained direct unit coverage for the new primitives
+(payload-slot round trip with/without a map, map-omission-only-when-
+fields-empty, negative-key encode/decode, wire-order sorting,
+`stripKeys`/`stripSubrecordType`/`stripAllSubrecords` payload-slot
+preservation) before touching `TagDropCodec.kt` at all, then the full
+existing suite (134 real tests across `TagDropCodecTest`/
+`SectorAssemblerTest`/`MiniCborTest`, plus the pre-existing 2 unrelated
+`ByteArray`-reference-equality failures from the byte-mode-framing
+feature, untouched by this change) confirmed nothing else regressed.
+`tools/test-qdef-roundtrip.mjs`'s 10 vectors and `tools/test-qr-
+roundtrip.mjs`'s 14 (deliberately left on `test-qr-roundtrip.mjs`'s own
+pre-array-wrap grammar, per the version-10 entry above — still
+self-consistent, still passing, still not exercising the real current
+wire format) both pass; `qdef-fixtures.json` regenerated.
 
 ### Known duplication (not yet deduped)
 

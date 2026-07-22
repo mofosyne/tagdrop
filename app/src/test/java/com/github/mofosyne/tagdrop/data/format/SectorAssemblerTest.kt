@@ -27,20 +27,24 @@ class SectorAssemblerTest {
         3 to hint, 23 to lat, 25 to lng, 27 to radiusM, 29 to (true.takeIf { preferDeclaredLocation }), 33 to keyMaterial
     ))
 
-    /** A minimal Media Preview Record (QDEF Type 14, SPEC §3.1a), optionally nesting [subrecords]. */
+    /**
+     * A minimal Media Preview Record (QDEF Type 14, SPEC §3.1a), optionally nesting
+     * [subrecords]. `contentHash`/`filename` are QDEF Common Field Keys (§3.6, SPEC.md v11:
+     * -11/-15), not Type-specific fields.
+     */
     private fun mediaPreviewBytes(
         cacheId: ByteArray?, mimeType: String = "text/plain", filename: String? = null,
         subrecords: List<ByteArray> = emptyList()
     ): ByteArray = MiniCbor.encodeRecord(14, listOf(
-        0 to mimeType, 1 to cacheId?.let { byteArrayOf(0x12) + it }, 3 to filename
+        0 to mimeType, -11 to cacheId?.let { byteArrayOf(0x12) + it }, -15 to filename
     ), subrecords)
 
-    /** A minimal Media Payload Record (QDEF Type 6, SPEC §3.1a) carrying [content]. */
+    /** A minimal Media Payload Record (QDEF Type 6, SPEC §3.1a) carrying [content] in the payload slot (SPEC.md v11). */
     private fun mediaPayloadBytes(content: ByteArray, mimeType: String = "text/plain", subrecords: List<ByteArray> = emptyList()): ByteArray =
-        MiniCbor.encodeRecord(6, listOf(0 to mimeType, 2 to content), subrecords)
+        MiniCbor.encodeRecord(6, listOf(0 to mimeType), subrecords, payload = content)
 
-    /** A Compress Wrapper Record (Type 8, QDEF-SPEC.md §4.1) DEFLATE-wrapping [inner]. */
-    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(8, listOf(0 to TagDropCodec.compress(inner)))
+    /** A Compress Wrapper Record (Type 8, QDEF-SPEC.md §4.1) DEFLATEing [inner] into its payload slot (SPEC.md v11: no field map at all). */
+    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(8, emptyList(), payload = TagDropCodec.compress(inner))
 
     /** A Split Wrapper Record (Type 2, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes, optionally nesting [subrecords] (Media Preview, multi-code case). */
     private fun splitFragmentBytes(

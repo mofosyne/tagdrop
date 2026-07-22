@@ -108,7 +108,10 @@ function encodeValue(v) {
   throw new Error(`encodeValue: unsupported type ${typeof v}`);
 }
 
-// fields: plain object, integer-string keys, undefined values are omitted
+// fields: plain object, integer-string keys, undefined values are omitted.
+// A negative key (a QDEF Common Field Key, QDEF-SPEC.md §3.6 — always odd/
+// optional) encodes as a CBOR negative integer (major type 1: argument
+// `-(k+1)`) instead of the ordinary major-type-0 uint.
 function encodeRecord(fields) {
   const keys = Object.keys(fields)
     .filter((k) => fields[k] !== undefined)
@@ -116,20 +119,31 @@ function encodeRecord(fields) {
     .sort((a, b) => a - b);
   const parts = [encodeUInt(keys.length, 5)];
   for (const k of keys) {
-    parts.push(encodeUInt(k, 0));
+    parts.push(k >= 0 ? encodeUInt(k, 0) : encodeUInt(-k - 1, 1));
     parts.push(encodeValue(fields[String(k)]));
   }
   return Buffer.concat(parts);
 }
 
-// A QDEF Record (QDEF-SPEC.md §3.1): a self-delimited CBOR array,
-// [typeId, map, subrecord*] — every Record is its own array now, not a bare
-// typeId-then-map pair. `subrecords` are already-encoded array-Record byte
-// sequences (each itself built by a nested encodeArrayRecord call), spliced
-// in as their own array items.
-function encodeArrayRecord(typeId, fields, subrecords = []) {
-  const map = encodeRecord(fields);
-  return encodeArray([encodeUInt(typeId, 0), map, ...subrecords]);
+// A QDEF Record (QDEF-SPEC.md §3.1, v11): a self-delimited CBOR array,
+// [typeId, map?, payload?, subrecord*]. The map is omitted entirely only
+// when `fields` itself has no declared keys at all (a static, per-call-
+// site choice — e.g. Compress Wrapper, whose one value moved to the
+// payload slot) — NOT whenever every declared field's value happens to be
+// undefined, since Types that always declare fields (Content Extension,
+// Paper-Preview/Body) need a stable map for stripKeys/signature-hash
+// formulas to work against even when every optional field is unset.
+// `payload`, if given, is a Buffer encoded as a CBOR byte string (major
+// type 2) — never array-shaped, so it's always unambiguous against
+// `subrecords` (array, major type 4) with no marker needed. `subrecords`
+// are already-encoded array-Record byte sequences (each itself built by a
+// nested encodeArrayRecord call), spliced in as their own array items.
+function encodeArrayRecord(typeId, fields, subrecords = [], payload = null) {
+  const items = [encodeUInt(typeId, 0)];
+  if (Object.keys(fields).length > 0) items.push(encodeRecord(fields));
+  if (payload !== null) items.push(encodeBytes(payload));
+  items.push(...subrecords);
+  return encodeArray(items);
 }
 
 // Decoder: returns { value, rest } pairs, walking one CBOR item at a time.
@@ -164,6 +178,13 @@ function decodeItem(buf, offset) {
     // rare genuinely-large value as BigInt rather than silently losing
     // precision.
     const value = arg <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(arg) : arg;
+    return { value, next: argOffset };
+  }
+  if (majorType === 1) {
+    // A QDEF Common Field Key (QDEF-SPEC.md §3.6) — always small in TagDrop's
+    // own usage (-1..-15), so a plain Number downgrade (unlike majorType 0
+    // above) needs no BigInt-safety check.
+    const value = -(Number(arg) + 1);
     return { value, next: argOffset };
   }
   if (majorType === 2) {
@@ -207,9 +228,14 @@ function decodeItem(buf, offset) {
 }
 
 /**
- * Decodes one QDEF Record (a self-delimited CBOR array, `[typeId, map,
- * subrecord*]`, QDEF-SPEC.md §3.1) from the head of `buf` at `offset`.
- * Returns `{ typeId, record, raw, subrecords, next }` — `raw` is this
+ * Decodes one QDEF Record (a self-delimited CBOR array, `[typeId, map?,
+ * payload?, subrecord*]`, QDEF-SPEC.md §3.1, v11) from the head of `buf` at
+ * `offset`. Returns `{ typeId, record, payload, raw, subrecords, next }` —
+ * `record` is `{}` when the map was omitted, `payload` the payload-slot
+ * Buffer (or null if absent — never array-shaped, so it's always
+ * unambiguous against a following subrecord by major type alone: major 5
+ * is the map, anything else non-major-4 right after is the payload, and an
+ * array (major 4) always means subrecords start here), `raw` is this
  * Record's own exact byte range (what signature/group-id hashes are
  * computed over), `subrecords` an array of the same shape (recursively —
  * each with `raw` relative to the ORIGINAL `buf`, not sliced first), `next`
@@ -232,16 +258,32 @@ function decodeArrayRecord(buf, offset) {
   } else {
     throw new Error('decodeArrayRecord: unsupported array length encoding');
   }
-  if (count < 2) throw new Error('decodeArrayRecord: a Record needs at least [typeId, map]');
+  if (count < 1) throw new Error('decodeArrayRecord: a Record needs at least [typeId]');
 
   let cur = argOffset;
   const typeIdItem = decodeItem(buf, cur);
   cur = typeIdItem.next;
-  const mapItem = decodeItem(buf, cur);
-  cur = mapItem.next;
+  let remaining = count - 1;
+
+  let record = {};
+  if (remaining > 0 && (buf[cur] >> 5) === 5) {
+    const mapItem = decodeItem(buf, cur);
+    record = mapItem.value;
+    cur = mapItem.next;
+    remaining--;
+  }
+
+  let payload = null;
+  if (remaining > 0 && (buf[cur] >> 5) !== 4) {
+    const payloadItem = decodeItem(buf, cur);
+    if (!Buffer.isBuffer(payloadItem.value)) throw new Error('decodeArrayRecord: expected payload to be a byte string');
+    payload = payloadItem.value;
+    cur = payloadItem.next;
+    remaining--;
+  }
 
   const subrecords = [];
-  for (let i = 2; i < count; i++) {
+  for (let i = 0; i < remaining; i++) {
     const sub = decodeArrayRecord(buf, cur);
     subrecords.push(sub);
     cur = sub.next;
@@ -251,7 +293,7 @@ function decodeArrayRecord(buf, offset) {
     ? (typeIdItem.value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(typeIdItem.value) : typeIdItem.value)
     : typeIdItem.value;
 
-  return { typeId, record: mapItem.value, raw: buf.subarray(offset, cur), subrecords, next: cur };
+  return { typeId, record, payload, raw: buf.subarray(offset, cur), subrecords, next: cur };
 }
 
 // Decode a CBOR Sequence (RFC 8742) of records from the front of buf; returns
@@ -267,9 +309,10 @@ function decodeSequence(buf) {
   return items;
 }
 
-// ── Compress Wrapper (QDEF-SPEC.md §4.1 Type 8) ──
+// ── Compress Wrapper (QDEF-SPEC.md §4.1 Type 8) — DEFLATEs `bytes` into the
+// payload slot (SPEC.md v11): [8, deflated_bytes], no field map at all. ──
 function compressWrap(bytes) {
-  return encodeArrayRecord(TYPE.COMPRESS, { 0: deflateRawSync(bytes) });
+  return encodeArrayRecord(TYPE.COMPRESS, {}, [], deflateRawSync(bytes));
 }
 
 // ── Split Wrapper (QDEF-SPEC.md §4.1 Type 2) — fragment / reassemble / XOR parity ──
@@ -359,7 +402,7 @@ function resolveNonSplitWrapperStack(bytes) {
   for (;;) {
     const decoded = decodeArrayRecord(cur, 0);
     if (decoded.typeId === TYPE.COMPRESS) {
-      cur = inflateRawSync(decoded.record[0]);
+      cur = inflateRawSync(decoded.payload);
       continue;
     }
     return decoded;
@@ -411,8 +454,8 @@ function buildContentExtension(f) {
 // explicit test rather than falling out of the existing round-trips.
 const KNOWN_KEYS = {
   CONTENT_EXTENSION: new Set([3, 33, 35, 37, 45, 47, 49]),
-  MEDIA_PREVIEW: new Set([0, 1, 3]),
-  MEDIA_PAYLOAD: new Set([0, 2]),
+  MEDIA_PREVIEW: new Set([0, -11, -15]), // contentHash/filename moved to Common Field Keys (v11)
+  MEDIA_PAYLOAD: new Set([0]), // content moved to the payload slot (v11)
   CONTENT_SIGNATURE: new Set([3, 5]),
   PAPER_PREVIEW: new Set([1, 3, 5, 7, 31, 33, 35]),
   PAPER_BODY: new Set([1, 3, 5, 7]),
@@ -430,25 +473,29 @@ function assertKnownKeys(record, knownKeys, label) {
 }
 
 // Media Preview (QDEF standard Type 14, SPEC.md v9 §3.1a) — file
-// identification. `contentHash` is multihash-style: a 1-byte function code
-// (0x12 = sha2-256) prepended to the 8-byte digest. `subrecords` carries
-// Media Payload when it fits nested here (single-code case) or is omitted
-// (multi-code case, where Media Preview itself becomes Split's subrecord
-// instead — SPEC.md §5.1).
+// identification. `contentHash`/`filename` are QDEF Common Field Keys
+// (§3.6, SPEC.md v11: -11/-15) -- mediaType is the only field left that's
+// specific to this Type. `contentHash` is multihash-style: a 1-byte
+// function code (0x12 = sha2-256) prepended to the 8-byte digest.
+// `subrecords` carries Media Payload when it fits nested here (single-code
+// case) or is omitted (multi-code case, where Media Preview itself becomes
+// Split's subrecord instead — SPEC.md §5.1).
 function buildMediaPreview(f, subrecords = []) {
   return encodeArrayRecord(TYPE.MEDIA_PREVIEW, {
     0: f.mediaType,
-    1: f.contentHash ? Buffer.concat([Buffer.from([0x12]), f.contentHash]) : undefined,
-    3: f.filename,
+    [-11]: f.contentHash ? Buffer.concat([Buffer.from([0x12]), f.contentHash]) : undefined,
+    [-15]: f.filename,
   }, subrecords);
 }
 
-// Media Payload (QDEF standard Type 6, SPEC.md v9 §3.1a) — the content
-// bytes. `subrecords` carries Content Signature (Type 3) when the payload
-// is signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
+// Media Payload (QDEF standard Type 6, SPEC.md v9 §3.1a) — mediaType stays
+// in the field map; the content bytes moved to the payload slot (SPEC.md
+// v11), since Media Payload's whole point is carrying exactly one blob.
+// `subrecords` carries Content Signature (Type 3) when the payload is
+// signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
 // own bytes travel (nested once, not repeated per code — SPEC.md §3.1).
 function buildMediaPayload(f, subrecords = []) {
-  return encodeArrayRecord(TYPE.MEDIA_PAYLOAD, { 0: f.mediaType, 2: f.content }, subrecords);
+  return encodeArrayRecord(TYPE.MEDIA_PAYLOAD, { 0: f.mediaType }, subrecords, f.content);
 }
 
 // Content Signature (Type 3, TagDrop-scoped, SPEC.md v9 §3.1a) —
@@ -581,7 +628,10 @@ function decodeContentPayload(codes) {
   assert.equal(unwrapped.typeId, TYPE.MEDIA_PAYLOAD, 'reassembled bytes must decode as Media Payload');
   assertKnownKeys(unwrapped.record, KNOWN_KEYS.MEDIA_PAYLOAD, 'Media Payload');
 
-  return { extension, mediaPreview: mediaPreviewRecord, mediaPayload: unwrapped.record };
+  return {
+    extension, mediaPreview: mediaPreviewRecord, mediaPayload: unwrapped.record,
+    mediaPayloadContent: unwrapped.payload, // content moved to the payload slot (SPEC.md v11)
+  };
 }
 
 // ── Test vectors ──
@@ -589,17 +639,17 @@ function decodeContentPayload(codes) {
 function testSingleCodeContent() {
   const codes = buildContentPayload({ hint: 'under the bridge', mimeType: 'text/html', content: Buffer.from('<p>hello</p>') });
   assert.equal(codes.length, 1, 'small content must fit one code');
-  const { extension, mediaPreview, mediaPayload } = decodeContentPayload(codes);
+  const { extension, mediaPreview, mediaPayloadContent } = decodeContentPayload(codes);
   assert.equal(extension[3], 'under the bridge');
   assert.equal(mediaPreview[0], 'text/html');
-  assert.ok(mediaPayload[2].equals(Buffer.from('<p>hello</p>')));
+  assert.ok(mediaPayloadContent.equals(Buffer.from('<p>hello</p>')));
   return { name: 'single-code-content', codes: codes.map((c) => c.toString('hex')) };
 }
 
 function testSingleCodeSignedContent() {
   const codes = buildContentPayload({ hint: 'signed note', mimeType: 'text/plain', content: Buffer.from('hello, signed world'), sign: true });
   assert.equal(codes.length, 1);
-  const { extension, mediaPayload } = decodeContentPayload(codes);
+  const { extension, mediaPayloadContent } = decodeContentPayload(codes);
   assert.equal(extension[45], 1, 'signature_algorithm must be present');
   assert.equal(extension[47].length, 8, 'signer_id must be 8 bytes');
 
@@ -614,7 +664,7 @@ function testSingleCodeSignedContent() {
   assertKnownKeys(contentSignatureRec.record, KNOWN_KEYS.CONTENT_SIGNATURE, 'Content Signature');
   assert.equal(contentSignatureRec.record[3].length, MOCK_SIGNATURE_LEN, 'signature field must be the fixed ML-DSA-44 length');
   assert.equal(contentSignatureRec.record[5].length, MOCK_PUBKEY_LEN, 'signer_pubkey field must be the fixed ML-DSA-44 length');
-  assert.ok(mediaPayload[2].equals(Buffer.from('hello, signed world')), 'content must survive alongside the signature fields, unmodified');
+  assert.ok(mediaPayloadContent.equals(Buffer.from('hello, signed world')), 'content must survive alongside the signature fields, unmodified');
   return { name: 'single-code-signed-content', codes: codes.map((c) => c.toString('hex')) };
 }
 
@@ -631,16 +681,16 @@ function testMultiCodeContentSplitCompressParity() {
   assert.ok(codes.length > 1, 'large content must split across multiple codes');
 
   // full reassembly
-  const { extension, mediaPayload } = decodeContentPayload(codes);
+  const { extension, mediaPayloadContent } = decodeContentPayload(codes);
   assert.equal(extension[3], 'a long essay');
-  assert.ok(mediaPayload[2].equals(bigContent), 'reassembled+decompressed content must match the original exactly');
+  assert.ok(mediaPayloadContent.equals(bigContent), 'reassembled+decompressed content must match the original exactly');
 
   // drop one data fragment (not the parity one) and confirm recovery
   const droppedIndex = 1;
   const codesWithOneDropped = codes.filter((_, i) => i !== droppedIndex);
   assert.ok(codesWithOneDropped.length < codes.length);
   const recovered = decodeContentPayload(codesWithOneDropped);
-  assert.ok(recovered.mediaPayload[2].equals(bigContent), 'XOR parity must recover the missing fragment exactly');
+  assert.ok(recovered.mediaPayloadContent.equals(bigContent), 'XOR parity must recover the missing fragment exactly');
 
   return {
     name: 'multi-code-content-split-compress-parity',
@@ -795,8 +845,8 @@ function testEncryptedContent() {
   const cacheId = randomBytes(8);
   const coverHint = 'just a locked note';
   const extension = buildContentExtension({ hint: coverHint, encryption: 1 });
-  // The override blob occupies Media Payload's `content` field (key 2) — the
-  // same slot a Content payload's cache normally occupies (SPEC §9).
+  // The override blob occupies Media Payload's payload slot (SPEC.md v11) —
+  // the same slot a Content payload's cache normally occupies (SPEC §9).
   const mediaPreview = buildMediaPreview({ mediaType: 'text/plain', contentHash: cacheId }, [
     buildMediaPayload({ mediaType: 'text/plain', content: blob }),
   ]);
@@ -810,8 +860,7 @@ function testEncryptedContent() {
   // blob against a known key_material; a wrong key must fail the GCM
   // authentication tag, not silently produce garbage plaintext.
   const second = decodeArrayRecord(codes[0], first.next);
-  const mediaPayloadRecord = second.subrecords[0].record;
-  const candidateBlob = mediaPayloadRecord[2];
+  const candidateBlob = second.subrecords[0].payload; // content moved to the payload slot (SPEC.md v11)
   const candidateNonce = candidateBlob.subarray(0, 12);
   const rest = candidateBlob.subarray(12);
   const candidateTag = rest.subarray(rest.length - 16);

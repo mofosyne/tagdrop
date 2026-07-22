@@ -723,29 +723,52 @@ function concatBytes(...arrays) {
   return out;
 }
 
+// Encodes a CBOR map/field key: a non-negative uint (major type 0) for an
+// ordinary Type-specific key, or -- for a QDEF Common Field Key
+// (QDEF-SPEC.md §3.6, always negative, always odd/optional) -- a CBOR
+// negative integer (major type 1, RFC 8949 §3.1: stores `-(n+1)` as its
+// argument).
+function writeKey(out, k) {
+  if (k >= 0) writeHead(out, 0, k);
+  else writeHead(out, 1, -k - 1);
+}
+
 // ── QDEF Records (SPEC.md §2's "Relationship to QDEF") ────────────────────
 // A field object's keys are always encoded in ascending numeric order —
 // SPEC.md's fixed, specified key-encoding order (§2.2) — rather than
 // whatever order a caller happened to list them in, the way the old
 // cborMap(pairs)-array pattern required getting right by convention.
+// Negative Common Field Keys (§3.6) sort before every non-negative one.
 function cborFieldMap(fields) {
   const keys = Object.keys(fields).filter(k => fields[k] !== null && fields[k] !== undefined).map(Number).sort((a, b) => a - b);
   const out = [];
   writeHead(out, 5, keys.length);
-  for (const k of keys) { writeHead(out, 0, k); cborValue(out, fields[k]); }
+  for (const k of keys) { writeKey(out, k); cborValue(out, fields[k]); }
   return new Uint8Array(out);
 }
 
-// A QDEF Record (QDEF-SPEC.md §3.1): a self-delimited CBOR array,
-// [typeId, map, subrecord*] — every Record is its own array now, not a bare
-// typeId-then-map CBOR Sequence pair. TagDrop's own carriers imply the
-// namespace (SPEC.md §2.1a) and never use the optional NDEF-ID slot, so
-// those two optional array elements are always omitted here. `subrecords`
-// are already-encoded [typeId, map, ...] byte sequences (each built by a
-// nested cborRecord call), spliced in raw as their own array items.
-function cborRecord(typeId, fields, subrecords = []) {
-  const map = cborFieldMap(fields);
-  const items = [typeId, craw(map), ...subrecords.map(craw)];
+// A QDEF Record (QDEF-SPEC.md §3.1, v11): a self-delimited CBOR array,
+// [typeId, map?, payload?, subrecord*]. TagDrop's own carriers imply the
+// namespace (SPEC.md §2.1a), so that optional array element is always
+// omitted here. The map is omitted entirely only when `fields` itself has
+// no declared keys at all (a static, per-call-site choice — e.g. Compress
+// Wrapper, whose one value moved to the payload slot) — NOT whenever every
+// declared field's value happens to be null/undefined, since Types that
+// always declare fields (Content Extension, Paper-Preview/Body) need a
+// stable map for stripKeys/signature-hash formulas to work against even
+// when every optional field is unset. `payload`, if given, is raw bytes —
+// cborValue's own Uint8Array branch wraps it as a CBOR byte string (major
+// type 2), never array-shaped, so it's always unambiguous against
+// `subrecords` (array, major type 4) with no marker needed (QDEF-SPEC.md
+// §3.1: an array right after the map/typeId is unconditionally subrecord
+// 0, never the payload). `subrecords` are already-encoded [typeId, ...]
+// byte sequences (each built by a nested cborRecord call), spliced in raw
+// as their own array items.
+function cborRecord(typeId, fields, subrecords = [], payload = undefined) {
+  const items = [typeId];
+  if (Object.keys(fields).length > 0) items.push(craw(cborFieldMap(fields)));
+  if (payload !== undefined) items.push(payload);
+  items.push(...subrecords.map(craw));
   const out = [];
   writeHead(out, 4, items.length);
   items.forEach(item => cborValue(out, item));
@@ -762,10 +785,11 @@ const TYPE_CONTENT_SIGNATURE = 3;
 const TYPE_PAPER_PREVIEW = 5;
 const TYPE_PAPER_BODY = 7;
 
-// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 8) — wraps `bytes`
-// DEFLATE-compressed. Async: zlibCompress uses CompressionStream.
+// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 8) — DEFLATEs
+// `bytes` into the payload slot (SPEC.md v11): [8, deflated_bytes], no
+// field map at all. Async: zlibCompress uses CompressionStream.
 async function compressWrap(bytes) {
-  return cborRecord(TYPE_COMPRESS, { 0: await zlibCompress(bytes) });
+  return cborRecord(TYPE_COMPRESS, {}, [], await zlibCompress(bytes));
 }
 
 /**
@@ -845,30 +869,35 @@ function buildContentExtension(f) {
     33: f.keyMaterial, 35: f.retainKey, 37: f.encryption,
     39: f.kdfAlg, 41: f.kdfSalt, 43: f.kdfIters,
     45: f.signatureAlgorithm, 47: f.signerId, 49: f.signerLabel,
-    51: f.inReplyTo, 53: f.createdAt, 55: f.sourceUrl,
+    51: f.inReplyTo, 53: f.createdAt, [-13]: f.sourceUrl,
   });
 }
 
 // Media Preview (QDEF standard Type 14, SPEC.md §3.1a) — file identification.
-// `contentHash` is multihash-style: a 1-byte function code (0x12 = sha2-256)
-// prepended to the 8-byte digest TagDrop already computes elsewhere.
-// `subrecords` carries Media Payload when it fits nested here (single-code
-// case) or is omitted (multi-code case, where Media Preview itself becomes
-// Split's subrecord instead — SPEC.md §5.1).
+// `contentHash`/`filename`/`label` are QDEF Common Field Keys (§3.6,
+// SPEC.md v11: -11/-15/-7) -- mediaType is the only field left that's
+// specific to this Type. `contentHash` is multihash-style: a 1-byte
+// function code (0x12 = sha2-256) prepended to the 8-byte digest TagDrop
+// already computes elsewhere. `subrecords` carries Media Payload when it
+// fits nested here (single-code case) or is omitted (multi-code case,
+// where Media Preview itself becomes Split's subrecord instead — SPEC.md
+// §5.1).
 function buildMediaPreview(f, subrecords = []) {
   return cborRecord(TYPE_MEDIA_PREVIEW, {
     0: f.mediaType,
-    1: f.contentHash ? concatBytes(new Uint8Array([0x12]), f.contentHash) : undefined,
-    3: f.filename, 5: f.label,
+    [-11]: f.contentHash ? concatBytes(new Uint8Array([0x12]), f.contentHash) : undefined,
+    [-15]: f.filename, [-7]: f.label,
   }, subrecords);
 }
 
-// Media Payload (QDEF standard Type 6, SPEC.md §3.1a) — the content bytes.
+// Media Payload (QDEF standard Type 6, SPEC.md §3.1a) — mediaType stays in
+// the field map; the content bytes moved to the payload slot (SPEC.md
+// v11), since Media Payload's whole point is carrying exactly one blob.
 // `subrecords` carries Content Signature (Type 3) when the payload is
 // signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
 // own bytes travel (nested once, not repeated per code — SPEC.md §3.1).
 function buildMediaPayload(f, subrecords = []) {
-  return cborRecord(TYPE_MEDIA_PAYLOAD, { 0: f.mediaType, 2: f.content }, subrecords);
+  return cborRecord(TYPE_MEDIA_PAYLOAD, { 0: f.mediaType }, subrecords, f.content);
 }
 
 // Content Signature (Type 3, TagDrop-scoped, SPEC.md §3.1a) — signature/
@@ -888,7 +917,7 @@ function buildPaperPreview(f) {
     25: f.radiusM != null ? cfloat(f.radiusM) : undefined,
     27: f.preferDeclaredLocation, 29: f.locationLabel,
     31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
-    37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
+    37: f.inReplyTo, 39: f.createdAt, [-13]: f.sourceUrl,
     43: f.title, 45: f.description,
     47: f.keyMaterial, 49: f.retainKey,
   });
@@ -1104,43 +1133,71 @@ function cborItemRanges(cur, expectedMajor) {
   return ranges;
 }
 
-// Decodes a bare CBOR uint (major 0) at `cur.pos`, advancing past it.
-function cborReadUint(cur) {
+// Decodes a bare CBOR uint (major 0) or negative integer (major 1 — a QDEF
+// Common Field Key, QDEF-SPEC.md §3.6) at `cur.pos`, advancing past it.
+function cborReadInt(cur) {
   const b = cur.bytes[cur.pos++];
-  if ((b >> 5) !== 0) throw new Error('Expected uint, got major ' + (b >> 5));
+  const major = b >> 5;
+  if (major !== 0 && major !== 1) throw new Error('Expected uint or negative int, got major ' + major);
   const info = b & 0x1F;
-  if (info <= 23) return info;
-  if (info === 24) return cur.bytes[cur.pos++];
-  if (info === 25) { const v = cur.bytes[cur.pos] * 256 + cur.bytes[cur.pos + 1]; cur.pos += 2; return v; }
-  throw new Error('Unsupported CBOR uint encoding');
+  let arg;
+  if (info <= 23) arg = info;
+  else if (info === 24) arg = cur.bytes[cur.pos++];
+  else if (info === 25) { arg = cur.bytes[cur.pos] * 256 + cur.bytes[cur.pos + 1]; cur.pos += 2; }
+  else throw new Error('Unsupported CBOR int encoding');
+  return major === 1 ? -(arg + 1) : arg;
+}
+
+// Determines where a Record's map/payload/subrecords fall within its own
+// top-level item `ranges` (ranges[0] is always typeId) — QDEF-SPEC.md
+// §3.1's grammar (v11), dispatched purely by CBOR major type: the map
+// (major 5) comes first if present; then, if the next item is NOT an array
+// (major 4), it's the payload; everything from the first remaining array
+// onward is subrecords. Shared by stripKeys/stripSubrecordType so both
+// agree on the same layout.
+function majorOf(bytes, pos) { return bytes[pos] >> 5; }
+function layoutOf(bytes, ranges) {
+  let idx = 1;
+  let mapIdx = -1;
+  if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) === 5) { mapIdx = idx; idx++; }
+  let payloadIdx = -1;
+  if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) !== 4) { payloadIdx = idx; idx++; }
+  return { mapIdx, payloadIdx, subrecordsFrom: idx };
 }
 
 /**
- * Re-encodes [recordBytes] (a Record's own array, QDEF-SPEC.md §3.1:
- * [typeId, map, subrecord*]) with every field-map pair whose key is in
- * [keysToStrip] removed, regardless of position. cborFieldMap/cborRecord
- * always sort keys ascending (SPEC.md §2.2's fixed key-encoding order), so
- * a higher-numbered field (e.g. `source_url`, key 55) can legitimately sort
- * after the signature fields (45/47/49) — this walks and keeps every
- * surviving pair by its own byte range rather than assuming the stripped
- * keys form a truncatable trailing run. Subrecords, if any, are carried
- * through byte-for-byte, untouched.
+ * Re-encodes [recordBytes] (a Record's own array, QDEF-SPEC.md §3.1, v11:
+ * [typeId, map?, payload?, subrecord*]) with every field-map pair whose key
+ * is in [keysToStrip] removed, regardless of position. cborFieldMap/
+ * cborRecord always sort keys ascending (SPEC.md §2.2's fixed key-encoding
+ * order), so a higher-numbered field (e.g. `source_url`, key 55) can
+ * legitimately sort after the signature fields (45/47/49) — this walks and
+ * keeps every surviving pair by its own byte range rather than assuming the
+ * stripped keys form a truncatable trailing run. The payload slot and any
+ * subrecords, if present, are carried through byte-for-byte, untouched.
+ * Requires a map to be present (every caller strips keys from a Record
+ * Type that always carries required fields).
  */
 function stripKeys(recordBytes, keysToStrip) {
   const cur = { bytes: recordBytes, pos: 0 };
-  const [typeIdRange, mapRange, ...subrecordRanges] = cborItemRanges(cur, 4);
+  const ranges = cborItemRanges(cur, 4);
+  const layout = layoutOf(recordBytes, ranges);
+  if (layout.mapIdx < 0) throw new Error('stripKeys requires a field map');
+  const mapRange = ranges[layout.mapIdx];
   const mapCur = { bytes: recordBytes, pos: mapRange[0] };
   const pairRanges = cborItemRanges(mapCur, 5);
   const survivors = [];
   for (let i = 0; i < pairRanges.length; i += 2) {
     const keyRange = pairRanges[i], valueRange = pairRanges[i + 1];
-    const key = cborReadUint({ bytes: recordBytes, pos: keyRange[0] });
+    const key = cborReadInt({ bytes: recordBytes, pos: keyRange[0] });
     if (!keysToStrip.has(key)) survivors.push(recordBytes.slice(keyRange[0], valueRange[1]));
   }
   const mapHeader = [];
   writeHead(mapHeader, 5, survivors.length);
   const newMap = concatBytes(new Uint8Array(mapHeader), ...survivors);
-  const items = [recordBytes.slice(...typeIdRange), newMap, ...subrecordRanges.map(r => recordBytes.slice(...r))];
+  const items = [recordBytes.slice(...ranges[0]), newMap];
+  if (layout.payloadIdx >= 0) items.push(recordBytes.slice(...ranges[layout.payloadIdx]));
+  for (let i = layout.subrecordsFrom; i < ranges.length; i++) items.push(recordBytes.slice(...ranges[i]));
   const arrHeader = [];
   writeHead(arrHeader, 4, items.length);
   return concatBytes(new Uint8Array(arrHeader), ...items);
@@ -1151,17 +1208,22 @@ function stripKeys(recordBytes, keysToStrip) {
  * whose own typeId is [typeIdToStrip] removed entirely — not a field-map key
  * strip, a whole-subrecord removal. Used to build "what an unsigned Media
  * Payload would contain" (no Content Signature subrecord at all, SPEC.md §10)
- * from a placeholder-signed build.
+ * from a placeholder-signed build. The map and payload slot (if present) are
+ * kept — only subrecords are dropped/filtered.
  */
 function stripSubrecordType(recordBytes, typeIdToStrip) {
   const cur = { bytes: recordBytes, pos: 0 };
-  const [typeIdRange, mapRange, ...subrecordRanges] = cborItemRanges(cur, 4);
-  const keptSubrecords = subrecordRanges.filter(r => {
+  const ranges = cborItemRanges(cur, 4);
+  const layout = layoutOf(recordBytes, ranges);
+  const keptSubrecords = ranges.slice(layout.subrecordsFrom).filter(r => {
     const subCur = { bytes: recordBytes, pos: r[0] };
     const [subTypeIdRange] = cborItemRanges(subCur, 4);
-    return cborReadUint({ bytes: recordBytes, pos: subTypeIdRange[0] }) !== typeIdToStrip;
+    return cborReadInt({ bytes: recordBytes, pos: subTypeIdRange[0] }) !== typeIdToStrip;
   });
-  const items = [recordBytes.slice(...typeIdRange), recordBytes.slice(...mapRange), ...keptSubrecords.map(r => recordBytes.slice(...r))];
+  const items = [recordBytes.slice(...ranges[0])];
+  if (layout.mapIdx >= 0) items.push(recordBytes.slice(...ranges[layout.mapIdx]));
+  if (layout.payloadIdx >= 0) items.push(recordBytes.slice(...ranges[layout.payloadIdx]));
+  items.push(...keptSubrecords.map(r => recordBytes.slice(...r)));
   const arrHeader = [];
   writeHead(arrHeader, 4, items.length);
   return concatBytes(new Uint8Array(arrHeader), ...items);
@@ -1439,23 +1501,23 @@ const RECORD_TYPE_INFO = new Map([
     23:'lat', 25:'lng', 27:'radius_m', 29:'prefer_declared_location', 31:'location_label',
     33:'key_material', 35:'retain_key', 37:'encryption', 39:'kdf_alg', 41:'kdf_salt', 43:'kdf_iters',
     45:'signature_algorithm', 47:'signer_id', 49:'signer_label',
-    51:'in_reply_to', 53:'created_at', 55:'source_url',
+    51:'in_reply_to', 53:'created_at', [-13]:'source',
   } }],
   [String(TYPE_CONTENT_SIGNATURE), { name: 'Content Signature', keyNames: {
     3:'signature', 5:'signer_pubkey',
   } }],
   [String(TYPE_MEDIA_PREVIEW), { name: 'Media Preview', keyNames: {
-    0:'mediaType', 1:'contentHash', 3:'filename', 5:'label',
+    0:'mediaType', [-11]:'contentHash', [-15]:'filename', [-7]:'label',
   } }],
   [String(TYPE_MEDIA_PAYLOAD), { name: 'Media Payload', keyNames: {
-    0:'mediaType', 2:'content',
+    0:'mediaType',
   } }],
   [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
     1:'root_hash', 3:'hint', 5:'set', 7:'slug', 9:'domain', 11:'step',
     13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon',
     21:'lat', 23:'lng', 25:'radius_m', 27:'prefer_declared_location', 29:'location_label',
     31:'signature_algorithm', 33:'signer_id', 35:'signer_label',
-    37:'in_reply_to', 39:'created_at', 41:'source_url', 43:'title', 45:'description',
+    37:'in_reply_to', 39:'created_at', [-13]:'source', 43:'title', 45:'description',
     47:'key_material', 49:'retain_key',
   } }],
   [String(TYPE_PAPER_BODY), { name: 'Paper-Body', keyNames: {
@@ -1464,37 +1526,47 @@ const RECORD_TYPE_INFO = new Map([
   [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
     0:'group_id', 2:'index', 4:'count', 6:'data', 7:'total_bytes', 9:'parity',
   } }],
-  [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {
-    0:'compressed_payload',
-  } }],
+  [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {} }],
 ]);
 
 // Reinterprets an already-decoded JS array (from cborDecodeSequencePrefix's readVal,
 // which recursively decodes nested arrays/maps already) as a QDEF Record: [typeId, map,
-// subrecord*] (QDEF-SPEC.md §3.1) — recursively, since a subrecord is itself the same
-// shape. Returns null if `arr` doesn't match that shape at all.
-function interpretRecordArray(arr) {
-  if (!Array.isArray(arr) || arr.length < 2) return null;
-  const typeId = arr[0];
-  const record = arr[1];
-  if (typeof typeId !== 'number' || !isCborMap(record)) return null;
-  const subrecords = arr.slice(2).map(interpretRecordArray).filter(x => x !== null);
-  return { typeId, record, subrecords };
-}
-
 /**
- * Decodes one QDEF Record (QDEF-SPEC.md §3.1: a self-delimited CBOR array,
- * [typeId, map, subrecord*]) from the head of `bytes`.
- * Returns { typeId, record, subrecords, raw, trailing } — `raw` is the record's own
- * exact byte range, `trailing` whatever follows in the sequence — or null if the head
- * of `bytes` isn't a well-formed Record.
+ * Decodes one QDEF Record (QDEF-SPEC.md §3.1, v11: a self-delimited CBOR
+ * array, [typeId, map?, payload?, subrecord*]) from the head of `bytes`,
+ * byte-range aware (not a naive array-shape interpretation) so it
+ * correctly handles a map-less Record (Compress Wrapper) or a payload slot
+ * (Media Payload's content) rather than misreading either as malformed.
+ * Returns { typeId, record, payload, subrecords, raw, trailing } — `record`
+ * is `{}` when the map was omitted, `payload` the decoded byte-string
+ * payload-slot value (or null), `raw` the record's own exact byte range,
+ * `trailing` whatever follows in the sequence — or null if the head of
+ * `bytes` isn't a well-formed Record.
  */
 function decodeRecordPrefix(bytes) {
   try {
-    const { items, trailing } = cborDecodeSequencePrefix(bytes, 1);
-    const interpreted = interpretRecordArray(items[0]);
-    if (!interpreted) return null;
-    return { ...interpreted, raw: bytes.slice(0, bytes.length - trailing.length), trailing };
+    const cur = { bytes, pos: 0 };
+    const ranges = cborItemRanges(cur, 4);
+    if (ranges.length === 0) return null;
+    const typeId = cborDecodeSequencePrefix(bytes.slice(ranges[0][0]), 1).items[0];
+    if (typeof typeId !== 'number') return null;
+    const layout = layoutOf(bytes, ranges);
+    const record = layout.mapIdx < 0 ? {} : cborDecodeSequencePrefix(bytes.slice(ranges[layout.mapIdx][0]), 1).items[0];
+    if (!isCborMap(record)) return null;
+    let payload = null;
+    if (layout.payloadIdx >= 0) {
+      const decoded = cborDecodeSequencePrefix(bytes.slice(ranges[layout.payloadIdx][0]), 1).items[0];
+      if (!(decoded instanceof Uint8Array)) return null;
+      payload = decoded;
+    }
+    const subrecords = [];
+    for (let i = layout.subrecordsFrom; i < ranges.length; i++) {
+      const r = ranges[i];
+      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]));
+      if (!sub) return null;
+      subrecords.push({ ...sub, raw: bytes.slice(r[0], r[1]) });
+    }
+    return { typeId, record, payload, raw: bytes.slice(0, cur.pos), subrecords, trailing: bytes.slice(cur.pos) };
   } catch (e) {
     return null;
   }
@@ -1507,6 +1579,7 @@ function describeOneRecord(rec, indent, label) {
   const pad = '  '.repeat(indent);
   let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + '\n';
   out += describeMap(rec.record, indent + 1, info ? info.keyNames : {});
+  if (rec.payload) out += '  '.repeat(indent + 1) + 'payload: ' + toHexDump(rec.payload) + ' (' + rec.payload.length + ' bytes)\n';
   for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
   return out;
 }

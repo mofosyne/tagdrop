@@ -157,17 +157,22 @@ object TagDropCodec {
     private const val EK_SIGNER_LABEL = 49
     private const val EK_IN_REPLY_TO  = 51
     private const val EK_CREATED_AT   = 53
-    private const val EK_SOURCE_URL   = 55
 
     // ── Media Preview field keys (QDEF standard Type 14, SPEC.md §3.1a) ────────
+    // contentHash/filename/label moved to QDEF's shared Common Field Keys (§3.6, v11) —
+    // MPK_MEDIA_TYPE is the only field left that's specific to this Type.
     private const val MPK_MEDIA_TYPE   = 0
-    private const val MPK_CONTENT_HASH = 1
-    private const val MPK_FILENAME     = 3
-    private const val MPK_LABEL        = 5
 
     // ── Media Payload field keys (QDEF standard Type 6, SPEC.md §3.1a) ─────────
+    // `content` moved to the payload slot (§3.1, v11) — mediaType is the only field left.
     private const val MYK_MEDIA_TYPE = 0
-    private const val MYK_CONTENT    = 2
+
+    // ── QDEF Common Field Keys (QDEF-SPEC.md §3.6, SPEC.md v11) — negative, always
+    // odd/optional, usable in any Record's field map regardless of Type. ──────────
+    private const val CFK_LABEL        = -7
+    private const val CFK_CONTENT_HASH = -11
+    private const val CFK_SOURCE       = -13
+    private const val CFK_FILENAME     = -15
 
     // ── Content Signature field keys (TagDrop-scoped Type 3, SPEC.md §3.1a) ────
     private const val CSK_SIGNATURE     = 3
@@ -201,7 +206,6 @@ object TagDropCodec {
     private const val PPK_SIGNER_LABEL = 35
     private const val PPK_IN_REPLY_TO = 37
     private const val PPK_CREATED_AT  = 39
-    private const val PPK_SOURCE_URL  = 41
     private const val PPK_TITLE       = 43
     private const val PPK_DESCRIPTION = 45
     private const val PPK_KEY_MATERIAL = 47
@@ -232,14 +236,15 @@ object TagDropCodec {
     private const val KR_RETAIN_KEY   = 9
     private const val KR_STEP         = 10
 
-    // QDEF Split Wrapper (Type 2) / Compress Wrapper (Type 8) field keys (QDEF-SPEC.md §4.1).
+    // QDEF Split Wrapper (Type 2) field keys (QDEF-SPEC.md §4.1). Compress Wrapper (Type 8)
+    // has no field keys of its own at all any more — its one value is the payload slot
+    // (§3.1, v11), not a map entry.
     private const val SK_GROUP_ID = 0
     private const val SK_INDEX    = 2
     private const val SK_COUNT    = 4
     private const val SK_DATA     = 6
     private const val SK_TOTAL    = 7
     private const val SK_PARITY   = 9
-    private const val CK_PAYLOAD  = 0
 
     // SPEC §10 signature-field key sets, per Record Type — what the placeholder-then-strip
     // discipline strips before hashing (contentSignedMessageHash/paperSignedMessageHash).
@@ -252,19 +257,19 @@ object TagDropCodec {
         EK_HINT, EK_DESCRIPTION, EK_COLLECTION_ID, EK_COLLECTION_LABEL, EK_COLLECTION_TAG, EK_ICON,
         EK_PIXEL_ART, EK_LAT, EK_LNG, EK_RADIUS_M, EK_PREFER_DECLARED_LOCATION, EK_LOCATION_LABEL,
         EK_KEY_MATERIAL, EK_RETAIN_KEY, EK_ENCRYPTION, EK_KDF_ALG, EK_KDF_SALT, EK_KDF_ITERS,
-        EK_SIGNATURE_ALGORITHM, EK_SIGNER_ID, EK_SIGNER_LABEL, EK_IN_REPLY_TO, EK_CREATED_AT, EK_SOURCE_URL)
-    private val KNOWN_MEDIA_PREVIEW = setOf(MPK_MEDIA_TYPE, MPK_CONTENT_HASH, MPK_FILENAME, MPK_LABEL)
-    private val KNOWN_MEDIA_PAYLOAD = setOf(MYK_MEDIA_TYPE, MYK_CONTENT)
+        EK_SIGNATURE_ALGORITHM, EK_SIGNER_ID, EK_SIGNER_LABEL, EK_IN_REPLY_TO, EK_CREATED_AT, CFK_SOURCE)
+    private val KNOWN_MEDIA_PREVIEW = setOf(MPK_MEDIA_TYPE, CFK_CONTENT_HASH, CFK_FILENAME, CFK_LABEL)
+    private val KNOWN_MEDIA_PAYLOAD = setOf(MYK_MEDIA_TYPE)
     private val KNOWN_CONTENT_SIGNATURE = setOf(CSK_SIGNATURE, CSK_SIGNER_PUBKEY)
     private val KNOWN_PAPER_PREVIEW = setOf(
         PPK_ROOT_HASH, PPK_HINT, PPK_SET, PPK_SLUG, PPK_DOMAIN, PPK_STEP,
         PPK_COLLECTION_ID, PPK_COLLECTION_LABEL, PPK_COLLECTION_TAG, PPK_ICON,
         PPK_LAT, PPK_LNG, PPK_RADIUS_M, PPK_PREFER_DECLARED_LOCATION, PPK_LOCATION_LABEL,
         PPK_SIGNATURE_ALGORITHM, PPK_SIGNER_ID, PPK_SIGNER_LABEL, PPK_IN_REPLY_TO, PPK_CREATED_AT,
-        PPK_SOURCE_URL, PPK_TITLE, PPK_DESCRIPTION, PPK_KEY_MATERIAL, PPK_RETAIN_KEY)
+        CFK_SOURCE, PPK_TITLE, PPK_DESCRIPTION, PPK_KEY_MATERIAL, PPK_RETAIN_KEY)
     private val KNOWN_PAPER_BODY = setOf(PBK_FILES, PBK_RELATED, PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
     private val KNOWN_SPLIT = setOf(SK_GROUP_ID, SK_INDEX, SK_COUNT, SK_DATA, SK_TOTAL, SK_PARITY)
-    private val KNOWN_COMPRESS = setOf(CK_PAYLOAD)
+    private val KNOWN_COMPRESS = emptySet<Int>()
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -384,9 +389,9 @@ object TagDropCodec {
 
     // ── QDEF Records (QDEF-SPEC.md §3.1: array-wrapped [typeId, map, subrecord*]) ─────
 
-    /** QDEF Compress Wrapper (Type 8, QDEF-SPEC.md §4.1) — DEFLATEs [bodyBytes] as its `payload` field. */
+    /** QDEF Compress Wrapper (Type 8, QDEF-SPEC.md §4.1) — DEFLATEs [bodyBytes] into the payload slot (§3.1, v11): `[8, deflated_bytes]`, no field map at all. */
     private fun compressWrap(bodyBytes: ByteArray): ByteArray =
-        MiniCbor.encodeRecord(TYPE_COMPRESS, listOf(CK_PAYLOAD to compress(bodyBytes)))
+        MiniCbor.encodeRecord(TYPE_COMPRESS, emptyList(), payload = compress(bodyBytes))
 
     /**
      * Fragments [bytes] into [fragmentCount] QDEF Split Wrapper Records (Type 2, QDEF-SPEC.md
@@ -572,13 +577,13 @@ object TagDropCodec {
             EK_KDF_ALG to null, EK_KDF_SALT to null, EK_KDF_ITERS to null,
             EK_SIGNATURE_ALGORITHM to (signatureAlgorithm.takeIf { it != SIGNATURE_ALG_NONE }),
             EK_SIGNER_ID to signerId, EK_SIGNER_LABEL to signerLabel,
-            EK_IN_REPLY_TO to inReplyTo, EK_CREATED_AT to createdAt, EK_SOURCE_URL to null
+            EK_IN_REPLY_TO to inReplyTo, EK_CREATED_AT to createdAt, CFK_SOURCE to null
         ))
 
         fun buildMediaPreview(subrecords: List<ByteArray> = emptyList()) = MiniCbor.encodeRecord(TYPE_MEDIA_PREVIEW, listOf(
             MPK_MEDIA_TYPE to mimeType,
-            MPK_CONTENT_HASH to (byteArrayOf(0x12) + cacheId),
-            MPK_FILENAME to filename, MPK_LABEL to title
+            CFK_CONTENT_HASH to (byteArrayOf(0x12) + cacheId),
+            CFK_FILENAME to filename, CFK_LABEL to title
         ), subrecords)
         // The LOGICAL (bare) Media Preview bytes — for hashing/return, and reused unwrapped as
         // Split's own repeated subrecord in the multi-code case (§3.1a).
@@ -588,8 +593,9 @@ object TagDropCodec {
             MiniCbor.encodeRecord(TYPE_CONTENT_SIGNATURE, listOf(CSK_SIGNATURE to signature, CSK_SIGNER_PUBKEY to signerPubkey))
         } else null
         val mediaPayloadRaw = MiniCbor.encodeRecord(
-            TYPE_MEDIA_PAYLOAD, listOf(MYK_MEDIA_TYPE to mimeType, MYK_CONTENT to contentSlot),
-            if (contentSignatureRecord != null) listOf(contentSignatureRecord) else emptyList()
+            TYPE_MEDIA_PAYLOAD, listOf(MYK_MEDIA_TYPE to mimeType),
+            if (contentSignatureRecord != null) listOf(contentSignatureRecord) else emptyList(),
+            payload = contentSlot
         )
         // An encrypted override blob is already high-entropy — Compress-wrapping it on top would
         // waste a wrapper layer for nothing (DEFLATE doesn't shrink it).
@@ -759,7 +765,7 @@ object TagDropCodec {
             PPK_LAT to lat, PPK_LNG to lng, PPK_RADIUS_M to radiusM,
             PPK_PREFER_DECLARED_LOCATION to (true.takeIf { preferDeclaredLocation }), PPK_LOCATION_LABEL to locationLabel,
             PPK_SIGNATURE_ALGORITHM to sigAlg, PPK_SIGNER_ID to sId, PPK_SIGNER_LABEL to sLabel,
-            PPK_IN_REPLY_TO to inReplyTo, PPK_CREATED_AT to createdAt, PPK_SOURCE_URL to null,
+            PPK_IN_REPLY_TO to inReplyTo, PPK_CREATED_AT to createdAt, CFK_SOURCE to null,
             PPK_TITLE to title, PPK_DESCRIPTION to description,
             PPK_KEY_MATERIAL to keyMaterial, PPK_RETAIN_KEY to (false.takeIf { keyMaterial != null && !retainKey })
         ))
@@ -943,7 +949,12 @@ object TagDropCodec {
         }
         val second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
         if (second.typeId == TYPE_MEDIA_PREVIEW) {
-            // Single-code case: Media Payload is Media Preview's own (sole) subrecord.
+            // Single-code case: Media Payload is Media Preview's own (sole) subrecord — either
+            // directly, or Compress-wrapped (unwrapMediaPayload handles both downstream). Taken
+            // positionally, not by typeId: the size==1 check makes position 0 unambiguous, and
+            // deliberately deferring "is this actually Media Payload/Compress" to unwrap time
+            // (rather than rejecting here) matches SPEC §5.1 — scan time only validates the field
+            // map and subrecord count, nothing type-specific.
             if (!checkRecordKeys(second.record, KNOWN_MEDIA_PREVIEW) || second.subrecords.size != 1) return null
             val mediaPreviewRaw = MiniCbor.stripAllSubrecords(second.raw)
             return ScannedRecord.Content(first.raw, first.record, second.record, mediaPreviewRaw, null, second.subrecords[0].raw, second.raw)
@@ -969,7 +980,7 @@ object TagDropCodec {
     }
 
     /** Outcome of unwrapping a (possibly Compress-wrapped) Media Payload byte sequence. */
-    private data class UnwrappedMediaPayload(val body: Map<Int, Any>, val bodyRaw: ByteArray, val contentSignature: Map<Int, Any>?)
+    private data class UnwrappedMediaPayload(val body: Map<Int, Any>, val content: ByteArray, val bodyRaw: ByteArray, val contentSignature: Map<Int, Any>?)
 
     /**
      * Unwraps a (possibly Compress-wrapped) Media Payload byte sequence into its own
@@ -984,7 +995,7 @@ object TagDropCodec {
         var cur = MiniCbor.decodeRecordPrefix(bodyWireBytes) ?: return null
         if (cur.typeId == TYPE_COMPRESS) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
-            val payload = cur.record[CK_PAYLOAD] as? ByteArray ?: return null
+            val payload = cur.payload ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = MiniCbor.decodeRecordPrefix(inflated) ?: return null
         }
@@ -995,7 +1006,7 @@ object TagDropCodec {
             if (!checkRecordKeys(cs.record, KNOWN_CONTENT_SIGNATURE)) return null
             contentSignature = cs.record
         }
-        return UnwrappedMediaPayload(cur.record, cur.raw, contentSignature)
+        return UnwrappedMediaPayload(cur.record, cur.payload ?: ByteArray(0), cur.raw, contentSignature)
     }
 
     /**
@@ -1007,7 +1018,7 @@ object TagDropCodec {
         var cur = MiniCbor.decodeRecordPrefix(bodyWireBytes) ?: return null
         if (cur.typeId == TYPE_COMPRESS) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
-            val payload = cur.record[CK_PAYLOAD] as? ByteArray ?: return null
+            val payload = cur.payload ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = MiniCbor.decodeRecordPrefix(inflated) ?: return null
         }
@@ -1044,9 +1055,8 @@ object TagDropCodec {
             return ContentParse.Ok(contentFromParts(record.extension, null, ByteArray(0), null), mediaPayloadRaw = null)
         }
         val unwrapped = unwrapMediaPayload(bodyWireBytes) ?: return ContentParse.Malformed
-        val slot = unwrapped.body[MYK_CONTENT] as? ByteArray ?: ByteArray(0)
         return ContentParse.Ok(
-            contentFromParts(record.extension, record.mediaPreview, slot, unwrapped.contentSignature),
+            contentFromParts(record.extension, record.mediaPreview, unwrapped.content, unwrapped.contentSignature),
             mediaPayloadRaw = unwrapped.bodyRaw
         )
     }
@@ -1055,14 +1065,14 @@ object TagDropCodec {
     private fun contentFromParts(
         extension: Map<Int, Any>, mediaPreview: Map<Int, Any>?, slot: ByteArray, contentSignature: Map<Int, Any>?
     ): TagDropPayload.Content {
-        val rawHash = mediaPreview?.get(MPK_CONTENT_HASH) as? ByteArray
+        val rawHash = mediaPreview?.get(CFK_CONTENT_HASH) as? ByteArray
         // contentHash is multihash-style on the wire (1-byte function-code prefix, §4.4) —
         // stripped back to the plain 8-byte digest this app's cacheId convention uses elsewhere.
         val cacheId = if (rawHash != null && rawHash.size > 1) rawHash.copyOfRange(1, rawHash.size) else null
         return TagDropPayload.Content(
             cacheId         = cacheId,
             hint            = extension.text(EK_HINT),
-            filename        = mediaPreview?.text(MPK_FILENAME),
+            filename        = mediaPreview?.text(CFK_FILENAME),
             mimeType        = mediaPreview?.text(MPK_MEDIA_TYPE) ?: "",
             compression     = COMPRESSION_NONE, // Compress Wrapper presence is transient (unwrapped already); not re-declared on TagDropPayload
             content         = slot,
@@ -1083,11 +1093,11 @@ object TagDropCodec {
             preferDeclaredLocation = extension.boolOrNull(EK_PREFER_DECLARED_LOCATION) ?: false,
             locationLabel   = extension.text(EK_LOCATION_LABEL),
             inReplyTo       = extension.bytesOrNull(EK_IN_REPLY_TO),
-            title           = mediaPreview?.text(MPK_LABEL),
+            title           = mediaPreview?.text(CFK_LABEL),
             description     = extension.text(EK_DESCRIPTION),
             createdAt       = extension.uint(EK_CREATED_AT),
             pixelArt        = extension.boolOrNull(EK_PIXEL_ART) ?: false,
-            sourceUrl       = extension.text(EK_SOURCE_URL),
+            sourceUrl       = extension.text(CFK_SOURCE),
             signatureAlgorithm = extension.uint(EK_SIGNATURE_ALGORITHM)?.toInt() ?: SIGNATURE_ALG_NONE,
             signature       = contentSignature?.bytesOrNull(CSK_SIGNATURE),
             signerPubkey    = contentSignature?.bytesOrNull(CSK_SIGNER_PUBKEY),
@@ -1244,7 +1254,7 @@ object TagDropCodec {
     @Suppress("UNCHECKED_CAST")
     fun previewIdentity(record: ScannedRecord): Pair<ByteArray?, String?> = when (record) {
         is ScannedRecord.Content -> {
-            val rawHash = record.mediaPreview?.get(MPK_CONTENT_HASH) as? ByteArray
+            val rawHash = record.mediaPreview?.get(CFK_CONTENT_HASH) as? ByteArray
             val cacheId = if (rawHash != null && rawHash.size > 1) rawHash.copyOfRange(1, rawHash.size) else null
             cacheId to record.extension.text(EK_HINT)
         }
@@ -1294,12 +1304,12 @@ object TagDropCodec {
         EK_KEY_MATERIAL to "key_material", EK_RETAIN_KEY to "retain_key", EK_ENCRYPTION to "encryption",
         EK_KDF_ALG to "kdf_alg", EK_KDF_SALT to "kdf_salt", EK_KDF_ITERS to "kdf_iters",
         EK_SIGNATURE_ALGORITHM to "signature_algorithm", EK_SIGNER_ID to "signer_id", EK_SIGNER_LABEL to "signer_label",
-        EK_IN_REPLY_TO to "in_reply_to", EK_CREATED_AT to "created_at", EK_SOURCE_URL to "source_url"
+        EK_IN_REPLY_TO to "in_reply_to", EK_CREATED_AT to "created_at", CFK_SOURCE to "source"
     )
     private val MEDIA_PREVIEW_KEY_NAMES = mapOf(
-        MPK_MEDIA_TYPE to "mediaType", MPK_CONTENT_HASH to "contentHash", MPK_FILENAME to "filename", MPK_LABEL to "label"
+        MPK_MEDIA_TYPE to "mediaType", CFK_CONTENT_HASH to "contentHash", CFK_FILENAME to "filename", CFK_LABEL to "label"
     )
-    private val MEDIA_PAYLOAD_KEY_NAMES = mapOf(MYK_MEDIA_TYPE to "mediaType", MYK_CONTENT to "content")
+    private val MEDIA_PAYLOAD_KEY_NAMES = mapOf(MYK_MEDIA_TYPE to "mediaType")
     private val CONTENT_SIGNATURE_KEY_NAMES = mapOf(CSK_SIGNATURE to "signature", CSK_SIGNER_PUBKEY to "signer_pubkey")
     private val PAPER_PREVIEW_KEY_NAMES = mapOf(
         PPK_ROOT_HASH to "root_hash", PPK_HINT to "hint", PPK_SET to "set", PPK_SLUG to "slug",
@@ -1309,7 +1319,7 @@ object TagDropCodec {
         PPK_LAT to "lat", PPK_LNG to "lng", PPK_RADIUS_M to "radius_m",
         PPK_PREFER_DECLARED_LOCATION to "prefer_declared_location", PPK_LOCATION_LABEL to "location_label",
         PPK_SIGNATURE_ALGORITHM to "signature_algorithm", PPK_SIGNER_ID to "signer_id", PPK_SIGNER_LABEL to "signer_label",
-        PPK_IN_REPLY_TO to "in_reply_to", PPK_CREATED_AT to "created_at", PPK_SOURCE_URL to "source_url",
+        PPK_IN_REPLY_TO to "in_reply_to", PPK_CREATED_AT to "created_at", CFK_SOURCE to "source",
         PPK_TITLE to "title", PPK_DESCRIPTION to "description",
         PPK_KEY_MATERIAL to "key_material", PPK_RETAIN_KEY to "retain_key"
     )
@@ -1321,7 +1331,7 @@ object TagDropCodec {
         SK_GROUP_ID to "group_id", SK_INDEX to "index", SK_COUNT to "count",
         SK_DATA to "data", SK_TOTAL to "total_bytes", SK_PARITY to "parity"
     )
-    private val COMPRESS_KEY_NAMES = mapOf(CK_PAYLOAD to "compressed_payload")
+    private val COMPRESS_KEY_NAMES = emptyMap<Int, String>()
 
     private val KEY_NAMES_BY_TYPE = mapOf(
         TYPE_CONTENT_EXTENSION to CONTENT_EXTENSION_KEY_NAMES, TYPE_CONTENT_SIGNATURE to CONTENT_SIGNATURE_KEY_NAMES,
@@ -1382,6 +1392,7 @@ object TagDropCodec {
         val typeNameStr = if (typeName != null) "$typeName (${rec.typeId})" else "Type ${rec.typeId}"
         out.appendLine("$pad$typeNameStr [${rec.raw.toHexDump()}]")
         describeMap(rec.record, indent + 1, out, KEY_NAMES_BY_TYPE[rec.typeId] ?: emptyMap())
+        rec.payload?.let { out.appendLine("${"  ".repeat(indent)}payload: ${it.toHexDump()} (${it.size} bytes)") }
         for (sub in rec.subrecords) describeRecord(sub, indent + 1, out)
     }
 

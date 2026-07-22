@@ -1,9 +1,11 @@
 # TagDrop Encoding Specification
 
-**Version:** 10 (Split/Compress Wrapper field key numbering corrected to
-match QDEF-SPEC.md's actual values — both implementations had drifted by
-a consistent +2 offset since the Wrapper Records were first adopted; see
-§14 "Version history")
+**Version:** 11 (Compress Wrapper and Media Payload adopt QDEF's payload
+slot — `content`/the Compress Wrapper's DEFLATE bytes move out of the
+field map into `[typeId, map?, payload?, subrecord*]`'s payload
+position — and Media Preview's `contentHash`/`filename`/`label` and
+Content Extension/Paper-Preview's `source_url` migrate to QDEF's shared
+Common Field Keys (`-11`/`-15`/`-7`/`-13`); see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -39,7 +41,7 @@ The format is designed to:
 
 ## 2. Wire Framing
 
-Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or more **Records** (QDEF terminology — each Record is its own self-delimited CBOR array, `[namespace?, typeId, map?, payload?, subrecord*]`, routed by its `typeId` element, per QDEF-SPEC.md §3.1; a Record MAY carry other Records nested after its own map/payload, as subrecords). TagDrop's own Records never use the optional bare `payload` slot — every TagDrop field is carried in the typed field map instead — so this is a documentation-only correction with no wire-format effect; see CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions (a structural Bundle Type 0, unrelated to anything TagDrop currently emits). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
+Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or more **Records** (QDEF terminology — each Record is its own self-delimited CBOR array, `[namespace?, typeId, map?, payload?, subrecord*]`, routed by its `typeId` element, per QDEF-SPEC.md §3.1; a Record MAY carry other Records nested after its own map/payload, as subrecords). Two of QDEF's own stdlib Types — Compress Wrapper (Type 8) and Media Payload (Type 6) — use the `payload` slot for their one genuinely singular value (§3.1a, §4.1); every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields and stays field-map-only, no payload slot. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions (a structural Bundle Type 0, unrelated to anything TagDrop currently emits). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
 
 **Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
@@ -238,7 +240,11 @@ reads this Extension Record for the full feature set.
 | 49 | `signer_label` | text (opt) | See §10 |
 | 51 | `in_reply_to` | bytes (8, opt) | `contentHash`/`root_hash` of the single parent this replies to; see §7 |
 | 53 | `created_at` | uint (opt) | Author-declared Unix timestamp; not independently verified |
-| 55 | `source_url` | text (opt) | See §17 |
+
+**`source_url` moved off this table (version 11):** it now lives at QDEF
+Common Field Key `-13` (`Source`, QDEF-SPEC.md §3.6) — see §17 and the new
+"QDEF Common Field Keys" note below §3.1a. Not a TagDrop-scoped key any
+more, so it's no longer listed in this Record's own field table.
 
 **Removed fields (now in Media Preview, Type 14):** `cache_id` (key 1),
 `mime_type` (key 5), `filename` (key 7), `title` (key 9). These are
@@ -273,16 +279,26 @@ namespace-scoped — any QDEF-aware decoder can read them.
 | Key | Field | Type | Notes |
 |---|---|---|---|
 | 0 | `mediaType` | uint or text | CRITICAL — IANA media type or CoAP Content-Format uint (QDEF-SPEC.md §4.3 key 0) |
-| 1 | `contentHash` | bytes | Multihash-style content hash (QDEF-SPEC.md §4.5 key 1) — `SHA-256(content bytes)[0:8]` with multihash prefix |
-| 3 | `filename` | text (opt) | |
-| 5 | `label` | text (opt) | Human-readable label; maps to old Content Extension `title` |
+| -11 | `contentHash` | bytes | QDEF Common Field Key "Content Hash" (§3.6) — multihash-style, `SHA-256(content bytes)[0:8]` with multihash prefix. Was Type-specific key `1` before version 11. |
+| -15 | `filename` | text (opt) | QDEF Common Field Key "Filename" (§3.6). Was Type-specific key `3` before version 11. |
+| -7 | `label` | text (opt) | QDEF Common Field Key "Label" (§3.6); maps to old Content Extension `title`. Was Type-specific key `5` before version 11. |
 
 **Media Payload (Type 6) field map:**
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
 | 0 | `mediaType` | uint or text | CRITICAL — same mediaType as Media Preview |
-| 2 | `content` | bytes | CRITICAL — the payload bytes |
+
+**`content` moved to the payload slot (version 11):** Media Payload's
+whole point is carrying exactly one blob, which is precisely what QDEF's
+payload slot exists for (§3.1) — `content` is no longer a field-map entry
+(it was Type-specific key `2` before version 11) and instead occupies the
+`payload` position of `[typeId, map?, payload?, subrecord*]`: `[6,
+{mediaType}, content_bytes]`. `content` is mandatory whenever a Media
+Payload Record exists, so the payload slot is never absent here — no
+ambiguity with a following Content Signature subrecord, since QDEF-SPEC.md
+§3.1's decode rule is purely positional (map, then payload if the next
+item isn't an array, then subrecords).
 
 **Content Signature (Type 3, TagDrop-scoped) field map** — present only
 when the payload is signed (§10), nested as Media Payload's own
@@ -295,22 +311,23 @@ subrecord (see nesting rules below), never as a bare top-level Record:
 
 **Nesting: single code vs. Split-wrapped.** The base shape is Media
 Payload nested as Media Preview's own subrecord — `[14, {mediaType,
-contentHash, ...}, [6, {mediaType, content}]]` — with Content Signature,
-if the payload is signed, nested one level deeper, as Media Payload's
-*own* subrecord: `[14, {...}, [6, {mediaType, content}, [3, {signature,
+contentHash, ...}, [6, {mediaType}, content_bytes]]` — with Content
+Signature, if the payload is signed, nested one level deeper, as Media
+Payload's *own* subrecord (following its payload slot, not replacing
+it): `[14, {...}, [6, {mediaType}, content_bytes, [3, {signature,
 signer_pubkey}]]]`. This is the whole shape when it fits on one code.
 
 **When Split is needed** (QDEF-SPEC.md §4.1/§4.5), the nesting inverts:
 **Split is outermost**, wrapping the canonical bytes of the `[6, {...},
-[3, {...}]?]` array — Media Payload *and* its own Content Signature
-subrecord, if present — as its opaque, fragmented `fragment` field;
-Media Preview becomes *Split's* subrecord instead, unwrapped and
+content_bytes, [3, {...}]?]` array — Media Payload *and* its own Content
+Signature subrecord, if present — as its opaque, fragmented `fragment`
+field; Media Preview becomes *Split's* subrecord instead, unwrapped and
 repeated identically on every code in the group, exactly like Content
 Extension:
 
 ```
 [ 2, { 0: h'<group_id>', 2: <index>, 4: <count>, 6: h'<fragment bytes>', 7: <total> },
-  [ 14, { 0: "image/png", 1: h'<contentHash>', 3: "photo.png" } ] ]
+  [ 14, { 0: "image/png", -11: h'<contentHash>', -15: "photo.png" } ] ]
 ```
 
 Because Content Signature travels *inside* the bytes Split fragments —
@@ -342,6 +359,31 @@ optional hint that this is the case; its absence does NOT mean there's no
 hidden override map — see §9, "Discovery, not declaration." Media
 Preview's own `filename`/`label`, if present, are the values shown before
 (or without) a matching override key.
+
+**QDEF Common Field Keys (version 11).** QDEF-SPEC.md §3.6 defines a
+small registry of negative-integer field keys — always odd/optional, always
+usable on any Record's field map regardless of Type — for concepts common
+enough that a shared key beats every adopter minting their own. TagDrop
+adopts four, all backed by fields it had already independently built
+before the registry existed (real matches, not speculative adoption):
+
+| Key | Name | Used on |
+|---|---|---|
+| `-7` | Label | Media Preview (`label`) |
+| `-11` | Content Hash | Media Preview (`contentHash`) |
+| `-13` | Source | Content Extension and Paper-Preview (`source_url`) |
+| `-15` | Filename | Media Preview (`filename`) |
+
+Adopting a shared key is a pure key-*location* change — the field's own
+value shape is unchanged, and existing per-Record field tables (above,
+and §3.2 below) list these keys inline rather than duplicating them here.
+Not every TagDrop field with a plausible shared-key match gets migrated:
+QDEF declined a `Reference`/`In-Reply-To` key for TagDrop's own
+`in_reply_to` (a deliberately truncated, unauthenticated 8-byte pointer —
+weaker than the full-multihash shape a shared key for this concept would
+need) on the grounds that a key with zero real adopters at launch isn't
+worth registering yet.
+
 ### 3.2 Paper-Preview (Type `5`)
 
 Always plain, unwrapped, present on every code carrying this payload
@@ -369,11 +411,14 @@ Always plain, unwrapped, present on every code carrying this payload
 | 35 | `signer_label` | text (opt) | See §10 |
 | 37 | `in_reply_to` | bytes (8, opt) | See §7 |
 | 39 | `created_at` | uint (opt) | |
-| 41 | `source_url` | text (opt) | See §17 |
 | 43 | `title` | text (opt) | |
 | 45 | `description` | text (opt) | |
 | 47 | `key_material` | bytes (32, opt) | Decryption key for other content (§9) — **Note: uses key 47 here, not key 33 as on Content Extension.** Paper-Preview's key 33 is `signer_id` (§10), so `key_material`/`retain_key` occupy the next available odd slots (47/49) to avoid collision. See §9 for the full encryption design. |
 | 49 | `retain_key` | bool (opt, default `true`) | Whether the app should remember `key_material` across sessions (§9) |
+
+**`source_url` moved off this table (version 11):** same migration as
+Content Extension's, above — it now lives at QDEF Common Field Key `-13`
+(`Source`, QDEF-SPEC.md §3.6) rather than this Record's own key `41`.
 
 ### 3.4 Paper-Body (Type `7`)
 
@@ -545,7 +590,7 @@ Signature Record rather than on the always-repeated Content Extension
 per-code repetition cost), not meaning. May be Compress-wrapped (QDEF-
 SPEC.md §4.1 Type 8, §8) before Split-wrapping.
 
-**Body's `content`** is the actual bytes (Media Payload key 2): a Content
+**Body's `content`** is the actual bytes (Media Payload's payload slot, §3.1a): a Content
 payload's cache (raw or Compress-wrapped), or absent entirely for a Paper,
 which has no content of its own — Paper-Body only ever carries `files`/
 `related`. For a Content payload, `content` may also be a hidden encrypted
@@ -566,13 +611,13 @@ Content Extension (Type 1) {
 }
 Media Preview (Type 14) {
   0: "text/html",              // mediaType — CRITICAL, even key
-  1: h'12<h8 of SHA-256>',    // contentHash — multihash-style, §3.1a
-  3: "poem.html",              // filename
-  5: "Spring poem",            // label
+  -11: h'12<h8 of SHA-256>',  // contentHash — QDEF Common Field Key, §3.6
+  -15: "poem.html",            // filename — QDEF Common Field Key, §3.6
+  -7: "Spring poem",           // label — QDEF Common Field Key, §3.6
 }
   Media Payload (Type 6, Media Preview's subrecord — §3.1a) {
     0: "text/html",            // mediaType — must match Media Preview
-    2: h'<page bytes>',        // content — raw or Compress-wrapped
+    payload: h'<page bytes>',  // content — moved to the payload slot, §3.1
   }
 ```
 
@@ -709,7 +754,7 @@ a larger fragment `count`, not a different shape.
 
 TagDrop uses **content-addressed identifiers** — the same content always gets the same ID, regardless of who created it or where it was found.
 
-**File IDs (`contentHash`, Media Preview key 1):**
+**File IDs (`contentHash`, Media Preview key `-11`):**
 ```
 contentHash = SHA-256(uncompressed content)[0:8]
 ```
@@ -717,7 +762,7 @@ Two payloads encoding the same content bytes will have the same `contentHash`,
 regardless of Media Preview's other fields (`filename`/`label`) or the
 Content Extension's fields (`hint`/collection fields/etc.) — this enables
 deduplication across multiple papers and payloads made by different authors.
-`content` here means Media Payload's own `content` field (key 2), decompressed
+`content` here means Media Payload's own payload-slot bytes, decompressed
 if it was Compress-wrapped — never the compressed or Split-fragmented wire
 bytes, so the same logical content always produces the same `contentHash`
 regardless of which DEFLATE implementation, level, or Split chunking happened
@@ -775,7 +820,7 @@ sticker), this is fine — a new revision gets a new root hash.
 
 ```
 Paper (root_hash, Paper-Preview key 1)
-  └─ Files (contentHash, Media Preview key 1)
+  └─ Files (contentHash, Media Preview key -11)
        └─ Codes (Media Preview + Media Payload + Extension repeated on every code carrying a payload, §5.1)
 ```
 
@@ -1445,7 +1490,7 @@ DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively
 ## 9. Encryption
 
 A Content payload's `hint`, `mime_type`, and `filename` (Content Extension
-keys 3/5/7), plus `content` (Media Payload key 1, §4.1) — may optionally be
+keys 3/5/7), plus `content` (Media Payload's payload slot, §3.1a) — may optionally be
 shadowed by a hidden, encrypted **override map**, independently of
 compression (§8). Unlike most of this format, the override map's presence
 is **never required to be declared** — see "Discovery, not declaration"
@@ -1498,8 +1543,9 @@ local key namespace (§3.1a) — 1 (`hint`), 3 (`mime_type`), 5 (`content`), 7
 The nonce travels with the blob — nothing in Content Extension is needed to
 locate or interpret it.
 
-**Where this blob lives:** Media Payload's `content` field (key 2, §4.1) —
-the same slot a Content payload's cache normally occupies. Once Body has
+**Where this blob lives:** Media Payload's payload slot (§3.1a; `content`
+moved there from field-map key `2` in version 11) — the same slot a
+Content payload's cache normally occupies. Once Body has
 been reassembled (§5) and any Compress Wrapper unwrapped, `content`'s bytes
 — if their length is ≥ 28 (the minimum possible blob: 12-byte nonce +
 16-byte tag, for an empty plaintext) — are a candidate, *in addition to*
@@ -1563,7 +1609,7 @@ deduplication, but exactly the wrong property here: it would let anyone
 compute the `contentHash` of `content`'s own plain reading (cover story or not)
 and check whether any code in the wild carries it, linking that code to a
 known document regardless of what's hidden inside. An author embedding a
-hidden override map MUST set `contentHash` (Media Preview key 1) to 8 random
+hidden override map MUST set `contentHash` (Media Preview key -11) to 8 random
 bytes, independent of both `content`'s own plain reading and the override
 map's real `content`.
 
@@ -1933,11 +1979,11 @@ Content Extension (Type 1) {
 }
 Media Preview (Type 14) {
   0: "text/markdown",                // mediaType
-  1: h'12<contentHash>',             // multihash-style contentHash, §4.4
+  -11: h'12<contentHash>',           // multihash-style contentHash, QDEF Common Field Key §3.6
 }
   Media Payload (Type 6, Media Preview's subrecord) {
     0: "text/markdown",              // mediaType, same as Media Preview
-    2: h'<content bytes>',
+    payload: h'<content bytes>',     // content — moved to the payload slot, §3.1
   }
     Content Signature (Type 3, Media Payload's own subrecord) {
       3: h'<2420-byte signature>',
@@ -2077,7 +2123,44 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 10** (current) — corrects a field-key bug in the Split (Type 2)
+**Version 11** (current) — adopts two QDEF-SPEC.md grammar/registry
+additions confirmed live upstream (`[namespace?, typeId, map?, payload?,
+subrecord*]`, and §3.6's Common Field Keys) for the Record Types where
+they're a genuine fit, not adopted wholesale. **Payload slot:** Compress
+Wrapper (Type 8) becomes `[8, deflated_bytes]` — its field map (`{0:
+compressed_payload}`) disappears entirely, since the payload slot exists
+precisely for a Record whose whole point is one value. Media Payload
+(Type 6) becomes `[6, {mediaType}, content_bytes]` — `content` (formerly
+field-map key `2`) moves to the payload slot; `mediaType` stays, since
+Media Payload still carries two fields. Neither Content Extension nor
+Paper-Preview/Body adopt the payload slot — both always carry several
+fields, so there's no single value to promote. Media Preview and Split
+Wrapper are unaffected: both already carry a subrecord with no payload of
+their own, and upstream's earlier proposal to require an explicit `null`
+marker there (which would have forced a re-encode) was itself reverted
+before landing — the final rule needs no marker at all, since an array
+right after the map is unconditionally the start of subrecords, never
+mistaken for a payload. **Common Field Keys:** Media Preview's
+`contentHash`/`filename`/`label` move from Type-specific keys `1`/`3`/`5`
+to QDEF's shared, negative Common Field Keys `-11`/`-15`/`-7`
+(QDEF-SPEC.md §3.6) — real matches, not just size-motivated renumbering,
+since TagDrop's own `contentHash` shape (a 1-byte multihash function-code
+prefix) is exactly what `-11 Content Hash` was defined to be. Content
+Extension's `source_url` (key `55`) and Paper-Preview's `source_url` (key
+`41`) both move to the same shared `-13 Source` key, retiring two
+separate TagDrop-scoped numbers for one concept in favor of a single
+registry entry either payload type can carry. All migrated fields keep
+their exact same value shape — this is a pure key-location change, no
+semantic difference. CBOR's negative-integer encoding (major type 1,
+`-(n+1)`) is new to every implementation's wire-level primitives; both
+`MiniCbor.kt` and all four JS tools needed a genuine encode/decode
+addition (not just a renumbering) to emit/parse it, since nothing in
+TagDrop's format used a non-uint map key before this version. Fields
+still sort ascending by integer value (SPEC §2.2 unchanged) — a negative
+Common Field Key always sorts before any Type-specific non-negative key
+on the same Record.
+
+**Version 10** — corrects a field-key bug in the Split (Type 2)
 and Compress (Type 8) Wrapper Records: both TagDrop implementations
 (Kotlin app and all three web tools) encoded/decoded `group_id`/`index`/
 `count`/`data`/`total_bytes`/`parity_scheme` at keys `2`/`4`/`6`/`8`/`9`/
@@ -2384,8 +2467,11 @@ A drop **source** is a URL pointing to a JSON file that lists TagDrop drop locat
 
 ### Wire field
 
-`source_url` (text, optional — Content Extension key 55 or Paper-Preview key
-41, §3.1/§3.3) may appear on any Content or Paper payload — typically a
+`source_url` (text, optional — QDEF Common Field Key `-13` "Source",
+QDEF-SPEC.md §3.6, usable on both Content Extension and Paper-Preview
+since version 11; was a TagDrop-scoped key — Content Extension `55` or
+Paper-Preview `41` — before that) may appear on any Content or Paper
+payload — typically a
 key-only or hint-only code (no Media Payload at all, or a Media Payload with no meaningful
 `content`) placed alongside a physical drop or distributed as a sticker.
 It names a URL that the finder's app can add as a source. No other
@@ -2448,7 +2534,7 @@ Per-drop entry fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | string (required) | `contentHash` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). Matches Media Preview key 1. |
+| `id` | string (required) | `contentHash` of the drop's TagDrop code — 16 lowercase hex characters (SHA-256 of content bytes, first 8 bytes, §4.4). Matches Media Preview key -11. |
 | `lat` | number (required) | WGS84 latitude. Matches Content Extension key 23. |
 | `lng` | number (required) | WGS84 longitude. Matches Content Extension key 25. |
 | `hint` | string (opt) | Short human-readable location clue, e.g. `"Behind the loose brick"`. Matches Content Extension key 3. |
