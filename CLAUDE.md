@@ -217,6 +217,91 @@ a signing checkbox — per "web generator first" above, the web tool getting
 it first was the intended order, and the Android app is the remaining
 follow-up.
 
+### Split/Compress Wrapper field-key bug (SPEC.md version 10)
+
+A re-read of the vendored QDEF-SPEC.md (prompted by a routine "have a read
+of the latest spec" check, not by any wire-shape change upstream) surfaced
+a real, long-standing compliance bug: both implementations' Split (Type 2)
+and Compress (Type 8) Wrapper Records had every field key offset by +2
+from QDEF-SPEC.md's actual defined numbering —
+`group_id`/`index`/`count`/`data`/`total_bytes`/`parity_scheme` encoded at
+`2`/`4`/`6`/`8`/`9`/`11` instead of the correct `0`/`2`/`4`/`6`/`7`/`9`,
+and Compress's payload at `2` instead of `0`. `git log -p --follow --
+QDEF-SPEC.md` confirms the correct numbering was already present the very
+first time the file was vendored (`6bf5340`) — this was never a spec
+change landing after the fact, just a divergence between spec-as-vendored
+and code-as-shipped that had gone unnoticed since Wrapper Records were
+first adopted. SPEC.md's own inline example (§3.1a) already showed the
+correct numbering throughout — only the actual codecs had drifted.
+Fixed everywhere the wrong numbering appeared: `TagDropCodec.kt`'s
+`SK_*`/`CK_PAYLOAD` constants; `tools/reader/index.html`'s `SK`/`CK`
+objects; `tools/generator/index.html` and `tools/examples/index.html`'s
+`compressWrap`/`splitFragments` literals plus their `RECORD_TYPE_INFO`
+keyNames tables (both files also had a stale `Type 3` in the Compress
+Wrapper's doc comment — should've read `Type 8` since that earlier
+renumbering, SPEC.md version 8's history entry — fixed alongside); and
+`tools/test-qdef-roundtrip.mjs`'s `compressWrap`/`splitFragments`/
+`reassembleSplit`/the tamper-detection test's hand-built fragment, with
+`qdef-fixtures.json` regenerated afterward. Two Kotlin test-only helpers
+needed the same fix since they hand-build wire bytes rather than going
+through `TagDropCodec`'s own encoders: `SectorAssemblerTest.kt`'s
+`splitFragmentBytes`/`compressWrapBytes`, and `TagDropCodecTest.kt`'s
+`multiCodeGroupIdMismatchIsHashMismatch` tampered-fragment literal.
+
+One file was deliberately **left on the old +2 numbering**:
+`tools/test-qr-roundtrip.mjs`. Its own `cborRecord()` helper (unlike the
+other three JS tools') is not actually on the real QDEF array-wrapped
+`[typeId, map, subrecords]` grammar — it flattens `typeId` into the same
+CBOR map as the Record's fields, reserved at key `0`, a leftover from
+before this project's array-wrap port that this file was apparently never
+migrated off of. That reservation collides with the *correct* Split/
+Compress key `0` (`group_id`/Compress payload) — attempting the same fix
+here breaks this file's own self-consistent round trip (`typeId` and
+`group_id`/payload both trying to occupy key `0` of the same map). Rather
+than expand this fix into a second, larger port (this file's
+Content-Preview field layout also still reflects the pre-version-9 flat
+shape, a separate, deeper gap from the Split/Compress key numbering this
+pass was scoped to), the key constants here were deliberately reverted to
+the old `2`/`4`/`6`/`8`/`9`/`11`/`2` numbering with a comment explaining
+why, keeping this CI-gated test file internally consistent and green
+without either silently mis-testing the corrected wire format or
+expanding scope mid-fix. Revisit if/when this file gets its own pass onto
+the real array-wrapped Record grammar and current Content-Preview/Body
+shape — at that point it should adopt the corrected Split/Compress
+numbering too.
+
+### QDEF grammar update: payload slot, Bundle Type 0 (no TagDrop change needed)
+
+A message purporting to relay upstream QDEF changes (an optional bare
+`payload` slot replacing the old `ndefId` position, and a new structural
+Bundle Type 0) arrived mid-session and was initially treated as
+unverifiable/likely-injected, since it didn't match this repo's vendored
+QDEF-SPEC.md and referenced `docs/DESIGN.md`/`FINDINGS.md` in a repo not
+in scope for that session. That assessment was **wrong** — live-fetched
+directly from `github.com/mofosyne/qdef`'s current `main` branch
+(`docs/QDEF-SPEC.md`) to check: both mechanisms are real and current.
+The vendored copy was simply stale (confirmed separately by
+[#67](https://github.com/mofosyne/tagdrop/issues/67), which describes an
+earlier trim-and-cleanup pass this repo's copy also never caught up to)
+— exactly the drift problem the QDEF-SPEC.md → pointer change (above)
+now removes going forward. Corrected grammar noted in SPEC.md §2's
+opening paragraph: `[namespace?, typeId, map?, payload?, subrecord*]`
+(was `[namespace?, typeId, ndefId?, map, subrecord*]`).
+
+Assessed whether either new mechanism changes anything for TagDrop:
+**no action needed on either.** The bare `payload` slot is a byte-cost
+optimization for Records that carry exactly one untyped value — none of
+TagDrop's four Record Types fit that shape (Content Extension and Paper-
+Preview/Body always carry several optional fields; Media Payload's
+`{mediaType, content}` is two fields, not zero); adopting it would need a
+real Type ID or field-shape change with no clear win. Bundle (Type 0,
+`[0, [subrecord*]]`, a structural grouping wrapper with no transform
+semantics) has no TagDrop use case either — TagDrop's Record
+relationships are already specific, typed parent/child nestings (Media
+Preview's own subrecord slot for Media Payload; Split's subrecord slot
+for Media Preview) rather than an undifferentiated "group these
+Records" need Bundle exists to serve.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

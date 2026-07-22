@@ -300,7 +300,7 @@ class TagDropCodecTest {
         // Multi-code Content's Split Wrapper (Type 2) carries Media Preview as its own subrecord
         // (SPEC.md v9 §3.1a) — preserve it so the tampered fragment still decodes.
         val tamperedSplit = MiniCbor.encodeRecord(2, listOf(
-            2 to frag.groupId, 4 to frag.index, 6 to frag.count, 8 to tamperedData, 9 to frag.total
+            0 to frag.groupId, 2 to frag.index, 4 to frag.count, 6 to tamperedData, 7 to frag.total
         ), listOf(victim.mediaPreviewRaw!!))
         val tamperedFull = victim.extensionRaw + tamperedSplit
         val tamperedRecord = (TagDropCodec.decodeRaw(tamperedFull) as TagDropScan.RecordScan).record

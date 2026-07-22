@@ -762,10 +762,10 @@ const TYPE_CONTENT_SIGNATURE = 3;
 const TYPE_PAPER_PREVIEW = 5;
 const TYPE_PAPER_BODY = 7;
 
-// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 3) — wraps `bytes`
+// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 8) — wraps `bytes`
 // DEFLATE-compressed. Async: zlibCompress uses CompressionStream.
 async function compressWrap(bytes) {
-  return cborRecord(TYPE_COMPRESS, { 2: await zlibCompress(bytes) });
+  return cborRecord(TYPE_COMPRESS, { 0: await zlibCompress(bytes) });
 }
 
 /**
@@ -787,8 +787,8 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecor
     const start = Math.min(i * chunkLen, total);
     const end = Math.min(start + chunkLen, total);
     fragments.push(cborRecord(TYPE_SPLIT, {
-      2: groupId, 4: i, 6: fragmentCount, 8: bytes.slice(start, end),
-      9: total, 11: withParity ? 1 : undefined,
+      0: groupId, 2: i, 4: fragmentCount, 6: bytes.slice(start, end),
+      7: total, 9: withParity ? 1 : undefined,
     }, extraSubrecords));
   }
   if (withParity) {
@@ -799,7 +799,7 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecor
       const slice = bytes.slice(start, end);
       for (let j = 0; j < slice.length; j++) parity[j] ^= slice[j];
     }
-    fragments.push(cborRecord(TYPE_SPLIT, { 2: groupId, 4: fragmentCount, 6: fragmentCount, 8: parity, 9: total, 11: 1 }, extraSubrecords));
+    fragments.push(cborRecord(TYPE_SPLIT, { 0: groupId, 2: fragmentCount, 4: fragmentCount, 6: parity, 7: total, 9: 1 }, extraSubrecords));
   }
   return fragments;
 }
@@ -1462,10 +1462,10 @@ const RECORD_TYPE_INFO = new Map([
     1:'files', 3:'related', 5:'signature', 7:'signer_pubkey',
   } }],
   [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
-    2:'group_id', 4:'index', 6:'count', 8:'data', 9:'total_bytes', 11:'parity',
+    0:'group_id', 2:'index', 4:'count', 6:'data', 7:'total_bytes', 9:'parity',
   } }],
   [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {
-    2:'compressed_payload',
+    0:'compressed_payload',
   } }],
 ]);
 

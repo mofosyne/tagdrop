@@ -233,13 +233,13 @@ object TagDropCodec {
     private const val KR_STEP         = 10
 
     // QDEF Split Wrapper (Type 2) / Compress Wrapper (Type 8) field keys (QDEF-SPEC.md §4.1).
-    private const val SK_GROUP_ID = 2
-    private const val SK_INDEX    = 4
-    private const val SK_COUNT    = 6
-    private const val SK_DATA     = 8
-    private const val SK_TOTAL    = 9
-    private const val SK_PARITY   = 11
-    private const val CK_PAYLOAD  = 2
+    private const val SK_GROUP_ID = 0
+    private const val SK_INDEX    = 2
+    private const val SK_COUNT    = 4
+    private const val SK_DATA     = 6
+    private const val SK_TOTAL    = 7
+    private const val SK_PARITY   = 9
+    private const val CK_PAYLOAD  = 0
 
     // SPEC §10 signature-field key sets, per Record Type — what the placeholder-then-strip
     // discipline strips before hashing (contentSignedMessageHash/paperSignedMessageHash).

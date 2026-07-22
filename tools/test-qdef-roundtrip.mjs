@@ -269,7 +269,7 @@ function decodeSequence(buf) {
 
 // ── Compress Wrapper (QDEF-SPEC.md §4.1 Type 8) ──
 function compressWrap(bytes) {
-  return encodeArrayRecord(TYPE.COMPRESS, { 2: deflateRawSync(bytes) });
+  return encodeArrayRecord(TYPE.COMPRESS, { 0: deflateRawSync(bytes) });
 }
 
 // ── Split Wrapper (QDEF-SPEC.md §4.1 Type 2) — fragment / reassemble / XOR parity ──
@@ -284,12 +284,12 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, subrecords = 
     const slice = bytes.subarray(i * chunkLen, Math.min((i + 1) * chunkLen, totalBytes));
     fragments.push(
       encodeArrayRecord(TYPE.SPLIT, {
-        2: groupId,
-        4: i,
-        6: fragmentCount,
-        8: slice,
-        9: totalBytes,
-        11: withParity ? 1 : undefined,
+        0: groupId,
+        2: i,
+        4: fragmentCount,
+        6: slice,
+        7: totalBytes,
+        9: withParity ? 1 : undefined,
       }, subrecords)
     );
   }
@@ -303,12 +303,12 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, subrecords = 
     }
     fragments.push(
       encodeArrayRecord(TYPE.SPLIT, {
-        2: groupId,
+        0: groupId,
+        2: fragmentCount,
         4: fragmentCount,
-        6: fragmentCount,
-        8: parity,
-        9: totalBytes,
-        11: 1,
+        6: parity,
+        7: totalBytes,
+        9: 1,
       }, subrecords)
     );
   }
@@ -319,10 +319,10 @@ function reassembleSplit(fragmentRecords, expectedGroupId) {
   const byIndex = new Map();
   let count, totalBytes;
   for (const rec of fragmentRecords) {
-    assert.ok(rec[2].equals(expectedGroupId), 'group_id mismatch across fragments');
-    count = rec[6];
-    totalBytes = rec[9];
-    byIndex.set(rec[4], rec[8]);
+    assert.ok(rec[0].equals(expectedGroupId), 'group_id mismatch across fragments');
+    count = rec[4];
+    totalBytes = rec[7];
+    byIndex.set(rec[2], rec[6]);
   }
   const chunkLen = Math.ceil(totalBytes / count);
   const missing = [];
@@ -359,7 +359,7 @@ function resolveNonSplitWrapperStack(bytes) {
   for (;;) {
     const decoded = decodeArrayRecord(cur, 0);
     if (decoded.typeId === TYPE.COMPRESS) {
-      cur = inflateRawSync(decoded.record[2]);
+      cur = inflateRawSync(decoded.record[0]);
       continue;
     }
     return decoded;
@@ -571,7 +571,7 @@ function decodeContentPayload(codes) {
 
   let mediaPayloadWireBytes;
   if (fragmentRecords.length > 0) {
-    const groupId = fragmentRecords[0][2];
+    const groupId = fragmentRecords[0][0];
     mediaPayloadWireBytes = reassembleSplit(fragmentRecords, groupId);
   } else {
     mediaPayloadWireBytes = plainMediaPayloadWireRaw;
@@ -698,7 +698,7 @@ function decodePaperPayload(codes) {
 
   let bodyWireBytes;
   if (fragmentRecords.length > 0) {
-    const groupId = fragmentRecords[0][2];
+    const groupId = fragmentRecords[0][0];
     bodyWireBytes = reassembleSplit(fragmentRecords, groupId);
   } else {
     bodyWireBytes = plainBodyRaw;
@@ -860,15 +860,15 @@ function testTamperedFragmentDetected() {
   const mediaPreviewSubRaw = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW).raw;
 
   // Flip one bit in the fragment's data, leaving its declared group_id (key
-  // 2) field untouched — the tamper must be caught by recomputing the hash
+  // 0) field untouched — the tamper must be caught by recomputing the hash
   // from the actual reassembled bytes, not by comparing declared fields.
   // Media Preview's subrecord (carried on every Split fragment, §3.1a) must
   // be preserved so the tampered fragment still decodes.
-  const tamperedFragmentBytes = Buffer.from(fragmentRecord[8]);
+  const tamperedFragmentBytes = Buffer.from(fragmentRecord[6]);
   tamperedFragmentBytes[0] ^= 0xff;
   const tamperedFragmentRecordBytes = encodeArrayRecord(TYPE.SPLIT, {
-    2: fragmentRecord[2], 4: fragmentRecord[4], 6: fragmentRecord[6],
-    8: tamperedFragmentBytes, 9: fragmentRecord[9], 11: fragmentRecord[11],
+    0: fragmentRecord[0], 2: fragmentRecord[2], 4: fragmentRecord[4],
+    6: tamperedFragmentBytes, 7: fragmentRecord[7], 9: fragmentRecord[9],
   }, [mediaPreviewSubRaw]);
   const tamperedCode = Buffer.concat([rawExtensionBytes, tamperedFragmentRecordBytes]);
   const tamperedCodes = codes.map((c, i) => (i === 1 ? tamperedCode : c));

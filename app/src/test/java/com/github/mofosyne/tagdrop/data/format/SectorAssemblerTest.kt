@@ -40,14 +40,14 @@ class SectorAssemblerTest {
         MiniCbor.encodeRecord(6, listOf(0 to mimeType, 2 to content), subrecords)
 
     /** A Compress Wrapper Record (Type 8, QDEF-SPEC.md §4.1) DEFLATE-wrapping [inner]. */
-    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(8, listOf(2 to TagDropCodec.compress(inner)))
+    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(8, listOf(0 to TagDropCodec.compress(inner)))
 
     /** A Split Wrapper Record (Type 2, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes, optionally nesting [subrecords] (Media Preview, multi-code case). */
     private fun splitFragmentBytes(
         groupId: ByteArray, index: Int, count: Int, data: ByteArray, total: Int, parity: Boolean = false,
         subrecords: List<ByteArray> = emptyList()
     ): ByteArray = MiniCbor.encodeRecord(2, listOf(
-        2 to groupId, 4 to index, 6 to count, 8 to data, 9 to total, 11 to (1.takeIf { parity })
+        0 to groupId, 2 to index, 4 to count, 6 to data, 7 to total, 9 to (1.takeIf { parity })
     ), subrecords)
 
     /** Decodes [extensionRaw] + [secondRaw] the same way a real scan would (SPEC §2, §5.1). */

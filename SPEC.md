@@ -1,11 +1,9 @@
 # TagDrop Encoding Specification
 
-**Version:** 9 (Content format restructured for generic QDEF compatibility —
-Media Preview + Media Payload for file content, a TagDrop-specific
-Content Extension Record for hint/collections/location/small signing
-fields, and a Content Signature Record nested under Media Payload so
-`signature`/`signer_pubkey` are carried once per payload, not once per
-code; see §14 "Version history")
+**Version:** 10 (Split/Compress Wrapper field key numbering corrected to
+match QDEF-SPEC.md's actual values — both implementations had drifted by
+a consistent +2 offset since the Wrapper Records were first adopted; see
+§14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -41,7 +39,7 @@ The format is designed to:
 
 ## 2. Wire Framing
 
-Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or more **Records** (QDEF terminology — each Record is its own self-delimited CBOR array, `[namespace?, typeId, ndefId?, map, subrecord*]`, routed by its `typeId` element, per QDEF-SPEC.md §3.1; a Record MAY carry other Records nested after its own map, as subrecords). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
+Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or more **Records** (QDEF terminology — each Record is its own self-delimited CBOR array, `[namespace?, typeId, map?, payload?, subrecord*]`, routed by its `typeId` element, per QDEF-SPEC.md §3.1; a Record MAY carry other Records nested after its own map/payload, as subrecords). TagDrop's own Records never use the optional bare `payload` slot — every TagDrop field is carried in the typed field map instead — so this is a documentation-only correction with no wire-format effect; see CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions (a structural Bundle Type 0, unrelated to anything TagDrop currently emits). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
 
 **Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
@@ -2079,7 +2077,20 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 9** (current) — Content format restructured for generic QDEF
+**Version 10** (current) — corrects a field-key bug in the Split (Type 2)
+and Compress (Type 8) Wrapper Records: both TagDrop implementations
+(Kotlin app and all three web tools) encoded/decoded `group_id`/`index`/
+`count`/`data`/`total_bytes`/`parity_scheme` at keys `2`/`4`/`6`/`8`/`9`/
+`11` and the Compress payload at key `2` — a consistent +2 offset from
+QDEF-SPEC.md's actual defined values (`0`/`2`/`4`/`6`/`7`/`9` and `0`
+respectively). This document's own inline example (§3.1a, above) already
+showed the correct QDEF numbering; only the code had drifted, present
+since Wrapper Records were first adopted and undetected until a spec
+re-read surfaced it. All keys stay CBOR single-byte uints either way (≤
+23), so this is a pure renumbering with no other byte-size impact. No
+semantic change to Split/Compress themselves.
+
+**Version 9** — Content format restructured for generic QDEF
 compatibility. Content payloads now use QDEF's standard Media Preview
 (Type 14) + Media Payload (Type 6) for file identification and content
 bytes, with TagDrop-specific features (hint, collections, location,

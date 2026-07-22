@@ -165,6 +165,12 @@ const TYPE_CONTENT_BODY = 3;
 const TYPE_PAPER_PREVIEW = 5;
 const TYPE_PAPER_BODY = 7;
 
+// NOTE: this file's cborRecord() embeds typeId at field key 0 in a flat
+// CBOR map (see cborRecord above), unlike the real QDEF array-wrapped
+// `[typeId, map, subrecords...]` Record grammar the other JS tools and
+// test-qdef-roundtrip.mjs use — so key 0 is reserved for typeId here and
+// cannot double as a Wrapper's own field key (SK.GROUP_ID/CK.PAYLOAD are
+// deliberately kept at 2/4/6/8/9/11 in this file only; see CLAUDE.md).
 async function compressWrap(bytes) {
   return cborRecord(TYPE_COMPRESS, { 2: await zlibCompress(bytes) });
 }
@@ -325,7 +331,9 @@ const PPK = {
 };
 // Paper-Body keys (SPEC §3.4)
 const PBK = { FILES: 1, RELATED: 3, SIGNATURE: 5, SIGNER_PUBKEY: 7 };
-// Split Wrapper keys
+// Split Wrapper keys (see the note above compressWrap: kept at this file's
+// own historical 2/4/6/8/9/11 numbering, not QDEF-SPEC.md's 0/2/4/6/7/9,
+// because this file's typeId lives at field key 0 — see cborRecord above)
 const SK = { GROUP_ID: 2, INDEX: 4, COUNT: 6, DATA: 8, TOTAL: 9, PARITY_FLAG: 11 };
 // Compress Wrapper keys
 const CK = { PAYLOAD: 2 };

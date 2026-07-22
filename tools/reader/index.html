@@ -631,8 +631,8 @@ const MYK = { MEDIA_TYPE:0, CONTENT:2 };
 // Media Payload's own subrecord, never a bare top-level Record.
 const CSK = { SIGNATURE:3, SIGNER_PUBKEY:5 };
 // QDEF Split Wrapper (Type 2) / Compress Wrapper (Type 8) field keys.
-const SK = { GROUP_ID:2, INDEX:4, COUNT:6, DATA:8, TOTAL:9, PARITY:11 };
-const CK = { PAYLOAD:2 };
+const SK = { GROUP_ID:0, INDEX:2, COUNT:4, DATA:6, TOTAL:7, PARITY:9 };
+const CK = { PAYLOAD:0 };
 
 // Paper-Preview's field keys (SPEC.md §3.3).
 const PPK = {
