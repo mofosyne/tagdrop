@@ -288,6 +288,22 @@ now removes going forward. Corrected grammar noted in SPEC.md §2's
 opening paragraph: `[namespace?, typeId, map?, payload?, subrecord*]`
 (was `[namespace?, typeId, ndefId?, map, subrecord*]`).
 
+**Offline in-app spec viewer:** `SpecActivity`'s QDEF pane needs real
+content, not just a pointer, to stay useful offline (the app's whole
+"no computer needed" ethos) — but a hand-maintained full copy is exactly
+the drift problem the pointer just fixed. Resolved with
+`scripts/sync-qdef-spec.sh`, a manually-run script (not CI, not a
+build-time fetch — deliberately, so a bad upstream fetch or an
+unreviewed upstream change never lands unattended) that mirrors
+`mofosyne/qdef`'s current `docs/QDEF-SPEC.md` into a committed
+`QDEF-SPEC-cached.md`, printing a diff against the last committed copy so
+whoever runs it can review before committing. `app/build.gradle`'s
+`copyQdefSpecToRawRes` task now sources from that cache file instead of
+the pointer (falling back to the pointer if the cache is ever missing,
+so a fresh checkout without it still builds) — keeps the actual
+`./gradlew build` fully offline/hermetic, unlike a build-time fetch
+would've been.
+
 Assessed whether either new mechanism changes anything for TagDrop:
 **no action needed on either.** The bare `payload` slot is a byte-cost
 optimization for Records that carry exactly one untyped value — none of

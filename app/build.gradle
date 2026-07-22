@@ -13,9 +13,18 @@ tasks.register("copySpecToRawRes", Copy) {
     rename { "spec.md" }
 }
 
+// QDEF-SPEC.md itself is just a short pointer to the real, always-current spec at
+// mofosyne/qdef (kept that way deliberately -- a hand-maintained full copy here just
+// drifts, see its own header and CLAUDE.md). For the in-app viewer to still show real
+// content offline, this bundles QDEF-SPEC-cached.md instead -- a periodically refreshed
+// mirror, updated by running `scripts/sync-qdef-spec.sh` and committing the result (not
+// fetched at build time: keeps builds hermetic/offline-safe and avoids depending on
+// GitHub being reachable from wherever ./gradlew happens to run). Falls back to the
+// pointer file itself if the cache is ever missing, so a fresh checkout still builds.
+def qdefSpecCacheFile = rootProject.file("QDEF-SPEC-cached.md")
 def qdefSpecRawResDir = layout.buildDirectory.dir("generated/qdefSpecRawRes")
 tasks.register("copyQdefSpecToRawRes", Copy) {
-    from(rootProject.file("QDEF-SPEC.md"))
+    from(qdefSpecCacheFile.exists() ? qdefSpecCacheFile : rootProject.file("QDEF-SPEC.md"))
     into(qdefSpecRawResDir.map { it.dir("raw") })
     rename { "qdef_spec.md" }
 }
