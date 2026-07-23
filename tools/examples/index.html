@@ -2412,8 +2412,8 @@ async function addRawQrCard(grid, { label, mime, rawContent, fileIdHex }) {
 
 // Renders a card for a binary/byte-mode QR code — raw Record Sequence bytes
 // encoded in QR byte mode instead of a tagdrop: URI in alphanumeric mode.
-// Shows the raw bytes as a QR code alongside a "binary QR" badge and the
-// corresponding tagdrop: URI for copy/inspect.
+// Shows the raw bytes as a QR code alongside a "binary QDEF QR" badge and
+// the corresponding tagdrop: URI for copy/inspect.
 async function addBinaryQrCard(grid, { label, mime, rawBytes, uri, id }) {
   const div = document.createElement('div');
   div.className = 'qr-card';
@@ -2423,7 +2423,7 @@ async function addBinaryQrCard(grid, { label, mime, rawBytes, uri, id }) {
   infoEl.className = 'qr-qrinfo';
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
-    <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge binary">binary QR</span></div>
+    <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge binary">binary QDEF QR</span></div>
     <div class="qr-id">${id} · ${rawBytes.length} raw bytes + ${QDEF_FRAMING.length} byte framing · byte mode</div>`);
   div.appendChild(infoEl);
   div.insertAdjacentHTML('beforeend', `
