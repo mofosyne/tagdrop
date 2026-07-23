@@ -108,18 +108,34 @@ function encodeValue(v) {
   throw new Error(`encodeValue: unsupported type ${typeof v}`);
 }
 
+// Encodes a single field-map key: a non-negative uint (major type 0) for an
+// ordinary Type-specific key, or a CBOR negative integer (major type 1,
+// argument `-(k+1)`) for a QDEF Common Field Key (§3.6, always odd/optional).
+function encodeKey(k) {
+  return k >= 0 ? encodeUInt(k, 0) : encodeUInt(-k - 1, 1);
+}
+
+// RFC 8949 §4.2.1 core deterministic-encoding map-key order (QDEF-SPEC.md
+// §3.4): shorter encoded key first; same-length keys compare bytewise. NOT
+// the same as ascending integer value once negative keys are involved — a
+// negative key (major type 1) always encodes to a *larger* raw byte than a
+// same-magnitude non-negative key (major type 0), so e.g. `0` sorts before
+// `-1` here despite `-1 < 0`.
+function compareKeyBytes(a, b) {
+  if (a.length !== b.length) return a.length - b.length;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
+
 // fields: plain object, integer-string keys, undefined values are omitted.
-// A negative key (a QDEF Common Field Key, QDEF-SPEC.md §3.6 — always odd/
-// optional) encodes as a CBOR negative integer (major type 1: argument
-// `-(k+1)`) instead of the ordinary major-type-0 uint.
 function encodeRecord(fields) {
   const keys = Object.keys(fields)
     .filter((k) => fields[k] !== undefined)
     .map(Number)
-    .sort((a, b) => a - b);
+    .sort((a, b) => compareKeyBytes(encodeKey(a), encodeKey(b)));
   const parts = [encodeUInt(keys.length, 5)];
   for (const k of keys) {
-    parts.push(k >= 0 ? encodeUInt(k, 0) : encodeUInt(-k - 1, 1));
+    parts.push(encodeKey(k));
     parts.push(encodeValue(fields[String(k)]));
   }
   return Buffer.concat(parts);

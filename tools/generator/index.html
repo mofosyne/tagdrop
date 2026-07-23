@@ -733,14 +733,30 @@ function writeKey(out, k) {
   else writeHead(out, 1, -k - 1);
 }
 
+// RFC 8949 §4.2.1 core deterministic-encoding map-key order (QDEF-SPEC.md
+// §3.4): shorter encoded key first; same-length keys compare bytewise. NOT
+// the same as ascending integer value once negative keys are involved — a
+// negative key (major type 1) always encodes to a *larger* raw byte than a
+// same-magnitude non-negative key (major type 0), so e.g. `0` sorts before
+// `-1` here despite `-1 < 0`.
+function keyBytes(k) {
+  const out = [];
+  writeKey(out, k);
+  return out;
+}
+function compareKeyBytes(a, b) {
+  if (a.length !== b.length) return a.length - b.length;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
+
 // ── QDEF Records (SPEC.md §2's "Relationship to QDEF") ────────────────────
-// A field object's keys are always encoded in ascending numeric order —
-// SPEC.md's fixed, specified key-encoding order (§2.2) — rather than
+// A field object's keys are always encoded in canonical order (above) —
+// SPEC.md's fixed, specified key-encoding order (§2.2/§3.4) — rather than
 // whatever order a caller happened to list them in, the way the old
 // cborMap(pairs)-array pattern required getting right by convention.
-// Negative Common Field Keys (§3.6) sort before every non-negative one.
 function cborFieldMap(fields) {
-  const keys = Object.keys(fields).filter(k => fields[k] !== null && fields[k] !== undefined).map(Number).sort((a, b) => a - b);
+  const keys = Object.keys(fields).filter(k => fields[k] !== null && fields[k] !== undefined).map(Number).sort((a, b) => compareKeyBytes(keyBytes(a), keyBytes(b)));
   const out = [];
   writeHead(out, 5, keys.length);
   for (const k of keys) { writeKey(out, k); cborValue(out, fields[k]); }

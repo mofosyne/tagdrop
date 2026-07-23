@@ -63,6 +63,22 @@ object MiniCbor {
         return out.toByteArray()
     }
 
+    /**
+     * RFC 8949 §4.2.1's core deterministic-encoding map-key order (QDEF-SPEC.md §3.4
+     * requires it of every Record Map): shorter encoded key first; same-length keys compare
+     * bytewise. NOT the same as ascending integer value once negative keys are involved — a
+     * negative key (major type 1) always encodes to a *larger* raw byte than a same-magnitude
+     * non-negative key (major type 0), so e.g. `0` sorts before `-1` here despite `-1 < 0`.
+     */
+    private val CANONICAL_KEY_BYTES_ORDER = Comparator<ByteArray> { a, b ->
+        if (a.size != b.size) a.size - b.size
+        else {
+            var i = 0
+            while (i < a.size && a[i] == b[i]) i++
+            if (i == a.size) 0 else (a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF)
+        }
+    }
+
     /** Encodes a single CBOR byte string (major type 2) — e.g. a sequence envelope item. */
     fun encodeBytes(bytes: ByteArray): ByteArray {
         val out = ByteArrayOutputStream()
@@ -305,7 +321,9 @@ object MiniCbor {
 
     /**
      * Encodes a QDEF Record: `[typeId, map?, payload?, subrecord*]` as one CBOR array (major
-     * type 4). Fields sort ascending (SPEC §2.2). The map is omitted entirely only when
+     * type 4). Fields sort by RFC 8949 §4.2.1 canonical/deterministic order — by their
+     * *encoded* key bytes (shorter first, then bytewise), not by plain integer value; see
+     * [CANONICAL_KEY_BYTES_ORDER] (QDEF-SPEC.md §3.4). The map is omitted entirely only when
      * [fields] itself is empty — a static, per-call-site choice (e.g. Compress Wrapper, whose
      * one value moved entirely to the payload slot) — NOT whenever every declared field's
      * *value* happens to be null: a Type that always declares fields (Content Extension,
@@ -316,7 +334,7 @@ object MiniCbor {
      */
     fun encodeRecord(typeId: Int, fields: List<Pair<Int, Any?>>, subrecords: List<ByteArray> = emptyList(), payload: ByteArray? = null): ByteArray {
         val items = mutableListOf(encodeUInt(typeId.toLong()))
-        if (fields.isNotEmpty()) items.add(encodeMap(fields.sortedBy { it.first }))
+        if (fields.isNotEmpty()) items.add(encodeMap(fields.sortedWith(compareBy(CANONICAL_KEY_BYTES_ORDER) { encodeKey(it.first) })))
         if (payload != null) items.add(encodeBytes(payload))
         items.addAll(subrecords)
         val out = ByteArrayOutputStream()

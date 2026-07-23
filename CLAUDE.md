@@ -436,6 +436,55 @@ pre-array-wrap grammar, per the version-10 entry above — still
 self-consistent, still passing, still not exercising the real current
 wire format) both pass; `qdef-fixtures.json` regenerated.
 
+### Canonical CBOR key-ordering bug (SPEC.md version 12)
+
+Self-discovered, not reported upstream or by a user: a close read of
+QDEF-SPEC.md §3.4 (done while verifying an unrelated "Root Unification"
+claim, below) turned up that every implementation was sorting Record
+field-map keys by plain ascending integer value, not RFC 8949 §4.2.1's
+actual core deterministic-encoding rule — compare each key's own
+*encoded* bytes, shorter first, then bytewise. The two rules are silently
+identical as long as every key on a Record shares one CBOR major type,
+which was true of every TagDrop key through version 10 (all Type-specific
+keys are non-negative uints, major type 0, where a bigger integer always
+encodes to more-or-equal bytes — integer order and byte-length order
+coincide). Version 11's negative Common Field Keys (major type 1) broke
+that coincidence: a negative key's encoded byte is always numerically
+*larger* than a same-magnitude non-negative key's (`-11` encodes to
+`0x2a`, `0` encodes to `0x00`), so canonical order actually puts `0`
+*before* `-11` on the wire — the reverse of what version 11's own history
+entry claimed at the time ("a negative Common Field Key always sorts
+before any Type-specific non-negative key"). That claim was corrected in
+place (SPEC.md's version-11 entry now has an explicit note pointing at
+version 12) rather than silently rewritten, matching this project's
+practice elsewhere of leaving a visible trail when an earlier documented
+belief turns out to be wrong (see the FINDINGS.md #51 self-correction,
+CLAUDE.md's own session history).
+
+Fixed in `MiniCbor.kt` (a new `CANONICAL_KEY_BYTES_ORDER: Comparator<ByteArray>`
+used by `encodeRecord`'s sort call, replacing `sortedBy { it.first }`) and
+the three JS files that actually emit negative keys —
+`tools/generator/index.html`, `tools/examples/index.html` (byte-identical
+`cborFieldMap`/`keyBytes`/`compareKeyBytes` in both, per the "known
+duplication" note below), and `tools/test-qdef-roundtrip.mjs`'s
+`encodeRecord`. **`tools/reader/index.html` needed no change** — it only
+ever decodes, never encodes, negative keys. **`tools/test-qr-
+roundtrip.mjs` also needed no change** — per the version-10 entry above,
+this file was deliberately never migrated to array-wrapped Records or
+Common Field Keys at all, so it has no negative-key support to begin
+with; its existing integer-ascending sort is (and remains) correct,
+since every key it ever emits is major type 0.
+
+`MiniCborTest.kt`'s `negativeKeysSortBeforeNonNegativeKeysOnTheWire` test
+asserted the old (wrong) order and was rewritten —
+`fieldsSortByCanonicalEncodedKeyBytesOnTheWire` — to assert the corrected
+one. Verified via the same standalone `kotlinc`+JUnit harness used
+throughout this port (155/157 tests green; the 2 failures are the same
+pre-existing, unrelated `ByteArray`-reference-equality issue noted
+elsewhere in this file, untouched by this change) and both JS test
+scripts (`test-qdef-roundtrip.mjs`'s 10 vectors, `test-qr-roundtrip.mjs`'s
+14, both passing); `qdef-fixtures.json` regenerated.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

@@ -430,19 +430,25 @@ class MiniCborTest {
         assertEquals("Beach sunset", decoded.record[-7])
     }
 
-    @Test fun negativeKeysSortBeforeNonNegativeKeysOnTheWire() {
-        // encodeRecord sorts fields ascending by integer value regardless of input order
-        // (SPEC §2.2) -- -11 must land before 0 in the actual encoded bytes, not just in the
-        // decoded Map. (Plain encodeMap preserves caller order -- encodeRecord does the
-        // sorting, exercised here since that's the real call path every Record goes through.)
+    @Test fun fieldsSortByCanonicalEncodedKeyBytesOnTheWire() {
+        // encodeRecord sorts fields by RFC 8949 §4.2.1 canonical order -- comparing each key's
+        // own ENCODED bytes (shorter first, then bytewise), not by plain integer value
+        // (QDEF-SPEC.md §3.4) -- regardless of input order, so this must land the same way in
+        // the actual encoded bytes, not just in the decoded Map. (Plain encodeMap preserves
+        // caller order -- encodeRecord does the sorting, exercised here since that's the real
+        // call path every Record goes through.)
         val declaredNegativeFirst = MiniCbor.encodeRecord(14, listOf(-11 to byteArrayOf(1), 0 to "image/png"))
         val declaredPositiveFirst = MiniCbor.encodeRecord(14, listOf(0 to "image/png", -11 to byteArrayOf(1)))
         assertArrayEquals(declaredNegativeFirst, declaredPositiveFirst)
-        // Confirm the negative key's byte (major 1, argument 10 -> 0x2a) really does precede
-        // the positive key's byte (major 0, argument 0 -> 0x00) in the map header's pair order.
-        val negKeyByte = (1 shl 5) or 10 // 0x2a
+        // Confirm the non-negative key's byte (major 0, argument 0 -> 0x00) really does precede
+        // the negative key's byte (major 1, argument 10 -> 0x2a) in the map header's pair order:
+        // both encode to a single byte, so canonical order falls back to a bytewise compare, and
+        // 0x00 < 0x2a -- despite -11 < 0 as plain integers, it sorts *after* 0 on the wire, since
+        // major type 1's encoded byte is always numerically larger than major type 0's for the
+        // same-magnitude argument.
+        val posKeyByte = 0 // major 0, argument 0 -> 0x00
         val firstKeyOffset = 3 // [array header][typeId byte][map header byte] precede the map's own pairs
-        assertEquals(negKeyByte, declaredNegativeFirst[firstKeyOffset].toInt() and 0xFF)
+        assertEquals(posKeyByte, declaredNegativeFirst[firstKeyOffset].toInt() and 0xFF)
     }
 
     @Test fun compressWrapperShapeNoMapJustPayload() {

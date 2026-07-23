@@ -1,11 +1,10 @@
 # TagDrop Encoding Specification
 
-**Version:** 11 (Compress Wrapper and Media Payload adopt QDEF's payload
-slot — `content`/the Compress Wrapper's DEFLATE bytes move out of the
-field map into `[typeId, map?, payload?, subrecord*]`'s payload
-position — and Media Preview's `contentHash`/`filename`/`label` and
-Content Extension/Paper-Preview's `source_url` migrate to QDEF's shared
-Common Field Keys (`-11`/`-15`/`-7`/`-13`); see §14 "Version history")
+**Version:** 12 (Record field maps now sort by RFC 8949 §4.2.1 canonical/
+deterministic key order — comparing each key's own *encoded* bytes, not
+its plain integer value — a real behavior change once negative Common
+Field Keys (version 11) are mixed with ordinary non-negative keys on the
+same map; see §14 "Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -2123,7 +2122,30 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 11** (current) — adopts two QDEF-SPEC.md grammar/registry
+**Version 12** (current) — corrects a map-key-ordering bug: Record field
+maps MUST sort by RFC 8949 §4.2.1's core deterministic-encoding order
+(QDEF-SPEC.md §3.4 requires it of every Record Map) — comparing each
+key's own *encoded* bytes, shorter first, then bytewise — not by the
+field key's plain integer value. This is silently the same thing as long
+as every key on a Record shares one CBOR major type (all of TagDrop's
+own Type-specific keys are non-negative uints, major type 0, where a
+larger integer always encodes to more or equal bytes), which is why the
+bug went unnoticed through versions 2-10. It stopped being the same
+thing the moment version 11 introduced negative Common Field Keys (major
+type 1): a negative key's encoded byte is always numerically *larger*
+than a same-magnitude non-negative key's, so e.g. field key `0` (major
+0) now correctly sorts *before* `-11` (major 1) on the wire, even though
+`-11 < 0` as a plain integer — the opposite of what version 11's own
+history entry (below) claimed. Every implementation (`MiniCbor.kt`, all
+four JS tools except `test-qr-roundtrip.mjs`, which has no negative-key
+support to begin with, so its integer-ascending sort was never wrong)
+needed a genuine comparator fix, not just a documentation correction —
+each had been sorting keys by plain integer value since encode-side
+sorting was first introduced. No field/Type-ID/byte-length changes; this
+is purely a key-ordering fix, verified by re-running the full Kotlin and
+JS test suites and regenerating `qdef-fixtures.json`.
+
+**Version 11** — adopts two QDEF-SPEC.md grammar/registry
 additions confirmed live upstream (`[namespace?, typeId, map?, payload?,
 subrecord*]`, and §3.6's Common Field Keys) for the Record Types where
 they're a genuine fit, not adopted wholesale. **Payload slot:** Compress
@@ -2155,10 +2177,12 @@ semantic difference. CBOR's negative-integer encoding (major type 1,
 `-(n+1)`) is new to every implementation's wire-level primitives; both
 `MiniCbor.kt` and all four JS tools needed a genuine encode/decode
 addition (not just a renumbering) to emit/parse it, since nothing in
-TagDrop's format used a non-uint map key before this version. Fields
-still sort ascending by integer value (SPEC §2.2 unchanged) — a negative
-Common Field Key always sorts before any Type-specific non-negative key
-on the same Record.
+TagDrop's format used a non-uint map key before this version. **Note:**
+this version's fields were, at the time, sorted ascending by plain
+integer value — believed to put a negative Common Field Key before every
+Type-specific non-negative key on the same Record. That belief was
+wrong; see version 12, directly above, which corrects both the actual
+sort order and this claim about it.
 
 **Version 10** — corrects a field-key bug in the Split (Type 2)
 and Compress (Type 8) Wrapper Records: both TagDrop implementations
