@@ -160,7 +160,7 @@ class CollectionDetailAdapter(
                 is PageItem.CacheEntry -> {
                     val cache = item.cache
                     binding.textTitle.text = cache.title ?: cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
-                    binding.textSubtitle.text = subtitleWithLocationLabel(cache.mimeType, cache.locationLabel)
+                    binding.textSubtitle.text = subtitleWithLocationLabel(cacheSubtitleBase(cache), cache.locationLabel)
                     binding.textSubtitle.visibility = View.VISIBLE
                     binding.textStatus.text = dateFormat().format(Date(cache.discoveredAt))
                     binding.buttonOpen.isEnabled = cache.isOpenable
@@ -274,5 +274,11 @@ class CollectionDetailAdapter(
         /** Appends a non-coordinate location description (SPEC §4.2) to a subtitle, since it has no map pin to show instead. */
         private fun subtitleWithLocationLabel(base: String, locationLabel: String?) =
             if (locationLabel != null) "$base · 📍 $locationLabel" else base
+
+        /** Subtitle text: filename (unless it's already showing as the title) plus MIME type. */
+        private fun cacheSubtitleBase(cache: FoundCache): String = listOfNotNull(
+            cache.filename?.takeIf { cache.title != null || cache.hint != null },
+            cache.mimeType
+        ).joinToString(" · ")
     }
 }

@@ -7,6 +7,7 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.github.mofosyne.tagdrop.R
+import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.isThumbnailEligible
 import com.github.mofosyne.tagdrop.databinding.ItemCollectionBinding
 import com.github.mofosyne.tagdrop.util.DEFAULT_COLLECTION_ICON
@@ -50,7 +51,7 @@ class HistoryAdapter(
                         if (cache.createdByMe) R.string.collection_type_loose_created else R.string.collection_type_loose
                     )
                     binding.textTitle.text = cache.title ?: cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
-                    binding.textSubtitle.text = cache.mimeType
+                    binding.textSubtitle.text = cacheSubtitleBase(cache)
                     binding.textMeta.text = buildString {
                         if (cache.collectionTag != null) append("#${cache.collectionTag}  ·  ")
                         append(dateFormat().format(Date(cache.discoveredAt)))
@@ -101,5 +102,11 @@ class HistoryAdapter(
 
     companion object {
         private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+
+        /** Subtitle text: filename (unless it's already showing as the title) plus MIME type. */
+        private fun cacheSubtitleBase(cache: FoundCache): String = listOfNotNull(
+            cache.filename?.takeIf { cache.title != null || cache.hint != null },
+            cache.mimeType
+        ).joinToString(" · ")
     }
 }
