@@ -3,6 +3,8 @@
 - New: write any single code straight to an NFC tag from the Create screen.
 - New: Paper trail stops can declare their position in a sequence (e.g. "stop 3 of a trail"), shown as a step indicator.
 - New: the full wire-format spec is now browsable in-app.
+- Improved: history and collection lists now show a page's title when it has one, with the filename kept as a secondary line underneath.
+- Improved: "Reload default sources" now pulls from the same recommended-sources list as "Browse recommended sources", so new default sources can be added without an app update.
 - Security: fixed a trust-on-first-use cache-poisoning issue in signer verification.
 - Security: scanned HTML/Markdown content can no longer silently phone home over the network — links now require an explicit tap and open in your browser.
 - Wire format: Content and Paper codes now use the QDEF container format underneath. Papers you scanned with a previous version may show as empty after this update — rescan them to pick the files back up.
