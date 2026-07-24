@@ -447,12 +447,12 @@ object TagDropCodec {
         preview: ByteArray, body: ByteArray, compressBody: Boolean, withParity: Boolean, maxFragmentDataBytes: Int
     ): List<ByteArray> {
         val wrapped = if (compressBody) compressWrap(body) else body
-        val single = preview + wrapped
+        val single = MiniCbor.encodeRootBundle(listOf(preview, wrapped))
         if (maxFragmentDataBytes <= 0 || single.size <= maxFragmentDataBytes) return listOf(single)
         val fragmentCount = maxOf(1, (wrapped.size + maxFragmentDataBytes - 1) / maxFragmentDataBytes)
         if (fragmentCount <= 1) return listOf(single)
         val groupId = sha256(wrapped).copyOf(8)
-        return splitFragments(wrapped, groupId, fragmentCount, withParity).map { preview + it }
+        return splitFragments(wrapped, groupId, fragmentCount, withParity).map { MiniCbor.encodeRootBundle(listOf(preview, it)) }
     }
 
     // ── Content: build (SPEC §3.1/§3.1a) ────────────────────────────────────────
@@ -606,7 +606,7 @@ object TagDropCodec {
             // Single code: Media Payload (or its Compress Wrapper) nests as Media Preview's own
             // subrecord (§3.1a) — not a separate sibling Record.
             val wireMediaPreview = buildMediaPreview(listOf(mediaPayloadForWire))
-            val code = extensionRaw + wireMediaPreview
+            val code = MiniCbor.encodeRootBundle(listOf(extensionRaw, wireMediaPreview))
             return ContentBuild(listOf(code), extensionRaw, mediaPreviewRaw, mediaPayloadRaw, cacheId)
         }
 
@@ -616,7 +616,7 @@ object TagDropCodec {
         // Content Extension stays a separate top-level Record, repeated per code exactly as in
         // the single-code case above.
         val fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, withParity, listOf(mediaPreviewRaw))
-        val codes = fragments.map { extensionRaw + it }
+        val codes = fragments.map { MiniCbor.encodeRootBundle(listOf(extensionRaw, it)) }
         return ContentBuild(codes, extensionRaw, mediaPreviewRaw, mediaPayloadRaw, cacheId)
     }
 
@@ -932,26 +932,30 @@ object TagDropCodec {
      */
     @Suppress("UNCHECKED_CAST")
     private fun recordScanResult(bytes: ByteArray): ScannedRecord? {
-        val first = MiniCbor.decodeRecordPrefix(bytes) ?: return null
+        // QDEF-SPEC.md's self-delimited root (§2/§3.1): the whole scanned payload is exactly one
+        // definite-length CBOR array, so decodeRootBundle's own array-header length is what
+        // bounds it — bytes past that length are provably outside the container and never
+        // inspected here, satisfying SPEC §9's deniability requirement structurally rather than
+        // by this function manually declining to look further (see MiniCbor.decodeRootBundle's
+        // own doc comment).
+        val records = MiniCbor.decodeRootBundle(bytes) ?: return null
+        if (records.isEmpty() || records.size > 2) return null
+        val first = records[0]
+        val second = records.getOrNull(1)
         return when (first.typeId) {
-            TYPE_CONTENT_EXTENSION -> contentScanResult(first)
-            TYPE_PAPER_PREVIEW -> paperScanResult(first)
+            TYPE_CONTENT_EXTENSION -> contentScanResult(first, second)
+            TYPE_PAPER_PREVIEW -> paperScanResult(first, second)
             else -> null
         }
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun contentScanResult(first: MiniCbor.DecodedRecord): ScannedRecord.Content? {
+    private fun contentScanResult(first: MiniCbor.DecodedRecord, second: MiniCbor.DecodedRecord?): ScannedRecord.Content? {
         if (!checkRecordKeys(first.record, KNOWN_CONTENT_EXTENSION)) return null
-        if (first.trailing.isEmpty()) {
+        if (second == null) {
             // Key-only code (SPEC §9): Extension only, no Media Preview/Payload at all.
             return ScannedRecord.Content(first.raw, first.record, null, null, null, null, null)
         }
-        // Only ever decode ONE more Record here, never further: SPEC §9's deniability feature
-        // requires decoders to stop after this and tolerate anything beyond it untouched — bytes
-        // past this second Record may be a wholly independent, differently-encrypted Record
-        // Sequence, not something to parse-or-fail on.
-        val second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
         if (second.typeId == TYPE_MEDIA_PREVIEW) {
             // Single-code case: Media Payload is Media Preview's own (sole) subrecord — either
             // directly, or Compress-wrapped (unwrapMediaPayload handles both downstream). Taken
@@ -974,13 +978,8 @@ object TagDropCodec {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun paperScanResult(first: MiniCbor.DecodedRecord): ScannedRecord.Paper? {
+    private fun paperScanResult(first: MiniCbor.DecodedRecord, second: MiniCbor.DecodedRecord?): ScannedRecord.Paper? {
         if (!checkRecordKeys(first.record, KNOWN_PAPER_PREVIEW)) return null
-        var second: MiniCbor.DecodedRecord? = null
-        if (first.trailing.isNotEmpty()) {
-            // Same "stop after the second Record, never look further" rule as contentScanResult.
-            second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
-        }
         return ScannedRecord.Paper(first.raw, first.record, second?.typeId, second?.raw, second?.record)
     }
 
@@ -1378,8 +1377,25 @@ object TagDropCodec {
             appendLine("── Record Sequence (${bytes.size} bytes) ──")
         }
         runCatching {
-            var rest = bytes
+            // The self-delimited QDEF root (QDEF-SPEC.md §2/§3.1): try the strict, structured
+            // decode first — a single Record, or a Bundle wrapping several — since that's what
+            // any real TagDrop code now is. Whatever's left after the root array's own
+            // self-delimited length (SPEC §9: possibly tolerated padding, or a wholly
+            // independent second Sequence) falls through to the same best-effort walk this
+            // function always used, so a genuinely malformed/legacy input still shows something
+            // rather than nothing.
             var i = 0
+            var rest = bytes
+            val records = MiniCbor.decodeRootBundle(bytes)
+            if (records != null) {
+                for (rec in records) {
+                    appendLine("Record $i:")
+                    describeRecord(rec, 1, this)
+                    appendLine()
+                    i++
+                }
+                rest = bytes.copyOfRange(MiniCbor.encodeRootBundle(records.map { it.raw }).size, bytes.size)
+            }
             while (rest.isNotEmpty()) {
                 val rec = MiniCbor.decodeRecordPrefix(rest) ?: break
                 appendLine("Record $i:")

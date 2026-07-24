@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "node test-qr-roundtrip.mjs",
-    "test:qdef": "node test-qdef-roundtrip.mjs"
+    "test:qdef": "node test-qdef-roundtrip.mjs",
+    "lint:qdef": "node verify-qdef-lint.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

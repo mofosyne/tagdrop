@@ -1,10 +1,12 @@
 # TagDrop Encoding Specification
 
-**Version:** 12 (Record field maps now sort by RFC 8949 §4.2.1 canonical/
-deterministic key order — comparing each key's own *encoded* bytes, not
-its plain integer value — a real behavior change once negative Common
-Field Keys (version 11) are mixed with ordinary non-negative keys on the
-same map; see §14 "Version history")
+**Version:** 13 (the Record Sequence a code carries is now a genuine
+self-delimited CBOR array — QDEF's Root Unification-derived "the root is
+the same shape as any Record" — instead of a bare RFC 8742 CBOR Sequence;
+adopted from a further QDEF-SPEC.md revision, and unlike the prior Root
+Unification pass, this one *does* change TagDrop's own wire bytes: +1
+byte on any code carrying two top-level Records, the common case; see §14
+"Version history")
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -40,7 +42,7 @@ The format is designed to:
 
 ## 2. Wire Framing
 
-Every TagDrop code carries a **CBOR Sequence** ([RFC 8742](https://www.rfc-editor.org/rfc/rfc8742) — concatenated CBOR data items, no enclosing array) of one or more **Records** (QDEF terminology — each Record is its own self-delimited CBOR array, `[namespace?, typeId, map?, payload?, subrecord*]`, routed by its `typeId` element, per QDEF-SPEC.md §3.1; a Record MAY carry other Records nested after its own map/payload, as subrecords). Two of QDEF's own stdlib Types — Compress Wrapper (Type 8) and Media Payload (Type 6) — use the `payload` slot for their one genuinely singular value (§3.1a, §4.1); every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields and stays field-map-only, no payload slot. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions (a structural Bundle Type 0, unrelated to anything TagDrop currently emits). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
+Every TagDrop code carries a **Record Sequence**: the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1, version 13) — exactly one definite-length CBOR array, the *same* self-delimited shape as any **Record** (QDEF terminology — `[namespace?, typeId?, map?, payload?, subrecord*]`, routed by its `typeId` element; a Record MAY carry other Records nested after its own map/payload, as subrecords). A code carrying a single top-level Record (e.g. a key-only code, §9) writes that Record's own array directly as the root — no extra wrapping. A code carrying two top-level Records (Content Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-fragment — the common case) wraps them as the two subrecords of an implied, never-transmitted Bundle (typeId `0`, omitted): one more definite-length array around them, 1 byte for TagDrop's own two-item case. Being a genuine CBOR array (not a bare RFC 8742 Sequence, unlike prior versions of this document) means the root is self-delimiting by construction — a decoder finds where it ends from the array's own header, not by counting how many Records it expects to see (§9's "Decoders tolerate trailing bytes" relies on exactly this). Two of QDEF's own stdlib Types — Compress Wrapper (Type 8) and Media Payload (Type 6) — use the `payload` slot for their one genuinely singular value (§3.1a, §4.1); every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields and stays field-map-only, no payload slot. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions (a structural Bundle Type 0, unrelated to anything TagDrop currently emits otherwise). A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
 
 **Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
@@ -849,7 +851,8 @@ still a flat Preview/Body pair, Types 5/7):
   overhead the old `part_meta` already accepted on every sector for a
   similar reason.
 - **Body travels alone or Split-wrapped.** If Body fits on the same code as
-  Preview, that code carries both Records (a plain two-item CBOR Sequence).
+  Preview, that code carries both Records (wrapped as a two-item root
+  Bundle, §2, version 13).
   If not, Body is Split-wrapped (QDEF-SPEC.md §4.1 Type 2) into `count`
   fragments, and each of those codes carries Preview plus one fragment.
   `group_id` is a content hash of the fully reassembled, unwrapped Body
@@ -1702,17 +1705,18 @@ format in plain view. The same property underlies things like
   any particular `key_material` unlocks them — and genuine cover content is
   indistinguishable from "this is simply the (unencrypted) content, full
   stop."
-- **Decoders tolerate trailing bytes.** A CBOR Sequence (RFC 8742, §2) is
-  self-delimiting — a decoder reads exactly as many Records as it expects
-  and stops. TagDrop decoders MUST NOT treat additional bytes after a
-  complete, valid Record Sequence (§2) as an error. This lets a code's
-  transmitted bytes be followed by a second, wholly independent Record
-  Sequence — its own Preview (and Body, if any) — encrypted under a
-  different key, indistinguishable from padding or noise to a decoder that
-  stops after the first one. This is separate from the `content`-field
-  override map above (which lives *inside* Media Payload's own bytes, not
-  after the whole Sequence); the two mechanisms can be combined for two
-  independent layers of hiding on one physical code.
+- **Decoders tolerate trailing bytes.** The Record Sequence (§2, version
+  13) is a genuine self-delimited CBOR array — a decoder finds where it
+  ends from the array's own header, not by counting how many Records it
+  expects to see. TagDrop decoders MUST NOT treat additional bytes after
+  that array as an error. This lets a code's transmitted bytes be followed
+  by a second, wholly independent Record Sequence — its own Preview (and
+  Body, if any) — encrypted under a different key, indistinguishable from
+  padding or noise to a decoder that stops after the first one. This is
+  separate from the `content`-field override map above (which lives
+  *inside* Media Payload's own bytes, not after the whole Sequence); the
+  two mechanisms can be combined for two independent layers of hiding on
+  one physical code.
 - **Keys and content are the same shape.** A `key_material`-only code and a
   small code carrying a hidden override map both look like a Preview of
   high-entropy byte strings, optionally followed by a `content` field
@@ -2122,7 +2126,61 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 12** (current) — corrects a map-key-ordering bug: Record field
+**Version 13** (current) — the Record Sequence a code carries (§2) is now
+a genuine self-delimited CBOR array, matching a further QDEF-SPEC.md
+revision that supersedes the "Root Unification" mechanism CLAUDE.md's
+backlog previously assessed as requiring zero TagDrop wire-format changes
+(that assessment was correct for Root Unification itself — it only
+affected QDEF's magic-header container, which TagDrop's own carriers
+never use). This revision goes further: the root is now *always* one
+definite-length CBOR array, on every carrier, including `tagdrop:` URI
+and NFC NDEF, which do change TagDrop's wire bytes. A code carrying a
+single top-level Record (a key-only code, §9) writes that Record's own
+array directly as the root — unchanged, since a lone Record was already
+exactly this shape. A code carrying two top-level Records (Content
+Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-
+fragment — the common case for both payload types) now wraps them as the
+two subrecords of an implied, never-transmitted Bundle (typeId `0`,
+omitted): one more definite-length CBOR array around the two Records,
+costing exactly 1 extra byte per code (a 2-element array header), versus
+the previous bare concatenation. The real motivation isn't the byte
+count, though — it's correctness: the root array's own header is what
+makes it self-delimiting *by construction*, so any decoder (not just
+TagDrop's own, which already knew to stop after exactly the Records it
+expected) can find where the container ends without needing to already
+know how many Records to expect. This directly firms up §9's deniability
+feature (trailing bytes after a code's real content, tolerated as
+possibly an independent second Sequence): previously "a decoder stops
+after the Records it expects" was an app-level policy choice; now it's a
+structural property of the wire format itself. Verified against
+`qdef-lint.cjs` (`tools/qdef-lint.cjs`, vendored unmodified from
+mofosyne/qdef's own prototype, sharing no code with any TagDrop
+encoder/decoder) — every code produced by the current encoders lints
+clean (0 errors, 0 warnings) via the new `npm run lint:qdef` (also gated
+in CI). `MiniCbor.kt` gained `encodeRootBundle`/`decodeRootBundle`; all
+four JS tools gained matching functions (`tools/reader/index.html`
+decode-only, the other three both directions). Every encode-side
+concatenation of a Preview/Extension with a second Record was updated to
+go through the new wrapping function, including two debug-only
+reconstruction sites (`ReceiveActivity.kt`'s CBOR inspector fallback,
+`SectorAssembler.kt`'s stored Paper `streamBytes`) and the CBOR debug
+pretty-printers in both Kotlin and all three JS tools, which previously
+walked the bytes as a bare Record-after-Record sequence and would have
+silently shown nothing for a real code under the new format. One
+non-obvious byte-math fix: `WriteNfcTagActivity.kt`'s NFC capacity-probe
+estimate (`codes.first().size - extensionRaw.size`) needed one more byte
+subtracted for the new wrapping array header — an estimate only, not
+correctness-critical, since the retry loop always re-measures the real
+rebuilt code, but worth getting right. Verified via the same standalone
+`kotlinc`+JUnit harness used throughout this port (162/164 tests green;
+the 2 failures are the same pre-existing, unrelated `ByteArray`-
+reference-equality issue noted elsewhere in this file, untouched by this
+change) and both JS test scripts (`test-qdef-roundtrip.mjs`'s 10 vectors,
+`test-qr-roundtrip.mjs`'s 14 — deliberately unaffected, per the version-10
+entry's reasoning, since it was never migrated to array-wrapped Records);
+`qdef-fixtures.json` regenerated.
+
+**Version 12** — corrects a map-key-ordering bug: Record field
 maps MUST sort by RFC 8949 §4.2.1's core deterministic-encoding order
 (QDEF-SPEC.md §3.4 requires it of every Record Map) — comparing each
 key's own *encoded* bytes, shorter first, then bytewise — not by the

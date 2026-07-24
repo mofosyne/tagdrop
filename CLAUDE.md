@@ -485,6 +485,157 @@ elsewhere in this file, untouched by this change) and both JS test
 scripts (`test-qdef-roundtrip.mjs`'s 10 vectors, `test-qr-roundtrip.mjs`'s
 14, both passing); `qdef-fixtures.json` regenerated.
 
+### Self-delimited root array replaces the bare Record Sequence (SPEC.md version 13)
+
+Started from a user question — "with the new spec saying root is a
+record, is it possible for you to simplify your parser?" — prompted by
+QDEF's "Root Unification" (root parsed with the same grammar as a
+Record, end-of-buffer-bounded instead of array-bounded). First attempt
+at the simplification was wrong and reverted same-session: SPEC.md §9's
+deniability feature requires decoders to stop after the Records they
+expect and tolerate anything beyond as untouched, possibly-independent
+bytes — a generic "decode records until end of buffer, fail on any
+error" walker breaks that outright. Root Unification's own root-as-
+Record framing doesn't actually require a decoder to walk that far
+either — a decoder is always free to stop early — so at that point there
+was no live bug, just a documented near-miss.
+
+The real fix came from a different angle: proposed adding an explicit
+"end of record" marker to QDEF (reusing CBOR's break code) so a
+*generic* decoder without app-specific record-count knowledge could find
+the same boundary TagDrop's own bounded decoder already knew how to
+find. Relayed to qdef bot, whose answer landed differently than
+proposed but solved the same problem better: QDEF's spec had already
+moved to wrapping the root in an ordinary definite-length CBOR array —
+literally the same self-delimiting shape a subrecord already uses — on
+every carrier, including `tagdrop:`-style own-URI-scheme and NDEF
+carriers, not just the magic-header one "Root Unification" covered.
+Verified directly against the live `QDEF-SPEC.md`/`DESIGN.md`/
+`prototype/scripts/qdef-lint.js` before touching any code (not trusted
+on the relay's word alone, per this project's established practice) —
+confirmed real, and confirmed it does change TagDrop's own wire bytes on
+carriers already shipping, unlike Root Unification itself.
+
+**The change:** a code carrying a single top-level Record (a key-only
+code) is unaffected — that Record's own array already *is* the root, "no
+Bundle indirection." A code carrying two top-level Records (the common
+case for both Content and Paper) now wraps them in one more
+definite-length CBOR array — the two subrecords of an implied,
+never-transmitted Bundle (typeId `0`, omitted) — costing exactly 1 byte
+per code versus the previous bare RFC 8742 concatenation. `MiniCbor.kt`
+gained `encodeRootBundle`/`decodeRootBundle`, mirroring the existing
+`encodeRecord`/`decodeRecordPrefix` primitives; all four JS tools gained
+matching functions (`tools/reader/index.html` decode-only, matching its
+decode-only role; the other three both directions). Every encode-side
+site concatenating a Preview/Extension with a second Record — Content's
+single-code and Split-fragment cases, Paper's equivalent pair, in both
+`TagDropCodec.kt` and the three encoding-capable JS tools — now goes
+through the new wrapping function instead of raw concatenation.
+Decode-side `recordScanResult`/`contentScanResult`/`paperScanResult`
+(Kotlin) and their JS mirrors were rewritten around
+`decodeRootBundle`, recovering the exact simplification originally
+asked about — now safe, since `decodeRootBundle`'s self-delimiting is
+structural (bounded by the array's own header) rather than the
+generic-walker approach that broke SPEC §9 the first time around.
+
+Two debug-only reconstruction sites needed the same fix to keep working
+at all, not just to stay byte-accurate: `ReceiveActivity.kt`'s "Inspect
+CBOR" fallback (reconstructs wire bytes when the original scan bytes
+aren't retained) and `SectorAssembler.kt`'s stored Paper `streamBytes`
+(`ScannedPaper.cborBytes`, later re-decoded by `TagDropCodec.
+decodePaperStream` — confirmed by tracing every caller, not assumed,
+since this one persists to Room and getting it wrong would have broken
+existing-session Paper browsing silently). More subtly, the CBOR debug
+pretty-printers (`TagDropCodec.describeCbor`'s Record-walking loop, and
+all three JS tools' `describeRecords`) would have silently shown *zero*
+Records for any real code under the new format — they used to walk
+`decodeRecordPrefix`+`trailing` repeatedly, which assumed a bare
+concatenated sequence; calling that directly on a root-Bundle-wrapped
+code misreads the wrapping array's own header as if it were a
+Record's, and fails immediately. Fixed by trying the strict
+`decodeRootBundle` first and falling through to the old best-effort
+`decodeRecordPrefix`/`trailing` walk for whatever's left afterward
+(SPEC §9 trailing bytes, or genuinely malformed/legacy input) — keeping
+the debug view's existing lenient, never-fully-blank behavior on bad
+input while fixing it for every real code. One non-obvious byte-math
+fix, caught by tracing every site doing manual `Raw + Raw`-style
+concatenation rather than assuming the list above was exhaustive:
+`WriteNfcTagActivity.kt`'s NFC capacity-probe estimate
+(`codes.first().size - extensionRaw.size`) needed one more byte
+subtracted for the new wrapping array header — an estimate feeding a
+retry loop that always re-measures the real rebuilt code, so not
+correctness-critical, but silently off by one otherwise.
+
+**New verification tool adopted, not just written:** qdef bot mentioned
+a "validator" in passing; turned out to be `prototype/scripts/
+qdef-lint.js`, a standalone, dependency-free grammar-and-footgun checker
+qdef ships, written from scratch against the spec with no shared code
+with any TagDrop encoder — a genuinely independent second check, not
+just another self-consistency test. Vendored unmodified as
+`tools/qdef-lint.cjs` (`.cjs` since `tools/package.json` is
+`"type": "module"` but the vendored file is CommonJS), wired up via
+`tools/verify-qdef-lint.mjs` (`npm run lint:qdef`, gated in CI
+alongside `test`/`test:qdef`) — lints every code in `qdef-fixtures.json`
+with `--no-magic` (none of TagDrop's shipping carriers use QDEF's magic
+header). All 15 codes across the 10 fixtures lint clean: 0 errors, 0
+warnings. Worth noting for its own sake: this tool's canonical-map-
+key-order check would have caught the SPEC.md v12 key-ordering bug
+directly, had it existed at the time — a concrete demonstration of why
+an independently-written checker catches a different class of mistake
+than a codebase's own self-consistent test suite.
+
+Verified via the same standalone `kotlinc`+JUnit harness used throughout
+this port (162/164 tests green; the 2 failures are the same
+pre-existing, unrelated `ByteArray`-reference-equality issue noted
+elsewhere in this file, untouched by this change), both JS test scripts
+(`test-qdef-roundtrip.mjs`'s 10 vectors, `test-qr-roundtrip.mjs`'s 14 —
+deliberately unaffected, per the version-10 entry's reasoning, since it
+was never migrated to array-wrapped Records), and the new
+`qdef-lint.cjs` pass; `qdef-fixtures.json` regenerated.
+
+**Separately found, real, severe pre-existing bug — none of the above
+verification would have caught it:** `test-qdef-roundtrip.mjs` and
+`qdef-lint.cjs` both exercise only *one* codec's own byte output against
+itself (or against a spec-level grammar checker) — neither actually
+feeds the web generator's real output into the web reader's real decoder.
+Doing exactly that (a from-scratch Node `vm`-based cross-tool check,
+loading `generator/index.html` and `reader/index.html`'s actual script
+bodies and calling `createContentSectors`/`recordScanResult` directly)
+surfaced a real, severe, and entirely unrelated bug: **all three web
+tools' generic CBOR value decoder (`readVal`, inside
+`cborDecodeSequencePrefix`) never gained a `case 1` for negative
+integers when SPEC.md v11 introduced negative Common Field Keys.** Its
+`switch (major)` fell through to `default: throw`, so any Record whose
+field map contained a negative key — which includes Media Preview's
+`contentHash`/`filename`/`label` on essentially *every* real Content
+code, and `source_url` wherever set — failed to decode via
+`decodeRecordPrefix`'s map-decoding step. Since `decodeRecordPrefix` is
+what `recordScanResult` (the reader's actual scan entry point) depends
+on, this meant the reader has been unable to correctly scan a normal
+Content code's Media Preview since v11 shipped — not a hypothetical or
+edge case, the mainline path. The byte-range-aware primitives
+(`cborItemRanges`/`cborReadInt`/`layoutOf`, used by `stripKeys`/etc.)
+were correctly updated for negative keys back in v11; only this one
+generic recursive decoder was missed, and nothing in the existing test
+suites exercises it against reader-produced output (the reader has no
+committed automated tests of its own at all — this project's own
+"Playwright scripts run ad hoc, not committed" gap, noted earlier in
+this file, is exactly the coverage hole this fell through). Fixed
+identically in all three files (`generator/index.html`,
+`examples/index.html`, `reader/index.html`) by adding a `case 1`
+mirroring `case 0`'s existing structure (including its same
+8-byte-argument/BigInt-overflow handling, negated per RFC 8949 §3.1:
+value = `-(a+1)`). Verified via direct `decodeRecordPrefix` calls against
+a hand-built Media-Preview-shaped byte string in all three files
+post-fix (all three now correctly decode `-11`/`-15`); the full
+cross-tool generator→reader round trip (Content single-code, Content
+Split multi-code, Paper) was also confirmed working end-to-end during
+debugging, though that specific Node `vm` harness (needing DOM stubs to
+tolerate each file's UI-initialization code) wasn't kept as a committed
+script — a real headless-browser (Playwright) version of this exact
+check would be a good candidate for the "worth formalizing" gap this
+file's "Why the reader uses zxing-wasm" section area already flags.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

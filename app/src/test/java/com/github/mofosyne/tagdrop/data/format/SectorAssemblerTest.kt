@@ -54,9 +54,9 @@ class SectorAssemblerTest {
         0 to groupId, 2 to index, 4 to count, 6 to data, 7 to total, 9 to (1.takeIf { parity })
     ), subrecords)
 
-    /** Decodes [extensionRaw] + [secondRaw] the same way a real scan would (SPEC §2, §5.1). */
+    /** Decodes [extensionRaw]/[secondRaw] the same way a real scan would (SPEC §2, §5.1): wrapped as the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1). */
     private fun recordOf(extensionRaw: ByteArray, secondRaw: ByteArray?): ScannedRecord.Content =
-        (TagDropCodec.decodeRaw(extensionRaw + (secondRaw ?: ByteArray(0))) as TagDropScan.RecordScan).record as ScannedRecord.Content
+        (TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOfNotNull(extensionRaw, secondRaw))) as TagDropScan.RecordScan).record as ScannedRecord.Content
 
     /**
      * Splits [mediaPayloadRaw] into [chunkCount]-many Split Wrapper fragment [ScannedRecord.

@@ -487,4 +487,73 @@ class MiniCborTest {
         assertFalse(decoded.record.containsKey(45))
         assertEquals("https://example.com/x", decoded.record[-13])
     }
+
+    // ── Root Bundle (QDEF-SPEC.md §2/§3.1 self-delimited root) ───────────────────
+
+    @Test fun encodeRootBundleWithOneRecordReturnsItUnwrapped() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val root = MiniCbor.encodeRootBundle(listOf(rec))
+        assertArrayEquals("a single Record's own array IS the root -- no Bundle indirection", rec, root)
+    }
+
+    @Test fun decodeRootBundleWithOneRecordRecognizesTypeIdDirectly() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val root = MiniCbor.encodeRootBundle(listOf(rec))
+        val records = MiniCbor.decodeRootBundle(root)!!
+        assertEquals(1, records.size)
+        assertEquals(1, records[0].typeId)
+        assertEquals("hint", records[0].record[3])
+    }
+
+    @Test fun encodeRootBundleWithTwoRecordsWrapsInOneMoreArray() {
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b))
+        // One more byte than the two Records concatenated bare -- the implied Bundle's own
+        // definite-length array header (count=2, single byte for count <= 23).
+        assertEquals(a.size + b.size + 1, root.size)
+        assertEquals(0x82, root[0].toInt() and 0xFF) // major 4 (array), count 2
+    }
+
+    @Test fun decodeRootBundleWithTwoRecordsRecoversBoth() {
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b))
+        val records = MiniCbor.decodeRootBundle(root)!!
+        assertEquals(2, records.size)
+        assertEquals(1, records[0].typeId)
+        assertEquals(14, records[1].typeId)
+        assertArrayEquals(a, records[0].raw)
+        assertArrayEquals(b, records[1].raw)
+    }
+
+    @Test fun decodeRootBundleTreatsBytesAfterTheRootArrayAsUninspectedTrailing() {
+        // SPEC §9's deniability feature: a second, independent (here: garbage) Record Sequence
+        // appended after the root array must never be parsed or cause a failure -- the root
+        // array's own self-delimited length is what makes that safe.
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b))
+        val withTrailingGarbage = root + byteArrayOf(0xFF.toByte(), 0x00, 0x11, 0x22)
+        val records = MiniCbor.decodeRootBundle(withTrailingGarbage)!!
+        assertEquals(2, records.size)
+        assertEquals(1, records[0].typeId)
+        assertEquals(14, records[1].typeId)
+    }
+
+    @Test fun decodeRootBundleRejectsNonArrayRoot() {
+        val bareUint = byteArrayOf(0x01) // a lone CBOR uint, not an array at all
+        assertNull(MiniCbor.decodeRootBundle(bareUint))
+    }
+
+    @Test fun decodeRootBundleRejectsMalformedNestedRecord() {
+        // A well-formed outer array whose second item isn't a well-formed Record itself.
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val notARecord = byteArrayOf(0x60) // an empty CBOR text string, not a Record array
+        val out = java.io.ByteArrayOutputStream()
+        out.write(0x82) // array header, count 2
+        out.write(a)
+        out.write(notARecord)
+        assertNull(MiniCbor.decodeRootBundle(out.toByteArray()))
+    }
 }

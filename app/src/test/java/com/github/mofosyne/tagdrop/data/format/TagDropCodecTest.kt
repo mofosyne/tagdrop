@@ -302,7 +302,7 @@ class TagDropCodecTest {
         val tamperedSplit = MiniCbor.encodeRecord(2, listOf(
             0 to frag.groupId, 2 to frag.index, 4 to frag.count, 6 to tamperedData, 7 to frag.total
         ), listOf(victim.mediaPreviewRaw!!))
-        val tamperedFull = victim.extensionRaw + tamperedSplit
+        val tamperedFull = MiniCbor.encodeRootBundle(listOf(victim.extensionRaw, tamperedSplit))
         val tamperedRecord = (TagDropCodec.decodeRaw(tamperedFull) as TagDropScan.RecordScan).record
         records[1] = tamperedRecord
 
@@ -466,8 +466,8 @@ class TagDropCodecTest {
         val decoded = MiniCbor.decodeRecordPrefix(build.extensionRaw)!!
         val fields = decoded.record.toList() + (9001 to "unknown but odd")
         val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields)
-        val rest = build.codes.first().copyOfRange(build.extensionRaw.size, build.codes.first().size)
-        val record = TagDropCodec.decodeRaw(tamperedExtension + rest) as? TagDropScan.RecordScan
+        val second = MiniCbor.decodeRootBundle(build.codes.first())!![1]
+        val record = TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOf(tamperedExtension, second.raw))) as? TagDropScan.RecordScan
         assertNotNull("an unknown ODD key must be safely ignored, not rejected", record)
     }
 
@@ -476,8 +476,8 @@ class TagDropCodecTest {
         val decoded = MiniCbor.decodeRecordPrefix(build.extensionRaw)!!
         val fields = decoded.record.toList() + (9002 to "unknown and even")
         val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields)
-        val rest = build.codes.first().copyOfRange(build.extensionRaw.size, build.codes.first().size)
-        val scan = TagDropCodec.decodeRaw(tamperedExtension + rest)
+        val second = MiniCbor.decodeRootBundle(build.codes.first())!![1]
+        val scan = TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOf(tamperedExtension, second.raw)))
         assertNull("an unknown EVEN key must reject the whole Record (forward-compat safety valve)", scan)
     }
 
@@ -687,7 +687,7 @@ class TagDropCodecTest {
         val fields = decoded.record.toMutableMap()
         fields[1] = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0) // forged root_hash
         val forgedPreview = MiniCbor.encodeRecord(decoded.typeId, fields.toList())
-        val record = (TagDropCodec.decodeRaw(forgedPreview + build.bodyRaw) as TagDropScan.RecordScan).record as ScannedRecord.Paper
+        val record = (TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOf(forgedPreview, build.bodyRaw))) as TagDropScan.RecordScan).record as ScannedRecord.Paper
         assertNull(TagDropCodec.parsePaperStream(record, build.bodyRaw))
     }
 

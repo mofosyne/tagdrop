@@ -839,6 +839,18 @@ function cborDecodeSequencePrefix(bytes, n) {
         }
         return a;
       }
+      case 1: {
+        // Negative integer (RFC 8949 §3.1: value = -(a+1)) — a QDEF Common Field Key
+        // (QDEF-SPEC.md §3.6) when it's a map key, e.g. Media Preview's contentHash/
+        // filename/label. Same 8-byte-argument handling as case 0, negated.
+        if (a instanceof Uint8Array) {
+          let n = 0n;
+          for (const byte of a) n = (n << 8n) | BigInt(byte);
+          const neg = -(n + 1n);
+          return neg >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(neg) : neg;
+        }
+        return -(a + 1);
+      }
       case 2: return rbs(a);
       case 3: return new TextDecoder().decode(rbs(a));
       case 4: return Array.from({length: a}, readVal);
@@ -967,6 +979,52 @@ function decodeRecordPrefix(bytes) {
   }
 }
 
+/**
+ * Encodes 1+ already-encoded top-level Record byte-arrays as the QDEF self-delimited root
+ * (QDEF-SPEC.md §2/§3.1): a single Record is returned as-is — its own array already IS the
+ * root, "no Bundle indirection" — while two or more become subrecords of an implied, never-
+ * transmitted Bundle (typeId 0, omitted): one more definite-length CBOR array wrapping them.
+ * Bytes appended after the returned array are provably outside the container, and MUST be
+ * tolerated by a decoder (SPEC §9's deniability feature) — decodeRootBundle's own
+ * self-delimiting length is what makes that safe without any app-specific record-count
+ * foreknowledge.
+ */
+function encodeRootBundle(records) {
+  if (records.length === 1) return records[0];
+  const out = [];
+  writeHead(out, 4, records.length);
+  return concatBytes(new Uint8Array(out), ...records);
+}
+
+/**
+ * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one definite-length
+ * CBOR array. If its first item is a uint, the whole array IS one Record's own item list
+ * (delegated to decodeRecordPrefix exactly as for any other Record). Otherwise typeId
+ * defaults to 0 (Bundle, never transmitted for TagDrop's own Types) and every item of the
+ * root array is itself a nested Record, decoded independently. Returns null if the root
+ * isn't a well-formed, definite-length CBOR array, or if any of its items fails to decode as
+ * a Record.
+ */
+function decodeRootBundle(bytes) {
+  try {
+    const ranges = cborItemRanges({ bytes, pos: 0 }, 4);
+    if (ranges.length === 0) return null;
+    if (majorOf(bytes, ranges[0][0]) !== 4) {
+      const rec = decodeRecordPrefix(bytes);
+      return rec ? [rec] : null;
+    }
+    const out = [];
+    for (const [s, e] of ranges) {
+      const rec = decodeRecordPrefix(bytes.slice(s, e));
+      if (!rec) return null;
+      out.push(rec);
+    }
+    return out;
+  } catch (e) {
+    return null;
+  }
+}
+
 /** Pretty-prints one decoded Record (as returned by decodeRecordPrefix/interpretRecordArray)
  *  and, recursively indented, any subrecords it carries. */
 function describeOneRecord(rec, indent, label) {
@@ -983,14 +1041,24 @@ function describeOneRecord(rec, indent, label) {
  *  top-level Record's type and fields (and any subrecords it carries) per
  *  RECORD_TYPE_INFO. Mirrors ../reader/index.html.
  *
- *  The Record Sequence is a flat CBOR sequence of Records (each Record being
- *  a self-delimiting CBOR array [typeId, map, subrecord*]). Do NOT treat it as
- *  a single outer CBOR array — that would wrap the *entire* payload in one
- *  CBOR item, making decodeRecordPrefix misinterpret the top-level structure. */
+ *  The scanned bytes are the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one
+ *  definite-length CBOR array, either a single Record directly or a Bundle wrapping several
+ *  — decodeRootBundle handles both. Whatever's left after the root array's own length (SPEC
+ *  §9: possibly tolerated padding, or a wholly independent second Sequence) falls through to
+ *  a best-effort decodeRecordPrefix/trailing walk, so a genuinely malformed/legacy input
+ *  still shows something rather than nothing. */
 function describeRecords(bytes) {
   let out = '';
-  let rest = bytes;
   let n = 0;
+  let rest = bytes;
+  const records = decodeRootBundle(bytes);
+  if (records) {
+    for (const decoded of records) {
+      out += describeOneRecord(decoded, 0, 'Record ' + (++n) + ' (' + decoded.raw.length + ' bytes): ');
+      out += '\n';
+    }
+    rest = bytes.slice(encodeRootBundle(records.map(r => r.raw)).length);
+  }
   while (rest.length > 0) {
     const decoded = decodeRecordPrefix(rest);
     if (!decoded) {
@@ -1375,7 +1443,7 @@ async function createContentSectors({
     // own subrecord (§3.1a) — not a separate sibling Record.
     const wireMediaPreview = buildMediaPreview(previewFields, [mediaPayloadForWire]);
     return {
-      codes: [{ raw: concatBytes(contentExtension, wireMediaPreview), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
+      codes: [{ raw: encodeRootBundle([contentExtension, wireMediaPreview]), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
       contentExtension, mediaPreview, mediaPayload, cacheId,
     };
   }
@@ -1388,7 +1456,7 @@ async function createContentSectors({
   const fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, parity, [mediaPreview]);
   return {
     codes: fragments.map((frag, i) => ({
-      raw: concatBytes(contentExtension, frag), cacheId, totalBytes,
+      raw: encodeRootBundle([contentExtension, frag]), cacheId, totalBytes,
       index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
     })),
     contentExtension, mediaPreview, mediaPayload, cacheId,
@@ -1490,7 +1558,7 @@ async function createPaper({ label, set, slug, domain, files, related, descripti
 
   if (totalBytes <= maxSectorDataBytes) {
     return {
-      codes: [{ raw: concatBytes(finalPreview, bodyForWire), rootHash, totalBytes, index: 0, count: 1, isParity: false }],
+      codes: [{ raw: encodeRootBundle([finalPreview, bodyForWire]), rootHash, totalBytes, index: 0, count: 1, isParity: false }],
       rootHash, preview: finalPreview, bodyPlain,
     };
   }
@@ -1500,7 +1568,7 @@ async function createPaper({ label, set, slug, domain, files, related, descripti
   const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
   return {
     codes: fragments.map((frag, i) => ({
-      raw: concatBytes(finalPreview, frag), rootHash, totalBytes,
+      raw: encodeRootBundle([finalPreview, frag]), rootHash, totalBytes,
       index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
     })),
     rootHash, preview: finalPreview, bodyPlain,

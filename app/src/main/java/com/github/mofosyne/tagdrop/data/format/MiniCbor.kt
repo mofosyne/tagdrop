@@ -418,6 +418,51 @@ object MiniCbor {
     } catch (e: Exception) { null }
 
     /**
+     * Encodes 1+ already-encoded top-level Record byte-arrays as the QDEF self-delimited root
+     * (QDEF-SPEC.md §2/§3.1): a single Record is returned as-is — its own array already IS the
+     * root, "no Bundle indirection" — while two or more become subrecords of an implied, never-
+     * transmitted Bundle (typeId 0, omitted): one more definite-length CBOR array wrapping them.
+     * Bytes appended after the returned array are provably outside the container, and MUST be
+     * tolerated by a decoder (SPEC §9's deniability feature) — [decodeRootBundle]'s own
+     * self-delimiting length is what makes that safe without any app-specific record-count
+     * foreknowledge.
+     */
+    fun encodeRootBundle(records: List<ByteArray>): ByteArray {
+        require(records.isNotEmpty()) { "encodeRootBundle requires at least one Record" }
+        if (records.size == 1) return records[0]
+        val out = ByteArrayOutputStream()
+        writeHead(out, 4, records.size.toLong())
+        for (r in records) out.write(r)
+        return out.toByteArray()
+    }
+
+    /**
+     * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one definite-length
+     * CBOR array. If its first item is a uint, the whole array IS one Record's own item list
+     * (delegated to [decodeRecordPrefix] exactly as for any other Record — the common
+     * single-Record-root case, "no Bundle indirection"; that Record's own [DecodedRecord.trailing]
+     * is precisely "bytes after the root array," intentionally never inspected by any caller here
+     * or elsewhere — SPEC §9 requires trailing bytes be tolerated, not parsed or treated as an
+     * error). Otherwise typeId defaults to `0` (Bundle, never transmitted for TagDrop's own Types)
+     * and every item of the root array is itself a nested Record, decoded independently. Returns
+     * null if the root isn't a well-formed, definite-length CBOR array, or if any of its items
+     * fails to decode as a Record.
+     */
+    fun decodeRootBundle(bytes: ByteArray): List<DecodedRecord>? {
+        return try {
+            val ranges = itemRanges(Cursor(bytes, 0), 4)
+            if (ranges.isEmpty()) null
+            else if (majorOf(bytes, ranges[0].first) != 4) {
+                decodeRecordPrefix(bytes)?.let { listOf(it) }
+            } else {
+                val out = mutableListOf<DecodedRecord>()
+                for ((s, e) in ranges) out.add(decodeRecordPrefix(bytes.copyOfRange(s, e)) ?: return null)
+                out
+            }
+        } catch (e: Exception) { null }
+    }
+
+    /**
      * Re-encodes [recordBytes] (a Record's own array, `[typeId, map?, payload?, subrecord*]`)
      * with every field-map pair whose key is in [keysToStrip] removed, regardless of position
      * — SPEC §2.2's fixed ascending key-encoding order means a higher-numbered field (e.g.

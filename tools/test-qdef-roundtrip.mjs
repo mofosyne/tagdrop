@@ -312,6 +312,45 @@ function decodeArrayRecord(buf, offset) {
   return { typeId, record, payload, raw: buf.subarray(offset, cur), subrecords, next: cur };
 }
 
+// Encodes 1+ already-encoded top-level Record byte-arrays as the QDEF
+// self-delimited root (QDEF-SPEC.md §2/§3.1): a single Record is returned
+// as-is -- its own array already IS the root, "no Bundle indirection" --
+// while two or more become subrecords of an implied, never-transmitted
+// Bundle (typeId 0, omitted): one more definite-length CBOR array wrapping
+// them.
+function encodeRootBundle(records) {
+  return records.length === 1 ? records[0] : encodeArray(records);
+}
+
+// Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one
+// definite-length CBOR array. If its first item is not itself an array, the
+// whole array IS one Record's own item list (delegated to decodeArrayRecord
+// exactly as for any other Record -- the common single-Record-root case,
+// "no Bundle indirection"). Otherwise typeId defaults to 0 (Bundle, never
+// transmitted for TagDrop's own Types) and every item of the root array is
+// itself a nested Record, decoded independently. Returns null if the root
+// isn't a well-formed, definite-length CBOR array.
+function decodeRootBundle(buf) {
+  const head = buf[0];
+  if ((head >> 5) !== 4) return null;
+  const info = head & 0x1f;
+  let argOffset = 1, count;
+  if (info < 24) { count = info; }
+  else if (info === 24) { count = buf[argOffset]; argOffset += 1; }
+  else if (info === 25) { count = buf.readUInt16BE(argOffset); argOffset += 2; }
+  else return null;
+  if (count < 1) return null;
+  if ((buf[argOffset] >> 5) !== 4) return [decodeArrayRecord(buf, 0)];
+  const out = [];
+  let cur = argOffset;
+  for (let i = 0; i < count; i++) {
+    const rec = decodeArrayRecord(buf, cur);
+    out.push(rec);
+    cur = rec.next;
+  }
+  return out;
+}
+
 // Decode a CBOR Sequence (RFC 8742) of records from the front of buf; returns
 // as many top-level items as fit, each consumed in order.
 function decodeSequence(buf) {
@@ -572,12 +611,12 @@ function buildContentPayload({ hint, mimeType, content, maxBodyBytes = 900, spli
       const signedMediaPayloadBare = buildMediaPayload({ mediaType: mimeType, content }, [contentSignature]);
       const signedMediaPayloadForWire = compress ? compressWrap(signedMediaPayloadBare) : signedMediaPayloadBare;
       const wireMediaPreview = buildMediaPreview({ mediaType: mimeType, contentHash: cacheId }, [signedMediaPayloadForWire]);
-      return [Buffer.concat([signedExtension, wireMediaPreview])];
+      return [encodeRootBundle([signedExtension, wireMediaPreview])];
     }
     // Single code: Media Payload (or its Compress Wrapper) nests as Media
     // Preview's own subrecord (§3.1a) — not a separate sibling Record.
     const wireMediaPreview = buildMediaPreview({ mediaType: mimeType, contentHash: cacheId }, [mediaPayloadForWire]);
-    return [Buffer.concat([extension, wireMediaPreview])];
+    return [encodeRootBundle([extension, wireMediaPreview])];
   }
 
   // multi-code: Split-wrap mediaPayloadForWire; Media Preview becomes Split's
@@ -588,7 +627,7 @@ function buildContentPayload({ hint, mimeType, content, maxBodyBytes = 900, spli
   const fragmentCount = Math.ceil(mediaPayloadForWire.length / maxBodyBytes);
   const groupId = sha256(mediaPayloadForWire).subarray(0, 8);
   const fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, true, [mediaPreviewBare]);
-  return fragments.map((frag) => Buffer.concat([extension, frag]));
+  return fragments.map((frag) => encodeRootBundle([extension, frag]));
 }
 
 function decodeContentPayload(codes) {
@@ -599,7 +638,9 @@ function decodeContentPayload(codes) {
   let plainMediaPayloadWireRaw = null;
 
   for (const code of codes) {
-    const first = decodeArrayRecord(code, 0);
+    const records = decodeRootBundle(code);
+    assert.ok(records && records.length === 2, 'a Content code must carry exactly a Content Extension and a second Record');
+    const [first, second] = records;
     assert.equal(first.typeId, TYPE.CONTENT_EXTENSION, 'first Record must be Content Extension');
     assertKnownKeys(first.record, KNOWN_KEYS.CONTENT_EXTENSION, 'Content Extension');
 
@@ -610,9 +651,6 @@ function decodeContentPayload(codes) {
     }
     extensionRawForComparison = first.raw;
     extension = first.record;
-
-    assert.ok(first.next < code.length, 'a Content code must carry a second Record after Content Extension');
-    const second = decodeArrayRecord(code, first.next);
 
     if (second.typeId === TYPE.MEDIA_PREVIEW) {
       // Single-code case: Media Payload is Media Preview's own (sole) subrecord.
@@ -673,8 +711,7 @@ function testSingleCodeSignedContent() {
   // §3.1a) — re-locate it from the raw wire bytes directly, since
   // decodeContentPayload's returned `mediaPayload` is just the field map
   // (subrecords aren't map values).
-  const codeFirst = decodeArrayRecord(codes[0], 0);
-  const mediaPreviewRec = decodeArrayRecord(codes[0], codeFirst.next);
+  const [, mediaPreviewRec] = decodeRootBundle(codes[0]);
   const contentSignatureRec = mediaPreviewRec.subrecords[0].subrecords.find((s) => s.typeId === TYPE.CONTENT_SIGNATURE);
   assert.ok(contentSignatureRec, 'Content Signature subrecord must be present on a signed payload');
   assertKnownKeys(contentSignatureRec.record, KNOWN_KEYS.CONTENT_SIGNATURE, 'Content Signature');
@@ -731,13 +768,13 @@ function buildPaperPayload({ hint, set, slug, files, related, maxBodyBytes = 900
 
   const needsSplit = split || bodyForWire.length > maxBodyBytes;
   if (!needsSplit) {
-    return [Buffer.concat([preview, bodyForWire])];
+    return [encodeRootBundle([preview, bodyForWire])];
   }
 
   const fragmentCount = Math.ceil(bodyForWire.length / maxBodyBytes);
   const groupId = sha256(bodyForWire).subarray(0, 8);
   const fragments = splitFragments(bodyForWire, groupId, fragmentCount, true);
-  return fragments.map((frag) => Buffer.concat([preview, frag]));
+  return fragments.map((frag) => encodeRootBundle([preview, frag]));
 }
 
 function decodePaperPayload(codes) {
@@ -747,7 +784,9 @@ function decodePaperPayload(codes) {
   let plainBodyRaw = null;
 
   for (const code of codes) {
-    const first = decodeArrayRecord(code, 0);
+    const records = decodeRootBundle(code);
+    assert.ok(records && records.length === 2, 'a Paper code must carry exactly a Paper-Preview and a second Record');
+    const [first, second] = records;
     assert.equal(first.typeId, TYPE.PAPER_PREVIEW, 'first Record must be Paper-Preview');
     assertKnownKeys(first.record, KNOWN_KEYS.PAPER_PREVIEW, 'Paper-Preview');
 
@@ -757,7 +796,6 @@ function decodePaperPayload(codes) {
     previewRawForComparison = first.raw;
     preview = first.record;
 
-    const second = decodeArrayRecord(code, first.next);
     if (second.typeId === TYPE.SPLIT) fragmentRecords.push(second.record);
     else plainBodyRaw = second.raw;
   }
@@ -866,16 +904,15 @@ function testEncryptedContent() {
   const mediaPreview = buildMediaPreview({ mediaType: 'text/plain', contentHash: cacheId }, [
     buildMediaPayload({ mediaType: 'text/plain', content: blob }),
   ]);
-  const codes = [Buffer.concat([extension, mediaPreview])];
+  const codes = [encodeRootBundle([extension, mediaPreview])];
 
   // Cover story is what's visible without the key.
-  const first = decodeArrayRecord(codes[0], 0);
+  const [first, second] = decodeRootBundle(codes[0]);
   assert.equal(first.record[3], coverHint, 'cover hint must be visible with no key present');
 
   // Trial decryption (§9 "Discovery, not declaration") — try the candidate
   // blob against a known key_material; a wrong key must fail the GCM
   // authentication tag, not silently produce garbage plaintext.
-  const second = decodeArrayRecord(codes[0], first.next);
   const candidateBlob = second.subrecords[0].payload; // content moved to the payload slot (SPEC.md v11)
   const candidateNonce = candidateBlob.subarray(0, 12);
   const rest = candidateBlob.subarray(12);
@@ -917,9 +954,8 @@ function testTamperedFragmentDetected() {
   assert.ok(codes.length > 2, 'need at least two data fragments plus parity to isolate one non-parity fragment');
 
   const code = codes[1];
-  const first = decodeArrayRecord(code, 0);
+  const [first, second] = decodeRootBundle(code);
   const rawExtensionBytes = first.raw;
-  const second = decodeArrayRecord(code, first.next);
   assert.equal(second.typeId, TYPE.SPLIT);
   const fragmentRecord = second.record;
   const mediaPreviewSubRaw = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW).raw;
@@ -935,7 +971,7 @@ function testTamperedFragmentDetected() {
     0: fragmentRecord[0], 2: fragmentRecord[2], 4: fragmentRecord[4],
     6: tamperedFragmentBytes, 7: fragmentRecord[7], 9: fragmentRecord[9],
   }, [mediaPreviewSubRaw]);
-  const tamperedCode = Buffer.concat([rawExtensionBytes, tamperedFragmentRecordBytes]);
+  const tamperedCode = encodeRootBundle([rawExtensionBytes, tamperedFragmentRecordBytes]);
   const tamperedCodes = codes.map((c, i) => (i === 1 ? tamperedCode : c));
 
   assert.throws(
@@ -953,14 +989,13 @@ function testTamperedPaperRootHashDetected() {
   const codes = buildPaperPayload({ hint: 'Tamper Test Paper', set: 'x', slug: 'y', files, related });
   assert.equal(codes.length, 1);
 
-  const first = decodeArrayRecord(codes[0], 0);
+  const [first, second] = decodeRootBundle(codes[0]);
   const rawPreviewBytes = first.raw;
-  const second = decodeArrayRecord(codes[0], first.next);
   const bodyRecord = second.record;
 
   const tamperedFiles = encodeArray([encodeRecord({ 1: 'index-RENAMED', 2: 'text/html', 3: randomBytes(8) })]);
   const tamperedBodyBytes = encodeArrayRecord(TYPE.PAPER_BODY, { 1: tamperedFiles, 3: bodyRecord[3] });
-  const tamperedCode = Buffer.concat([rawPreviewBytes, tamperedBodyBytes]);
+  const tamperedCode = encodeRootBundle([rawPreviewBytes, tamperedBodyBytes]);
 
   assert.throws(
     () => decodePaperPayload([tamperedCode]),

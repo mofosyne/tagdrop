@@ -39,6 +39,7 @@ import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.db.SignatureStatus
+import com.github.mofosyne.tagdrop.data.format.MiniCbor
 import com.github.mofosyne.tagdrop.data.format.ScannedRecord
 import com.github.mofosyne.tagdrop.data.format.SectorAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
@@ -312,8 +313,8 @@ class ReceiveActivity : AppCompatActivity() {
         // Prefer original wire bytes (with QDEF framing if present) for the inspector;
         // fall back to reconstructed Record Sequence if wire bytes unavailable (NFC, paste).
         val raw = lastScannedWireBytes ?: when (record) {
-            is ScannedRecord.Content -> record.extensionRaw + (record.secondRaw ?: ByteArray(0))
-            is ScannedRecord.Paper -> record.previewRaw + (record.secondRaw ?: ByteArray(0))
+            is ScannedRecord.Content -> MiniCbor.encodeRootBundle(listOfNotNull(record.extensionRaw, record.secondRaw))
+            is ScannedRecord.Paper -> MiniCbor.encodeRootBundle(listOfNotNull(record.previewRaw, record.secondRaw))
         }
         showCborDebugDialog(raw, title)
     }

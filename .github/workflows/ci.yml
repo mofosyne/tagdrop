@@ -37,6 +37,13 @@ jobs:
         working-directory: tools
         run: npm run test:qdef
 
+      # Independent second check on the same fixtures test:qdef just regenerated, using
+      # qdef-lint.cjs (vendored from mofosyne/qdef, shares no code with our own encoders) —
+      # catches grammar/canonical-encoding issues our own tests wouldn't self-consistently miss.
+      - name: Run independent qdef-lint grammar/footgun check
+        working-directory: tools
+        run: npm run lint:qdef
+
   test-and-build:
     name: Unit tests & APK builds
     runs-on: ubuntu-latest
