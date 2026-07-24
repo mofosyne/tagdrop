@@ -10,6 +10,7 @@ data class ScannedPaper(
     val label: String?,
     val set: String?,
     val slug: String?,
+    val title: String? = null,           // optional short subject/caption, distinct from label (SPEC §7 "Postcards")
     val cborBytes: ByteArray,          // full paper manifest CBOR, used to re-parse files/related
     val collectionId: String? = null,    // hex-encoded 8-byte ID, groups related scans
     val collectionLabel: String? = null, // human-readable name for the collection

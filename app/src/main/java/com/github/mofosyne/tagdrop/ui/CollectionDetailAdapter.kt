@@ -159,7 +159,7 @@ class CollectionDetailAdapter(
                 }
                 is PageItem.CacheEntry -> {
                     val cache = item.cache
-                    binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
+                    binding.textTitle.text = cache.title ?: cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = subtitleWithLocationLabel(cache.mimeType, cache.locationLabel)
                     binding.textSubtitle.visibility = View.VISIBLE
                     binding.textStatus.text = dateFormat().format(Date(cache.discoveredAt))

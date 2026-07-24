@@ -1392,7 +1392,7 @@ async function createContentSectors({
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
   lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
-  inReplyTo, title, createdAt, pixelArt = false,
+  inReplyTo, title, description, createdAt, pixelArt = false,
   signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
   maxSectorDataBytes = Infinity, parity = false,
 }) {
@@ -1415,7 +1415,7 @@ async function createContentSectors({
   }
 
   const contentExtension = buildContentExtension({
-    hint: hint || undefined,
+    hint: hint || undefined, description: description || undefined,
     collectionId: collectionId || undefined, collectionLabel: collectionLabel || undefined,
     collectionTag: collectionTag || undefined, icon: icon || undefined,
     keyMaterial: keyMaterial || undefined, retainKey: (keyMaterial && !retainKey) ? false : undefined,

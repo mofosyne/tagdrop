@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class, DropSource::class, TrustedSigner::class], version = 24, exportSchema = false)
+@Database(entities = [FoundCache::class, ScannedPaper::class, RetainedKey::class, DropSource::class, TrustedSigner::class], version = 25, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cacheDao(): CacheDao
     abstract fun paperDao(): PaperDao
@@ -237,6 +237,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Paper-Preview's title (SPEC §7 "Postcards") was already decoded from the wire
+                // format but never persisted, so a single-file paper's own short subject/caption
+                // had nowhere to be shown — only `label` reached the UI. Mirrors FoundCache's
+                // existing `title` column.
+                db.execSQL("ALTER TABLE scanned_papers ADD COLUMN title TEXT")
+            }
+        }
+
         private val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -291,7 +301,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 DB_NAME
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
             .addCallback(SEED_CALLBACK)
             .build().also { INSTANCE = it }
         }

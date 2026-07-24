@@ -467,6 +467,7 @@ class ReceiveActivity : AppCompatActivity() {
                     label           = paper.label,
                     set             = paper.set,
                     slug            = paper.slug,
+                    title           = paper.title,
                     domain          = paper.domain,
                     cborBytes       = state.streamBytes,
                     collectionId    = paper.collectionId?.toHex(),

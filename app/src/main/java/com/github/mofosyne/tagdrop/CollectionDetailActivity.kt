@@ -150,7 +150,7 @@ class CollectionDetailActivity : AppCompatActivity() {
             binding.textEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
             exportableCaches = fileItems.mapNotNull { it.cache }.filter { it.isOpenable }
 
-            title = paper.label ?: getString(R.string.paper_manifest_label)
+            title = paper.title ?: paper.label ?: getString(R.string.paper_manifest_label)
             // Each page may be focused on its own theme, so accumulate every
             // distinct tag seen across the paper and its cached pages.
             val tags = (listOf(paper.collectionTag) + fileItems.mapNotNull { it.cache?.collectionTag })
@@ -467,7 +467,7 @@ class CollectionDetailActivity : AppCompatActivity() {
     }
 
     private fun confirmDeletePaper(paper: ScannedPaper) {
-        val label = paper.label ?: paper.rootHash.take(12)
+        val label = paper.title ?: paper.label ?: paper.rootHash.take(12)
         AlertDialog.Builder(this)
             .setTitle(R.string.delete_paper_confirm_title)
             .setMessage(getString(R.string.delete_paper_confirm_message, label))

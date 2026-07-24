@@ -49,7 +49,7 @@ class HistoryAdapter(
                     binding.textType.text = ctx.getString(
                         if (cache.createdByMe) R.string.collection_type_loose_created else R.string.collection_type_loose
                     )
-                    binding.textTitle.text = cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
+                    binding.textTitle.text = cache.title ?: cache.hint ?: cache.filename ?: ctx.getString(R.string.collection_untitled)
                     binding.textSubtitle.text = cache.mimeType
                     binding.textMeta.text = buildString {
                         if (cache.collectionTag != null) append("#${cache.collectionTag}  ·  ")
@@ -67,7 +67,7 @@ class HistoryAdapter(
                     binding.textType.text = ctx.getString(
                         if (paper.createdByMe) R.string.collection_type_paper_created else R.string.collection_type_paper
                     )
-                    binding.textTitle.text = paper.label ?: ctx.getString(R.string.paper_manifest_label)
+                    binding.textTitle.text = paper.title ?: paper.label ?: ctx.getString(R.string.paper_manifest_label)
                     binding.textSubtitle.text = buildString {
                         if (paper.set != null) append(ctx.getString(R.string.paper_set, paper.set))
                         if (paper.slug != null) append(" /${paper.slug}")

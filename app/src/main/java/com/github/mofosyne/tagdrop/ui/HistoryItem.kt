@@ -24,7 +24,7 @@ sealed class HistoryItem {
         override val key get() = "cache:${cache.cacheId}"
         override val timestamp get() = cache.discoveredAt
         override val searchHaystack get() = listOfNotNull(
-            cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
+            cache.title, cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
         ).joinToString(" ")
         override val tags get() = listOfNotNull(cache.collectionTag)
     }
@@ -37,7 +37,7 @@ sealed class HistoryItem {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
         override val searchHaystack get() = listOfNotNull(
-            paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
+            paper.title, paper.label, paper.set, paper.slug, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
         ).joinToString(" ")
         override val tags get() = listOfNotNull(paper.collectionTag)
     }

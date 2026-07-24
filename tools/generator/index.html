@@ -233,6 +233,10 @@
         <input type="text" id="s-collection-tag" placeholder="e.g. springtrail2026">
       </div>
     </div>
+    <div>
+      <label>Description <small>(optional — content teaser, e.g. "A poem left for whoever finds this bench")</small></label>
+      <input type="text" id="s-description" placeholder="e.g. A poem left for whoever finds this bench">
+    </div>
     <div class="row">
       <div>
         <label>Title <small>(optional — short subject/caption, see §7 Postcards)</small></label>
@@ -1941,7 +1945,7 @@ async function createContentSectors({
   keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
   lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
-  inReplyTo, title, createdAt, pixelArt = false,
+  inReplyTo, title, description, createdAt, pixelArt = false,
   signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
   maxSectorDataBytes = Infinity, parity = false,
 }) {
@@ -1964,7 +1968,7 @@ async function createContentSectors({
   }
 
   const contentExtension = buildContentExtension({
-    hint: hint || undefined,
+    hint: hint || undefined, description: description || undefined,
     collectionId: collectionId || undefined, collectionLabel: collectionLabel || undefined,
     collectionTag: collectionTag || undefined, icon: icon || undefined,
     keyMaterial: keyMaterial || undefined, retainKey: (keyMaterial && !retainKey) ? false : undefined,
@@ -2625,31 +2629,57 @@ function deriveTitleFromText(mimeType, text) {
   return null;
 }
 
-// Fills `titleFieldId` with a title derived from `text`/`mimeType` (see
-// deriveTitleFromText above), but only if the field exists and is still empty —
-// never overwrites something the author already typed.
-function autofillTitleField(titleFieldId, mimeType, text) {
-  if (!titleFieldId) return;
-  const el = document.getElementById(titleFieldId);
+// Best-effort description/teaser extraction, mirroring deriveTitleFromText above —
+// HTML's <meta name="description">, or Markdown's first non-heading, non-blank line.
+// Same GeoCities-era-author convenience caveat: not a SPEC requirement, freely
+// editable/clearable afterwards.
+function deriveDescriptionFromText(mimeType, text) {
+  if (mimeType === 'text/html') {
+    const meta = new DOMParser().parseFromString(text, 'text/html').querySelector('meta[name="description" i]');
+    return meta ? (meta.getAttribute('content') || '').trim() || null : null;
+  }
+  if (mimeType === 'text/markdown') {
+    const line = text.split('\n').find(l => l.trim() && !/^#{1,6}[ \t]/.test(l));
+    return line ? line.trim() : null;
+  }
+  return null;
+}
+
+// Fills `fieldId` with `value`, but only if the field exists, is still empty, and
+// `value` is non-null — never overwrites something the author already typed.
+function fillIfEmpty(fieldId, value) {
+  if (!fieldId || !value) return;
+  const el = document.getElementById(fieldId);
   if (!el || el.value.trim()) return;
-  const title = deriveTitleFromText(mimeType, text);
-  if (title) el.value = title;
+  el.value = value;
+}
+
+function autofillTitleField(titleFieldId, mimeType, text) {
+  fillIfEmpty(titleFieldId, deriveTitleFromText(mimeType, text));
+}
+
+function autofillDescriptionField(descriptionFieldId, mimeType, text) {
+  fillIfEmpty(descriptionFieldId, deriveDescriptionFromText(mimeType, text));
 }
 
 // Reads `file` into a filename input (optional), a MIME <select>, a content
-// <textarea>, and — for HTML/Markdown text content — an optional title-ish field
-// (see autofillTitleField above). Used by both the Single File upload and
-// per-file uploads on the Paper Layout tab. Returns the decoded {mime, text} (text
-// is null for non-text MIME types) so batch callers can also feed
-// autofillPaperTitleFromCandidates below.
-async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId, titleId) {
+// <textarea>, and — for HTML/Markdown text content — optional title-ish/description-ish
+// fields (see autofillTitleField/autofillDescriptionField above). Used by both the
+// Single File upload and per-file uploads on the Paper Layout tab (the latter passes
+// titleId null — a Paper file entry has no title field of its own, only description).
+// Returns the decoded {mime, text} (text is null for non-text MIME types) so batch
+// callers can also feed autofillPaperTitleFromCandidates below.
+async function loadFileIntoFields(file, filenameId, mimeSelectId, contentId, titleId, descriptionId) {
   const mime = guessMimeType(file.name, file.type);
   if (filenameId) document.getElementById(filenameId).value = file.name;
   setMimeSelect(document.getElementById(mimeSelectId), mime);
   const bytes = new Uint8Array(await file.arrayBuffer());
   const text = isTextMime(mime) ? new TextDecoder().decode(bytes) : null;
   document.getElementById(contentId).value = text ?? bytesToBase64(bytes);
-  if (text != null) autofillTitleField(titleId, mime, text);
+  if (text != null) {
+    autofillTitleField(titleId, mime, text);
+    autofillDescriptionField(descriptionId, mime, text);
+  }
   return { mime, text };
 }
 
@@ -2846,9 +2876,11 @@ function buildSingleEncodeArgs() {
   try { collectionId = hexToBytes(document.getElementById('s-collection-id').value); }
   catch (e) { throw new Error('Collection ID must be hex (e.g. a1b2c3d4e5f60718).'); }
 
-  // Replies and threading (SPEC §7) — title is never secret; in_reply_to points at the
-  // parent's own cache_id/root_hash (shown as "ID: …" under a previously generated code).
+  // Replies and threading (SPEC §7) — title/description are never secret; in_reply_to
+  // points at the parent's own cache_id/root_hash (shown as "ID: …" under a previously
+  // generated code).
   const title = document.getElementById('s-title').value.trim() || null;
+  const description = document.getElementById('s-description').value.trim() || null;
   let inReplyTo;
   try { inReplyTo = hexToBytes(document.getElementById('s-in-reply-to').value); }
   catch (e) { throw new Error('Replying to must be hex (e.g. a1b2c3d4e5f60718).'); }
@@ -2899,7 +2931,7 @@ function buildSingleEncodeArgs() {
         kdfPassphrase,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-        inReplyTo, title, createdAt, parity,
+        inReplyTo, title, description, createdAt, parity,
       };
     } else {
       encryptionKey = generateKeyMaterial();
@@ -2913,14 +2945,14 @@ function buildSingleEncodeArgs() {
         encryptionKey,
         collectionId, collectionLabel, collectionTag, icon,
         lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-        inReplyTo, title, createdAt, parity,
+        inReplyTo, title, description, createdAt, parity,
       };
     }
   } else {
     encodeArgs = {
       hint, filename, mimeType, rawBytes, compress, collectionId, collectionLabel, collectionTag, icon,
       lat, lng, radiusM, preferDeclaredLocation, locationLabel,
-      inReplyTo, title, createdAt, pixelArt, parity,
+      inReplyTo, title, description, createdAt, pixelArt, parity,
     };
   }
 
@@ -3108,7 +3140,7 @@ function addFileEntryFromBytes(name, bytes, mimeType) {
   setMimeSelect(document.getElementById('fmime-' + id), mimeType);
   const text = isTextMime(mimeType) ? new TextDecoder().decode(bytes) : null;
   document.getElementById('fcontent-' + id).value = text ?? bytesToBase64(bytes);
-  if (text != null) autofillTitleField('fdesc-' + id, mimeType, text);
+  if (text != null) autofillDescriptionField('fdesc-' + id, mimeType, text);
   updatePaperEstimate();
   return { slug: name, mimeType, text };
 }
@@ -3589,7 +3621,7 @@ async function addFilesToPaper(files) {
   for (const file of files) {
     const id = addFileEntry();
     document.getElementById('fslug-' + id).value = file.name;
-    const { mime, text } = await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id, 'fdesc-' + id);
+    const { mime, text } = await loadFileIntoFields(file, null, 'fmime-' + id, 'fcontent-' + id, null, 'fdesc-' + id);
     if (text != null) candidates.push({ slug: file.name, mimeType: mime, text });
   }
   autofillPaperTitleFromCandidates(candidates);
@@ -3618,7 +3650,7 @@ async function addZipToPaper(file) {
 document.getElementById('s-upload').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
-  if (file) await loadFileIntoFields(file, 's-filename', 's-mime', 's-content', 's-title');
+  if (file) await loadFileIntoFields(file, 's-filename', 's-mime', 's-content', 's-title', 's-description');
   // loadFileIntoFields() sets .value programmatically — no input/change event fires,
   // so the delegated listener on #tab-single never sees this; trigger explicitly.
   updateSingleEstimate();
@@ -3667,7 +3699,7 @@ function setupDropzone(el, onFiles) {
 }
 
 setupDropzone(document.getElementById('s-dropzone'), async files => {
-  await loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content', 's-title');
+  await loadFileIntoFields(files[0], 's-filename', 's-mime', 's-content', 's-title', 's-description');
   updateSingleEstimate();
 });
 

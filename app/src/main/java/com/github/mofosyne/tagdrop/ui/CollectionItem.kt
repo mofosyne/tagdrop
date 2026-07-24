@@ -37,7 +37,7 @@ sealed class CollectionItem {
         override val key get() = "paper:${paper.rootHash}"
         override val timestamp get() = paper.scannedAt
         override val searchHaystack get() = listOfNotNull(
-            paper.label, paper.set, paper.slug, paper.domain, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
+            paper.title, paper.label, paper.set, paper.slug, paper.domain, paper.collectionLabel, paper.collectionTag?.let { "#$it" }
         ).joinToString(" ")
         override val tags get() = listOfNotNull(paper.collectionTag)
     }
@@ -55,7 +55,7 @@ sealed class CollectionItem {
         override val key get() = "adhoc:$collectionId"
         override val timestamp get() = items.maxOf { it.discoveredAt }
         override val searchHaystack get() = (
-            listOfNotNull(label) + tags.map { "#$it" } + items.mapNotNull { it.hint } + items.mapNotNull { it.filename }
+            listOfNotNull(label) + tags.map { "#$it" } + items.mapNotNull { it.title } + items.mapNotNull { it.hint } + items.mapNotNull { it.filename }
         ).joinToString(" ")
     }
 
@@ -63,7 +63,7 @@ sealed class CollectionItem {
         override val key get() = "loose:${cache.cacheId}"
         override val timestamp get() = cache.discoveredAt
         override val searchHaystack get() = listOfNotNull(
-            cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
+            cache.title, cache.hint, cache.filename, cache.mimeType, cache.collectionLabel, cache.collectionTag?.let { "#$it" }
         ).joinToString(" ")
         override val tags get() = listOfNotNull(cache.collectionTag)
     }
