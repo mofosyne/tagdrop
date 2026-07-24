@@ -13,6 +13,33 @@ tasks.register("copySpecToRawRes", Copy) {
     rename { "spec.md" }
 }
 
+// QDEF-SPEC.md itself is just a short pointer to the real, always-current spec at
+// mofosyne/qdef (kept that way deliberately -- a hand-maintained full copy here just
+// drifts, see its own header and CLAUDE.md). For the in-app viewer to still show real
+// content offline, this bundles QDEF-SPEC-cached.md instead -- a periodically refreshed
+// mirror, updated by running `scripts/sync-qdef-spec.sh` and committing the result (not
+// fetched at build time: keeps builds hermetic/offline-safe and avoids depending on
+// GitHub being reachable from wherever ./gradlew happens to run). Falls back to the
+// pointer file itself if the cache is ever missing, so a fresh checkout still builds.
+def qdefSpecCacheFile = rootProject.file("QDEF-SPEC-cached.md")
+def qdefSpecRawResDir = layout.buildDirectory.dir("generated/qdefSpecRawRes")
+tasks.register("copyQdefSpecToRawRes", Copy) {
+    from(qdefSpecCacheFile.exists() ? qdefSpecCacheFile : rootProject.file("QDEF-SPEC.md"))
+    into(qdefSpecRawResDir.map { it.dir("raw") })
+    rename { "qdef_spec.md" }
+}
+
+// Bundles docs/db/sources.json -- the same file "Browse recommended sources" fetches live from
+// mofosyne.github.io/tagdrop/db/sources.json -- as a raw resource, so fresh-install seeding and
+// "Reload default sources" read the exact same directory instead of a separately hand-maintained
+// hardcoded list that can silently drift from it.
+def sourcesJsonRawResDir = layout.buildDirectory.dir("generated/sourcesJsonRawRes")
+tasks.register("copySourcesJsonToRawRes", Copy) {
+    from(rootProject.file("docs/db/sources.json"))
+    into(sourcesJsonRawResDir.map { it.dir("raw") })
+    rename { "default_sources.json" }
+}
+
 android {
     namespace = 'com.github.mofosyne.tagdrop'
     compileSdk = 35
@@ -21,8 +48,8 @@ android {
         applicationId = "com.github.mofosyne.tagdrop"
         minSdk = 23
         targetSdk = 35
-        versionCode = 9
-        versionName = "2.4.0"
+        versionCode = 10
+        versionName = "2.5.0"
     }
 
     buildFeatures {
@@ -32,6 +59,8 @@ android {
     sourceSets {
         main {
             res.srcDirs += specRawResDir
+            res.srcDirs += qdefSpecRawResDir
+            res.srcDirs += sourcesJsonRawResDir
         }
     }
 
@@ -56,6 +85,8 @@ android {
 
 tasks.named("preBuild").configure {
     dependsOn("copySpecToRawRes")
+    dependsOn("copyQdefSpecToRawRes")
+    dependsOn("copySourcesJsonToRawRes")
 }
 
 dependencies {

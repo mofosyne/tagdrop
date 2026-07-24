@@ -64,5 +64,35 @@
             android:layout_marginTop="4dp"
             android:text="@string/button_clear" />
 
+        <!-- Lets a tagdrop: URI be typed/pasted directly instead of requiring a camera/NFC
+             scan: feeds processScanned() exactly like a scanned code, so Inspect CBOR (menu)
+             lights up the same way and multi-code Split/Paper groups can be pasted one at a time. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/editPasteUri"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:hint="@string/hint_paste_uri"
+                android:imeOptions="actionGo"
+                android:inputType="textUri"
+                android:maxLines="1"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/buttonPasteUri"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="@string/button_decode_uri" />
+
+        </LinearLayout>
+
     </LinearLayout>
 </LinearLayout>

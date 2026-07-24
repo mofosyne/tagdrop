@@ -6,10 +6,10 @@ import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 
 /**
  * Builds the [NdefMessage] written to / parsed from a physical NFC tag (SPEC §12): one MIME
- * record carrying a sector's raw CBOR sequence ([TagDropCodec.sectorCbor]), optionally preceded
- * by a standard record matching the content's real type (so a phone without TagDrop installed
- * still gets something useful from the tap) and optionally followed by an Android Application
- * Record so tapping the tag launches TagDrop directly even when this app isn't already running.
+ * record carrying a code's raw CBOR Record Sequence bytes, optionally preceded by a standard
+ * record matching the content's real type (so a phone without TagDrop installed still gets
+ * something useful from the tap) and optionally followed by an Android Application Record so
+ * tapping the tag launches TagDrop directly even when this app isn't already running.
  */
 object NfcUtils {
     /**
@@ -19,14 +19,14 @@ object NfcUtils {
      * no longer dispatches to TagDrop itself either (SPEC §12) — there's no way to have both.
      */
     fun buildNdefMessage(
-        sectorCbor: ByteArray,
+        recordSequence: ByteArray,
         packageName: String,
         includeAppRecord: Boolean,
         standardRecord: NdefRecord? = null
     ): NdefMessage {
         val records = mutableListOf<NdefRecord>()
         if (standardRecord != null) records += standardRecord
-        records += NdefRecord.createMime(TagDropCodec.NFC_MIME_TYPE, sectorCbor)
+        records += NdefRecord.createMime(TagDropCodec.NFC_MIME_TYPE, recordSequence)
         if (includeAppRecord) records += NdefRecord.createApplicationRecord(packageName)
         return NdefMessage(records.toTypedArray())
     }

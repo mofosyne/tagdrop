@@ -360,4 +360,200 @@ class MiniCborTest {
         val expected = MiniCbor.encodeMap((0 until 22).map { it to it })
         assertArrayEquals(expected, stripped)
     }
+
+    // ── encodeRecord/decodeRecordPrefix payload slot + negative keys (QDEF-SPEC.md §3.1/§3.6, SPEC.md v11) ──
+
+    @Test fun recordWithNoMapNoPayloadNoSubrecords() {
+        val rec = MiniCbor.encodeRecord(9, emptyList())
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertEquals(9, decoded.typeId)
+        assertTrue(decoded.record.isEmpty())
+        assertNull(decoded.payload)
+        assertTrue(decoded.subrecords.isEmpty())
+    }
+
+    @Test fun recordOmitsMapOnlyWhenFieldsListItselfIsEmpty() {
+        // The map is omitted only when the caller declares zero fields at all for this call
+        // (e.g. Compress Wrapper) -- NOT whenever every declared field's value happens to be
+        // null (a Type that always declares fields, e.g. Content Extension, must keep writing
+        // `{}` so stripKeys/signature-hash formulas always find a stable map to work with).
+        val declaredFieldsAllNull = MiniCbor.encodeRecord(8, listOf(1 to null, 2 to null), payload = byteArrayOf(1, 2, 3))
+        val noFieldsDeclaredAtAll = MiniCbor.encodeRecord(8, emptyList(), payload = byteArrayOf(1, 2, 3))
+        assertFalse(declaredFieldsAllNull.contentEquals(noFieldsDeclaredAtAll)) // the former still writes `{}`, one byte longer
+        val decodedWithEmptyMap = MiniCbor.decodeRecordPrefix(declaredFieldsAllNull)!!
+        assertTrue(decodedWithEmptyMap.record.isEmpty())
+        assertArrayEquals(byteArrayOf(1, 2, 3), decodedWithEmptyMap.payload)
+        val decodedWithNoMap = MiniCbor.decodeRecordPrefix(noFieldsDeclaredAtAll)!!
+        assertTrue(decodedWithNoMap.record.isEmpty())
+        assertArrayEquals(byteArrayOf(1, 2, 3), decodedWithNoMap.payload)
+    }
+
+    @Test fun recordWithMapAndPayloadNoSubrecords() {
+        val rec = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), payload = "hello".toByteArray())
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertEquals("text/plain", decoded.record[0])
+        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertTrue(decoded.subrecords.isEmpty())
+    }
+
+    @Test fun recordWithMapAndPayloadAndSubrecord() {
+        val sub = MiniCbor.encodeRecord(3, listOf(3 to byteArrayOf(9, 9)))
+        val rec = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), listOf(sub), payload = "hello".toByteArray())
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertEquals(1, decoded.subrecords.size)
+        assertEquals(3, decoded.subrecords[0].typeId)
+    }
+
+    @Test fun recordWithMapAndSubrecordButNoPayload() {
+        // No mandatory-null marker needed (SPEC.md v11): an array right after the map is
+        // unconditionally subrecord 0, never mistaken for the payload.
+        val sub = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), payload = "x".toByteArray())
+        val rec = MiniCbor.encodeRecord(14, listOf(0 to "text/plain", 3 to "photo.png"), listOf(sub))
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertNull(decoded.payload)
+        assertEquals(1, decoded.subrecords.size)
+        assertEquals(6, decoded.subrecords[0].typeId)
+        assertArrayEquals("x".toByteArray(), decoded.subrecords[0].payload)
+    }
+
+    @Test fun recordWithNegativeCommonFieldKeys() {
+        // -11 Content Hash, -7 Label, -15 Filename (QDEF-SPEC.md §3.6) alongside an ordinary
+        // non-negative Type-specific key (0, mediaType).
+        val rec = MiniCbor.encodeRecord(14, listOf(
+            0 to "image/png", -11 to byteArrayOf(0x12, 1, 2, 3, 4), -15 to "photo.png", -7 to "Beach sunset"
+        ))
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertEquals("image/png", decoded.record[0])
+        assertArrayEquals(byteArrayOf(0x12, 1, 2, 3, 4), decoded.record[-11] as ByteArray)
+        assertEquals("photo.png", decoded.record[-15])
+        assertEquals("Beach sunset", decoded.record[-7])
+    }
+
+    @Test fun fieldsSortByCanonicalEncodedKeyBytesOnTheWire() {
+        // encodeRecord sorts fields by RFC 8949 §4.2.1 canonical order -- comparing each key's
+        // own ENCODED bytes (shorter first, then bytewise), not by plain integer value
+        // (QDEF-SPEC.md §3.4) -- regardless of input order, so this must land the same way in
+        // the actual encoded bytes, not just in the decoded Map. (Plain encodeMap preserves
+        // caller order -- encodeRecord does the sorting, exercised here since that's the real
+        // call path every Record goes through.)
+        val declaredNegativeFirst = MiniCbor.encodeRecord(14, listOf(-11 to byteArrayOf(1), 0 to "image/png"))
+        val declaredPositiveFirst = MiniCbor.encodeRecord(14, listOf(0 to "image/png", -11 to byteArrayOf(1)))
+        assertArrayEquals(declaredNegativeFirst, declaredPositiveFirst)
+        // Confirm the non-negative key's byte (major 0, argument 0 -> 0x00) really does precede
+        // the negative key's byte (major 1, argument 10 -> 0x2a) in the map header's pair order:
+        // both encode to a single byte, so canonical order falls back to a bytewise compare, and
+        // 0x00 < 0x2a -- despite -11 < 0 as plain integers, it sorts *after* 0 on the wire, since
+        // major type 1's encoded byte is always numerically larger than major type 0's for the
+        // same-magnitude argument.
+        val posKeyByte = 0 // major 0, argument 0 -> 0x00
+        val firstKeyOffset = 3 // [array header][typeId byte][map header byte] precede the map's own pairs
+        assertEquals(posKeyByte, declaredNegativeFirst[firstKeyOffset].toInt() and 0xFF)
+    }
+
+    @Test fun compressWrapperShapeNoMapJustPayload() {
+        // The actual Compress Wrapper shape adopted in SPEC.md v11: [8, deflated_bytes], no map at all.
+        val deflated = byteArrayOf(0x78, 0x9c.toByte(), 1, 2, 3)
+        val rec = MiniCbor.encodeRecord(8, emptyList(), payload = deflated)
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertEquals(8, decoded.typeId)
+        assertTrue(decoded.record.isEmpty())
+        assertArrayEquals(deflated, decoded.payload)
+    }
+
+    @Test fun stripSubrecordTypePreservesPayloadSlot() {
+        val sig = MiniCbor.encodeRecord(3, listOf(3 to byteArrayOf(9, 9)))
+        val rec = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), listOf(sig), payload = "hello".toByteArray())
+        val stripped = MiniCbor.stripSubrecordType(rec, 3)
+        val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
+        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertTrue(decoded.subrecords.isEmpty())
+    }
+
+    @Test fun stripAllSubrecordsPreservesPayloadSlot() {
+        val sub = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), payload = "x".toByteArray())
+        val rec = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"), listOf(sub))
+        val stripped = MiniCbor.stripAllSubrecords(rec)
+        val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
+        assertTrue(decoded.subrecords.isEmpty())
+        assertEquals("text/plain", decoded.record[0])
+    }
+
+    @Test fun stripKeysHandlesNegativeKeysCorrectly() {
+        // A stripped positive key must not disturb a surviving negative key, and vice versa.
+        val rec = MiniCbor.encodeRecord(1, listOf(45 to 1L, -13 to "https://example.com/x"))
+        val stripped = MiniCbor.stripKeys(rec, setOf(45))
+        val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
+        assertFalse(decoded.record.containsKey(45))
+        assertEquals("https://example.com/x", decoded.record[-13])
+    }
+
+    // ── Root Bundle (QDEF-SPEC.md §2/§3.1 self-delimited root) ───────────────────
+
+    @Test fun encodeRootBundleWithOneRecordReturnsItUnwrapped() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val root = MiniCbor.encodeRootBundle(listOf(rec))
+        assertArrayEquals("a single Record's own array IS the root -- no Bundle indirection", rec, root)
+    }
+
+    @Test fun decodeRootBundleWithOneRecordRecognizesTypeIdDirectly() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val root = MiniCbor.encodeRootBundle(listOf(rec))
+        val records = MiniCbor.decodeRootBundle(root)!!
+        assertEquals(1, records.size)
+        assertEquals(1, records[0].typeId)
+        assertEquals("hint", records[0].record[3])
+    }
+
+    @Test fun encodeRootBundleWithTwoRecordsWrapsInOneMoreArray() {
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b))
+        // One more byte than the two Records concatenated bare -- the implied Bundle's own
+        // definite-length array header (count=2, single byte for count <= 23).
+        assertEquals(a.size + b.size + 1, root.size)
+        assertEquals(0x82, root[0].toInt() and 0xFF) // major 4 (array), count 2
+    }
+
+    @Test fun decodeRootBundleWithTwoRecordsRecoversBoth() {
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b))
+        val records = MiniCbor.decodeRootBundle(root)!!
+        assertEquals(2, records.size)
+        assertEquals(1, records[0].typeId)
+        assertEquals(14, records[1].typeId)
+        assertArrayEquals(a, records[0].raw)
+        assertArrayEquals(b, records[1].raw)
+    }
+
+    @Test fun decodeRootBundleTreatsBytesAfterTheRootArrayAsUninspectedTrailing() {
+        // SPEC §9's deniability feature: a second, independent (here: garbage) Record Sequence
+        // appended after the root array must never be parsed or cause a failure -- the root
+        // array's own self-delimited length is what makes that safe.
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b))
+        val withTrailingGarbage = root + byteArrayOf(0xFF.toByte(), 0x00, 0x11, 0x22)
+        val records = MiniCbor.decodeRootBundle(withTrailingGarbage)!!
+        assertEquals(2, records.size)
+        assertEquals(1, records[0].typeId)
+        assertEquals(14, records[1].typeId)
+    }
+
+    @Test fun decodeRootBundleRejectsNonArrayRoot() {
+        val bareUint = byteArrayOf(0x01) // a lone CBOR uint, not an array at all
+        assertNull(MiniCbor.decodeRootBundle(bareUint))
+    }
+
+    @Test fun decodeRootBundleRejectsMalformedNestedRecord() {
+        // A well-formed outer array whose second item isn't a well-formed Record itself.
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val notARecord = byteArrayOf(0x60) // an empty CBOR text string, not a Record array
+        val out = java.io.ByteArrayOutputStream()
+        out.write(0x82) // array header, count 2
+        out.write(a)
+        out.write(notARecord)
+        assertNull(MiniCbor.decodeRootBundle(out.toByteArray()))
+    }
 }

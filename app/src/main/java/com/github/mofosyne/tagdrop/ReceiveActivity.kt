@@ -16,6 +16,7 @@ import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
@@ -38,12 +39,14 @@ import com.github.mofosyne.tagdrop.data.db.FoundCache
 import com.github.mofosyne.tagdrop.data.db.RetainedKey
 import com.github.mofosyne.tagdrop.data.db.ScannedPaper
 import com.github.mofosyne.tagdrop.data.db.SignatureStatus
-import com.github.mofosyne.tagdrop.data.format.Sector
+import com.github.mofosyne.tagdrop.data.format.MiniCbor
+import com.github.mofosyne.tagdrop.data.format.ScannedRecord
 import com.github.mofosyne.tagdrop.data.format.SectorAssembler
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 import com.github.mofosyne.tagdrop.data.format.TagDropPayload
 import com.github.mofosyne.tagdrop.data.format.TagDropScan
-import com.github.mofosyne.tagdrop.data.signing.verifySignature
+import com.github.mofosyne.tagdrop.data.signing.verifyPaperSignature
+import com.github.mofosyne.tagdrop.data.signing.verifySignatureCommon
 import com.github.mofosyne.tagdrop.databinding.ActivityReceiveBinding
 import com.github.mofosyne.tagdrop.ui.ScanBlock
 import com.github.mofosyne.tagdrop.ui.ScanBoardAdapter
@@ -86,8 +89,10 @@ class ReceiveActivity : AppCompatActivity() {
         openContent(cache.mimeType, cache.contentBytes!!, cache.cacheId)
     })
 
-    /** The most recently decoded sector, kept for the "Inspect CBOR" diagnostic menu item. */
-    private var lastScannedSector: Sector? = null
+    /** The most recently decoded record, kept for the "Inspect CBOR" diagnostic menu item. */
+    private var lastScannedRecord: ScannedRecord? = null
+    /** Original wire bytes (possibly QDEF-framed) for the most recently decoded record. */
+    private var lastScannedWireBytes: ByteArray? = null
 
     /** Debounce so the same code isn't reprocessed on every camera frame it's visible in. */
     private var lastDecodedText: String? = null
@@ -224,6 +229,10 @@ class ReceiveActivity : AppCompatActivity() {
 
         binding.buttonClear.setOnClickListener  { clearState() }
         binding.buttonLaunch.setOnClickListener { launchLegacyContent() }
+        binding.buttonPasteUri.setOnClickListener { decodePastedUri() }
+        binding.editPasteUri.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_GO) { decodePastedUri(); true } else false
+        }
 
         binding.barcodeScanner.statusView.visibility = View.GONE
         binding.barcodeScanner.barcodeView.decoderFactory =
@@ -266,7 +275,7 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        menu.findItem(R.id.action_inspect_cbor).isEnabled = lastScannedSector != null
+        menu.findItem(R.id.action_inspect_cbor).isEnabled = lastScannedRecord != null
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -275,12 +284,39 @@ class ReceiveActivity : AppCompatActivity() {
         else -> super.onOptionsItemSelected(item)
     }
 
-    /** Shows the raw CBOR of the most recently scanned sector, as decoded — pre-reassembly/storage. */
+    /**
+     * Lets a `tagdrop:` URI be typed/pasted directly instead of requiring a camera/NFC scan —
+     * feeds [processScanned] exactly like a scanned code, so it decodes Preview-only, multi-code
+     * Split, and Paper URIs identically (pasting a multi-code group's codes one at a time works
+     * the same way scanning them in sequence does), and "Inspect CBOR" lights up on the result
+     * the same way it does for a real scan. Rejects non-`tagdrop:` text up front rather than
+     * letting it fall through to [completeRawScan]'s catch-all, which would silently cache
+     * pasted garbage as standalone content.
+     */
+    private fun decodePastedUri() {
+        val text = binding.editPasteUri.text?.toString()?.trim().orEmpty()
+        if (text.isEmpty()) return
+        if (!text.startsWith("tagdrop:")) {
+            toast(getString(R.string.paste_uri_not_tagdrop))
+            return
+        }
+        processScanned(text)
+        binding.editPasteUri.setText("")
+    }
+
+    /** Shows the raw CBOR of the most recently scanned code, as decoded — pre-reassembly/storage. */
     private fun inspectLastScannedCbor() {
-        val sector = lastScannedSector ?: return
-        val title = (sector.partMeta.cacheId?.toHex() ?: "key-only") +
-            if (sector.partMeta.sectorCount > 1) " #${sector.partMeta.sectorIndex + 1}" else ""
-        showCborDebugDialog(TagDropCodec.sectorCbor(sector), title)
+        val record = lastScannedRecord ?: return
+        val fragment = TagDropCodec.splitFragmentOf(record)
+        val identity = TagDropCodec.previewIdentity(record).first?.toHex() ?: "key-only"
+        val title = identity + (fragment?.let { " #${it.index + 1}" } ?: "")
+        // Prefer original wire bytes (with QDEF framing if present) for the inspector;
+        // fall back to reconstructed Record Sequence if wire bytes unavailable (NFC, paste).
+        val raw = lastScannedWireBytes ?: when (record) {
+            is ScannedRecord.Content -> MiniCbor.encodeRootBundle(listOfNotNull(record.extensionRaw, record.secondRaw))
+            is ScannedRecord.Paper -> MiniCbor.encodeRootBundle(listOfNotNull(record.previewRaw, record.secondRaw))
+        }
+        showCborDebugDialog(raw, title)
     }
 
     private fun hasCameraPermission() =
@@ -379,14 +415,15 @@ class ReceiveActivity : AppCompatActivity() {
     /**
      * Dispatches an already-decoded scan, regardless of whether it arrived as `tagdrop:` URI
      * text (Base41) or a fully-binary code's raw CBOR sequence (SPEC §13) — see [barcodeCallback].
-     * A sector is fed to [SectorAssembler]; a legacy data: URI joins the dumb-append buffer.
+     * A record is fed to [SectorAssembler]; a legacy data: URI joins the dumb-append buffer.
      */
     private fun processScan(scan: TagDropScan) {
         when (scan) {
-            is TagDropScan.SectorScan -> {
-                lastScannedSector = scan.sector
+            is TagDropScan.RecordScan -> {
+                lastScannedRecord = scan.record
+                lastScannedWireBytes = scan.rawWireBytes
                 invalidateOptionsMenu()
-                handleState(assembler.add(scan.sector))
+                handleState(assembler.add(scan.record))
             }
             is TagDropScan.LegacyScan -> {
                 legacyChunks.add(scan.payload.dataUri)
@@ -398,7 +435,7 @@ class ReceiveActivity : AppCompatActivity() {
         }
     }
 
-    /** Routes a freshly-computed [SectorAssembler.State] for the just-scanned sector's payload. */
+    /** Routes a freshly-computed [SectorAssembler.State] for the just-scanned record's payload. */
     private fun handleState(state: SectorAssembler.State) {
         when (state) {
             is SectorAssembler.State.Collecting -> {
@@ -406,15 +443,15 @@ class ReceiveActivity : AppCompatActivity() {
                 toast(getString(R.string.chunk_progress, state.received, state.total, formatMissingIndices(state.missingIndices)))
             }
             is SectorAssembler.State.ContentReady -> lifecycleScope.launch { handleContentReady(state) }
-            is SectorAssembler.State.PaperReady -> handlePaper(state.paper, state.streamBytes)
-            is SectorAssembler.State.AwaitingKey -> lifecycleScope.launch { handleAwaitingKey(state) }
+            is SectorAssembler.State.PaperReady -> handlePaper(state)
             is SectorAssembler.State.HashMismatch -> { toast(getString(R.string.hash_mismatch)); updateDisplay() }
             is SectorAssembler.State.Failed -> { toast(getString(R.string.unsupported_code)); updateDisplay() }
             is SectorAssembler.State.Idle -> updateDisplay()
         }
     }
 
-    private fun handlePaper(paper: TagDropPayload.Paper, streamBytes: ByteArray) {
+    private fun handlePaper(state: SectorAssembler.State.PaperReady) {
+        val paper = state.paper
         val location = getLastKnownLocation()
         val resolved = LocationUtils.resolveLocation(
             paper.lat, paper.lng, paper.radiusM, paper.preferDeclaredLocation,
@@ -422,7 +459,7 @@ class ReceiveActivity : AppCompatActivity() {
         )
         lifecycleScope.launch {
             val db = AppDatabase.get(this@ReceiveActivity)
-            val verification = verifySignature(streamBytes, paper, db.signerDao())
+            val verification = verifyPaperSignature(state.previewRaw, state.bodyRaw, paper, db.signerDao())
             db.paperDao().insert(
                 ScannedPaper(
                     rootHash        = paper.rootHash.toHex(),
@@ -430,8 +467,9 @@ class ReceiveActivity : AppCompatActivity() {
                     label           = paper.label,
                     set             = paper.set,
                     slug            = paper.slug,
+                    title           = paper.title,
                     domain          = paper.domain,
-                    cborBytes       = streamBytes,
+                    cborBytes       = state.streamBytes,
                     collectionId    = paper.collectionId?.toHex(),
                     collectionLabel = paper.collectionLabel,
                     collectionTag   = paper.collectionTag,
@@ -579,15 +617,15 @@ class ReceiveActivity : AppCompatActivity() {
         val cacheId = state.cacheId ?: return
         val blob = state.pendingOverrideBlob
 
-        val verification = verifySignature(
-            state.streamBytes, state.signatureAlgorithm, state.signature,
+        val verification = verifySignatureCommon(
+            state.signatureAlgorithm, state.signature,
             state.signerPubkey, state.signerId, state.signerLabel,
             AppDatabase.get(this).signerDao()
-        )
+        ) { TagDropCodec.contentSignedMessageHash(state.extensionRaw, state.mediaPreviewRaw, state.mediaPayloadRaw) }
 
         val override = blob?.let { b ->
             retainedKeys().firstNotNullOfOrNull { key ->
-                TagDropCodec.tryDecryptOverrideMap(b, key, state.pendingOverrideCompression)
+                TagDropCodec.tryDecryptOverrideMap(b, key)
             }
         }
         if (override != null) {
@@ -612,7 +650,7 @@ class ReceiveActivity : AppCompatActivity() {
         if (blob != null && state.kdfAlg == TagDropCodec.KDF_PBKDF2_SHA256 && state.kdfSalt != null) {
             unlockWithPassphrase(
                 hint = state.hint, cacheIdHex = cacheId.toHex(), blob = blob,
-                compression = state.pendingOverrideCompression, kdfSalt = state.kdfSalt, kdfIters = state.kdfIters,
+                kdfSalt = state.kdfSalt, kdfIters = state.kdfIters,
                 fallbackContent = state.content, filename = state.filename, mimeType = state.mimeType,
                 collectionId = state.collectionId?.toHex(), collectionLabel = state.collectionLabel,
                 collectionTag = state.collectionTag, icon = state.icon, kdfAlg = state.kdfAlg,
@@ -630,7 +668,6 @@ class ReceiveActivity : AppCompatActivity() {
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = blob, pendingOverrideDeclared = state.pendingOverrideDeclared,
-            pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             signatureStatus = verification.status, signerIdHex = verification.signerIdHex,
             signerLabel = verification.signerLabel,
@@ -642,36 +679,13 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     /**
-     * A Content payload assembled but its content slot can't be read as plain content (SPEC §9):
-     * try every retained key, then a passphrase-derived key if the code declares one. If nothing
-     * unlocks it, leave it in the assembler (uncached) and report "still locked".
-     */
-    private suspend fun handleAwaitingKey(state: SectorAssembler.State.AwaitingKey) {
-        for (key in retainedKeys()) {
-            val resolved = assembler.tryKey(key)
-            if (resolved.isNotEmpty()) { resolved.forEach { completeContentReady(it) }; return }
-        }
-        if (state.kdfAlg == TagDropCodec.KDF_PBKDF2_SHA256 && state.kdfSalt != null && state.cacheId != null) {
-            unlockWithPassphrase(
-                hint = state.hint, cacheIdHex = state.cacheId.toHex(), blob = state.contentSlot,
-                compression = state.compression, kdfSalt = state.kdfSalt, kdfIters = state.kdfIters,
-                fallbackContent = null, filename = null, mimeType = "", collectionId = null,
-                collectionLabel = null, collectionTag = null, icon = null, kdfAlg = state.kdfAlg
-            )
-            return
-        }
-        toast(getString(R.string.awaiting_key))
-        updateDisplay()
-    }
-
-    /**
      * Prompts for a passphrase (SPEC §9), derives the key, and tries it against [blob]. On
      * success, optionally retains the derived key and completes with the override map's fields.
      * On failure/cancel, falls back to caching [fallbackContent] (if any) with the blob kept
      * pending — unless there's nothing to show, in which case the code stays locked.
      */
     private suspend fun unlockWithPassphrase(
-        hint: String?, cacheIdHex: String, blob: ByteArray, compression: Int,
+        hint: String?, cacheIdHex: String, blob: ByteArray,
         kdfSalt: ByteArray, kdfIters: Int, fallbackContent: ByteArray?, filename: String?, mimeType: String,
         collectionId: String?, collectionLabel: String?, collectionTag: String?, icon: String?, kdfAlg: Int,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null,
@@ -684,7 +698,7 @@ class ReceiveActivity : AppCompatActivity() {
         if (result != null) {
             val (passphrase, shouldStore) = result
             val derivedKey = TagDropCodec.deriveKeyFromPassphrase(passphrase, kdfSalt, kdfIters)
-            val override = TagDropCodec.tryDecryptOverrideMap(blob, derivedKey, compression)
+            val override = TagDropCodec.tryDecryptOverrideMap(blob, derivedKey)
             if (override != null) {
                 if (shouldStore) {
                     val saltHint = kdfSalt.take(4).joinToString("") { "%02x".format(it) }
@@ -710,7 +724,7 @@ class ReceiveActivity : AppCompatActivity() {
             completeSingle(
                 cacheIdHex, hint, filename, mimeType, fallbackContent,
                 collectionId, collectionLabel, collectionTag, icon,
-                pendingOverrideBlob = blob, pendingOverrideDeclared = true, pendingCompression = compression,
+                pendingOverrideBlob = blob, pendingOverrideDeclared = true,
                 wasEncrypted = true, kdfAlg = kdfAlg, kdfSalt = kdfSalt,
                 lat = lat, lng = lng, radiusM = radiusM, preferDeclaredLocation = preferDeclaredLocation,
                 locationLabel = locationLabel,
@@ -792,17 +806,16 @@ class ReceiveActivity : AppCompatActivity() {
 
     private suspend fun completeContentReady(state: SectorAssembler.State.ContentReady) {
         val cacheId = state.cacheId ?: return
-        val verification = verifySignature(
-            state.streamBytes, state.signatureAlgorithm, state.signature,
+        val verification = verifySignatureCommon(
+            state.signatureAlgorithm, state.signature,
             state.signerPubkey, state.signerId, state.signerLabel,
             AppDatabase.get(this).signerDao()
-        )
+        ) { TagDropCodec.contentSignedMessageHash(state.extensionRaw, state.mediaPreviewRaw, state.mediaPayloadRaw) }
         completeSingle(
             cacheId.toHex(), state.hint, state.filename, state.mimeType, state.content,
             state.collectionId?.toHex(), state.collectionLabel, state.collectionTag, state.icon,
             pendingOverrideBlob = state.pendingOverrideBlob,
             pendingOverrideDeclared = state.pendingOverrideDeclared,
-            pendingCompression = state.pendingOverrideCompression,
             wasEncrypted = state.wasEncrypted,
             lat = state.lat, lng = state.lng, radiusM = state.radiusM,
             preferDeclaredLocation = state.preferDeclaredLocation,
@@ -823,7 +836,7 @@ class ReceiveActivity : AppCompatActivity() {
         var unlocked = 0
         for (cache in cacheDao.getPendingOverrides()) {
             val blob = cache.pendingOverrideBlob ?: continue
-            val override = TagDropCodec.tryDecryptOverrideMap(blob, key, cache.pendingCompression) ?: continue
+            val override = TagDropCodec.tryDecryptOverrideMap(blob, key) ?: continue
             cacheDao.insert(
                 cache.copy(
                     hint = override.hint ?: cache.hint,
@@ -991,7 +1004,6 @@ class ReceiveActivity : AppCompatActivity() {
                             state.received, state.total, state.hint ?: "",
                             formatMissingIndices(state.missingIndices)
                         )
-                    is SectorAssembler.State.AwaitingKey -> getString(R.string.awaiting_key)
                     else -> getString(R.string.status_ready)
                 }
             }

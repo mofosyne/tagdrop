@@ -60,7 +60,12 @@
   .qr-card .qr-badge.key        { background: #fff3e0; color: #e65100; }
   .qr-card .qr-badge.parity     { background: #e0f7fa; color: #00838f; }
   .qr-card .qr-badge.pixel-art  { background: #f3e5f5; color: #6a1b9a; }
+  .qr-card .qr-badge.binary     { background: #e8eaf6; color: #283593; }
+
+  /* Binary toggle in header */
+  #binary-toggle input { accent-color: #D9652B; }
   .qr-card .qr-id   { font-family: monospace; font-size: 0.65rem; color: #aaa; margin-top: 4px; word-break: break-all; }
+  .qr-card .qr-qrinfo { font-family: monospace; font-size: 0.65rem; color: #999; margin-top: 2px; }
   .qr-card .qr-uri  { margin-top: 8px; width: 100%; }
   .qr-card .qr-uri input {
     width: 100%; font-family: monospace; font-size: 0.6rem; color: #888;
@@ -132,6 +137,9 @@
       <a href="../reader/index.html">Web Reader</a>
     </nav>
   </div>
+  <label id="binary-toggle" style="margin-left:auto;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.82rem;white-space:nowrap;" title="Toggle between tagdrop: URI (text QR, alphanumeric mode) and QDEF binary QR (byte-mode with framing header)">
+    <input type="checkbox" id="binary-toggle-cb"> QDEF binary QR
+  </label>
 </header>
 
 <div class="container">
@@ -145,6 +153,22 @@
       Scan any one with the <a href="../reader/index.html">web reader</a> or the Android app.
     </p>
     <div class="qr-grid" id="standalone-grid"></div>
+  </section>
+
+  <section id="sec-binary">
+    <h2>Binary QDEF Barcode (byte-mode QR)</h2>
+    <p class="section-desc">
+      Same payload as the standalone codes above, but rendered as a <strong>binary/byte-mode QR</strong>
+      instead of a <code>tagdrop:</code> URI in alphanumeric mode. The raw CBOR Record Sequence bytes
+      are framed with a 9-byte QDEF header (4-byte "QDEF" magic + 5-byte CBOR namespace discriminator)
+      and encoded directly in the QR's byte mode — no Base41 encoding, no <code>tagdrop:</code>
+      prefix — which is denser but not human-typable or shareable as text.
+      <br><br>
+      The side-by-side comparison below shows the same content code in both carriers. The toggle above
+      switches all TagDrop codes page-wide between these two carriers.
+    </p>
+    <div class="paper-info" id="binary-info"></div>
+    <div class="qr-grid" id="binary-grid"></div>
   </section>
 
   <section id="sec-passphrase">
@@ -243,6 +267,20 @@
     <div id="trail-stops"></div>
   </section>
 
+  <section id="sec-qdef-spec">
+    <h2>QDEF Wire Format Spec</h2>
+    <p class="section-desc">
+      The <strong>QDEF</strong> (QR Data Envelope Format) specification that TagDrop's wire format is
+      built on — Record framing, Type IDs, Compress/Split wrappers, namespace rules, and magic-header
+      framing for byte-mode QR carriers.
+      Raw source: <a href="../../QDEF-SPEC.md">QDEF-SPEC.md</a>.
+    </p>
+    <details>
+      <summary style="cursor:pointer;font-weight:600;margin-bottom:8px;user-select:none;">QDEF-SPEC.md — click to expand</summary>
+      <pre id="qdef-spec-content" style="background:#fafafa;border:1px solid #ddd;border-radius:6px;padding:16px;font-size:0.75rem;max-height:80vh;overflow:auto;white-space:pre-wrap;word-break:break-word;tab-size:2;"></pre>
+    </details>
+  </section>
+
 </div>
 
 <script>
@@ -264,12 +302,25 @@ function base41Encode(u8) {
 }
 
 // ── Minimal CBOR encoder ──────────────────────────────────────────────────
+// `n` may be a Number or a BigInt — internally BigInt-ified either way, so
+// a 64-bit QDEF Record Type ID (SPEC.md §2.1) and an ordinary small field
+// both go through the identical path. Plain 32-bit bitwise ops (the old
+// `>>>`/`&` approach) silently misencode anything past 2^32 — this is the
+// exact bug class flagged upstream in mofosyne/qdef's own reference
+// prototype (FINDINGS.md #14) after checking a real 64-bit Type ID against
+// it, not a hypothetical concern.
 function writeHead(out, major, n) {
+  n = typeof n === 'bigint' ? n : BigInt(n);
   const m = major << 5;
-  if      (n <= 23)       { out.push(m | n); }
-  else if (n <= 0xFF)     { out.push(m | 24, n); }
-  else if (n <= 0xFFFF)   { out.push(m | 25, n >> 8, n & 0xFF); }
-  else { out.push(m | 26, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF); }
+  if (n < 24n) { out.push(m | Number(n)); }
+  else if (n < 256n) { out.push(m | 24, Number(n)); }
+  else if (n < 65536n) { out.push(m | 25, Number(n >> 8n), Number(n & 0xffn)); }
+  else if (n < 4294967296n) {
+    out.push(m | 26, Number((n >> 24n) & 0xffn), Number((n >> 16n) & 0xffn), Number((n >> 8n) & 0xffn), Number(n & 0xffn));
+  } else {
+    out.push(m | 27);
+    for (let shift = 56n; shift >= 0n; shift -= 8n) out.push(Number((n >> shift) & 0xffn));
+  }
 }
 
 // Always written as major type 7, additional info 27 (8-byte IEEE 754 double).
@@ -283,10 +334,18 @@ function cborFloat64(out, v) {
 // Wraps a number so cborValue encodes it as a float64 instead of a uint.
 function cfloat(v) { return { __float64: true, value: v }; }
 
+// Splices already-encoded CBOR bytes into an array as one item, unwrapped — used for
+// a Record's own field map (already-sorted, §2.2) and its subrecords (§3.1), neither
+// of which should be re-wrapped as a CBOR byte-string value the way a plain Uint8Array
+// field value is.
+function craw(bytes) { return { __raw: true, bytes }; }
+
 function cborValue(out, v) {
   if (v === null || v === undefined) return;
+  if (v && v.__raw) { v.bytes.forEach(b => out.push(b)); return; }
   if (v && v.__float64) { cborFloat64(out, v.value); }
   else if (typeof v === 'boolean') { out.push(v ? 0xF5 : 0xF4); } // true (0xf5) / false (0xf4)
+  else if (typeof v === 'bigint') { writeHead(out, 0, v); }
   else if (typeof v === 'number') { writeHead(out, 0, v); }
   else if (v instanceof Uint8Array) { writeHead(out, 2, v.length); v.forEach(b => out.push(b)); }
   else if (typeof v === 'string') {
@@ -312,26 +371,16 @@ function cborMap(pairs) {
 // Nested map (inside an array value)
 function subMap(pairs) { return { __map: true, pairs }; }
 
-// ── CBOR-sequence envelope (RFC 8742, SPEC §2) ─────────────────────────────
-// tagdrop:<base41( CBOR(version) || CBOR(type) || CBOR(part_meta) || CBOR(sector_bytes) )>
-// Every code — standalone or one of several pieces — is a "sector" (SPEC §4.1): a
-// four-item CBOR Sequence carrying its slice of a payload's reassembled stream
-// (concatenated sector_bytes, SPEC §4.2): CBOR(core_meta_item) || CBOR(bulky_meta_item) || content.
-const VERSION = 1;
-const TYPE_CONTENT = 0, TYPE_PAPER = 1;
-
-function cborUInt(n) {
-  const out = [];
-  writeHead(out, 0, n);
-  return new Uint8Array(out);
-}
-
-// A raw top-level CBOR byte-string item (major type 2) — e.g. a sector's sector_bytes.
-function cborBytesItem(bytes) {
-  const out = [];
-  writeHead(out, 2, bytes.length);
-  bytes.forEach(b => out.push(b));
-  return new Uint8Array(out);
+// Returns the raw major-4 array encoding, UNWRAPPED — this becomes a map
+// field's *value* via cborFieldMap's own cborValue(out, v), whose Uint8Array
+// branch already wraps any Uint8Array as a byte string; wrapping here too,
+// as a top-level byte-string item, would double that header. Mirrors
+// ../generator/index.html.
+function cborArrayBytes(items) {
+  const inner = [];
+  writeHead(inner, 4, items.length);
+  items.forEach(item => cborValue(inner, item));
+  return new Uint8Array(inner);
 }
 
 function concatBytes(...arrays) {
@@ -342,85 +391,394 @@ function concatBytes(...arrays) {
   return out;
 }
 
-// part_meta (SPEC §4.1): cache_id/root_hash (omitted for a key-only code), total_bytes,
-// 0-based sector_index, sector_count, parity_scheme (only on a parity sector, at index
-// >= sector_count — see paritySector below).
-function partMetaMap(pm) {
-  return cborMap([
-    [K.CACHE_ID,     pm.cacheId || null],
-    [K.TOTAL_BYTES,  pm.totalBytes],
-    [K.SECTOR_INDEX, pm.sectorIndex],
-    [K.SECTOR_COUNT, pm.sectorCount],
-    [K.PARITY,       pm.paritySchemeRaw ?? null],
-  ]);
+// ── QDEF Records (SPEC.md §2's "Relationship to QDEF") ────────────────────
+// Encodes a CBOR map/field key: a non-negative uint (major type 0) for an
+// ordinary Type-specific key, or -- for a QDEF Common Field Key
+// (QDEF-SPEC.md §3.6, always negative, always odd/optional) -- a CBOR
+// negative integer (major type 1, RFC 8949 §3.1: stores `-(n+1)` as its
+// argument).
+function writeKey(out, k) {
+  if (k >= 0) writeHead(out, 0, k);
+  else writeHead(out, 1, -k - 1);
 }
 
-// A sector's four-item CBOR sequence (SPEC §2) — Base41-encoded for `tagdrop:`.
-function sectorCbor(sector) {
-  return concatBytes(
-    cborUInt(VERSION), cborUInt(sector.type),
-    partMetaMap(sector.partMeta), cborBytesItem(sector.sectorBytes)
-  );
+// RFC 8949 §4.2.1 core deterministic-encoding map-key order (QDEF-SPEC.md
+// §3.4): shorter encoded key first; same-length keys compare bytewise. NOT
+// the same as ascending integer value once negative keys are involved — a
+// negative key (major type 1) always encodes to a *larger* raw byte than a
+// same-magnitude non-negative key (major type 0), so e.g. `0` sorts before
+// `-1` here despite `-1 < 0`.
+function keyBytes(k) {
+  const out = [];
+  writeKey(out, k);
+  return out;
+}
+function compareKeyBytes(a, b) {
+  if (a.length !== b.length) return a.length - b.length;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
 }
 
-// A sector's `tagdrop:` encoding URI, plus its raw CBOR bytes.
-function encodeSector(sector) {
-  const raw = sectorCbor(sector);
-  return { uri: 'tagdrop:' + base41Encode(raw), raw, sector };
+// A field object's keys are always encoded in canonical order (above) —
+// SPEC.md's fixed, specified key-encoding order (§2.2/§3.4) — rather than
+// whatever order a caller happened to list them in, the way the old
+// cborMap(pairs)-array pattern required getting right by convention.
+function cborFieldMap(fields) {
+  const keys = Object.keys(fields).filter(k => fields[k] !== null && fields[k] !== undefined).map(Number).sort((a, b) => compareKeyBytes(keyBytes(a), keyBytes(b)));
+  const out = [];
+  writeHead(out, 5, keys.length);
+  for (const k of keys) { writeKey(out, k); cborValue(out, fields[k]); }
+  return new Uint8Array(out);
+}
+
+// A QDEF Record (QDEF-SPEC.md §3.1, v11): a self-delimited CBOR array,
+// [typeId, map?, payload?, subrecord*]. TagDrop's own carriers imply the
+// namespace (SPEC.md §2.1a), so that optional array element is always
+// omitted here. The map is omitted entirely only when `fields` itself has
+// no declared keys at all (a static, per-call-site choice — e.g. Compress
+// Wrapper, whose one value moved to the payload slot) — NOT whenever every
+// declared field's value happens to be null/undefined, since Types that
+// always declare fields (Content Extension, Paper-Preview/Body) need a
+// stable map for stripKeys/signature-hash formulas to work against even
+// when every optional field is unset. `payload`, if given, is raw bytes —
+// cborValue's own Uint8Array branch wraps it as a CBOR byte string (major
+// type 2), never array-shaped, so it's always unambiguous against
+// `subrecords` (array, major type 4) with no marker needed. `subrecords`
+// are already-encoded [typeId, ...] byte sequences (each built by a nested
+// cborRecord call), spliced in raw as their own array items.
+function cborRecord(typeId, fields, subrecords = [], payload = undefined) {
+  const items = [typeId];
+  if (Object.keys(fields).length > 0) items.push(craw(cborFieldMap(fields)));
+  if (payload !== undefined) items.push(payload);
+  items.push(...subrecords.map(craw));
+  const out = [];
+  writeHead(out, 4, items.length);
+  items.forEach(item => cborValue(out, item));
+  return new Uint8Array(out);
+}
+
+// QDEF Record Type IDs. SPLIT/COMPRESS/MEDIA_PREVIEW/MEDIA_PAYLOAD are QDEF
+// standard (even, globally-interpreted) types; the four TagDrop Type IDs are
+// small odd values under TagDrop's implied namespace (SPEC.md §2.1).
+const TYPE_SPLIT = 2, TYPE_COMPRESS = 8;
+const TYPE_MEDIA_PAYLOAD = 6, TYPE_MEDIA_PREVIEW = 14;
+const TYPE_CONTENT_EXTENSION = 1;
+const TYPE_CONTENT_SIGNATURE = 3;
+const TYPE_PAPER_PREVIEW = 5;
+const TYPE_PAPER_BODY = 7;
+
+// QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14): 4-byte magic +
+// 5-byte namespace discriminator (CBOR bstr h'89d414e0') = 9 bytes total,
+// prepended to the Record Sequence bytes for byte-mode QR / JABCode carriers.
+// tagdrop: URI and NFC NDEF are exempt — their own dispatch signal (scheme,
+// MIME type) already does the discriminator's job.
+const QDEF_FRAMING = new Uint8Array([
+  0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
+  0x44,                     // CBOR byte string header, length 4 (1 byte)
+  0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
+]);
+// Wraps raw Record Sequence bytes with QDEF framing for byte-mode QR.
+function qdefFrame(recordBytes) {
+  return concatBytes(QDEF_FRAMING, recordBytes);
+}
+
+// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 8) — DEFLATEs
+// `bytes` into the payload slot (SPEC.md v11): [8, deflated_bytes], no
+// field map at all. Async: zlibCompress uses CompressionStream.
+async function compressWrap(bytes) {
+  return cborRecord(TYPE_COMPRESS, {}, [], await zlibCompress(bytes));
 }
 
 /**
- * Slices a reassembled `stream` into data sectors of at most `maxSectorDataBytes` bytes
- * each, stamped with `cacheId` (null for a key-only code) and its sector_index/
- * sector_count/total_bytes in part_meta (SPEC §4.1). Every sector but the last is the
- * same length. Mirrors Kotlin TagDropCodec.sectorize / ../generator/index.html verbatim.
+ * QDEF Split Wrapper Records (QDEF-SPEC.md §4.1 Type 2, SPEC.md §5) —
+ * fragments `bytes` into `fragmentCount` pieces of ceil(total/count) each
+ * (every fragment but the last the same length), stamped with `groupId`
+ * (a content hash of `bytes`, computed by the caller) and, if `withParity`,
+ * one appended full-XOR parity fragment at index == fragmentCount that
+ * recovers any single lost fragment (SPEC.md §5's redundancy scheme).
+ * `extraSubrecords` (SPEC.md §3.1a) is attached to every fragment Record
+ * unwrapped and repeated — used to carry Content's Media Preview alongside
+ * a Split-wrapped Media Payload; Paper has none, so it's `[]` by default.
  */
-function sectorize(type, cacheId, stream, maxSectorDataBytes) {
-  const total = stream.length;
-  const count = (maxSectorDataBytes <= 0 || total <= maxSectorDataBytes)
-    ? 1 : Math.ceil(total / maxSectorDataBytes);
-  const sectorSize = Math.ceil(total / count);
-  const sectors = [];
-  for (let i = 0; i < count; i++) {
-    const start = Math.min(i * sectorSize, total);
-    const end = Math.min(start + sectorSize, total);
-    sectors.push({
-      type,
-      partMeta: { cacheId, sectorIndex: i, sectorCount: count, totalBytes: total, paritySchemeRaw: null },
-      sectorBytes: stream.slice(start, end),
-    });
+function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecords = []) {
+  const total = bytes.length;
+  const chunkLen = Math.ceil(total / fragmentCount);
+  const fragments = [];
+  for (let i = 0; i < fragmentCount; i++) {
+    const start = Math.min(i * chunkLen, total);
+    const end = Math.min(start + chunkLen, total);
+    fragments.push(cborRecord(TYPE_SPLIT, {
+      0: groupId, 2: i, 4: fragmentCount, 6: bytes.slice(start, end),
+      7: total, 9: withParity ? 1 : undefined,
+    }, extraSubrecords));
   }
-  return sectors;
+  if (withParity) {
+    const parity = new Uint8Array(chunkLen);
+    for (let i = 0; i < fragmentCount; i++) {
+      const start = Math.min(i * chunkLen, total);
+      const end = Math.min(start + chunkLen, total);
+      const slice = bytes.slice(start, end);
+      for (let j = 0; j < slice.length; j++) parity[j] ^= slice[j];
+    }
+    fragments.push(cborRecord(TYPE_SPLIT, { 0: groupId, 2: fragmentCount, 4: fragmentCount, 6: parity, 7: total, 9: 1 }, extraSubrecords));
+  }
+  return fragments;
+}
+
+// A code's `tagdrop:` URI (SPEC.md §2 — no QDEF magic header on this path;
+// the `tagdrop:` scheme itself is the dispatch signal), plus its raw
+// Record-Sequence bytes for binary/byte-mode QR rendering.
+function encodeCode(code) {
+  return { uri: 'tagdrop:' + base41Encode(code.raw), raw: code.raw, code };
+}
+
+// Content-Preview / Content-Body Records (SPEC.md §3.1-§3.2).
+// Content-Preview's full field set (SPEC.md §3.1).
+// Content Extension (Type 1) — TagDrop-specific fields only; file
+// identification (cache_id/mime_type/filename/title) moved to Media
+// Preview, and the large signing fields moved to Content Signature.
+function buildContentExtension(f) {
+  return cborRecord(TYPE_CONTENT_EXTENSION, {
+    3: f.hint, 11: f.description,
+    13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag, 19: f.icon,
+    21: f.pixelArt, 23: f.lat != null ? cfloat(f.lat) : undefined, 25: f.lng != null ? cfloat(f.lng) : undefined,
+    27: f.radiusM != null ? cfloat(f.radiusM) : undefined, 29: f.preferDeclaredLocation, 31: f.locationLabel,
+    33: f.keyMaterial, 35: f.retainKey, 37: f.encryption,
+    39: f.kdfAlg, 41: f.kdfSalt, 43: f.kdfIters,
+    45: f.signatureAlgorithm, 47: f.signerId, 49: f.signerLabel,
+    51: f.inReplyTo, 53: f.createdAt, [-13]: f.sourceUrl,
+  });
+}
+
+// Media Preview (QDEF standard Type 14, SPEC.md §3.1a) — file identification.
+// `contentHash`/`filename`/`label` are QDEF Common Field Keys (§3.6,
+// SPEC.md v11: -11/-15/-7) -- mediaType is the only field left that's
+// specific to this Type. `contentHash` is multihash-style: a 1-byte
+// function code (0x12 = sha2-256) prepended to the 8-byte digest TagDrop
+// already computes elsewhere. `subrecords` carries Media Payload when it
+// fits nested here (single-code case) or is omitted (multi-code case,
+// where Media Preview itself becomes Split's subrecord instead — SPEC.md
+// §5.1).
+function buildMediaPreview(f, subrecords = []) {
+  return cborRecord(TYPE_MEDIA_PREVIEW, {
+    0: f.mediaType,
+    [-11]: f.contentHash ? concatBytes(new Uint8Array([0x12]), f.contentHash) : undefined,
+    [-15]: f.filename, [-7]: f.label,
+  }, subrecords);
+}
+
+// Media Payload (QDEF standard Type 6, SPEC.md §3.1a) — mediaType stays in
+// the field map; the content bytes moved to the payload slot (SPEC.md
+// v11), since Media Payload's whole point is carrying exactly one blob.
+// `subrecords` carries Content Signature (Type 3) when the payload is
+// signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
+// own bytes travel (nested once, not repeated per code — SPEC.md §3.1).
+function buildMediaPayload(f, subrecords = []) {
+  return cborRecord(TYPE_MEDIA_PAYLOAD, { 0: f.mediaType }, subrecords, f.content);
+}
+
+// Content Signature (Type 3, TagDrop-scoped, SPEC.md §3.1a) — signature/
+// signer_pubkey for a signed Content payload, nested as Media Payload's own
+// subrecord. Absent entirely (no Record at all) when unsigned.
+function buildContentSignature(f) {
+  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey });
+}
+
+// Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4).
+function buildPaperPreview(f) {
+  return cborRecord(TYPE_PAPER_PREVIEW, {
+    1: f.rootHash, 3: f.hint, 5: f.set, 7: f.slug, 9: f.domain,
+    11: f.step, 13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag,
+    19: f.icon,
+    21: f.lat != null ? cfloat(f.lat) : undefined, 23: f.lng != null ? cfloat(f.lng) : undefined,
+    25: f.radiusM != null ? cfloat(f.radiusM) : undefined,
+    27: f.preferDeclaredLocation, 29: f.locationLabel,
+    31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
+    37: f.inReplyTo, 39: f.createdAt, [-13]: f.sourceUrl,
+    43: f.title, 45: f.description,
+    47: f.keyMaterial, 49: f.retainKey,
+  });
+}
+function buildPaperBody(f) {
+  return cborRecord(TYPE_PAPER_BODY, {
+    1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
+  });
+}
+
+// ── Low-level CBOR item-boundary walkers (encoder-side stripping only). Used
+// by stripKeys/stripSubrecordType below to locate byte ranges within an
+// already-encoded Record's own array/map without a full recursive decode.
+
+// Advances `cur.pos` past exactly one well-formed CBOR item at `cur.pos`,
+// recursing into arrays/maps as needed to find where they end. `cur` is a
+// mutable {bytes, pos} cursor.
+function cborSkipItem(cur) {
+  function rb() { return cur.bytes[cur.pos++]; }
+  function readArg(info) {
+    if (info <= 23) return info;
+    if (info === 24) return rb();
+    if (info === 25) return rb() * 256 + rb();
+    if (info === 26) { let n = 0; for (let i = 0; i < 4; i++) n = n * 256 + rb(); return n; }
+    // 8-byte argument: a uint64, or a float64's raw payload (major 7) — either way,
+    // consume the 8 bytes here so no float special case is needed below.
+    if (info === 27) { let n = 0; for (let i = 0; i < 8; i++) n = n * 256 + rb(); return n; }
+    throw new Error('Unsupported CBOR additional info: ' + info);
+  }
+  const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
+  if (major === 2 || major === 3) { cur.pos += a; }
+  else if (major === 4) { for (let i = 0; i < a; i++) cborSkipItem(cur); }
+  else if (major === 5) { for (let i = 0; i < a; i++) { cborSkipItem(cur); cborSkipItem(cur); } }
+  // major 0/1/7 carry no payload beyond the argument readArg already consumed.
+}
+
+// Reads a definite-length array (major 4) or map (major 5) header at `cur.pos`
+// and returns the byte range of each child item — for a map, key and value
+// ranges are flattened into one array (2 per pair) — advancing `cur.pos` past
+// the whole array/map. Map keys in TagDrop's own encodings are always small
+// (well under 2 bytes), so only additional-info 0-25 are handled.
+function cborItemRanges(cur, expectedMajor) {
+  const head = cur.bytes[cur.pos++];
+  const major = head >> 5;
+  if (major !== expectedMajor) throw new Error('Expected CBOR major ' + expectedMajor + ', got ' + major);
+  const info = head & 0x1F;
+  let count;
+  if (info <= 23) count = info;
+  else if (info === 24) count = cur.bytes[cur.pos++];
+  else if (info === 25) { count = cur.bytes[cur.pos] * 256 + cur.bytes[cur.pos + 1]; cur.pos += 2; }
+  else throw new Error('Unsupported CBOR array/map length encoding');
+  const n = expectedMajor === 5 ? count * 2 : count;
+  const ranges = [];
+  for (let i = 0; i < n; i++) {
+    const start = cur.pos;
+    cborSkipItem(cur);
+    ranges.push([start, cur.pos]);
+  }
+  return ranges;
+}
+
+// Decodes a bare CBOR uint (major 0) or negative integer (major 1 — a QDEF
+// Common Field Key, QDEF-SPEC.md §3.6) at `cur.pos`, advancing past it.
+function cborReadInt(cur) {
+  const b = cur.bytes[cur.pos++];
+  const major = b >> 5;
+  if (major !== 0 && major !== 1) throw new Error('Expected uint or negative int, got major ' + major);
+  const info = b & 0x1F;
+  let arg;
+  if (info <= 23) arg = info;
+  else if (info === 24) arg = cur.bytes[cur.pos++];
+  else if (info === 25) { arg = cur.bytes[cur.pos] * 256 + cur.bytes[cur.pos + 1]; cur.pos += 2; }
+  else throw new Error('Unsupported CBOR int encoding');
+  return major === 1 ? -(arg + 1) : arg;
+}
+
+// Determines where a Record's map/payload/subrecords fall within its own
+// top-level item `ranges` (ranges[0] is always typeId) — QDEF-SPEC.md
+// §3.1's grammar (v11), dispatched purely by CBOR major type. Shared by
+// stripKeys/stripSubrecordType so both agree on the same layout.
+function majorOf(bytes, pos) { return bytes[pos] >> 5; }
+function layoutOf(bytes, ranges) {
+  let idx = 1;
+  let mapIdx = -1;
+  if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) === 5) { mapIdx = idx; idx++; }
+  let payloadIdx = -1;
+  if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) !== 4) { payloadIdx = idx; idx++; }
+  return { mapIdx, payloadIdx, subrecordsFrom: idx };
 }
 
 /**
- * Builds the single full-XOR parity sector (parity_scheme 1, SPEC §5) for dataSectors — the
- * byte-wise XOR of every data sector's sectorBytes, each implicitly zero-padded to the longest
- * before XOR-ing. Placed at sector_index == sector_count, it recovers any one lost data sector.
- * dataSectors must be a complete 0..sector_count-1 run of one payload. Mirrors Kotlin
- * TagDropCodec.paritySector / ../generator/index.html verbatim.
+ * Re-encodes [recordBytes] (a Record's own array, QDEF-SPEC.md §3.1, v11:
+ * [typeId, map?, payload?, subrecord*]) with every field-map pair whose key
+ * is in [keysToStrip] removed, regardless of position. cborFieldMap/
+ * cborRecord always sort keys ascending (SPEC.md §2.2's fixed key-encoding
+ * order), so a higher-numbered field (e.g. `source_url`, key 55) can
+ * legitimately sort after the signature fields (45/47/49) — this walks and
+ * keeps every surviving pair by its own byte range rather than assuming the
+ * stripped keys form a truncatable trailing run. The payload slot and any
+ * subrecords, if present, are carried through byte-for-byte, untouched.
+ * Requires a map to be present.
  */
-function paritySector(dataSectors) {
-  const first = dataSectors[0].partMeta;
-  const width = Math.max(...dataSectors.map(s => s.sectorBytes.length));
-  const parity = new Uint8Array(width);
-  for (const sector of dataSectors) {
-    const b = sector.sectorBytes;
-    for (let j = 0; j < b.length; j++) parity[j] ^= b[j];
+function stripKeys(recordBytes, keysToStrip) {
+  const cur = { bytes: recordBytes, pos: 0 };
+  const ranges = cborItemRanges(cur, 4);
+  const layout = layoutOf(recordBytes, ranges);
+  if (layout.mapIdx < 0) throw new Error('stripKeys requires a field map');
+  const mapRange = ranges[layout.mapIdx];
+  const mapCur = { bytes: recordBytes, pos: mapRange[0] };
+  const pairRanges = cborItemRanges(mapCur, 5);
+  const survivors = [];
+  for (let i = 0; i < pairRanges.length; i += 2) {
+    const keyRange = pairRanges[i], valueRange = pairRanges[i + 1];
+    const key = cborReadInt({ bytes: recordBytes, pos: keyRange[0] });
+    if (!keysToStrip.has(key)) survivors.push(recordBytes.slice(keyRange[0], valueRange[1]));
   }
-  return {
-    type: dataSectors[0].type,
-    partMeta: {
-      cacheId: first.cacheId, sectorIndex: first.sectorCount, sectorCount: first.sectorCount,
-      totalBytes: first.totalBytes, paritySchemeRaw: PARITY_XOR,
-    },
-    sectorBytes: parity,
-  };
+  const mapHeader = [];
+  writeHead(mapHeader, 5, survivors.length);
+  const newMap = concatBytes(new Uint8Array(mapHeader), ...survivors);
+  const items = [recordBytes.slice(...ranges[0]), newMap];
+  if (layout.payloadIdx >= 0) items.push(recordBytes.slice(...ranges[layout.payloadIdx]));
+  for (let i = layout.subrecordsFrom; i < ranges.length; i++) items.push(recordBytes.slice(...ranges[i]));
+  const arrHeader = [];
+  writeHead(arrHeader, 4, items.length);
+  return concatBytes(new Uint8Array(arrHeader), ...items);
 }
 
-// Concatenates CBOR(core_meta_item) || CBOR(bulky_meta_item) || content (SPEC §4.2).
-function buildStream(corePairs, bulkyPairs, content) {
-  return concatBytes(cborMap(corePairs), cborMap(bulkyPairs), content);
+/**
+ * Re-encodes [recordBytes] (a Record's own array) with any *direct* subrecord
+ * whose own typeId is [typeIdToStrip] removed entirely — not a field-map key
+ * strip, a whole-subrecord removal. Used to build "what an unsigned Media
+ * Payload would contain" (no Content Signature subrecord at all, SPEC.md v9
+ * §10) from a placeholder-signed build.
+ */
+function stripSubrecordType(recordBytes, typeIdToStrip) {
+  const cur = { bytes: recordBytes, pos: 0 };
+  const ranges = cborItemRanges(cur, 4);
+  const layout = layoutOf(recordBytes, ranges);
+  const keptSubrecords = ranges.slice(layout.subrecordsFrom).filter(r => {
+    const subCur = { bytes: recordBytes, pos: r[0] };
+    const [subTypeIdRange] = cborItemRanges(subCur, 4);
+    return cborReadInt({ bytes: recordBytes, pos: subTypeIdRange[0] }) !== typeIdToStrip;
+  });
+  const items = [recordBytes.slice(...ranges[0])];
+  if (layout.mapIdx >= 0) items.push(recordBytes.slice(...ranges[layout.mapIdx]));
+  if (layout.payloadIdx >= 0) items.push(recordBytes.slice(...ranges[layout.payloadIdx]));
+  items.push(...keptSubrecords.map(r => recordBytes.slice(...r)));
+  const arrHeader = [];
+  writeHead(arrHeader, 4, items.length);
+  return concatBytes(new Uint8Array(arrHeader), ...items);
+}
+
+const CONTENT_EXTENSION_SIGNATURE_KEYS = new Set([45, 47, 49]); // signature_algorithm, signer_id, signer_label
+
+const PAPER_PREVIEW_SIGNATURE_KEYS = new Set([1, 31, 33, 35]); // root_hash, signature_algorithm, signer_id, signer_label
+const PAPER_BODY_SIGNATURE_KEYS = new Set([5, 7]); // signature, signer_pubkey
+
+/**
+ * Content's signed message hash (SPEC.md §10): SHA-256(MediaPreview' ||
+ * MediaPayload'' || Extension'). `mediaPreview` has nothing to strip (it
+ * never carries a signature field); `mediaPayload` has its own Content
+ * Signature subrecord (Type 3), if present, removed entirely; `extension`
+ * has its three small signature fields stripped. All three are the LOGICAL
+ * (pre-Compress, pre-Split, pre-wire-nesting) Record bytes — never the
+ * compressed/fragmented wire bytes.
+ */
+function contentSignedMessageHash(extension, mediaPreview, mediaPayload) {
+  const unsignedExtension = stripKeys(extension, CONTENT_EXTENSION_SIGNATURE_KEYS);
+  const unsignedMediaPayload = stripSubrecordType(mediaPayload, TYPE_CONTENT_SIGNATURE);
+  return sha256(concatBytes(mediaPreview, unsignedMediaPayload, unsignedExtension));
+}
+
+/**
+ * Paper's signed message hash (SPEC §10/§4.4): SHA-256(Preview' || Body') —
+ * same computation as root_hash (truncated to 8 bytes) but returned in full.
+ * Preview' strips key 1 (root_hash itself) + keys 31/33/35 (signature fields);
+ * Body' strips keys 5/7 (signature fields). The Compress/Split Wrapper layer
+ * sits outside the signed region — the logical (decompressed) Body Record bytes
+ * are always used for hashing, never the wire bytes.
+ */
+function paperSignedMessageHash(preview, bodyPlain) {
+  const unsignedPreview = stripKeys(preview, PAPER_PREVIEW_SIGNATURE_KEYS);
+  const unsignedBody = stripKeys(bodyPlain, PAPER_BODY_SIGNATURE_KEYS);
+  return sha256(concatBytes(unsignedPreview, unsignedBody));
 }
 
 // ── CBOR debug (dev tool: 🔍 Inspect CBOR button) ──────────────────────────
@@ -464,13 +822,35 @@ function cborDecodeSequencePrefix(bytes, n) {
     if (info === 24) return rb();
     if (info === 25) { return rb() * 256 + rb(); }
     if (info === 26) { let n2 = 0; for (let i = 0; i < 4; i++) n2 = n2 * 256 + rb(); return n2; }
-    if (info === 27) { return rbs(8); } // float64: 8 raw bytes, decoded in readVal
+    if (info === 27) { return rbs(8); } // 8 raw bytes: float64 (major 7) or uint64 (major 0), decoded in readVal
     throw new Error('Unsupported CBOR additional info: ' + info);
   }
   function readVal() {
     const b = rb(), major = b >> 5, a = readArg(b & 0x1F);
     switch (major) {
-      case 0: return a;
+      case 0: {
+        // 8-byte argument (info 27): a full uint64 — e.g. a QDEF Record Type ID
+        // (SPEC.md §2.1). BigInt when it doesn't fit a JS Number losslessly,
+        // plain Number otherwise (so ordinary small fields stay `===`-comparable).
+        if (a instanceof Uint8Array) {
+          let n = 0n;
+          for (const byte of a) n = (n << 8n) | BigInt(byte);
+          return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n;
+        }
+        return a;
+      }
+      case 1: {
+        // Negative integer (RFC 8949 §3.1: value = -(a+1)) — a QDEF Common Field Key
+        // (QDEF-SPEC.md §3.6) when it's a map key, e.g. Media Preview's contentHash/
+        // filename/label. Same 8-byte-argument handling as case 0, negated.
+        if (a instanceof Uint8Array) {
+          let n = 0n;
+          for (const byte of a) n = (n << 8n) | BigInt(byte);
+          const neg = -(n + 1n);
+          return neg >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(neg) : neg;
+        }
+        return -(a + 1);
+      }
       case 2: return rbs(a);
       case 3: return new TextDecoder().decode(rbs(a));
       case 4: return Array.from({length: a}, readVal);
@@ -501,12 +881,53 @@ const KEY_NAMES = {
   17: 'collection_id', 18: 'collection_label', 19: 'collection_tag', 24: 'icon',
   26: 'lat', 27: 'lng',
   28: 'encryption', 30: 'key_material', 31: 'retain_key',
+  32: 'signature_algorithm', 33: 'signature', 34: 'signer_pubkey', 35: 'signer_id', 36: 'signer_label',
   37: 'kdf_alg', 38: 'kdf_salt', 39: 'kdf_iters',
   40: 'description',
   42: 'sector_index', 43: 'sector_count', 44: 'parity_scheme',
   45: 'bulky_meta_compression', 46: 'bulky_meta_compressed_bytes', 47: 'bulky_meta_sha256',
-  55: 'pixel_art',
+  48: 'radius_m', 49: 'prefer_declared_location',
+  50: 'in_reply_to', 51: 'title', 52: 'created_at', 53: 'domain', 54: 'location_label', 55: 'pixel_art',
+  57: 'step',
 };
+
+// New-format (QDEF Record) field-name tables — keyed by String(typeId) since TagDrop's
+// Type IDs decode as BigInt, which can't be a plain object key. Mirrors ../reader/index.html.
+// Type ID is a QDEF prefix item (§3), not a map key — no key 0 in field maps.
+const RECORD_TYPE_INFO = new Map([
+  [String(TYPE_CONTENT_EXTENSION), { name: 'Content Extension', keyNames: {
+    3:'hint', 11:'description',
+    13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon', 21:'pixel_art',
+    23:'lat', 25:'lng', 27:'radius_m', 29:'prefer_declared_location', 31:'location_label',
+    33:'key_material', 35:'retain_key', 37:'encryption', 39:'kdf_alg', 41:'kdf_salt', 43:'kdf_iters',
+    45:'signature_algorithm', 47:'signer_id', 49:'signer_label',
+    51:'in_reply_to', 53:'created_at', [-13]:'source',
+  } }],
+  [String(TYPE_CONTENT_SIGNATURE), { name: 'Content Signature', keyNames: {
+    3:'signature', 5:'signer_pubkey',
+  } }],
+  [String(TYPE_MEDIA_PREVIEW), { name: 'Media Preview', keyNames: {
+    0:'mediaType', [-11]:'contentHash', [-15]:'filename', [-7]:'label',
+  } }],
+  [String(TYPE_MEDIA_PAYLOAD), { name: 'Media Payload', keyNames: {
+    0:'mediaType',
+  } }],
+  [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
+    1:'root_hash', 3:'hint', 5:'set', 7:'slug', 9:'domain', 11:'step',
+    13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon',
+    21:'lat', 23:'lng', 25:'radius_m', 27:'prefer_declared_location', 29:'location_label',
+    31:'signature_algorithm', 33:'signer_id', 35:'signer_label',
+    37:'in_reply_to', 39:'created_at', [-13]:'source', 43:'title', 45:'description',
+    47:'key_material', 49:'retain_key',
+  } }],
+  [String(TYPE_PAPER_BODY), { name: 'Paper-Body', keyNames: {
+    1:'files', 3:'related', 5:'signature', 7:'signer_pubkey',
+  } }],
+  [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
+    0:'group_id', 2:'index', 4:'count', 6:'data', 7:'total_bytes', 9:'parity',
+  } }],
+  [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {} }],
+]);
 
 function toHexDump(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -516,6 +937,139 @@ function toHexDump(bytes) {
 // (plain object) rather than a uint/string/bytes/array/null/bool/float64.
 function isCborMap(v) {
   return v !== null && typeof v === 'object' && !(v instanceof Uint8Array) && !Array.isArray(v);
+}
+
+/**
+ * Decodes one QDEF Record (QDEF-SPEC.md §3.1, v11: a self-delimited CBOR
+ * array, [typeId, map?, payload?, subrecord*]) from the head of `bytes`,
+ * byte-range aware so it correctly handles a map-less Record (Compress
+ * Wrapper) or a payload slot (Media Payload's content).
+ * Returns { typeId, record, payload, subrecords, raw, trailing } — `record`
+ * is `{}` when the map was omitted, `payload` the decoded byte-string
+ * payload-slot value (or null), `raw` the record's own exact byte range,
+ * `trailing` whatever follows in the sequence — or null if the head of
+ * `bytes` isn't a well-formed Record.
+ */
+function decodeRecordPrefix(bytes) {
+  try {
+    const cur = { bytes, pos: 0 };
+    const ranges = cborItemRanges(cur, 4);
+    if (ranges.length === 0) return null;
+    const typeId = cborDecodeSequencePrefix(bytes.slice(ranges[0][0]), 1).items[0];
+    if (typeof typeId !== 'number') return null;
+    const layout = layoutOf(bytes, ranges);
+    const record = layout.mapIdx < 0 ? {} : cborDecodeSequencePrefix(bytes.slice(ranges[layout.mapIdx][0]), 1).items[0];
+    if (!isCborMap(record)) return null;
+    let payload = null;
+    if (layout.payloadIdx >= 0) {
+      const decoded = cborDecodeSequencePrefix(bytes.slice(ranges[layout.payloadIdx][0]), 1).items[0];
+      if (!(decoded instanceof Uint8Array)) return null;
+      payload = decoded;
+    }
+    const subrecords = [];
+    for (let i = layout.subrecordsFrom; i < ranges.length; i++) {
+      const r = ranges[i];
+      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]));
+      if (!sub) return null;
+      subrecords.push({ ...sub, raw: bytes.slice(r[0], r[1]) });
+    }
+    return { typeId, record, payload, raw: bytes.slice(0, cur.pos), subrecords, trailing: bytes.slice(cur.pos) };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Encodes 1+ already-encoded top-level Record byte-arrays as the QDEF self-delimited root
+ * (QDEF-SPEC.md §2/§3.1): a single Record is returned as-is — its own array already IS the
+ * root, "no Bundle indirection" — while two or more become subrecords of an implied, never-
+ * transmitted Bundle (typeId 0, omitted): one more definite-length CBOR array wrapping them.
+ * Bytes appended after the returned array are provably outside the container, and MUST be
+ * tolerated by a decoder (SPEC §9's deniability feature) — decodeRootBundle's own
+ * self-delimiting length is what makes that safe without any app-specific record-count
+ * foreknowledge.
+ */
+function encodeRootBundle(records) {
+  if (records.length === 1) return records[0];
+  const out = [];
+  writeHead(out, 4, records.length);
+  return concatBytes(new Uint8Array(out), ...records);
+}
+
+/**
+ * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one definite-length
+ * CBOR array. If its first item is a uint, the whole array IS one Record's own item list
+ * (delegated to decodeRecordPrefix exactly as for any other Record). Otherwise typeId
+ * defaults to 0 (Bundle, never transmitted for TagDrop's own Types) and every item of the
+ * root array is itself a nested Record, decoded independently. Returns null if the root
+ * isn't a well-formed, definite-length CBOR array, or if any of its items fails to decode as
+ * a Record.
+ */
+function decodeRootBundle(bytes) {
+  try {
+    const ranges = cborItemRanges({ bytes, pos: 0 }, 4);
+    if (ranges.length === 0) return null;
+    if (majorOf(bytes, ranges[0][0]) !== 4) {
+      const rec = decodeRecordPrefix(bytes);
+      return rec ? [rec] : null;
+    }
+    const out = [];
+    for (const [s, e] of ranges) {
+      const rec = decodeRecordPrefix(bytes.slice(s, e));
+      if (!rec) return null;
+      out.push(rec);
+    }
+    return out;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Pretty-prints one decoded Record (as returned by decodeRecordPrefix/interpretRecordArray)
+ *  and, recursively indented, any subrecords it carries. */
+function describeOneRecord(rec, indent, label) {
+  const info = RECORD_TYPE_INFO.get(String(rec.typeId));
+  const pad = '  '.repeat(indent);
+  let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + ' [' + toHexDump(rec.raw) + ']\n';
+  out += describeMap(rec.record, indent + 1, info ? info.keyNames : {});
+  if (rec.payload) out += '  '.repeat(indent + 1) + 'payload: ' + toHexDump(rec.payload) + ' (' + rec.payload.length + ' bytes)\n';
+  if (rec.subrecords) for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
+  return out;
+}
+
+/** New-format half of describeCbor below: walks a QDEF Record Sequence, naming each
+ *  top-level Record's type and fields (and any subrecords it carries) per
+ *  RECORD_TYPE_INFO. Mirrors ../reader/index.html.
+ *
+ *  The scanned bytes are the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one
+ *  definite-length CBOR array, either a single Record directly or a Bundle wrapping several
+ *  — decodeRootBundle handles both. Whatever's left after the root array's own length (SPEC
+ *  §9: possibly tolerated padding, or a wholly independent second Sequence) falls through to
+ *  a best-effort decodeRecordPrefix/trailing walk, so a genuinely malformed/legacy input
+ *  still shows something rather than nothing. */
+function describeRecords(bytes) {
+  let out = '';
+  let n = 0;
+  let rest = bytes;
+  const records = decodeRootBundle(bytes);
+  if (records) {
+    for (const decoded of records) {
+      out += describeOneRecord(decoded, 0, 'Record ' + (++n) + ' (' + decoded.raw.length + ' bytes): ');
+      out += '\n';
+    }
+    rest = bytes.slice(encodeRootBundle(records.map(r => r.raw)).length);
+  }
+  while (rest.length > 0) {
+    const decoded = decodeRecordPrefix(rest);
+    if (!decoded) {
+      out += 'trailing bytes (not a Record): ' + toHexDump(rest) + '\n';
+      break;
+    }
+    out += describeOneRecord(decoded, 0, 'Record ' + (++n) + ' (' + decoded.raw.length + ' bytes): ');
+    out += '\n';
+    rest = decoded.trailing;
+  }
+  return out;
 }
 
 /**
@@ -530,18 +1084,21 @@ async function splitReassembledStream(stream) {
     const { items: coreItems, trailing: afterCore } = cborDecodeSequencePrefix(stream, 1);
     const core = coreItems[0];
     if (!isCborMap(core)) return null;
+    const coreRaw = stream.slice(0, stream.length - afterCore.length);
     const bulkyCompression = core[K.BULKY_COMPRESSION] ?? 0;
     if (bulkyCompression !== 0) {
       const n = core[K.BULKY_COMPRESSED_BYTES];
       if (n == null || n > afterCore.length) return null;
-      const bulky = cborDecodeSequencePrefix(await zlibDecompress(afterCore.slice(0, n)), 1).items[0];
+      const bulkyRaw = afterCore.slice(0, n);
+      const bulky = cborDecodeSequencePrefix(await zlibDecompress(bulkyRaw), 1).items[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, content: afterCore.slice(n) };
+      return { core, coreRaw, bulky, bulkyRaw, content: afterCore.slice(n) };
     } else {
       const { items: bulkyItems, trailing: afterBulky } = cborDecodeSequencePrefix(afterCore, 1);
       const bulky = bulkyItems[0];
       if (!isCborMap(bulky)) return null;
-      return { core, bulky, content: afterBulky };
+      const bulkyRaw = afterCore.slice(0, afterCore.length - afterBulky.length);
+      return { core, coreRaw, bulky, bulkyRaw, content: afterBulky };
     }
   } catch (e) {
     return null;
@@ -549,14 +1106,40 @@ async function splitReassembledStream(stream) {
 }
 
 /**
- * Pretty-prints a raw TagDrop sector CBOR sequence for the 🔍 Inspect CBOR debug view: a
- * hex dump, the four-item envelope (SPEC §2) with part_meta broken out by field name, and
- * — for a complete single-sector payload — the core_meta_item/bulky_meta_item/content
- * split of its reassembled stream (§4.2). Mirrors Kotlin TagDropCodec.describeCbor /
- * ../generator/index.html's debug view.
+ * Pretty-prints raw TagDrop code bytes for the 🔍 Inspect CBOR debug view: a hex dump,
+ * then — dispatched on the first CBOR item's major type — either the new QDEF Record
+ * Sequence breakdown or the old four-item envelope (SPEC §2, Paper manifests) with
+ * part_meta broken out by field name and, for a complete single-sector payload, the
+ * core_meta_item/bulky_meta_item/content split of its reassembled stream.
  */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
+  // Detect QDEF framing header: "QDEF" magic (4 bytes) + CBOR bstr namespace (5 bytes)
+  if (bytes.length >= QDEF_FRAMING.length &&
+      bytes[0] === 0x51 && bytes[1] === 0x44 && bytes[2] === 0x45 && bytes[3] === 0x46) {
+    const nsBytes = bytes.slice(4, 9);
+    const nsHash = bytes.slice(5, 9);
+    out += '── QDEF framing (on wire, SPEC.md §2, §2.1a) ──\n';
+    out += '  magic: 51444546 ("QDEF")\n';
+    out += '  namespace: ' + toHexDump(nsBytes) + ' (CBOR bstr h\'' + toHexDump(nsHash) + '\')\n';
+    out += '  framing overhead: ' + QDEF_FRAMING.length + ' bytes\n\n';
+    const inner = bytes.slice(QDEF_FRAMING.length);
+    if (inner.length > 0 && (inner[0] >> 5) === 4) {
+      out += '── Record Sequence (' + inner.length + ' bytes) ──\n';
+      return out + describeRecords(inner);
+    }
+    out += '── Inner bytes (' + inner.length + ' bytes, not a recognized Record Sequence) ──\n';
+    return out + toHexDump(inner) + '\n';
+  }
+  // No on-wire framing — show implied QDEF context (tagdrop: URI / NFC NDEF)
+  out += '── QDEF framing (implied, not on wire) ──\n';
+  out += '  magic: 51444546 ("QDEF")\n';
+  out += '  namespace: ' + toHexDump(QDEF_FRAMING.slice(4, 9)) + ' (CBOR bstr h\'' + toHexDump(QDEF_FRAMING.slice(5, 9)) + '\')\n';
+  out += '  framing overhead saved: ' + QDEF_FRAMING.length + ' bytes (tagdrop: URI / NFC NDEF)\n\n';
+  if (bytes.length > 0 && (bytes[0] >> 5) === 4) {
+    out += '── Record Sequence (' + bytes.length + ' bytes) ──\n';
+    try { return out + describeRecords(bytes); } catch (e2) { out += 'Record decode error: ' + e2.message + '\n'; }
+  }
   try {
     const { items, trailing } = cborDecodeSequencePrefix(bytes, 4);
     if (items.length < 4) throw new Error('Expected version, type, part_meta, sector_bytes — got ' + items.length + ' item(s)');
@@ -591,6 +1174,7 @@ async function describeCbor(bytes) {
 }
 
 function describeMap(map, indent, keyNames = KEY_NAMES) {
+  if (!map || typeof map !== 'object') return '  '.repeat(indent) + String(map) + '\n';
   const pad = '  '.repeat(indent);
   let out = '';
   for (const key of Object.keys(map).map(Number).sort((a, b) => a - b)) {
@@ -622,6 +1206,17 @@ function describeMap(map, indent, keyNames = KEY_NAMES) {
 async function inspectCborFromUri(uri, title) {
   try {
     const bytes = base41Decode(uri.replace(/^tagdrop:/, ''));
+    document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + title;
+    document.getElementById('cborDump').textContent = await describeCbor(bytes);
+    document.getElementById('cborOverlay').classList.remove('hidden');
+  } catch (e) {
+    alert('Failed to decode CBOR: ' + e.message);
+  }
+}
+
+// Shows CBOR breakdown from raw bytes (possibly QDEF-framed) in the #cborOverlay dialog.
+async function inspectCborFromBytes(bytes, title) {
+  try {
     document.getElementById('cborTitle').textContent = 'Raw CBOR — ' + title;
     document.getElementById('cborDump').textContent = await describeCbor(bytes);
     document.getElementById('cborOverlay').classList.remove('hidden');
@@ -688,31 +1283,32 @@ const K = { CACHE_ID:2, HINT:3, MIME:4, CONTENT:5,
             COLLECTION_ID:17, COLLECTION_LABEL:18, COLLECTION_TAG:19,
             ICON:24, LAT:26, LNG:27,
             ENCRYPTION:28, KEY_MATERIAL:30, RETAIN_KEY:31,
+            SIGNATURE_ALGORITHM:32, SIGNATURE:33, SIGNER_PUBKEY:34, SIGNER_ID:35, SIGNER_LABEL:36,
             KDF_ALG:37, KDF_SALT:38, KDF_ITERS:39,
             PAPER_DESCRIPTION:40,
             SECTOR_INDEX:42, SECTOR_COUNT:43, PARITY:44,
             BULKY_COMPRESSION:45, BULKY_COMPRESSED_BYTES:46, BULKY_SHA:47,
-            PIXEL_ART:55 };
+            RADIUS_M:48, PREFER_DECLARED_LOCATION:49,
+            IN_REPLY_TO:50, TITLE:51, CREATED_AT:52, DOMAIN:53, LOCATION_LABEL:54, PIXEL_ART:55,
+            STEP:57 };
 // Local keys for files[] sub-map entries (independent namespace, SPEC §3)
 const KF = { SLUG:1, MIME:2, FILE_ID:3, DESCRIPTION:4, PIXEL_ART:5 };
 // Local keys for related[] sub-map entries (independent namespace, SPEC §3)
-const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9 };
+const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MATERIAL:8, RETAIN_KEY:9, STEP:10 };
 const FILE_ENTRY_KEY_NAMES = { [KF.SLUG]:'slug', [KF.MIME]:'mime_type', [KF.FILE_ID]:'file_id', [KF.DESCRIPTION]:'description', [KF.PIXEL_ART]:'pixel_art' };
-const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key' };
-const SUB_KEY_NAMES = { 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
+const RELATED_ENTRY_KEY_NAMES = { [KR.HINT]:'hint', [KR.SET]:'set', [KR.SLUG]:'slug', [KR.PAPER_ID]:'paper_id', [KR.LAT]:'lat', [KR.LNG]:'lng', [KR.RADIUS_M]:'radius_m', [KR.KEY_MATERIAL]:'key_material', [KR.RETAIN_KEY]:'retain_key', [KR.STEP]:'step' };
+const SUB_KEY_NAMES = { 1: FILE_ENTRY_KEY_NAMES, 3: RELATED_ENTRY_KEY_NAMES, 15: FILE_ENTRY_KEY_NAMES, 16: RELATED_ENTRY_KEY_NAMES };
 
 // Sector sizing (mirrors Kotlin TagDropCodec.MAX_URI_LENGTH / MAX_SECTOR_DATA_BYTES,
 // ../generator/index.html): MAX_URI_LENGTH/MAX_SECTOR_DATA_BYTES are the hard ceiling;
 // createContentSectorsAutoSized/createPaperAutoSized default to the tighter
-// DEFAULT_SECTOR_DATA_BYTES (SPEC §6: ~400 bytes/sector ≈ QR Version 15, scans without
-// zooming on most phones) so these examples render the way the generator's defaults would.
+// DEFAULT_SECTOR_DATA_BYTES (SPEC §6: ~600 bytes/sector ≈ QR Version 17,
+// scans cleanly without zooming on most phones) so these examples render the
+// way the generator's defaults would.
 const MAX_URI_LENGTH = 2000;
 const MAX_SECTOR_DATA_BYTES = 1300;
-const DEFAULT_SECTOR_DATA_BYTES = 400;
+const DEFAULT_SECTOR_DATA_BYTES = 600;
 const DEFAULT_URI_LENGTH = 700;
-
-// parity_scheme = 1: a single full-XOR parity sector recovers one lost data sector (SPEC §5).
-const PARITY_XOR = 1;
 
 // ── Encryption (SPEC §9) ────────────────────────────────────────────────────
 function generateKeyMaterial() { return crypto.getRandomValues(new Uint8Array(32)); }
@@ -748,11 +1344,14 @@ async function deriveKeyFromPassphrase(passphrase, salt, iters) {
  * AES-256-GCM-encrypted under a fresh nonce.
  */
 async function encryptOverrideMap(override, key, compression) {
+  // Override map's own local key namespace (SPEC.md §3.2) — 1=hint,
+  // 3=mime_type, 5=content, 7=filename. Independent of Content-Preview's
+  // numbering; this is a nested structure, not a top-level Record.
   const cbor = cborMap([
-    [K.HINT,     override.hint ?? null],
-    [K.MIME,     override.mimeType ?? null],
-    [K.CONTENT,  override.content ?? null],
-    [K.FILENAME, override.filename ?? null],
+    [1, override.hint ?? null],
+    [3, override.mimeType ?? null],
+    [5, override.content ?? null],
+    [7, override.filename ?? null],
   ]);
   const plaintext = compression === 1 ? await zlibCompress(cbor) : cbor;
   const nonce = generateNonce();
@@ -760,35 +1359,43 @@ async function encryptOverrideMap(override, key, compression) {
 }
 
 /**
- * Builds the sector(s) of a Content payload (`type` 0) — mirrors Kotlin
- * TagDropCodec.createContentSectors / ../generator/index.html, plus a web-only
- * `kdfPassphrase` mode. The reassembled stream is CBOR(core_meta_item) ||
- * CBOR(bulky_meta_item) || content, split into sectors of at most
- * `maxSectorDataBytes` each — one sector for content that fits, more for larger
- * payloads (SPEC §4.2, §5). `content_sha256` (key 8) is added whenever more than
- * one sector is needed (required for sector_count > 1, SPEC §3) — without it, a decoder
- * has no way to detect a substituted/forged sector during reassembly.
+ * Builds the code(s) of a Content payload (SPEC.md v9 §3.1/§3.1a/§4.1) — mirrors
+ * Kotlin TagDropCodec, plus a web-only `kdfPassphrase` mode. Builds Content
+ * Extension (Type 1), Media Preview (Type 14), and Media Payload (Type 6); Media
+ * Payload is Compress-wrapped if `compress`, then Split-wrapped (§5) — with an
+ * optional appended parity fragment (`parity`) — whenever it doesn't fit
+ * `maxSectorDataBytes` alongside the small always-repeated part (Content
+ * Extension + Media Preview) on one code. That small part is repeated
+ * identically on every returned code (§5.1); Media Payload nests as Media
+ * Preview's own subrecord when unsplit, or Media Preview becomes Split's own
+ * repeated subrecord when it isn't (§3.1a).
  *
- * `hint`/`filename`/`mimeType`/`rawBytes` are the clear map's own fields — shown until a
- * hidden override map, if any, is unlocked (SPEC §9). They may be a cover story, a decoy,
- * or genuine unremarkable content with no relation to `override`.
+ * `hint`/`filename`/`mimeType`/`rawBytes` are the small part's own fields /
+ * Media Payload's plain `content` — shown until a hidden override map, if any,
+ * is unlocked (SPEC §9). They may be a cover story, a decoy, or genuine
+ * unremarkable content with no relation to `override`.
  *
- * If `override` is given, it's AES-256-GCM-encrypted into the content slot (SPEC §9);
- * `cacheId` becomes random rather than content-addressed. Supply exactly one of:
- *   - `encryptionKey` (32-byte Uint8Array) — key-code mode, pairs with a separate key QR
- *   - `kdfPassphrase` (string) — passphrase mode, derives key via PBKDF2; embeds kdf_alg/
- *     kdf_salt in the clear map so the reader knows to prompt for a passphrase
+ * If `override` is given, it's AES-256-GCM-encrypted into Media Payload's
+ * `content` field (SPEC §9); `cacheId` becomes random rather than
+ * content-addressed, and Media Payload is never also Compress-wrapped (the
+ * encrypted blob is already high-entropy).
+ *
+ * Returns `{codes, contentExtension, mediaPreview, mediaPayload, cacheId}` —
+ * each code is `{raw, cacheId, totalBytes, index, count, isParity}`, `raw`
+ * being one code's complete Record-Sequence bytes (encodeCode(code) turns it
+ * into a `tagdrop:` URI). A single-code payload is just a one-element `codes`
+ * array.
  */
 async function createContentSectors({
   hint, filename, mimeType, rawBytes, compress,
   collectionId, collectionLabel, collectionTag, icon,
+  keyMaterial, retainKey = true,
   override, encryptionKey, kdfPassphrase, declareEncryption = true,
-  pixelArt = false,
-  maxSectorDataBytes = Infinity,
+  lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
+  inReplyTo, title, description, createdAt, pixelArt = false,
+  signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
+  maxSectorDataBytes = Infinity, parity = false,
 }) {
-  let compression = null, compressedContent = rawBytes;
-  if (compress) { compressedContent = await zlibCompress(rawBytes); compression = 1; }
-
   let cacheId, contentSlot, encryption = null;
   let kdfAlg = null, kdfSalt = null, kdfIters = null;
   if (override) {
@@ -799,126 +1406,180 @@ async function createContentSectors({
       kdfAlg   = 1;
       key = await deriveKeyFromPassphrase(kdfPassphrase, kdfSalt, kdfIters);
     }
-    contentSlot = await encryptOverrideMap(override, key, compression || 0);
+    contentSlot = await encryptOverrideMap(override, key, compress ? 1 : 0);
     cacheId = randomCacheId();
     encryption = declareEncryption ? 1 : null;
   } else {
-    contentSlot = compressedContent;
+    contentSlot = rawBytes;
     cacheId = await sha256first8(rawBytes);
   }
 
-  async function core(withSha) {
-    return [
-      [K.HINT,        hint || null],
-      [K.FILENAME,    filename || null],
-      [K.MIME,        mimeType],
-      [K.COMPRESSION, compression],
-      [K.CONTENT_SHA, withSha ? await sha256(contentSlot) : null],
-      [K.ENCRYPTION,  encryption],
-      [K.COLLECTION_ID,    collectionId || null],
-      [K.COLLECTION_LABEL, collectionLabel || null],
-      [K.COLLECTION_TAG,   collectionTag || null],
-      [K.ICON,             icon || null],
-      [K.KDF_ALG,  kdfAlg],
-      [K.KDF_SALT, kdfSalt],
-      // kdf_iters is the default (100000) — omit to save bytes
-      [K.PIXEL_ART, pixelArt ? true : null],
-    ];
+  const contentExtension = buildContentExtension({
+    hint: hint || undefined, description: description || undefined,
+    collectionId: collectionId || undefined, collectionLabel: collectionLabel || undefined,
+    collectionTag: collectionTag || undefined, icon: icon || undefined,
+    keyMaterial: keyMaterial || undefined, retainKey: (keyMaterial && !retainKey) ? false : undefined,
+    encryption: encryption || undefined,
+    kdfAlg: kdfAlg || undefined, kdfSalt: kdfSalt || undefined, kdfIters: kdfIters || undefined,
+    lat, lng, radiusM, preferDeclaredLocation: preferDeclaredLocation ? true : undefined,
+    locationLabel: locationLabel || undefined,
+    inReplyTo: inReplyTo || undefined, createdAt: createdAt || undefined,
+    pixelArt: pixelArt ? true : undefined,
+    signatureAlgorithm: signatureAlgorithm || undefined, signerId: signerId || undefined, signerLabel: signerLabel || undefined,
+  });
+
+  const previewFields = { contentHash: cacheId, mediaType: mimeType, filename: filename || undefined, label: title || undefined };
+  const mediaPreview = buildMediaPreview(previewFields);
+
+  const contentSignature = (signature != null) ? buildContentSignature({ signature, signerPubkey }) : null;
+  const mediaPayload = buildMediaPayload({ mediaType: mimeType, content: contentSlot }, contentSignature ? [contentSignature] : []);
+  // An encrypted override blob is already high-entropy — Compress-wrapping it
+  // on top would waste a wrapper layer for nothing (DEFLATE doesn't shrink it).
+  const mediaPayloadForWire = (compress && !override) ? await compressWrap(mediaPayload) : mediaPayload;
+
+  const totalBytes = mediaPayloadForWire.length;
+  if (totalBytes <= maxSectorDataBytes) {
+    // Single code: Media Payload (or its Compress Wrapper) nests as Media Preview's
+    // own subrecord (§3.1a) — not a separate sibling Record.
+    const wireMediaPreview = buildMediaPreview(previewFields, [mediaPayloadForWire]);
+    return {
+      codes: [{ raw: encodeRootBundle([contentExtension, wireMediaPreview]), cacheId, totalBytes, index: 0, count: 1, isParity: false }],
+      contentExtension, mediaPreview, mediaPayload, cacheId,
+    };
   }
 
-  // Single-sector when the stream fits; otherwise re-build with content_sha256 added.
-  const single = buildStream(await core(false), [], contentSlot);
-  const stream = single.length <= maxSectorDataBytes ? single : buildStream(await core(true), [], contentSlot);
-  return sectorize(TYPE_CONTENT, cacheId, stream, maxSectorDataBytes);
+  const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
+  const groupId = await sha256first8(mediaPayloadForWire);
+  // Media Preview becomes Split's own repeated subrecord in the multi-code case
+  // (§3.1a) — Content Extension stays a separate top-level Record, repeated per
+  // code exactly as in the single-code case above.
+  const fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, parity, [mediaPreview]);
+  return {
+    codes: fragments.map((frag, i) => ({
+      raw: encodeRootBundle([contentExtension, frag]), cacheId, totalBytes,
+      index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
+    })),
+    contentExtension, mediaPreview, mediaPayload, cacheId,
+  };
 }
 
 /**
- * Two-pass auto-sizing wrapper around createContentSectors: build with an unbounded
- * sector size first; if the single resulting sector's tagdrop: URI fits under the
- * target's don't-bother-splitting threshold, use it as-is; otherwise rebuild the whole
- * payload with targetSectorBytes forced, producing several uniform sectors.
+ * Two-pass auto-sizing wrapper around createContentSectors: build with an
+ * unbounded sector size first; if the single resulting code's tagdrop: URI fits
+ * under the target's don't-bother-splitting threshold, use it as-is; otherwise
+ * rebuild the whole payload with targetSectorBytes forced, producing several
+ * uniform codes.
  */
 async function createContentSectorsAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
   const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createContentSectors({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first[0]).uri.length <= targetUriLength) return first;
+  if (encodeCode(first.codes[0]).uri.length <= targetUriLength) return first;
   return createContentSectors({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
 /**
- * Builds a single "key-only" Content sector (SPEC §9): carries `keyMaterial` for other
- * content, with no content/mime_type of its own and — referencing no content to address —
- * no `cache_id` in its part_meta either. Per SPEC §9's "discovery, not declaration", no
- * field says which content this key unlocks — a reader tries it against any encrypted
- * content it has cached.
+ * Builds a single "key-only" Content Extension code (SPEC §9): carries
+ * `keyMaterial` for other content, with no Media Preview or Media Payload at
+ * all — referencing no content to address, so no `contentHash` either. Per
+ * SPEC §9's "discovery, not declaration", no field says which content this
+ * key unlocks — a reader tries it against any encrypted content it has cached.
  */
 function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
-  const core = [
-    [K.HINT,         hint || null],
-    [K.KEY_MATERIAL, keyMaterial],
-    [K.RETAIN_KEY,   retainKey ? null : false],
-  ];
-  const stream = buildStream(core, [], new Uint8Array(0));
-  return sectorize(TYPE_CONTENT, null, stream, Infinity)[0];
+  const raw = buildContentExtension({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false });
+  return { raw, cacheId: null, totalBytes: raw.length, index: 0, count: 1, isParity: false };
 }
 
 /**
- * The reassembled-stream bytes for a Paper (pre-hash) — what the root hash covers
- * (SPEC §4.4). `content` is always empty for a Paper.
- *   files = [{slug, mimeType, fileId:Uint8Array}]
- *   related = [{hint, set, slug, paperId:Uint8Array|null, lat:number|null, lng:number|null}]
- *
- * `bulky_meta_item` is encoded first so its hash can be included in `core_meta_item` as
- * `bulky_meta_sha256` (key 47, SPEC §3) — required whenever the paper ends up spanning more
- * than one sector, since that's the only integrity check over `files`/`related` (the
- * slug -> file_id directory) once a multi-sector paper is reassembled from independently
- * scanned codes. Always including it (rather than only above the sector-count threshold,
- * as createContentSectors does for `content_sha256`) keeps this byte-reproducible from the
- * function's arguments alone, with no hidden state to replay.
+ * Builds a Paper payload using QDEF Records (SPEC §3.3-§3.4, §4.4).
+ * root_hash is self-referential: SHA-256(Preview' || Body')[0:8], where Preview'
+ * strips key 1 (root_hash itself) + keys 31/33/35 (signature fields), and Body'
+ * strips keys 5/7 (signature fields). The Compress/Split Wrapper layer sits
+ * outside the signed region.
+ *   files = [{slug, mimeType, fileId:Uint8Array, description:string|null}]
+ *   related = [{hint, set, slug, paperId:Uint8Array|null, ...}]
  */
-async function buildPaperStream({ label, set, slug, files, related, collectionId, collectionLabel, collectionTag, icon }) {
-  const bulky = [
-    [K.FILES, files.map(f => subMap([
-      [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
-    ]))],
-    [K.RELATED, related.map(r => subMap([
-      [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null], [KR.PAPER_ID, r.paperId || null],
-      [KR.LAT, r.lat != null ? cfloat(r.lat) : null], [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
-    ]))],
-  ];
-  const bulkyBytes = cborMap(bulky);
-  const core = [
-    [K.HINT,     label || null],
-    [K.SET,      set || null],
-    [K.SLUG,     slug || null],
-    [K.COLLECTION_ID,    collectionId || null],
-    [K.COLLECTION_LABEL, collectionLabel || null],
-    [K.COLLECTION_TAG,   collectionTag || null],
-    [K.ICON,             icon || null],
-    [K.BULKY_SHA, await sha256(bulkyBytes)],
-  ];
-  return concatBytes(cborMap(core), bulkyBytes);
-}
+async function createPaper({ label, set, slug, domain, files, related, description,
+  collectionId, collectionLabel, collectionTag, icon, keyMaterial, retainKey = true,
+  lat, lng, radiusM, preferDeclaredLocation = false, locationLabel,
+  inReplyTo, title, createdAt, step, compress = false, parity = false,
+  signatureAlgorithm, signature, signerPubkey, signerId, signerLabel,
+  maxSectorDataBytes = Infinity }) {
 
-/**
- * Builds a Paper payload (`type` 1) and its sector(s) — mirrors Kotlin
- * TagDropCodec.createPaper / ../generator/index.html. `root_hash` is content-addressed
- * over the reassembled stream (SPEC §4.4), and because it lives in part_meta, *outside*
- * the bytes it's computed over, there's no placeholder/re-encode pass: build the stream
- * once, hash it, copy the hash into every sector.
- */
-async function createPaper(args) {
-  const stream = await buildPaperStream(args);
-  const rootHash = await sha256first8(stream);
-  const maxSectorDataBytes = args.maxSectorDataBytes ?? Infinity;
-  return { rootHash, sectors: sectorize(TYPE_PAPER, rootHash, stream, maxSectorDataBytes) };
+  // Encode files[] and related[] as CBOR byte strings (SPEC §3.4 — field-value-shape rule).
+  const filesCbor = cborArrayBytes(files.map(f => subMap([
+    [KF.SLUG, f.slug], [KF.MIME, f.mimeType], [KF.FILE_ID, f.fileId],
+    [KF.DESCRIPTION, f.description || null],
+    [KF.PIXEL_ART, f.pixelArt || null],
+  ])));
+  const relatedCbor = cborArrayBytes(related.map(r => subMap([
+    [KR.HINT, r.hint], [KR.SET, r.set || null], [KR.SLUG, r.slug || null],
+    [KR.PAPER_ID, r.paperId || null],
+    [KR.LAT, r.lat != null ? cfloat(r.lat) : null],
+    [KR.LNG, r.lng != null ? cfloat(r.lng) : null],
+    [KR.RADIUS_M, r.radiusM != null ? cfloat(r.radiusM) : null],
+    [KR.KEY_MATERIAL, r.keyMaterial || null],
+    [KR.RETAIN_KEY, (r.keyMaterial && r.retainKey === false) ? false : null],
+    [KR.STEP, r.step ?? null],
+  ])));
+
+  // Build Preview and Body Records. root_hash (key 1) is included in the build;
+  // paperSignedMessageHash strips it before hashing, so its value doesn't affect
+  // the hash — this is the self-referential root_hash discipline (§4.4).
+  const preview = buildPaperPreview({
+    rootHash: undefined, // included as-is; stripped by paperSignedMessageHash
+    hint: label, set, slug, domain, step,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt,
+    signatureAlgorithm, signerId, signerLabel,
+    keyMaterial: keyMaterial || undefined,
+    retainKey: (keyMaterial && !retainKey) ? false : undefined,
+  });
+  const bodyPlain = buildPaperBody({ files: filesCbor, related: relatedCbor, signature, signerPubkey });
+
+  // root_hash = SHA-256(Preview' || Body')[0:8]
+  const hash = await paperSignedMessageHash(preview, bodyPlain);
+  const rootHash = hash.slice(0, 8);
+
+  // Rebuild Preview with root_hash now set to the computed value.
+  const finalPreview = buildPaperPreview({
+    rootHash, hint: label, set, slug, domain, step,
+    collectionId, collectionLabel, collectionTag, icon,
+    lat, lng, radiusM, preferDeclaredLocation, locationLabel,
+    inReplyTo, title, createdAt,
+    signatureAlgorithm, signerId, signerLabel,
+    keyMaterial: keyMaterial || undefined,
+    retainKey: (keyMaterial && !retainKey) ? false : undefined,
+  });
+
+  // Compress/split the Body for wire (same pattern as createContentSectors).
+  const bodyForWire = compress ? await compressWrap(bodyPlain) : bodyPlain;
+  const totalBytes = bodyForWire.length;
+
+  if (totalBytes <= maxSectorDataBytes) {
+    return {
+      codes: [{ raw: encodeRootBundle([finalPreview, bodyForWire]), rootHash, totalBytes, index: 0, count: 1, isParity: false }],
+      rootHash, preview: finalPreview, bodyPlain,
+    };
+  }
+
+  const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
+  const groupId = await sha256first8(bodyForWire);
+  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
+  return {
+    codes: fragments.map((frag, i) => ({
+      raw: encodeRootBundle([finalPreview, frag]), rootHash, totalBytes,
+      index: i, count: fragmentCount, isParity: parity && i === fragmentCount,
+    })),
+    rootHash, preview: finalPreview, bodyPlain,
+  };
 }
 
 /** Two-pass auto-sizing wrapper around createPaper — see createContentSectorsAutoSized. */
 async function createPaperAutoSized(args, targetSectorBytes = DEFAULT_SECTOR_DATA_BYTES) {
   const targetUriLength = Math.min(MAX_URI_LENGTH, Math.round(targetSectorBytes * DEFAULT_URI_LENGTH / DEFAULT_SECTOR_DATA_BYTES));
   const first = await createPaper({ ...args, maxSectorDataBytes: Infinity });
-  if (encodeSector(first.sectors[0]).uri.length <= targetUriLength) return first;
+  if (encodeCode(first.codes[0]).uri.length <= targetUriLength) return first;
   return createPaper({ ...args, maxSectorDataBytes: targetSectorBytes });
 }
 
@@ -1642,13 +2303,28 @@ function loadQRCode() {
   return qrcodeModulePromise;
 }
 
-async function renderQr(container, uri) {
+// Converts QR content to the form QRCode.toCanvas expects: a plain text string
+// for tagdrop: URIs, or a byte-mode segment for raw binary (Uint8Array) data —
+// mirrors ../generator/index.html's qrPayloadFor().
+function qrPayloadFor(data) {
+  return typeof data === 'string' ? data : [{ data: new Uint8ClampedArray(data), mode: 'byte' }];
+}
+
+async function renderQr(container, data) {
   const QRCode = await loadQRCode();
   return new Promise((resolve, reject) => {
-    QRCode.toCanvas(uri, { errorCorrectionLevel: 'L', margin: 2, width: 400 }, (err, canvas) => {
+    const payload = qrPayloadFor(data);
+    QRCode.toCanvas(payload, { errorCorrectionLevel: 'L', margin: 2, width: 400 }, (err, canvas) => {
       if (err) { reject(err); return; }
       container.appendChild(canvas);
-      resolve();
+      try {
+        const info = QRCode.create(payload, { errorCorrectionLevel: 'L' });
+        const modules = info.version * 4 + 17;
+        const sizeKb = (data.length / 1024).toFixed(1);
+        resolve({ version: info.version, modules, dataBytes: data.length, sizeKb });
+      } catch {
+        resolve(null);
+      }
     });
   });
 }
@@ -1656,24 +2332,63 @@ async function renderQr(container, uri) {
 // ── Card rendering ────────────────────────────────────────────────────────
 const messages = document.getElementById('page-messages');
 
-async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isManifest }) {
+// Binary QR toggle: when set, all TagDrop-encoded cards render as byte-mode QR
+// (raw Record Sequence bytes) instead of tagdrop: URI (alphanumeric mode).
+// Raw QR cards (vCard, URL etc.) are unaffected.
+let useBinaryQr = false;
+const qrCards = []; // { slot, uri, rawBytes, infoEl }
+
+function rerenderQrSlot(slot, data) {
+  slot.innerHTML = '';
+  return renderQr(slot, data);
+}
+
+async function rerenderAllQr() {
+  for (const card of qrCards) {
+    const data = useBinaryQr ? qdefFrame(card.rawBytes) : card.uri;
+    try {
+      const info = await rerenderQrSlot(card.slot, data);
+      if (card.infoEl && info) {
+        card.infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
+      } else if (card.infoEl) {
+        card.infoEl.textContent = '';
+      }
+    }
+    catch { card.slot.innerHTML = '<div class="err">QR render failed</div>'; }
+  }
+}
+
+document.getElementById('binary-toggle-cb').addEventListener('change', function () {
+  useBinaryQr = this.checked;
+  rerenderAllQr();
+});
+
+async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isManifest, rawBytes }) {
   const div = document.createElement('div');
   div.className = 'qr-card' + (isManifest ? ' manifest' : '');
   const qrSlot = document.createElement('div');
   div.appendChild(qrSlot);
   const mimeBadge = `<span class="qr-badge">${escHtml(mime)}</span>`;
   const extra = extraBadge ? ` <span class="qr-badge ${badgeClass || 'compress'}">${escHtml(extraBadge)}</span>` : '';
+  const infoEl = document.createElement('div');
+  infoEl.className = 'qr-qrinfo';
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
     <div>${mimeBadge}${extra}</div>
-    <div class="qr-id">${id}</div>
+    <div class="qr-id">${id}</div>`);
+  div.appendChild(infoEl);
+  div.insertAdjacentHTML('beforeend', `
     <div class="qr-uri"><input type="text" readonly value="${escHtml(uri)}"></div>
     <button class="copy-btn">Copy URI</button>
     <button class="copy-btn inspect-cbor">🔍 Inspect CBOR</button>`);
   grid.appendChild(div);
 
+  // Register for binary toggle if this is a TagDrop-encoded card (has rawBytes)
+  if (rawBytes) qrCards.push({ slot: qrSlot, uri, rawBytes, infoEl });
+
   try {
-    await renderQr(qrSlot, uri);
+    const info = await renderQr(qrSlot, useBinaryQr && rawBytes ? qdefFrame(rawBytes) : uri);
+    if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
   } catch (e) {
     qrSlot.innerHTML = '<div class="err">QR render failed</div>';
     if (!messages.dataset.warned) {
@@ -1690,43 +2405,54 @@ async function addCard(grid, { label, mime, extraBadge, badgeClass, id, uri, isM
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
   });
-  div.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromUri(uri, label));
+  div.querySelector('.inspect-cbor').addEventListener('click', () => {
+    if (rawBytes && useBinaryQr) {
+      inspectCborFromBytes(qdefFrame(rawBytes), label + ' (QDEF binary QR)');
+    } else if (rawBytes) {
+      inspectCborFromBytes(rawBytes, label + ' (TagDrop URI)');
+    } else {
+      inspectCborFromUri(uri, label);
+    }
+  });
 }
 
-// Renders one card per Content sector (SPEC §4.2): sector_index/sector_count give
-// every sector equal status — no separate manifest/chunk code — so once a payload
-// is split, each sector's card is labelled "<baseLabel> — sector i/N"; a payload
-// that fits one sector just uses baseLabel as-is.
-async function addContentSectorCards(grid, sectors, { baseLabel, mime, extraBadge, badgeClass }) {
-  const count = sectors.length;
-  const idHex = toHex(sectors[0].partMeta.cacheId);
-  for (const sector of sectors) {
-    const enc = encodeSector(sector);
+// Renders one card per Content code (SPEC §4.2): index/count give every code
+// equal status — no separate manifest/chunk code — so once a payload is split,
+// each code's card is labelled "<baseLabel> — code i/N"; a single-code payload
+// just uses baseLabel as-is.
+async function addContentSectorCards(grid, result, { baseLabel, mime, extraBadge, badgeClass }) {
+  const codes = result.codes;
+  const count = codes.length;
+  const idHex = toHex(result.cacheId);
+  for (const code of codes) {
+    const enc = encodeCode(code);
     await addCard(grid, {
-      label: count > 1 ? `${baseLabel} — sector ${sector.partMeta.sectorIndex + 1}/${count}` : baseLabel,
+      label: count > 1 ? `${baseLabel} — code ${code.index + 1}/${count}` : baseLabel,
       mime, extraBadge, badgeClass,
-      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex + 1}` : idHex,
+      id: count > 1 ? `${idHex}-code${code.index + 1}` : idHex,
       uri: enc.uri,
+      rawBytes: enc.raw,
       isManifest: false,
     });
   }
   return { count, idHex };
 }
 
-// Renders one card per sector of a Paper's own root sector(s) — `isManifest: true`
+// Renders one card per code of a Paper's own root code(s) — `isManifest: true`
 // triggers the "📋 " CSS prefix (.qr-card.manifest .qr-label::before) used to set
-// these visually apart from each file's own Content sector(s) rendered alongside
+// these visually apart from each file's own Content code(s) rendered alongside
 // them, the same informal "manifest" framing ../generator/index.html uses.
-async function addPaperSectorCards(grid, sectors, { baseLabel }) {
-  const count = sectors.length;
-  const idHex = toHex(sectors[0].partMeta.cacheId);
-  for (const sector of sectors) {
-    const enc = encodeSector(sector);
+async function addPaperSectorCards(grid, codes, { baseLabel }) {
+  const count = codes.length;
+  const idHex = toHex(codes[0].rootHash);
+  for (const code of codes) {
+    const enc = encodeCode(code);
     await addCard(grid, {
-      label: count > 1 ? `${baseLabel || 'Manifest'} — sector ${sector.partMeta.sectorIndex + 1}/${count}` : (baseLabel || 'Manifest'),
+      label: count > 1 ? `${baseLabel || 'Manifest'} — code ${code.index + 1}/${count}` : (baseLabel || 'Manifest'),
       mime: 'paper manifest', extraBadge: null,
-      id: count > 1 ? `${idHex}-sector${sector.partMeta.sectorIndex + 1}` : idHex,
+      id: count > 1 ? `${idHex}-code${code.index + 1}` : idHex,
       uri: enc.uri,
+      rawBytes: enc.raw,
       isManifest: true,
     });
   }
@@ -1741,15 +2467,20 @@ async function addRawQrCard(grid, { label, mime, rawContent, fileIdHex }) {
   div.className = 'qr-card';
   const qrSlot = document.createElement('div');
   div.appendChild(qrSlot);
+  const infoEl = document.createElement('div');
+  infoEl.className = 'qr-qrinfo';
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
     <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge parity">raw QR</span></div>
-    <div class="qr-id">${fileIdHex} (sha256 file_id)</div>
+    <div class="qr-id">${fileIdHex} (sha256 file_id)</div>`);
+  div.appendChild(infoEl);
+  div.insertAdjacentHTML('beforeend', `
     <div class="qr-uri"><input type="text" readonly value="${escHtml(rawContent)}"></div>
     <button class="copy-btn copy-raw">Copy content</button>`);
   grid.appendChild(div);
   try {
-    await renderQr(qrSlot, rawContent);
+    const info = await renderQr(qrSlot, rawContent);
+    if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
   } catch (e) {
     qrSlot.innerHTML = '<div class="err">QR render failed</div>';
   }
@@ -1763,6 +2494,44 @@ async function addRawQrCard(grid, { label, mime, rawContent, fileIdHex }) {
   });
 }
 
+// Renders a card for a binary/byte-mode QR code — raw Record Sequence bytes
+// encoded in QR byte mode instead of a tagdrop: URI in alphanumeric mode.
+// Shows the raw bytes as a QR code alongside a "binary QDEF QR" badge and
+// the corresponding tagdrop: URI for copy/inspect.
+async function addBinaryQrCard(grid, { label, mime, rawBytes, uri, id }) {
+  const div = document.createElement('div');
+  div.className = 'qr-card';
+  const qrSlot = document.createElement('div');
+  div.appendChild(qrSlot);
+  const infoEl = document.createElement('div');
+  infoEl.className = 'qr-qrinfo';
+  div.insertAdjacentHTML('beforeend', `
+    <div class="qr-label">${escHtml(label)}</div>
+    <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge binary">binary QDEF QR</span></div>
+    <div class="qr-id">${id} · ${rawBytes.length} raw bytes + ${QDEF_FRAMING.length} byte framing · byte mode</div>`);
+  div.appendChild(infoEl);
+  div.insertAdjacentHTML('beforeend', `
+    <div class="qr-uri"><input type="text" readonly value="${escHtml(uri)}"></div>
+    <button class="copy-btn copy-uri">Copy URI</button>
+    <button class="copy-btn inspect-cbor">🔍 Inspect CBOR</button>`);
+  grid.appendChild(div);
+  try {
+    const info = await renderQr(qrSlot, qdefFrame(rawBytes));
+    if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
+  } catch (e) {
+    qrSlot.innerHTML = '<div class="err">QR render failed</div>';
+  }
+  div.querySelector('.copy-uri').addEventListener('click', (ev) => {
+    navigator.clipboard.writeText(uri).then(() => {
+      const btn = ev.target;
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
+  });
+  div.querySelector('.inspect-cbor').addEventListener('click', () => inspectCborFromBytes(qdefFrame(rawBytes), label + ' (binary QR, QDEF-framed)'));
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 async function main() {
   // Standalone examples
@@ -1771,12 +2540,12 @@ async function main() {
     const rawBytes = typeof ex.content === 'function'
       ? await ex.content()
       : new TextEncoder().encode(ex.content);
-    const sectors = await createContentSectorsAutoSized({
+    const result = await createContentSectorsAutoSized({
       hint: ex.hint, filename: ex.filename,
       mimeType: ex.mimeType, rawBytes, compress: ex.compress,
       pixelArt: ex.pixelArt || false,
     });
-    await addContentSectorCards(standaloneGrid, sectors, {
+    await addContentSectorCards(standaloneGrid, result, {
       baseLabel: ex.label,
       mime: ex.mimeType,
       extraBadge: ex.compress ? 'deflate' : (ex.pixelArt ? 'pixel art' : null),
@@ -1784,9 +2553,45 @@ async function main() {
     });
   }
 
+  // Binary QDEF barcode example: same "Plain text" content rendered in both
+  // carriers — tagdrop: URI (alphanumeric) and raw bytes (byte-mode QR) —
+  // to demonstrate the carrier choice.
+  {
+    const ex = STANDALONE_EXAMPLES[0]; // "Plain text"
+    const rawBytes = new TextEncoder().encode(ex.content);
+    const result = await createContentSectorsAutoSized({
+      hint: ex.hint, filename: ex.filename,
+      mimeType: ex.mimeType, rawBytes, compress: ex.compress,
+    });
+    const code = result.codes[0];
+    const enc = encodeCode(code);
+    const idHex = toHex(result.cacheId);
+
+    document.getElementById('binary-info').innerHTML = `
+      <strong>${escHtml(ex.label)}</strong> — ${escHtml(ex.mimeType)}<br>
+      Cache ID: <code>${idHex}</code><br>
+      URI length: <code>${enc.uri.length}</code> chars · Raw bytes: <code>${enc.raw.length}</code> bytes (+ ${QDEF_FRAMING.length} byte QDEF framing)
+      <div class="step">① <strong>Text QR</strong> (left): <code>tagdrop:</code> + Base41-encoded bytes, QR alphanumeric mode — human-readable, copyable, typeable.</div>
+      <div class="step">② <strong>Binary QR</strong> (right): QDEF magic + namespace discriminator (9 bytes) + raw Record Sequence bytes, QR byte mode — denser, but not text-sharable.</div>
+      <div class="step">③ Both decode to the same payload. The toggle above switches all TagDrop codes between these two carriers.</div>`;
+
+    const binaryGrid = document.getElementById('binary-grid');
+    // Text QR (tagdrop: URI) — same as standalone section
+    await addCard(binaryGrid, {
+      label: ex.label, mime: ex.mimeType,
+      extraBadge: 'text QR', badgeClass: null,
+      id: idHex, uri: enc.uri, isManifest: false,
+    });
+    // Binary QR (raw bytes)
+    await addBinaryQrCard(binaryGrid, {
+      label: ex.label, mime: ex.mimeType,
+      rawBytes: enc.raw, uri: enc.uri, id: idHex,
+    });
+  }
+
   // Passphrase-encrypted example (SPEC §9 + PBKDF2)
   const pe = PASSPHRASE_EXAMPLE;
-  const peSectors = await createContentSectorsAutoSized({
+  const peResult = await createContentSectorsAutoSized({
     hint: pe.cover.hint, filename: pe.cover.filename, mimeType: pe.cover.mimeType,
     rawBytes: new TextEncoder().encode(pe.cover.content), compress: pe.cover.compress,
     override: { ...pe.override, content: new TextEncoder().encode(pe.override.content) },
@@ -1797,81 +2602,88 @@ async function main() {
     <strong>${escHtml(pe.cover.label)}</strong>
     — ${escHtml(pe.cover.mimeType)}, passphrase-encrypted (AES-256-GCM via PBKDF2-HMAC-SHA256)<br>
     Passphrase: <code>${escHtml(pe.passphrase)}</code><br>
-    Cache ID: <code>${toHex(peSectors[0].partMeta.cacheId)}</code> (random — not content-addressed)
+    Cache ID: <code>${toHex(peResult.cacheId)}</code> (random — not content-addressed)
     <div class="step">① Scan the QR code — it decodes immediately, showing the "${escHtml(pe.cover.label)}" cover.</div>
     <div class="step">② The reader detects <code>kdf_alg=1</code> and prompts for a passphrase. Enter: <strong>${escHtml(pe.passphrase)}</strong></div>
     <div class="step">③ PBKDF2-SHA256 derives the AES key; the hidden message replaces the cover. Optionally remember the derived key for future scans.</div>`;
 
   const passphraseGrid = document.getElementById('passphrase-grid');
-  await addContentSectorCards(passphraseGrid, peSectors, {
+  await addContentSectorCards(passphraseGrid, peResult, {
     baseLabel: pe.cover.label, mime: pe.cover.mimeType, extraBadge: 'passphrase', badgeClass: 'encrypted',
   });
 
   // Hidden override map + key code (SPEC §9)
   const ee = ENCRYPTED_EXAMPLE;
   const eeKey = generateKeyMaterial();
-  const eeSectors = await createContentSectorsAutoSized({
+  const eeResult = await createContentSectorsAutoSized({
     hint: ee.cover.hint, filename: ee.cover.filename, mimeType: ee.cover.mimeType,
     rawBytes: new TextEncoder().encode(ee.cover.content), compress: ee.cover.compress,
     override: { ...ee.override, content: new TextEncoder().encode(ee.override.content) },
     encryptionKey: eeKey,
   });
-  const eeKeyEnc = encodeSector(createKeyCodeSector({ keyMaterial: eeKey, hint: ee.keyHint }));
+  const eeKeyEnc = encodeCode(createKeyCodeSector({ keyMaterial: eeKey, hint: ee.keyHint }));
 
   document.getElementById('encryption-info').innerHTML = `
     <strong>${escHtml(ee.cover.label)}</strong>
     — ${escHtml(ee.cover.mimeType)}, hidden override map encrypted with AES-256-GCM<br>
-    Cache ID: <code>${toHex(eeSectors[0].partMeta.cacheId)}</code> (random — not content-addressed)
+    Cache ID: <code>${toHex(eeResult.cacheId)}</code> (random — not content-addressed)
     <div class="step">① Scan the <strong>content</strong> code — it decodes immediately, showing the "${escHtml(ee.cover.label)}" cover. The hidden message stays locked.</div>
     <div class="step">② Scan the <strong>key</strong> code, in any order. The reader tries it against the cached content and, on a match, replaces the cover with the hidden message.</div>`;
 
   const encryptionGrid = document.getElementById('encryption-grid');
-  await addContentSectorCards(encryptionGrid, eeSectors, {
+  await addContentSectorCards(encryptionGrid, eeResult, {
     baseLabel: ee.cover.label, mime: ee.cover.mimeType, extraBadge: 'hidden content', badgeClass: 'encrypted',
   });
   await addCard(encryptionGrid, {
     label: 'Key code', mime: 'key_material', extraBadge: 'key', badgeClass: 'key',
-    id: toHex(randomCacheId()), uri: eeKeyEnc.uri, isManifest: false,
+    id: toHex(randomCacheId()), uri: eeKeyEnc.uri, rawBytes: eeKeyEnc.raw, isManifest: false,
   });
 
-  // Multi-sector content: several equal-status sectors, no separate manifest code
+  // Multi-sector content: several equal-status codes, no separate manifest code
   const mc = MULTI_SECTOR_EXAMPLE;
   const mcRawBytes = new TextEncoder().encode(mc.content);
-  const mcSectors = await createContentSectors({
+  const mcResult = await createContentSectors({
     hint: mc.hint, filename: mc.filename, mimeType: mc.mimeType,
     rawBytes: mcRawBytes, compress: mc.compress, maxSectorDataBytes: mc.maxSectorDataBytes,
+    parity: true,
   });
-  const mcParity = paritySector(mcSectors);
+  const mcCodes = mcResult.codes;
+  const mcDataCodes = mcCodes.filter(c => !c.isParity);
+  const mcParityCodes = mcCodes.filter(c => c.isParity);
 
   document.getElementById('multi-info').innerHTML = `
     <strong>${escHtml(mc.label)}</strong>
-    — ${escHtml(mc.mimeType)}, ${mcSectors[0].partMeta.totalBytes} bytes total, ${mcSectors.length} sectors<br>
-    Cache ID: <code>${toHex(mcSectors[0].partMeta.cacheId)}</code>
-    <div class="step">① Scan each <strong>sector</strong> below, in any order.</div>
-    <div class="step">② TagDrop reassembles and verifies the SHA-256 checksum once all ${mcSectors.length} are collected.</div>
-    <div class="step">③ Or scan only ${mcSectors.length - 1} of the ${mcSectors.length} sectors plus the
+    — ${escHtml(mc.mimeType)}, ${mcResult.codes[0].totalBytes} bytes total, ${mcDataCodes.length} data codes<br>
+    Cache ID: <code>${toHex(mcResult.cacheId)}</code>
+    <div class="step">① Scan each <strong>code</strong> below, in any order.</div>
+    <div class="step">② TagDrop reassembles and verifies the SHA-256 checksum once all ${mcDataCodes.length} data codes are collected.</div>
+    <div class="step">③ Or scan only ${mcDataCodes.length - 1} of the ${mcDataCodes.length} data codes plus the
       🛟 <strong>parity</strong> code below — TagDrop XORs them together to reconstruct the one you missed.</div>`;
 
   const multiGrid = document.getElementById('multi-grid');
-  await addContentSectorCards(multiGrid, mcSectors, {
+  await addContentSectorCards(multiGrid, { codes: mcDataCodes, cacheId: mcResult.cacheId }, {
     baseLabel: mc.label, mime: mc.mimeType, extraBadge: mc.compress ? 'deflate' : null,
   });
-  await addCard(multiGrid, {
-    label: `${mc.label} — parity (recovery)`,
-    mime: 'parity recovery code',
-    extraBadge: 'parity', badgeClass: 'parity',
-    id: `${toHex(mcParity.partMeta.cacheId)}-parity`,
-    uri: encodeSector(mcParity).uri,
-    isManifest: false,
-  });
+  for (const pc of mcParityCodes) {
+    const enc = encodeCode(pc);
+    await addCard(multiGrid, {
+      label: `${mc.label} — parity (recovery)`,
+      mime: 'parity recovery code',
+      extraBadge: 'parity', badgeClass: 'parity',
+      id: `${toHex(mcResult.cacheId)}-parity`,
+      uri: enc.uri,
+      rawBytes: enc.raw,
+      isManifest: false,
+    });
+  }
 
   // Paper set
   const p = PAPER_EXAMPLE;
   const encodedFiles = [];
   for (const f of p.files) {
     const rawBytes = new TextEncoder().encode(f.content);
-    const sectors = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
-    encodedFiles.push({ slug: f.slug, mimeType: f.mimeType, sectors, fileId: sectors[0].partMeta.cacheId, compress: f.compress });
+    const result = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
+    encodedFiles.push({ slug: f.slug, mimeType: f.mimeType, result, fileId: result.cacheId, compress: f.compress });
   }
   const manifestFiles = encodedFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
   const paper = await createPaperAutoSized({ label: p.label, set: p.set, slug: p.slug, files: manifestFiles, related: [] });
@@ -1888,9 +2700,9 @@ async function main() {
     <div class="step">③ Open <strong>readme</strong> — its relative links (<code>note</code>, <code>images/badge.svg</code>) resolve to the sibling files on this same paper.</div>`;
 
   const paperGrid = document.getElementById('paper-grid');
-  await addPaperSectorCards(paperGrid, paper.sectors, { baseLabel: p.label });
+  await addPaperSectorCards(paperGrid, paper.codes, { baseLabel: p.label });
   for (const f of encodedFiles) {
-    await addContentSectorCards(paperGrid, f.sectors, {
+    await addContentSectorCards(paperGrid, f.result, {
       baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
     });
   }
@@ -1908,9 +2720,9 @@ async function main() {
   const rqpTagDropFiles = [];
   for (const f of rqp.files) {
     const rawBytes = new TextEncoder().encode(f.content);
-    const sectors = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
-    rqpTagDropFiles.push({ slug: f.slug, mimeType: f.mimeType, sectors, fileId: sectors[0].partMeta.cacheId, compress: f.compress });
-    rqpManifestFiles.push({ slug: f.slug, mimeType: f.mimeType, fileId: sectors[0].partMeta.cacheId });
+    const result = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
+    rqpTagDropFiles.push({ slug: f.slug, mimeType: f.mimeType, result, fileId: result.cacheId, compress: f.compress });
+    rqpManifestFiles.push({ slug: f.slug, mimeType: f.mimeType, fileId: result.cacheId });
   }
   const rqpPaper = await createPaperAutoSized({ label: rqp.label, set: rqp.set, slug: rqp.slug, files: rqpManifestFiles, related: [] });
   const rqpRootHashHex = toHex(rqpPaper.rootHash);
@@ -1919,13 +2731,13 @@ async function main() {
     <strong>${escHtml(rqp.label)}</strong>
     — set: <code>${escHtml(rqp.set)}</code>, slug: <code>${escHtml(rqp.slug)}</code><br>
     Root hash: <code>${rqpRootHashHex}</code>
-    — ${rqpRawFileInfos.length} raw QR file(s), ${rqpTagDropFiles.length} TagDrop Content sector(s)
+    — ${rqpRawFileInfos.length} raw QR file(s), ${rqpTagDropFiles.length} TagDrop Content code(s)
     <div class="step">① Scan the <strong>manifest</strong> — it registers the paper and its file list (including the raw QR file_ids).</div>
     <div class="step">② Scan each file QR in any order. The raw QR codes (vCard, Wi-Fi) are plain — any scanner reads them; TagDrop caches them by matching their SHA-256 to the manifest's <code>file_id</code>.</div>
     <div class="step">③ Open <strong>index</strong> to read the info page, which also explains the mixed format.</div>`;
 
   const rqpGrid = document.getElementById('raw-qr-paper-grid');
-  await addPaperSectorCards(rqpGrid, rqpPaper.sectors, { baseLabel: rqp.label });
+  await addPaperSectorCards(rqpGrid, rqpPaper.codes, { baseLabel: rqp.label });
   for (const f of rqpRawFileInfos) {
     await addRawQrCard(rqpGrid, {
       label: f.slug + ' (raw QR)',
@@ -1935,7 +2747,7 @@ async function main() {
     });
   }
   for (const f of rqpTagDropFiles) {
-    await addContentSectorCards(rqpGrid, f.sectors, {
+    await addContentSectorCards(rqpGrid, f.result, {
       baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
     });
   }
@@ -1946,8 +2758,8 @@ async function main() {
   const bookFiles = [];
   for (const f of book.files) {
     const rawBytes = new TextEncoder().encode(f.content);
-    const sectors = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
-    bookFiles.push({ slug: f.slug, mimeType: f.mimeType, sectors, fileId: sectors[0].partMeta.cacheId, compress: f.compress });
+    const result = await createContentSectorsAutoSized({ hint: null, filename: f.slug, mimeType: f.mimeType, rawBytes, compress: f.compress });
+    bookFiles.push({ slug: f.slug, mimeType: f.mimeType, result, fileId: result.cacheId, compress: f.compress });
   }
   const bookManifestFiles = bookFiles.map(f => ({ slug: f.slug, mimeType: f.mimeType, fileId: f.fileId }));
   const bookPaper = await createPaperAutoSized({ label: book.label, set: book.set, slug: book.slug, files: bookManifestFiles, related: [] });
@@ -1966,9 +2778,9 @@ async function main() {
       reading like one small cross-linked book.</div>`;
 
   const bookGrid = document.getElementById('book-grid');
-  await addPaperSectorCards(bookGrid, bookPaper.sectors, { baseLabel: book.label });
+  await addPaperSectorCards(bookGrid, bookPaper.codes, { baseLabel: book.label });
   for (const f of bookFiles) {
-    await addContentSectorCards(bookGrid, f.sectors, {
+    await addContentSectorCards(bookGrid, f.result, {
       baseLabel: f.slug, mime: f.mimeType, extraBadge: f.compress ? 'deflate' : null,
     });
   }
@@ -1991,13 +2803,13 @@ async function main() {
   const trailStops = document.getElementById('trail-stops');
   for (const stop of TRAIL_EXAMPLES) {
     const rawBytes = new TextEncoder().encode(stop.file.content);
-    const fileSectors = await createContentSectorsAutoSized({
+    const fileResult = await createContentSectorsAutoSized({
       hint: null, filename: stop.file.slug, mimeType: stop.file.mimeType,
       rawBytes, compress: stop.file.compress,
     });
     const stopPaper = await createPaperAutoSized({
       label: stop.label, set: stop.set, slug: stop.slug,
-      files: [{ slug: stop.file.slug, mimeType: stop.file.mimeType, fileId: fileSectors[0].partMeta.cacheId }],
+      files: [{ slug: stop.file.slug, mimeType: stop.file.mimeType, fileId: fileResult.cacheId }],
       related: stop.related,
       collectionId: TRAIL_COLLECTION.id,
       collectionLabel: TRAIL_COLLECTION.label,
@@ -2026,8 +2838,8 @@ async function main() {
     stopGrid.className = 'qr-grid';
     trailStops.appendChild(stopGrid);
 
-    await addPaperSectorCards(stopGrid, stopPaper.sectors, { baseLabel: `${stop.icon} ${stop.label}` });
-    await addContentSectorCards(stopGrid, fileSectors, {
+    await addPaperSectorCards(stopGrid, stopPaper.codes, { baseLabel: `${stop.icon} ${stop.label}` });
+    await addContentSectorCards(stopGrid, fileResult, {
       baseLabel: stop.file.slug, mime: stop.file.mimeType, extraBadge: stop.file.compress ? 'deflate' : null,
     });
   }

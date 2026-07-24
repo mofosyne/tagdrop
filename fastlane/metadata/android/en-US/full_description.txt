@@ -11,12 +11,13 @@ Think of it as a digital geocache: instead of a logbook in a box, the "cache" is
 <li>Build trails, collections, and replies — link papers together with location hints, tag a loose set of stickers with a shared collection so they group into one card on the home screen and map, or mark a code as a reply to another to thread a conversation across drops.</li>
 <li>Browse offline — scanned pages render in an in-app viewer, with search and #hashtag filtering, and a hex/CBOR inspector for the curious. The Collections, History, and Map tabs let you revisit, locate, and manage everything you've found, and a single file can back up or restore it all.</li>
 <li>Tap instead of scan — write any TagDrop code to a blank or rewritable NFC tag, then read it back with a tap instead of the camera.</li>
+<li>Sign your drops — post-quantum (ML-DSA-44) Verified Authorship signing lets anyone who scans your codes recognise them as genuinely yours after the first scan (trust-on-first-use), with a ✅/⚠️/🔏 badge shown on every signed item. Back up your signing identity to a passphrase-protected file to keep the same recognisable signer across devices.</li>
 </ul>
 
 <b>How it works</b>
 
-Every code carries a tagdrop: URI — a CBOR sequence (version, type, and payload map), Base41-encoded so it packs efficiently into a QR code's alphanumeric mode. Content can optionally be DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical content always gets the same ID regardless of who created it.
+Every code carries a tagdrop: URI — a QDEF container of CBOR Records, Base41-encoded so it packs efficiently into a QR code's alphanumeric mode. Content can optionally be DEFLATE-compressed and split across multiple codes with parity recovery. IDs are content-addressed (SHA-256 based), so identical content always gets the same ID regardless of who created it. The full wire-format spec is browsable in-app, no internet connection required.
 
 <b>Status</b>
 
-V2.4 — CBOR-sequence envelope encoding with content split into sectors plus optional parity recovery, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, reply threading, an in-app scanner with a live scan board, NFC tag read/write, search and #hashtag filtering, full backup/restore, a Map tab for located finds, and remote drop-source feeds that pre-populate the map with community drops before you scan them.
+V2.5 — QDEF-based wire container encoding with content split into codes plus optional parity recovery, post-quantum (ML-DSA-44) content signing with trust-on-first-use verification, paper manifests with multi-file directories and relative-link navigation, geographic trails via "related" hints, ad-hoc collections, reply threading, an in-app scanner with a live scan board, NFC tag read/write, search and #hashtag filtering, full backup/restore, a Map tab for located finds, and remote drop-source feeds that pre-populate the map with community drops before you scan them.

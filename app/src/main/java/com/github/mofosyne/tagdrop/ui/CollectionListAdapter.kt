@@ -66,7 +66,7 @@ class CollectionListAdapter(
                     binding.textType.text = ctx.getString(
                         if (item.paper.createdByMe) R.string.collection_type_paper_created else R.string.collection_type_paper
                     )
-                    binding.textTitle.text = item.paper.label ?: ctx.getString(R.string.paper_manifest_label)
+                    binding.textTitle.text = item.paper.title ?: item.paper.label ?: ctx.getString(R.string.paper_manifest_label)
                     binding.textSubtitle.text = ctx.getString(
                         R.string.collection_cached_progress, item.cachedFiles, item.totalFiles
                     )
@@ -106,10 +106,11 @@ class CollectionListAdapter(
                     binding.textType.text = ctx.getString(
                         if (item.cache.createdByMe) R.string.collection_type_loose_created else R.string.collection_type_loose
                     )
-                    binding.textTitle.text = item.cache.hint
+                    binding.textTitle.text = item.cache.title
+                        ?: item.cache.hint
                         ?: item.cache.filename
                         ?: ctx.getString(R.string.collection_untitled)
-                    binding.textSubtitle.text = item.cache.mimeType
+                    binding.textSubtitle.text = cacheSubtitleBase(item.cache)
                     binding.textMeta.text = dateFormat().format(Date(item.cache.discoveredAt))
                     if (item.cache.lat != null && item.cache.lng != null) {
                         binding.buttonMap.visibility = View.VISIBLE
@@ -138,5 +139,11 @@ class CollectionListAdapter(
 
     companion object {
         private fun dateFormat() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+
+        /** Subtitle text: filename (unless it's already showing as the title) plus MIME type. */
+        private fun cacheSubtitleBase(cache: FoundCache): String = listOfNotNull(
+            cache.filename?.takeIf { cache.title != null || cache.hint != null },
+            cache.mimeType
+        ).joinToString(" · ")
     }
 }

@@ -316,9 +316,9 @@ class SourcesActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val db = AppDatabase.get(this@SourcesActivity)
             val existing = db.dropSourceDao().getAllOnce().map { it.url }.toSet()
-            DEFAULT_SOURCES.forEach { source ->
+            SourceFetcher.readBundledDefaultSources(this@SourcesActivity).forEach { source ->
                 if (source.url !in existing) {
-                    db.dropSourceDao().insert(source)
+                    db.dropSourceDao().insert(DropSource(name = source.name, url = source.url, enabled = false))
                 }
             }
             Toast.makeText(this@SourcesActivity,
@@ -429,14 +429,4 @@ class SourcesActivity : AppCompatActivity() {
         }
     }
 
-    companion object {
-        private val DEFAULT_SOURCES = listOf(
-            DropSource(name = "TagDrop Community Drops",
-                       url  = "https://mofosyne.github.io/tagdrop/db/drops.json",
-                       enabled = false),
-            DropSource(name = "TagDrop Demo Drops",
-                       url  = "https://mofosyne.github.io/tagdrop/db/drops_demo.json",
-                       enabled = false)
-        )
-    }
 }

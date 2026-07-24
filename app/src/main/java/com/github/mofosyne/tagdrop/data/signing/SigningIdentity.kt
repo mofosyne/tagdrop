@@ -3,10 +3,7 @@ package com.github.mofosyne.tagdrop.data.signing
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.github.mofosyne.tagdrop.data.format.Sector
 import com.github.mofosyne.tagdrop.data.format.TagDropCodec
-import com.github.mofosyne.tagdrop.data.format.TagDropPayload
-import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
 /**
@@ -95,43 +92,35 @@ object SigningIdentityStore {
     }
 }
 
-private fun concatSectorBytes(sectors: List<Sector>): ByteArray {
-    val out = ByteArrayOutputStream()
-    for (sector in sectors) out.write(sector.sectorBytes)
-    return out.toByteArray()
-}
-
 /**
- * Signs a Content payload with [identity]. [build] is a callback that builds the sectors given
+ * Signs a Content payload with [identity]. [build] is a callback that builds the code(s) given
  * this call's `signatureAlgorithm`/`signature`/`signerPubkey`/`signerId`/`signerLabel` args —
  * pass a lambda wrapping [TagDropCodec.createContentSectorsAutoSized] (or
  * [TagDropCodec.createContentSectors]) with the payload's other fields already bound.
  *
  * Builds with a same-length PLACEHOLDER signature first, rather than building unsigned and
  * signed versions from two independent calls. That's not just an optimization: adding ~3.7 KB
- * of signature fields can itself push a payload from single- to multi-sector, and
- * [TagDropCodec.createContentSectors] only adds `content_sha256` once it's required for a
- * multi-sector split (SPEC §3) — so an independently-built "unsigned" version can end up
- * missing a field the real signed version needs, breaking SPEC §10's "signing happens last and
- * feeds back into nothing" invariant (every other field, including content_sha256, MUST be
- * identical whether or not signing happens). Building signed-with-a-placeholder first makes
- * every sizing decision (sector count, content_sha256 inclusion) exactly what the final signed
- * build will need; [TagDropCodec.signedMessageHash] then strips the placeholder's signature
- * fields back out (same operation a verifier performs) to get the correct hash to sign.
- * Swapping the placeholder for the real signature afterward can't change any sizing decision,
- * since ML-DSA-44 signatures are fixed-length — same bytes in, same bytes out, everywhere
- * except the signature itself. Mirrors the web generator's `signSectors`.
+ * of signature fields can itself push a payload from single- to multi-code (Split), and sizing
+ * decisions must be identical whether or not signing happens (SPEC §10 "signing happens last
+ * and feeds back into nothing"). Building signed-with-a-placeholder first makes every sizing
+ * decision exactly what the final signed build will need;
+ * [TagDropCodec.contentSignedMessageHash] then strips the placeholder's signature fields back
+ * out (over the LOGICAL, pre-wrap [TagDropCodec.ContentBuild.extensionRaw]/
+ * [TagDropCodec.ContentBuild.mediaPreviewRaw]/[TagDropCodec.ContentBuild.mediaPayloadRaw] —
+ * same operation a verifier performs) to get the correct
+ * hash to sign. Swapping the placeholder for the real signature afterward can't change any
+ * sizing decision, since ML-DSA-44 signatures are fixed-length — same bytes in, same bytes out,
+ * everywhere except the signature itself. Mirrors the web generator's `signContentSectors`.
  */
 fun signContentSectors(
     identity: SigningIdentity,
     includePubkey: Boolean = true,
-    build: (signatureAlgorithm: Int, signature: ByteArray?, signerPubkey: ByteArray?, signerId: ByteArray?, signerLabel: String?) -> List<Sector>
-): List<Sector> {
+    build: (signatureAlgorithm: Int, signature: ByteArray?, signerPubkey: ByteArray?, signerId: ByteArray?, signerLabel: String?) -> TagDropCodec.ContentBuild
+): TagDropCodec.ContentBuild {
     val pubkeyArg = if (includePubkey) identity.publicKey else null
     val placeholderSignature = ByteArray(MLDSA44.SIGNATURE_BYTES)
-    val placeholderSectors = build(TagDropCodec.SIGNATURE_ALG_MLDSA44, placeholderSignature, pubkeyArg, identity.signerId, identity.label)
-    val hash = TagDropCodec.signedMessageHash(concatSectorBytes(placeholderSectors))
-        ?: error("signedMessageHash failed on a freshly-built stream")
+    val placeholder = build(TagDropCodec.SIGNATURE_ALG_MLDSA44, placeholderSignature, pubkeyArg, identity.signerId, identity.label)
+    val hash = TagDropCodec.contentSignedMessageHash(placeholder.extensionRaw, placeholder.mediaPreviewRaw, placeholder.mediaPayloadRaw)
     val signature = MLDSA44.sign(hash, identity.secretKey)
     return build(TagDropCodec.SIGNATURE_ALG_MLDSA44, signature, pubkeyArg, identity.signerId, identity.label)
 }
@@ -140,13 +129,12 @@ fun signContentSectors(
 fun signPaper(
     identity: SigningIdentity,
     includePubkey: Boolean = true,
-    build: (signatureAlgorithm: Int, signature: ByteArray?, signerPubkey: ByteArray?, signerId: ByteArray?, signerLabel: String?) -> Pair<TagDropPayload.Paper, List<Sector>>
-): Pair<TagDropPayload.Paper, List<Sector>> {
+    build: (signatureAlgorithm: Int, signature: ByteArray?, signerPubkey: ByteArray?, signerId: ByteArray?, signerLabel: String?) -> TagDropCodec.PaperBuild
+): TagDropCodec.PaperBuild {
     val pubkeyArg = if (includePubkey) identity.publicKey else null
     val placeholderSignature = ByteArray(MLDSA44.SIGNATURE_BYTES)
-    val (_, placeholderSectors) = build(TagDropCodec.SIGNATURE_ALG_MLDSA44, placeholderSignature, pubkeyArg, identity.signerId, identity.label)
-    val hash = TagDropCodec.signedMessageHash(concatSectorBytes(placeholderSectors))
-        ?: error("signedMessageHash failed on a freshly-built stream")
+    val placeholder = build(TagDropCodec.SIGNATURE_ALG_MLDSA44, placeholderSignature, pubkeyArg, identity.signerId, identity.label)
+    val hash = TagDropCodec.paperSignedMessageHash(placeholder.previewRaw, placeholder.bodyRaw)
     val signature = MLDSA44.sign(hash, identity.secretKey)
     return build(TagDropCodec.SIGNATURE_ALG_MLDSA44, signature, pubkeyArg, identity.signerId, identity.label)
 }
