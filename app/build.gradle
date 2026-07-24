@@ -29,6 +29,17 @@ tasks.register("copyQdefSpecToRawRes", Copy) {
     rename { "qdef_spec.md" }
 }
 
+// Bundles docs/db/sources.json -- the same file "Browse recommended sources" fetches live from
+// mofosyne.github.io/tagdrop/db/sources.json -- as a raw resource, so fresh-install seeding and
+// "Reload default sources" read the exact same directory instead of a separately hand-maintained
+// hardcoded list that can silently drift from it.
+def sourcesJsonRawResDir = layout.buildDirectory.dir("generated/sourcesJsonRawRes")
+tasks.register("copySourcesJsonToRawRes", Copy) {
+    from(rootProject.file("docs/db/sources.json"))
+    into(sourcesJsonRawResDir.map { it.dir("raw") })
+    rename { "default_sources.json" }
+}
+
 android {
     namespace = 'com.github.mofosyne.tagdrop'
     compileSdk = 35
@@ -49,6 +60,7 @@ android {
         main {
             res.srcDirs += specRawResDir
             res.srcDirs += qdefSpecRawResDir
+            res.srcDirs += sourcesJsonRawResDir
         }
     }
 
@@ -74,6 +86,7 @@ android {
 tasks.named("preBuild").configure {
     dependsOn("copySpecToRawRes")
     dependsOn("copyQdefSpecToRawRes")
+    dependsOn("copySourcesJsonToRawRes")
 }
 
 dependencies {

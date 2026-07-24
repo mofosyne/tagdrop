@@ -247,7 +247,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_20_21 = object : Migration(20, 21) {
+        private fun migration20To21(context: Context) = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     """CREATE TABLE IF NOT EXISTS drop_sources (
@@ -261,48 +261,42 @@ abstract class AppDatabase : RoomDatabase() {
                     )"""
                 )
                 // Seed default sources for existing installs (disabled by default).
-                val now = System.currentTimeMillis()
-                seedDefaultSources(db, now)
+                seedDefaultSources(db, System.currentTimeMillis(), context)
             }
         }
 
-        private fun seedDefaultSources(db: SupportSQLiteDatabase, now: Long) {
-            listOf(
-                "TagDrop Community Drops" to "https://mofosyne.github.io/tagdrop/db/drops.json",
-                "TagDrop Demo Drops"      to "https://mofosyne.github.io/tagdrop/db/drops_demo.json"
-            ).forEach { (name, url) ->
+        /**
+         * Seeds the drop_sources table from the same bundled docs/db/sources.json directory
+         * SourcesActivity's "Reload default sources" reads (see
+         * SourceFetcher.readBundledDefaultSources / app/build.gradle's
+         * copySourcesJsonToRawRes) — a single source of truth for which sources ship with the
+         * app, instead of a separately hand-maintained hardcoded list here.
+         */
+        private fun seedDefaultSources(db: SupportSQLiteDatabase, now: Long, context: Context) {
+            com.github.mofosyne.tagdrop.data.SourceFetcher.readBundledDefaultSources(context).forEach { source ->
                 db.execSQL(
                     "INSERT INTO drop_sources (name, url, enabled, addedAt, lastFetchedAt, entryCount) VALUES (?, ?, 0, ?, NULL, 0)",
-                    arrayOf(name, url, now)
+                    arrayOf(source.name, source.url, now)
                 )
             }
         }
 
-        // Default sources seeded into every fresh install — all disabled by default.
-        private val DEFAULT_SOURCES = listOf(
-            DropSource(name = "TagDrop Community Drops",
-                       url  = "https://mofosyne.github.io/tagdrop/db/drops.json",
-                       enabled = false),
-            DropSource(name = "TagDrop Demo Drops",
-                       url  = "https://mofosyne.github.io/tagdrop/db/drops_demo.json",
-                       enabled = false)
-        )
-
-        private val SEED_CALLBACK = object : RoomDatabase.Callback() {
+        private fun seedCallback(context: Context) = object : RoomDatabase.Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 super.onCreate(db)
-                seedDefaultSources(db, System.currentTimeMillis())
+                seedDefaultSources(db, System.currentTimeMillis(), context)
             }
         }
 
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
+            val appContext = context.applicationContext
             INSTANCE ?: Room.databaseBuilder(
-                context.applicationContext,
+                appContext,
                 AppDatabase::class.java,
                 DB_NAME
             )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
-            .addCallback(SEED_CALLBACK)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, migration20To21(appContext), MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
+            .addCallback(seedCallback(appContext))
             .build().also { INSTANCE = it }
         }
 
