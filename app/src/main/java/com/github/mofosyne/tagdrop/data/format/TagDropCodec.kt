@@ -947,6 +947,10 @@ object TagDropCodec {
             // Key-only code (SPEC §9): Extension only, no Media Preview/Payload at all.
             return ScannedRecord.Content(first.raw, first.record, null, null, null, null, null)
         }
+        // Only ever decode ONE more Record here, never further: SPEC §9's deniability feature
+        // requires decoders to stop after this and tolerate anything beyond it untouched — bytes
+        // past this second Record may be a wholly independent, differently-encrypted Record
+        // Sequence, not something to parse-or-fail on.
         val second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
         if (second.typeId == TYPE_MEDIA_PREVIEW) {
             // Single-code case: Media Payload is Media Preview's own (sole) subrecord — either
@@ -974,6 +978,7 @@ object TagDropCodec {
         if (!checkRecordKeys(first.record, KNOWN_PAPER_PREVIEW)) return null
         var second: MiniCbor.DecodedRecord? = null
         if (first.trailing.isNotEmpty()) {
+            // Same "stop after the second Record, never look further" rule as contentScanResult.
             second = MiniCbor.decodeRecordPrefix(first.trailing) ?: return null
         }
         return ScannedRecord.Paper(first.raw, first.record, second?.typeId, second?.raw, second?.record)
