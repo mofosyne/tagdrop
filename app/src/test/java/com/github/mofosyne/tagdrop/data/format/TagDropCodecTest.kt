@@ -506,7 +506,10 @@ class TagDropCodecTest {
         val viaFramed = TagDropCodec.decodeRaw(framed)
         val viaRaw = TagDropCodec.decodeRaw(raw)
         assertNotNull(viaFramed)
-        assertEquals(viaRaw, viaFramed)
+        // Only the decoded record needs to match — rawWireBytes legitimately differs (viaFramed's
+        // still carries the QDEF magic prefix it was scanned with; stripping it is decodeRaw's
+        // internal concern, not something it retroactively edits out of the bytes it returns).
+        assertEquals((viaRaw as TagDropScan.RecordScan).record, (viaFramed as TagDropScan.RecordScan).record)
     }
 
     @Test fun decodeRawRejectsPartialQdefMagic() {

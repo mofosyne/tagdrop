@@ -315,7 +315,22 @@ data class SplitFragment(
  * [TagDropPayload.Legacy].
  */
 sealed class TagDropScan {
-    data class RecordScan(val record: ScannedRecord, val rawWireBytes: ByteArray? = null) : TagDropScan()
+    data class RecordScan(val record: ScannedRecord, val rawWireBytes: ByteArray? = null) : TagDropScan() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is RecordScan) return false
+            if (record != other.record) return false
+            if ((rawWireBytes == null) != (other.rawWireBytes == null)) return false
+            if (rawWireBytes != null && other.rawWireBytes != null && !rawWireBytes.contentEquals(other.rawWireBytes)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = record.hashCode()
+            result = 31 * result + (rawWireBytes?.contentHashCode() ?: 0)
+            return result
+        }
+    }
     data class LegacyScan(val payload: TagDropPayload.Legacy) : TagDropScan()
 }
 
