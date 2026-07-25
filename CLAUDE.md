@@ -636,6 +636,97 @@ script — a real headless-browser (Playwright) version of this exact
 check would be a good candidate for the "worth formalizing" gap this
 file's "Why the reader uses zxing-wasm" section area already flags.
 
+### Content description field, title-preference display, Remote Drop Sources unification, and a real CI-blocking test bug (2.5.0 release prep)
+
+Several smaller, independent changes landed while prepping the 2.5.0
+F-Droid release (`versionCode` 9→10, `versionName` "2.4.0"→"2.5.0"):
+
+- **Content description field.** The web generator's Single File tab
+  gained a `description` input threaded into `createContentSectors`/
+  `buildContentExtension` (mirrored in `tools/examples/index.html` for
+  codec-copy consistency, per "Known duplication" below) plus
+  `deriveDescriptionFromText()` — auto-fills it from an HTML page's
+  `<meta name="description">` or a Markdown file's first non-heading
+  line, same trigger as the existing title auto-fill. `description` was
+  already a decoded, persisted `FoundCache`/`ScannedPaper` field from
+  earlier work (issue #35) but was never actually rendered anywhere in
+  the Android UI — still isn't, as of this change; only the generator-side
+  authoring gap was closed.
+- **Title-preference display.** `HistoryAdapter`/`CollectionListAdapter`/
+  `CollectionDetailAdapter` now show `cache.title ?: cache.hint ?:
+  cache.filename ?: <untitled>` (and the `Paper` equivalent) as the row's
+  main title, instead of always showing `filename`/`hint`. Filename is
+  still shown, as a `cacheSubtitleBase()` line under the title, unless
+  it would be redundant with a title/hint already showing above it —
+  filename never fully disappears, it just stops being the primary label
+  once something more descriptive exists.
+- **Remote Drop Sources unification.** `docs/db/sources.json` — the same
+  file "Browse recommended sources" already fetches live from
+  `mofosyne.github.io/tagdrop/db/sources.json` — is now also bundled as
+  an Android raw resource (`app/build.gradle`'s new
+  `copySourcesJsonToRawRes` task, mirroring `copySpecToRawRes`/
+  `copyQdefSpecToRawRes`). `SourceFetcher.fetchDirectory()`'s parsing was
+  split out into a pure `parseDirectory(text)` plus a new
+  `readBundledDefaultSources(context)`, so fresh-install seeding
+  (`AppDatabase.seedDefaultSources`, now needing a `Context` threaded
+  through `migration20To21`/`seedCallback`) and "Reload default sources"
+  (`SourcesActivity.reloadDefaults`) both read the same bundled file
+  through the same parser instead of two separately hand-maintained
+  hardcoded `DropSource`/`RelatedSource` lists (a third, already-dead
+  `AppDatabase.DEFAULT_SOURCES` list — confirmed via grep to have zero
+  callers — was deleted outright rather than migrated). Net effect:
+  changing which sources ship with the app is now a `docs/db/sources.json`
+  edit, not a code change in three separate places.
+- **A real, CI-blocking bug, found only by actually checking CI rather
+  than trusting the "known pre-existing, unrelated" label this file had
+  been carrying it under.** `TagDropCodecTest.kt`'s
+  `decodeRawMatchesDecodeOfEncodedUri`/`decodeRawStripsQdefFraming` had
+  been failing on *every single push* to this branch since the SPEC.md
+  v9 port — confirmed via the GitHub Actions API, not assumed — which
+  meant `testDebugUnitTest` failed the whole `Unit tests & APK builds`
+  CI job every time (skipping the APK build steps too), not merely
+  "2 pre-existing unrelated failures" as several session's worth of
+  CLAUDE.md notes had characterized them. Root causes were two different
+  things bundled under one label:
+  1. `TagDropScan.RecordScan` (`TagDropPayload.kt`) was the one data
+     class holding a `ByteArray` (`rawWireBytes`) that never got a
+     `contentEquals`-based `equals()`/`hashCode()` override — unlike its
+     siblings `ScannedRecord.Content`/`Paper` and `SplitFragment`, which
+     already had one. A real latent bug (Kotlin data classes default to
+     reference equality on array properties), now fixed the same way.
+  2. `decodeRawStripsQdefFraming`'s failure wasn't a reference-equality
+     artifact at all — it compared whole `RecordScan`s including
+     `rawWireBytes`, but a QDEF-magic-framed scan's `rawWireBytes`
+     legitimately keeps the magic prefix it was scanned with (`decodeRaw`
+     doesn't retroactively edit the bytes it returns), so it can never
+     equal the unframed scan's `rawWireBytes`. The test itself was wrong;
+     narrowed to compare just the decoded `.record`, which is what the
+     test name actually claims to verify.
+
+  Lesson for future sessions: "pre-existing failing test, unrelated to
+  this change" is not the same claim as "not blocking CI" — the two were
+  conflated here for a long time. Check the Actions API, don't just
+  reason from a test's failure message matching an old note.
+
+- **qdef bot flagged three small QDEF encoder-hardening changes**
+  (upstream PR [mofosyne/qdef#44](https://github.com/mofosyne/qdef/pull/44),
+  not yet merged there): `typeId` becoming a required argument in the JS
+  reference encoder's own call-time API (no wire-format effect); payload
+  becoming spec-required to be byte-string/text-string only, never a
+  scalar or map (closes a real ambiguity bug in *that* encoder); and a
+  payload requiring a nonzero `typeId` (Bundle/`0` can never carry one).
+  Verified directly against both of TagDrop's own encoders rather than
+  taking the relay's characterization on faith (this project's standing
+  practice): Compress Wrapper and Media Payload both already only ever
+  pass a raw `ByteArray` as `payload`, with a nonzero `typeId` (`8`/`6`);
+  `encodeRootBundle`/its JS equivalents (the implied, never-transmitted
+  Bundle) don't expose a payload parameter at all, so violating rule 3
+  isn't structurally possible through TagDrop's own API. All three are
+  confirmed no-ops for TagDrop — no SPEC.md or code change needed.
+
+Released as `v2.5.0` (tag + GitHub Release), merged to `master` via PR #64.
+SPEC.md's `Status:` line stays `Draft` — this release does not flip it.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

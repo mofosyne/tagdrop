@@ -99,12 +99,14 @@ network, or account needed to read or write a drop.
 
 ## How it works
 
-Every code carries a `tagdrop:<base41-cbor-sequence>` URI — a
-[CBOR](https://cbor.io/) sequence (version, type, and payload map),
-Base41-encoded (a QR/URI-safe alphabet packed like RFC 9285 Base45) so it
-packs efficiently into a QR code's alphanumeric mode. Content can optionally be
-DEFLATE-compressed. IDs are content-addressed (SHA-256 based), so identical
-content always gets the same ID regardless of who created it.
+Every code carries a `tagdrop:<base41-qdef>` URI — a
+[QDEF](https://github.com/mofosyne/qdef) container of
+[CBOR](https://cbor.io/) Records, Base41-encoded (a QR/URI-safe alphabet
+packed like RFC 9285 Base45) so it packs efficiently into a QR code's
+alphanumeric mode. Content can optionally be DEFLATE-compressed and split
+across multiple codes with parity recovery. IDs are content-addressed
+(SHA-256 based), so identical content always gets the same ID regardless of
+who created it.
 
 See [SPEC.md](SPEC.md) for the full wire format and design rationale.
 
@@ -132,17 +134,19 @@ running from source.
 
 ## Status
 
-> ⚠ **Wire format v1 is a draft.** No real-world codes have been printed or distributed yet, so breaking wire-format changes may occur without a version bump. Once the first code is deployed the format freezes.
+> ⚠ **Wire format is a draft.** No real-world codes have been printed or distributed yet, so breaking wire-format changes may occur without a version bump. Once the first code is deployed the format freezes.
 
-**TagDrop v2.4** — wire format version 1 (draft, see [SPEC.md](SPEC.md)). CBOR-sequence envelope encoding
-(`tagdrop:<base41>`) with content split into one or more sectors plus
-optional parity recovery, paper manifests with multi-file directories and
-relative-link navigation, geographic trails via `related` hints and located
-content, ad-hoc collections, reply threading, an in-app scanner with a live
-scan board, NFC tag read/write, search and `#hashtag` filtering, full
-backup/restore, AES-256-GCM encryption via key-code QR or passphrase
-(PBKDF2-SHA256), and remote drop-source feeds (community drop registries
-whose entries appear as map pins before you scan them).
+**TagDrop v2.5** — wire format version 13 (draft, [QDEF](https://github.com/mofosyne/qdef)-based, see [SPEC.md](SPEC.md)). QDEF container encoding
+(`tagdrop:<base41>`) with content split into one or more codes plus
+optional parity recovery, post-quantum (ML-DSA-44) Verified Authorship
+signing with trust-on-first-use verification, paper manifests with
+multi-file directories and relative-link navigation, geographic trails via
+`related` hints and located content, ad-hoc collections, reply threading, an
+in-app scanner with a live scan board, NFC tag read/write, search and
+`#hashtag` filtering, full backup/restore, AES-256-GCM encryption via
+key-code QR or passphrase (PBKDF2-SHA256), and remote drop-source feeds
+(community drop registries whose entries appear as map pins before you scan
+them).
 
 ## Community conventions
 
