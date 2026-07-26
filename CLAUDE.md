@@ -793,6 +793,18 @@ standalone `kotlinc`+JUnit harness used throughout this project's history
 tests across `TagDropCodecTest`/`MiniCborTest`/`SectorAssemblerTest`
 green, 0 failures.
 
+Released as `v2.5.1` (`versionCode` 10→11, `versionName` "2.5.0"→"2.5.1") — a
+bugfix-only release, no wire-format version bump (SPEC.md's own `version`
+field is unaffected; this was a bug in how the byte-mode QR carrier's
+namespace was framed, not a change to what it means). Confirmed via
+real-device testing that the symptom this fixes is real: an app build
+predating this fix fails to recognize the current QDEF-framed byte-mode
+output from this repo's own web tools (falls back to generic
+non-TagDrop content handling — `application/octet-stream`, no filename
+— since `decodeRaw` returns null on the pre-fix binary). `tagdrop:` URI
+and NFC NDEF codes were never affected, only the byte-mode QR/JABCode
+carrier.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
