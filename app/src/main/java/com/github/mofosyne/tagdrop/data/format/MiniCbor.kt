@@ -463,6 +463,34 @@ object MiniCbor {
     }
 
     /**
+     * Inverse of the QDEF byte-mode QR carrier's namespace splice (QDEF-SPEC.md §3.5: "no
+     * separate container-level discriminator item anymore — a namespace is declared exactly
+     * the same way for the container root as for any subrecord: the ordinary namespace-pairing
+     * prefix"). Given [bytes] immediately after the 4-byte magic header — a namespaced root
+     * array whose first element is the namespace CBOR byte string — returns the namespace bytes
+     * and the plain, unnamespaced root array (exactly what [decodeRootBundle] already knows how
+     * to read), with the namespace item removed and the array header's count decremented back
+     * by one. Returns null if [bytes] isn't a well-formed CBOR array or its first element isn't
+     * a byte string (i.e. no namespace present).
+     */
+    fun unframeNamespaceFromRootArray(bytes: ByteArray): Pair<ByteArray, ByteArray>? {
+        return try {
+            val ranges = itemRanges(Cursor(bytes, 0), 4)
+            if (ranges.isEmpty() || majorOf(bytes, ranges[0].first) != 2) null
+            else {
+                val (nsStart, nsEnd) = ranges[0]
+                val namespace = bytes.copyOfRange(nsStart, nsEnd)
+                val itemsStart = if (ranges.size > 1) ranges[1].first else nsEnd
+                val items = bytes.copyOfRange(itemsStart, bytes.size)
+                val out = ByteArrayOutputStream()
+                writeHead(out, 4, (ranges.size - 1).toLong())
+                out.write(items)
+                namespace to out.toByteArray()
+            }
+        } catch (e: Exception) { null }
+    }
+
+    /**
      * Re-encodes [recordBytes] (a Record's own array, `[typeId, map?, payload?, subrecord*]`)
      * with every field-map pair whose key is in [keysToStrip] removed, regardless of position
      * — SPEC §2.2's fixed ascending key-encoding order means a higher-numbered field (e.g.
