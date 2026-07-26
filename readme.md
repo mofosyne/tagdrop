@@ -100,7 +100,7 @@ network, or account needed to read or write a drop.
 ## How it works
 
 Every code carries a `tagdrop:<base41-qdef>` URI — a
-[QDEF](https://github.com/mofosyne/qdef) container of
+[QDEF](https://qdef-format.github.io) container of
 [CBOR](https://cbor.io/) Records, Base41-encoded (a QR/URI-safe alphabet
 packed like RFC 9285 Base45) so it packs efficiently into a QR code's
 alphanumeric mode. Content can optionally be DEFLATE-compressed and split
@@ -136,7 +136,7 @@ running from source.
 
 > ⚠ **Wire format is a draft.** No real-world codes have been printed or distributed yet, so breaking wire-format changes may occur without a version bump. Once the first code is deployed the format freezes.
 
-**TagDrop v2.5** — wire format version 13 (draft, [QDEF](https://github.com/mofosyne/qdef)-based, see [SPEC.md](SPEC.md)). QDEF container encoding
+**TagDrop v2.5** — wire format version 13 (draft, [QDEF](https://qdef-format.github.io/)-based, see [SPEC.md](SPEC.md)). QDEF container encoding
 (`tagdrop:<base41>`) with content split into one or more codes plus
 optional parity recovery, post-quantum (ML-DSA-44) Verified Authorship
 signing with trust-on-first-use verification, paper manifests with

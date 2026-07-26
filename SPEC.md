@@ -14,7 +14,7 @@ changes from then on require a version bump (§14). Feedback welcome via
 GitHub issues.
 
 **Relationship to QDEF:** TagDrop's envelope is built on the Record/Wrapper
-primitives defined by [QDEF](https://github.com/mofosyne/qdef)
+primitives defined by [QDEF](https://qdef-format.github.io/)
 (`docs/QDEF-SPEC.md` there) — a general-purpose binary container for
 multi-action barcodes/NFC, developed alongside TagDrop but meant to be a
 reusable, TagDrop-independent standard. TagDrop registers four QDEF Record

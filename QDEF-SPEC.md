@@ -8,7 +8,7 @@ duplicate, the same anti-drift reasoning already applied to `SPEC.md`
 itself elsewhere in this repo.
 
 **The authoritative, always-current QDEF spec lives at:**
-[github.com/mofosyne/qdef/blob/main/docs/QDEF-SPEC.md](https://github.com/mofosyne/qdef/blob/main/docs/QDEF-SPEC.md)
+[github.com/qdef-format/qdef-format.github.io/blob/main/docs/QDEF-SPEC.md](https://github.com/qdef-format/qdef-format.github.io/blob/main/docs/QDEF-SPEC.md)
 
 Related documents in that repo, for context on *why* the spec looks the
 way it does (not needed to implement against it, just useful background):
