@@ -98,26 +98,32 @@ object TagDropCodec {
     private const val SCHEME          = "tagdrop:"
     private const val NAV_LINK_PREFIX = "tagdrop://"
 
-    // ── QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14) ──────────────
-    // 4-byte magic "QDEF" + 5-byte CBOR bstr namespace discriminator
-    // h'89d414e0' (SHA-256("io.github.mofosyne.tagdrop")[0:4]) = 9 bytes total,
-    // prepended to the Record Sequence for byte-mode QR / JABCode carriers.
-    // tagdrop: URI and NFC NDEF are exempt — their own dispatch signal already
-    // does the discriminator's job.
+    // ── QDEF binary-mode QR framing (QDEF-SPEC.md §2, §3.5) ────────────────
+    // 4-byte "QDEF" magic, then the root array's own leading namespace element
+    // (CBOR bstr h'89d414e0', SHA-256("io.github.mofosyne.tagdrop")[0:4]) = 9
+    // bytes of overhead total. tagdrop: URI and NFC NDEF are exempt from
+    // carrying a namespace at all — their own dispatch signal already gives
+    // the decoder the same context an on-wire namespace would.
+    // Kept as one flat 9-byte constant purely for overhead/display math —
+    // there's no longer a separate discriminator CBOR item to strip as a flat
+    // prefix; [stripQdefFraming] unfolds the namespace out of the root array
+    // itself via [MiniCbor.unframeNamespaceFromRootArray].
     private val QDEF_FRAMING_MAGIC = byteArrayOf(
         0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
         0x44,                     // CBOR byte string header, length 4 (1 byte)
         0x89.toByte(), 0xD4.toByte(), 0x14.toByte(), 0xE0.toByte(),  // SHA-256(...)[0:4]
     )
 
-    /** If [bytes] starts with the QDEF framing header, returns the inner Record
-     *  Sequence bytes (stripped of the 9-byte header); otherwise returns [bytes] unchanged. */
+    /** If [bytes] starts with the 4-byte QDEF magic header, strips it and unfolds the root
+     *  array's own leading namespace element (QDEF-SPEC.md §3.5 — no separate discriminator
+     *  item anymore), returning the plain, unnamespaced Record Sequence bytes; otherwise
+     *  returns [bytes] unchanged. Falls back to stripping just the magic if what follows isn't
+     *  a well-formed namespaced root array (best-effort — lets the caller's own decode error
+     *  handling take over from whatever's actually there). */
     fun stripQdefFraming(bytes: ByteArray): ByteArray {
-        if (bytes.size < QDEF_FRAMING_MAGIC.size) return bytes
-        for (i in QDEF_FRAMING_MAGIC.indices) {
-            if (bytes[i] != QDEF_FRAMING_MAGIC[i]) return bytes
-        }
-        return bytes.copyOfRange(QDEF_FRAMING_MAGIC.size, bytes.size)
+        if (bytes.size < 4 || !QDEF_FRAMING_MAGIC.copyOfRange(0, 4).contentEquals(bytes.copyOfRange(0, 4))) return bytes
+        val rest = bytes.copyOfRange(4, bytes.size)
+        return MiniCbor.unframeNamespaceFromRootArray(rest)?.second ?: rest
     }
 
     // ── QDEF Record Type IDs (SPEC.md §2.1) — TagDrop's four are small odd values under its
@@ -1353,18 +1359,22 @@ object TagDropCodec {
         appendLine("${cbor.size} bytes")
         appendLine(cbor.toHexDump())
         appendLine()
-        // Detect QDEF framing header on the wire
-        val qdefDetected = cbor.size >= QDEF_FRAMING_MAGIC.size &&
-            QDEF_FRAMING_MAGIC.indices.all { cbor[it] == QDEF_FRAMING_MAGIC[it] }
+        // Detect QDEF framing on the wire: "QDEF" magic, then the root array's own leading
+        // namespace element (QDEF-SPEC.md §3.5 — no separate discriminator item anymore).
+        val qdefMagicPresent = cbor.size >= 4 && QDEF_FRAMING_MAGIC.copyOfRange(0, 4).contentEquals(cbor.copyOfRange(0, 4))
+        val unframed = if (qdefMagicPresent) MiniCbor.unframeNamespaceFromRootArray(cbor.copyOfRange(4, cbor.size)) else null
         val bytes: ByteArray
-        if (qdefDetected) {
-            val nsHash = cbor.sliceArray(5 until 9)
-            appendLine("── QDEF framing (on wire, SPEC.md §2, §2.1a) ──")
+        if (qdefMagicPresent && unframed == null) {
+            appendLine("── QDEF magic present, but no well-formed namespaced root array followed ──")
+            return@buildString
+        } else if (unframed != null) {
+            val (namespace, rest) = unframed
+            appendLine("── QDEF framing (on wire, QDEF-SPEC.md §3.5) ──")
             appendLine("  magic: 51444546 (\"QDEF\")")
-            appendLine("  namespace: ${cbor.copyOfRange(4, 9).toHexDump()} (CBOR bstr h'${nsHash.toHexDump()}')")
-            appendLine("  framing overhead: ${QDEF_FRAMING_MAGIC.size} bytes")
+            appendLine("  namespace: ${namespace.toHexDump()} (root array's own leading element — no separate discriminator item)")
+            appendLine("  framing overhead: ${4 + namespace.size} bytes")
             appendLine()
-            bytes = cbor.copyOfRange(QDEF_FRAMING_MAGIC.size, cbor.size)
+            bytes = rest
         } else {
             appendLine("── QDEF framing (implied, not on wire) ──")
             appendLine("  magic: 51444546 (\"QDEF\")")

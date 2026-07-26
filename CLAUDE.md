@@ -727,6 +727,72 @@ F-Droid release (`versionCode` 9→10, `versionName` "2.4.0"→"2.5.0"):
 Released as `v2.5.0` (tag + GitHub Release), merged to `master` via PR #64.
 SPEC.md's `Status:` line stays `Draft` — this release does not flip it.
 
+### QDEF project moved; container discriminator removed entirely (byte-mode QR framing bug)
+
+A user question about a real generator-produced byte-mode QR hex dump
+surfaced two things at once. First, the QDEF project moved from
+`github.com/mofosyne/qdef` to `github.com/qdef-format/qdef-format.github.io`
+(spec now published at `qdef-format.github.io/spec.html`, with a
+validator tool at `qdef-format.github.io/tools/validator.html`) —
+`scripts/sync-qdef-spec.sh`'s `SOURCE_URL` was repointed there and
+`QDEF-SPEC-cached.md` refreshed (a much bigger diff than just this fix:
+QDEF gained a new §4.7 Signature record type in the interim too, not
+otherwise acted on here).
+
+Second, and more substantively: QDEF-SPEC.md §3.5 has dropped the
+mandatory container discriminator entirely — the entry above
+("QDEF mandatory container discriminator") is now superseded. There's no
+longer a separate CBOR item after the magic header; a namespace is
+declared exactly the same way for the container root as for any
+subrecord — the ordinary namespace-pairing prefix, folded into the root
+array's own first element. All four implementations (the three web
+tools' `qdefFrame`/`stripQdefFraming`, and the Kotlin app's
+`TagDropCodec.stripQdefFraming`, decode-only there per the existing
+"byte-mode QR carrier this app doesn't implement" note) were still on the
+old shape — magic + a standalone namespace bstr CBOR item sitting ahead
+of the root array as a second sibling item, byte-identical to the
+now-removed discriminator. Fixed by splicing the namespace bstr in as the
+root array's own new first element instead (bumping its declared item
+count by one): `qdefFrame`/`MiniCbor.unframeNamespaceFromRootArray` (new,
+mirroring `encodeRootBundle`/`decodeRootBundle`) on encode/decode
+respectively. Total byte cost unchanged (9 bytes of overhead) — only
+where the namespace sits within the CBOR moved. Every "Inspect CBOR"
+debug pretty-printer (`describeCbor` in all four implementations) was
+fixed the same way. `tagdrop:` URI and NFC NDEF carriers are unaffected
+(no on-wire namespace either before or after — this only touches the
+byte-mode QR/JABCode carrier).
+
+Verified two ways, not just self-consistently: (1) re-derived the fix
+against a real generator-produced hex dump the user posted, confirming
+the corrected bytes round-trip (`qdefFrame` → `unframeNamespaceFromRootArray`)
+back to the exact original root-bundle bytes; (2) ran the corrected bytes
+through qdef-format's own independently-written `validator.js` tool,
+which correctly parsed the root array, recognized the namespace, and
+walked the Bundle/Content-Extension/Media-Preview/Media-Payload
+structure. That check also surfaced a real bug in the validator itself
+(not in this fix): its `analyzeRecord` doesn't implement §3.5's namespace
+*cascading* to subrecords, so it false-positives "odd typeId requires a
+namespace" on a subrecord that legitimately inherits its parent's
+declared namespace — confirmed against the live spec text before
+concluding this was the validator's bug and not TagDrop's; reported
+upstream (issue draft handed to the user to file, since this session's
+repo scope couldn't attach a second GitHub owner tier to add the
+`qdef-format` org's repo directly).
+
+On the Kotlin side, `TagDropCodecTest.kt`'s `decodeRawStripsQdefFraming`
+was rewritten to build its `framed` test input via the new splice instead
+of old-style concatenation; `decodeRawRejectsPartialQdefMagic`'s old
+premise (magic being a 9-byte discriminator unit that could be "partially
+present") stopped being true (magic is a flat, atomic 4 bytes, full
+stop) — renamed/repointed at an actually-partial 3-of-4-byte magic
+mismatch, with a new `decodeRawToleratesMagicWithNoNamespacePresent`
+covering the now-legitimate "magic present, no namespace item at all"
+case the old test used to (incorrectly) reject. Verified via the same
+standalone `kotlinc`+JUnit harness used throughout this project's history
+(this environment's Gradle wrapper still can't build normally) — 144
+tests across `TagDropCodecTest`/`MiniCborTest`/`SectorAssemblerTest`
+green, 0 failures.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -937,7 +1003,11 @@ again or a concrete need emerges.
   their own dispatch context). Namespace-scoping is adopted after all,
   just not the way this entry originally evaluated it.
 - **QDEF mandatory container discriminator** (checked in, settled — see
-  github.com/mofosyne/tagdrop#66). Landed after the namespace-scoping
+  github.com/mofosyne/tagdrop#66) — **superseded, see "QDEF project moved;
+  container discriminator removed entirely" above.** QDEF later dropped
+  the separate discriminator item entirely; the byte-cost/exemption
+  reasoning below is kept for history but the discriminator itself no
+  longer exists on the wire. Landed after the namespace-scoping
   entry above: the previously-optional Type-0 namespace header became a
   mandatory 1-byte container discriminator on any carrier using QDEF's
   magic header (ambiguity fix — a decoder couldn't otherwise tell "this is

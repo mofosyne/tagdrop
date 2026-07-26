@@ -497,12 +497,19 @@ class TagDropCodecTest {
     @Test fun decodeRawStripsQdefFraming() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hello".toByteArray())
         val raw = build.codes.first()
-        val qdefMagic = byteArrayOf(
-            0x51, 0x44, 0x45, 0x46,  // "QDEF" magic
+        val qdefMagic = byteArrayOf(0x51, 0x44, 0x45, 0x46)  // "QDEF" magic (4 bytes)
+        val namespace = byteArrayOf(
             0x44,                     // CBOR byte string header, length 4
             0x89.toByte(), 0xD4.toByte(), 0x14.toByte(), 0xE0.toByte(),  // namespace
         )
-        val framed = qdefMagic + raw
+        // QDEF-SPEC.md §3.5: the namespace is spliced in as the root array's own new first
+        // element (bumping its declared item count by one), not prepended as a separate CBOR
+        // item ahead of the array the way the old (removed) discriminator was. `raw`'s own
+        // array header is always a single byte for TagDrop's small root bundles/records
+        // (additional info <= 23), so bumping the count is just `+1` on that one header byte.
+        val rawHead = raw[0].toInt() and 0xFF
+        require((rawHead ushr 5) == 4 && (rawHead and 0x1F) <= 23)
+        val framed = qdefMagic + byteArrayOf((0x80 or ((rawHead and 0x1F) + 1)).toByte()) + namespace + raw.copyOfRange(1, raw.size)
         val viaFramed = TagDropCodec.decodeRaw(framed)
         val viaRaw = TagDropCodec.decodeRaw(raw)
         assertNotNull(viaFramed)
@@ -512,12 +519,28 @@ class TagDropCodecTest {
         assertEquals((viaRaw as TagDropScan.RecordScan).record, (viaFramed as TagDropScan.RecordScan).record)
     }
 
+    @Test fun decodeRawToleratesMagicWithNoNamespacePresent() {
+        // QDEF-SPEC.md §3.5: the magic header is a flat 4 bytes, full stop — there's no longer a
+        // fixed-size "magic + discriminator" unit to be partially present. Magic directly
+        // followed by a plain, unnamespaced root array (no namespace element at all) isn't
+        // malformed; stripQdefFraming falls back to treating everything after the magic as the
+        // Record Sequence, same as this carrier gets implicitly on tagdrop:/NFC.
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
+        val raw = build.codes.first()
+        val magicOnly = byteArrayOf(0x51, 0x44, 0x45, 0x46) + raw
+        val viaMagicOnly = TagDropCodec.decodeRaw(magicOnly)
+        val viaRaw = TagDropCodec.decodeRaw(raw)
+        assertNotNull(viaMagicOnly)
+        assertEquals((viaRaw as TagDropScan.RecordScan).record, (viaMagicOnly as TagDropScan.RecordScan).record)
+    }
+
     @Test fun decodeRawRejectsPartialQdefMagic() {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
         val raw = build.codes.first()
-        // Only 4 bytes of the 9-byte QDEF magic — not enough to strip
-        val partial = byteArrayOf(0x51, 0x44, 0x45, 0x46) + raw
-        // First byte 0x51 is CBOR major type 2 (byte string), not type 4 (array) → null
+        // Only 3 of the 4 magic bytes ("QDE", not "QDEF") — doesn't match, so decodeRaw tries to
+        // decode the whole thing as-is; its first byte (0x51, CBOR major type 2 / byte string)
+        // isn't a valid Record array header → null.
+        val partial = byteArrayOf(0x51, 0x44, 0x45) + raw
         assertNull(TagDropCodec.decodeRaw(partial))
     }
 
