@@ -1304,16 +1304,22 @@ function describeRecords(bytes) {
  *  its reassembled stream). */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
-  // Detect on-wire QDEF framing (binary QR carrier)
-  if (bytes.length >= QDEF_FRAMING_MAGIC.length &&
+  // Detect on-wire QDEF framing (binary QR carrier): "QDEF" magic, then the root
+  // array's own leading namespace element (QDEF-SPEC.md §3.5 — no separate
+  // discriminator item anymore).
+  if (bytes.length >= 4 &&
       bytes[0] === QDEF_FRAMING_MAGIC[0] && bytes[1] === QDEF_FRAMING_MAGIC[1] &&
       bytes[2] === QDEF_FRAMING_MAGIC[2] && bytes[3] === QDEF_FRAMING_MAGIC[3]) {
-    const nsHash = bytes.slice(5, 9);
-    out += '── QDEF framing (on wire, SPEC.md §2, §2.1a) ──\n';
+    const unframed = qdefUnframeNamespace(bytes.slice(4));
+    if (!unframed) {
+      out += '── QDEF magic present, but no well-formed namespaced root array followed ──\n';
+      return out + toHexDump(bytes.slice(4)) + '\n';
+    }
+    out += '── QDEF framing (on wire, QDEF-SPEC.md §3.5) ──\n';
     out += '  magic: 51444546 ("QDEF")\n';
-    out += '  namespace: ' + toHexDump(bytes.slice(4, 9)) + ' (CBOR bstr h\'' + toHexDump(nsHash) + '\')\n';
-    out += '  framing overhead: ' + QDEF_FRAMING_MAGIC.length + ' bytes\n\n';
-    bytes = bytes.slice(QDEF_FRAMING_MAGIC.length);
+    out += '  namespace: ' + toHexDump(unframed.namespace) + ' (root array\'s own leading element — no separate discriminator item)\n';
+    out += '  framing overhead: ' + (4 + unframed.namespace.length) + ' bytes\n\n';
+    bytes = unframed.rest;
   } else {
     out += '── QDEF framing (implied, not on wire) ──\n';
     out += '  magic: 51444546 ("QDEF")\n';
@@ -2634,23 +2640,50 @@ function bytesToBinaryString(bytes) {
 // (SPEC.md binary-mode-chunks note) — mirrors the Android reference reader's raw byte-segment
 // fallback.
 
-// QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14): 4-byte magic +
-// 5-byte namespace discriminator (CBOR bstr h'89d414e0') = 9 bytes total,
-// prepended to the Record Sequence bytes for byte-mode QR / JABCode carriers.
+// QDEF binary-mode QR framing (QDEF-SPEC.md §2, §3.5): 4-byte "QDEF" magic,
+// then the root array's own leading namespace element (CBOR bstr h'89d414e0',
+// SHA-256("io.github.mofosyne.tagdrop")[0:4]) = 9 bytes of overhead total.
+// Kept as one flat 9-byte constant purely for overhead/display math — there's
+// no longer a separate discriminator CBOR item to strip as a flat prefix;
+// stripQdefFraming below unfolds the namespace out of the root array itself.
 const QDEF_FRAMING_MAGIC = new Uint8Array([
   0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
   0x44,                     // CBOR byte string header, length 4 (1 byte)
   0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
 ]);
 
-/** If `bytes` starts with the QDEF framing header, returns the inner Record Sequence
- *  bytes (stripped of the 9-byte header); otherwise returns `bytes` unchanged. */
+/** Inverse of the generator's qdefFrame splice: given the bytes immediately after
+ *  the 4-byte magic header (a QDEF-framed root array whose first element is the
+ *  namespace bstr), returns { namespace, rest } where `rest` is the plain,
+ *  unnamespaced root array — exactly what decodeRootBundle/sectorScanResult
+ *  already know how to read — with the namespace item removed and the array
+ *  header's count decremented back by one. Returns null if `bytes` isn't a
+ *  well-formed CBOR array or its first element isn't a byte string (i.e. no
+ *  namespace present). */
+function qdefUnframeNamespace(bytes) {
+  const cur = { bytes, pos: 0 };
+  let ranges;
+  try { ranges = cborItemRanges(cur, 4); } catch (e) { return null; }
+  if (ranges.length === 0 || majorOf(bytes, ranges[0][0]) !== 2) return null;
+  const namespace = bytes.slice(ranges[0][0], ranges[0][1]);
+  const itemsStart = ranges.length > 1 ? ranges[1][0] : ranges[0][1];
+  const items = bytes.slice(itemsStart);
+  const head = [];
+  writeHead(head, 4, ranges.length - 1);
+  return { namespace, rest: concatBytes(new Uint8Array(head), items) };
+}
+
+/** If `bytes` starts with the 4-byte QDEF magic header, strips it and unfolds the
+ *  root array's own leading namespace element (QDEF-SPEC.md §3.5 — no separate
+ *  discriminator item anymore), returning the plain, unnamespaced Record
+ *  Sequence bytes; otherwise returns `bytes` unchanged. Falls back to stripping
+ *  just the magic if what follows isn't a well-formed namespaced root array
+ *  (best-effort — lets the caller's own decode error handling take over from
+ *  whatever's actually there). */
 function stripQdefFraming(bytes) {
-  if (bytes.length < QDEF_FRAMING_MAGIC.length) return bytes;
-  for (let i = 0; i < QDEF_FRAMING_MAGIC.length; i++) {
-    if (bytes[i] !== QDEF_FRAMING_MAGIC[i]) return bytes;
-  }
-  return bytes.slice(QDEF_FRAMING_MAGIC.length);
+  if (bytes.length < 4 || bytes[0] !== 0x51 || bytes[1] !== 0x44 || bytes[2] !== 0x45 || bytes[3] !== 0x46) return bytes;
+  const unframed = qdefUnframeNamespace(bytes.slice(4));
+  return unframed ? unframed.rest : bytes.slice(4);
 }
 
 async function parseScannedBytes(bytes) {

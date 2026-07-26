@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
 # Refreshes QDEF-SPEC-cached.md from the live upstream QDEF spec
-# (mofosyne/qdef, docs/QDEF-SPEC.md on the main branch). This cached copy
+# (qdef-format/qdef-format.github.io, docs/QDEF-SPEC.md on the main
+# branch -- the project moved here from mofosyne/qdef; see CLAUDE.md).
+# This cached copy
 # is what app/build.gradle's copyQdefSpecToRawRes task bundles into the
 # in-app "Wire Format Spec" viewer (SpecActivity) for offline reading --
 # QDEF-SPEC.md itself stays a short pointer (see its own header) so anyone
@@ -24,7 +26,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_FILE="$REPO_ROOT/QDEF-SPEC-cached.md"
-SOURCE_URL="https://raw.githubusercontent.com/mofosyne/qdef/main/docs/QDEF-SPEC.md"
+SOURCE_URL="https://raw.githubusercontent.com/qdef-format/qdef-format.github.io/main/docs/QDEF-SPEC.md"
 
 TMP_FILE="$(mktemp)"
 trap 'rm -f "$TMP_FILE"' EXIT

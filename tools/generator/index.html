@@ -859,19 +859,39 @@ function encodeCode(code) {
   return { uri: 'tagdrop:' + base41Encode(code.raw), raw: code.raw, code };
 }
 
-// QDEF binary-mode QR framing (SPEC.md §2, §2.1a, §14): 4-byte magic +
-// 5-byte namespace discriminator (CBOR bstr h'89d414e0') = 9 bytes total,
-// prepended to the Record Sequence bytes for byte-mode QR / JABCode carriers.
-// tagdrop: URI and NFC NDEF are exempt — their own dispatch signal (scheme,
-// MIME type) already does the discriminator's job.
+// QDEF binary-mode QR framing (QDEF-SPEC.md §2, §3.5): 4-byte "QDEF" magic,
+// then the root array's own leading namespace element (CBOR bstr h'89d414e0',
+// SHA-256("io.github.mofosyne.tagdrop")[0:4]) = 9 bytes of overhead total.
+// tagdrop: URI and NFC NDEF are exempt from carrying a namespace at all —
+// their own dispatch signal (scheme, MIME type) already gives the decoder
+// the same context an on-wire namespace would.
+// Kept as one flat 9-byte constant purely for overhead/display math —
+// there's no longer a separate discriminator CBOR item to prepend as-is;
+// qdefFrame below splices these same bytes into the root array itself.
 const QDEF_FRAMING = new Uint8Array([
   0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
   0x44,                     // CBOR byte string header, length 4 (1 byte)
   0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
 ]);
-// Wraps raw Record Sequence bytes with QDEF framing for byte-mode QR.
+// Folds the QDEF byte-mode QR carrier's namespace into `recordBytes` (the
+// plain, unnamespaced root array from encodeRootBundle) as QDEF-SPEC.md §3.5
+// now requires: "no separate container-level discriminator item anymore — a
+// namespace is declared exactly the same way for the container root as for
+// any subrecord: the ordinary namespace-pairing prefix." Splices the
+// namespace bstr in as the root array's new first element (bumping its
+// declared item count by one) rather than prepending it as a sibling CBOR
+// item ahead of the array the way the old discriminator did. The 4-byte
+// magic header itself is unchanged — still a flat prefix outside the CBOR
+// entirely. Total byte cost is unchanged (9 bytes), only the namespace's
+// position moved from "before the array" to "inside it."
 function qdefFrame(recordBytes) {
-  return concatBytes(QDEF_FRAMING, recordBytes);
+  const cur = { bytes: recordBytes, pos: 0 };
+  const ranges = cborItemRanges(cur, 4);
+  const itemsStart = ranges.length ? ranges[0][0] : cur.pos;
+  const items = recordBytes.slice(itemsStart);
+  const head = [];
+  writeHead(head, 4, ranges.length + 1);
+  return concatBytes(QDEF_FRAMING.slice(0, 4), new Uint8Array(head), QDEF_FRAMING.slice(4, 9), items);
 }
 
 // Content Extension / Media Preview / Media Payload / Content Signature
