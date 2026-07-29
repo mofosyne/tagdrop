@@ -1,0 +1,2 @@
+- Wire format: codes now follow the current QDEF specification's rules for declaring namespace and laying out fields. QR codes, NFC tags, and codes made with the web generator before this update will no longer scan correctly with this version, and codes made with this version won't scan with an older one — regenerate any QR codes and rewrite any NFC tags after updating.
+- Fixed: reading the raw binary form of a QR code is now more resilient across different Android camera-library versions.
