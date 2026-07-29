@@ -17,8 +17,11 @@ import javax.crypto.spec.SecretKeySpec
  *
  * Encoding URI scheme:  tagdrop:<base41-cbor-root>
  *   <base41-cbor-root> = Base41( QDEF self-delimited root array of Records )
- * Every Record is its own self-delimited CBOR array, `[namespace?, typeId, map?, payload?,
- * subrecord*]` (QDEF-SPEC.md §3.1/§3.5) — not a bare typeId-then-map pair. The root array's
+ * Every Record is its own self-delimited CBOR array, `[namespace?, typeId, map?, subrecord*]`
+ * (QDEF-SPEC.md §3.1/§3.5) — not a bare typeId-then-map pair. As of SPEC.md v15, a Record's "one
+ * genuinely singular value," if it has one (Compress Wrapper's deflated bytes, Media Payload's
+ * content), lives at reserved map key `0` (QDEF-SPEC.md §3.6) rather than a separate positional
+ * payload item — there is no positional payload slot in the grammar at all any more. The root array's
  * own leading element declares TagDrop's namespace (§2.1a, [TAGDROP_NAMESPACE]) — mandatory
  * on every carrier as of SPEC.md v14, not just byte-mode QR — either directly on a lone
  * top-level Record's own array (the key-only case, §9) or as the implied, never-transmitted
@@ -191,15 +194,22 @@ object TagDropCodec {
     // ── Media Preview field keys (QDEF standard Type 7, SPEC.md §3.1a) ────────
     // Back to Type-specific keys as of SPEC.md v14 — contentHash/filename/label were QDEF
     // Common Field Keys -11/-15/-7 in versions 11-13; the shared registry shrank to just
-    // -1/-3 and no longer defines any of them.
-    private const val MPK_MEDIA_TYPE   = 0
-    private const val MPK_CONTENT_HASH = 1
-    private const val MPK_FILENAME     = 3
-    private const val MPK_LABEL        = 5
+    // -1/-3 and no longer defines any of them. Renumbered again in v15: QDEF's positional
+    // payload slot was removed from the grammar entirely in favor of reserved map key `0`
+    // (QDEF-SPEC.md §3.6) — Media Preview never had a payload of its own, but key `0`'s
+    // reservation means it can no longer use it either, so every field here shifts up two
+    // keys (key `0` is unused on this Type entirely as of v15).
+    private const val MPK_MEDIA_TYPE   = 2
+    private const val MPK_CONTENT_HASH = 3
+    private const val MPK_FILENAME     = 5
+    private const val MPK_LABEL        = 7
 
     // ── Media Payload field keys (QDEF standard Type 3, SPEC.md §3.1a) ─────────
-    // `content` moved to the payload slot (§3.1, v11) — mediaType is the only field left.
-    private const val MYK_MEDIA_TYPE = 0
+    // As of SPEC.md v15, `content` moves from the array's separate positional payload slot
+    // into an ordinary field at reserved map key `0` (QDEF-SPEC.md §3.6) — `mediaType`, which
+    // used to sit at key `0` itself (v11-v14), is displaced to key `1` to make room.
+    private const val MYK_CONTENT    = 0
+    private const val MYK_MEDIA_TYPE = 1
 
     // ── Content Signature field keys (TagDrop-scoped Type 2, SPEC.md §3.1a) ────
     private const val CSK_SIGNATURE     = 3
@@ -266,15 +276,22 @@ object TagDropCodec {
     private const val KR_RETAIN_KEY   = 9
     private const val KR_STEP         = 10
 
-    // QDEF Split Wrapper (Type 1) field keys (QDEF-SPEC.md §4.1). Compress Wrapper (Type 4)
-    // has no field keys of its own at all any more — its one value is the payload slot
-    // (§3.1, v11), not a map entry.
-    private const val SK_GROUP_ID = 0
-    private const val SK_INDEX    = 2
-    private const val SK_COUNT    = 4
-    private const val SK_DATA     = 6
+    // QDEF Split Wrapper (Type 1) field keys (QDEF-SPEC.md §4.1). Renumbered in SPEC.md v15:
+    // fragment data moves off its old key 6 onto reserved map key `0` (QDEF-SPEC.md §3.6),
+    // the same "singular value" slot Compress Wrapper/Media Payload also adopt — group_id/
+    // index/count shift up two keys each to make room (2/4/6); total_bytes/parity_scheme are
+    // untouched (7/9), since neither collided with anything vacating a slot.
+    private const val SK_DATA     = 0
+    private const val SK_GROUP_ID = 2
+    private const val SK_INDEX    = 4
+    private const val SK_COUNT    = 6
     private const val SK_TOTAL    = 7
     private const val SK_PARITY   = 9
+
+    // Compress Wrapper (Type 4) field keys (QDEF-SPEC.md §4.1). As of SPEC.md v15, its one
+    // value (the deflated bytes) is an ordinary field at reserved map key `0` (QDEF-SPEC.md
+    // §3.6) rather than a separate positional payload item — no map at all, pre-v15.
+    private const val CK_PAYLOAD = 0
 
     // SPEC §10 signature-field key sets, per Record Type — what the placeholder-then-strip
     // discipline strips before hashing (contentSignedMessageHash/paperSignedMessageHash).
@@ -289,7 +306,7 @@ object TagDropCodec {
         EK_KEY_MATERIAL, EK_RETAIN_KEY, EK_ENCRYPTION, EK_KDF_ALG, EK_KDF_SALT, EK_KDF_ITERS,
         EK_SIGNATURE_ALGORITHM, EK_SIGNER_ID, EK_SIGNER_LABEL, EK_IN_REPLY_TO, EK_CREATED_AT, EK_SOURCE_URL)
     private val KNOWN_MEDIA_PREVIEW = setOf(MPK_MEDIA_TYPE, MPK_CONTENT_HASH, MPK_FILENAME, MPK_LABEL)
-    private val KNOWN_MEDIA_PAYLOAD = setOf(MYK_MEDIA_TYPE)
+    private val KNOWN_MEDIA_PAYLOAD = setOf(MYK_CONTENT, MYK_MEDIA_TYPE)
     private val KNOWN_CONTENT_SIGNATURE = setOf(CSK_SIGNATURE, CSK_SIGNER_PUBKEY)
     private val KNOWN_PAPER_PREVIEW = setOf(
         PPK_ROOT_HASH, PPK_HINT, PPK_SET, PPK_SLUG, PPK_DOMAIN, PPK_STEP,
@@ -299,7 +316,7 @@ object TagDropCodec {
         PPK_SOURCE_URL, PPK_TITLE, PPK_DESCRIPTION, PPK_KEY_MATERIAL, PPK_RETAIN_KEY)
     private val KNOWN_PAPER_BODY = setOf(PBK_FILES, PBK_RELATED, PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
     private val KNOWN_SPLIT = setOf(SK_GROUP_ID, SK_INDEX, SK_COUNT, SK_DATA, SK_TOTAL, SK_PARITY)
-    private val KNOWN_COMPRESS = emptySet<Int>()
+    private val KNOWN_COMPRESS = setOf(CK_PAYLOAD)
 
     const val KDF_NONE          = 0
     const val KDF_PBKDF2_SHA256 = 1
@@ -419,9 +436,9 @@ object TagDropCodec {
 
     // ── QDEF Records (QDEF-SPEC.md §3.1: array-wrapped [typeId, map, subrecord*]) ─────
 
-    /** QDEF Compress Wrapper (Type 4, QDEF-SPEC.md §4.1) — DEFLATEs [bodyBytes] into the payload slot (§3.1, v11): `[4, deflated_bytes]`, no field map at all. */
+    /** QDEF Compress Wrapper (Type 4, QDEF-SPEC.md §4.1) — DEFLATEs [bodyBytes] into reserved map key `0` (§3.1/§3.6, v15): `[4, {0: deflated_bytes}]`. */
     private fun compressWrap(bodyBytes: ByteArray): ByteArray =
-        MiniCbor.encodeRecord(TYPE_COMPRESS, emptyList(), payload = compress(bodyBytes))
+        MiniCbor.encodeRecord(TYPE_COMPRESS, listOf(CK_PAYLOAD to compress(bodyBytes)))
 
     /**
      * Fragments [bytes] into [fragmentCount] QDEF Split Wrapper Records (Type 1, QDEF-SPEC.md
@@ -631,11 +648,11 @@ object TagDropCodec {
         val contentSignatureRecord = if (signature != null) {
             MiniCbor.encodeRecord(TYPE_CONTENT_SIGNATURE, listOf(CSK_SIGNATURE to signature, CSK_SIGNER_PUBKEY to signerPubkey), namespace = NAMESPACE_CASCADE)
         } else null
-        // Media Payload is a QDEF standard/global Type — no namespace item of its own.
+        // Media Payload is a QDEF standard/global Type — no namespace item of its own. `content`
+        // lives at reserved map key `0` (§3.1/§3.6, v15) rather than a separate payload item.
         val mediaPayloadRaw = MiniCbor.encodeRecord(
-            TYPE_MEDIA_PAYLOAD, listOf(MYK_MEDIA_TYPE to mimeType),
-            if (contentSignatureRecord != null) listOf(contentSignatureRecord) else emptyList(),
-            payload = contentSlot
+            TYPE_MEDIA_PAYLOAD, listOf(MYK_CONTENT to contentSlot, MYK_MEDIA_TYPE to mimeType),
+            if (contentSignatureRecord != null) listOf(contentSignatureRecord) else emptyList()
         )
         // An encrypted override blob is already high-entropy — Compress-wrapping it on top would
         // waste a wrapper layer for nothing (DEFLATE doesn't shrink it).
@@ -1073,7 +1090,7 @@ object TagDropCodec {
         // inspection).
         if (cur.typeId == TYPE_COMPRESS && cur.namespace == null) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
-            val payload = cur.payload ?: return null
+            val payload = cur.record.bytesOrNull(CK_PAYLOAD) ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = MiniCbor.decodeRecordPrefix(inflated, TAGDROP_NAMESPACE) ?: return null
         }
@@ -1090,7 +1107,10 @@ object TagDropCodec {
             if (!checkRecordKeys(cs.record, KNOWN_CONTENT_SIGNATURE)) return null
             contentSignature = cs.record
         }
-        return UnwrappedMediaPayload(cur.record, cur.payload ?: ByteArray(0), cur.raw, contentSignature)
+        // `content` lives at reserved map key `0` (§3.1/§3.6, v15) rather than a separate
+        // payload item — mandatory whenever a Media Payload Record exists, but default to
+        // empty rather than fail closed here, matching this function's existing leniency.
+        return UnwrappedMediaPayload(cur.record, cur.record.bytesOrNull(MYK_CONTENT) ?: ByteArray(0), cur.raw, contentSignature)
     }
 
     /**
@@ -1109,7 +1129,7 @@ object TagDropCodec {
         // required to tell them apart, not just the bare typeId number.
         if (cur.typeId == TYPE_COMPRESS && cur.namespace == null) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
-            val payload = cur.payload ?: return null
+            val payload = cur.record.bytesOrNull(CK_PAYLOAD) ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = MiniCbor.decodeRecordPrefix(inflated, TAGDROP_NAMESPACE) ?: return null
         }
@@ -1409,7 +1429,7 @@ object TagDropCodec {
     private val MEDIA_PREVIEW_KEY_NAMES = mapOf(
         MPK_MEDIA_TYPE to "mediaType", MPK_CONTENT_HASH to "contentHash", MPK_FILENAME to "filename", MPK_LABEL to "label"
     )
-    private val MEDIA_PAYLOAD_KEY_NAMES = mapOf(MYK_MEDIA_TYPE to "mediaType")
+    private val MEDIA_PAYLOAD_KEY_NAMES = mapOf(MYK_CONTENT to "content", MYK_MEDIA_TYPE to "mediaType")
     private val CONTENT_SIGNATURE_KEY_NAMES = mapOf(CSK_SIGNATURE to "signature", CSK_SIGNER_PUBKEY to "signer_pubkey")
     private val PAPER_PREVIEW_KEY_NAMES = mapOf(
         PPK_ROOT_HASH to "root_hash", PPK_HINT to "hint", PPK_SET to "set", PPK_SLUG to "slug",
@@ -1431,7 +1451,7 @@ object TagDropCodec {
         SK_GROUP_ID to "group_id", SK_INDEX to "index", SK_COUNT to "count",
         SK_DATA to "data", SK_TOTAL to "total_bytes", SK_PARITY to "parity"
     )
-    private val COMPRESS_KEY_NAMES = emptyMap<Int, String>()
+    private val COMPRESS_KEY_NAMES = mapOf(CK_PAYLOAD to "payload")
 
     // Split the same way as TAGDROP_TYPE_NAMES/QDEF_GLOBAL_TYPE_NAMES above, for the same reason.
     private val TAGDROP_KEY_NAMES_BY_TYPE = mapOf(
@@ -1516,9 +1536,12 @@ object TagDropCodec {
         out.appendLine("$pad$typeNameStr [${rec.raw.toHexDump()}]")
         val nsLine = rec.namespace?.let { "${it.toHexDump()}${if (tagDrop) " (TagDrop)" else " (unrecognized)"}" } ?: "(global — no namespace)"
         out.appendLine("${"  ".repeat(indent)}namespace: $nsLine")
+        // As of SPEC.md v15, a Record's "one genuinely singular value" (if it has one) is an
+        // ordinary field at reserved map key `0` — describeMap already renders it by name
+        // (e.g. Compress Wrapper's/Media Payload's "payload"/"content" key), no separate
+        // payload-slot line needed any more.
         val keyNames = if (tagDrop) TAGDROP_KEY_NAMES_BY_TYPE[rec.typeId] else QDEF_GLOBAL_KEY_NAMES_BY_TYPE[rec.typeId]
         describeMap(rec.record, indent + 1, out, keyNames ?: emptyMap())
-        rec.payload?.let { out.appendLine("${"  ".repeat(indent)}payload: ${it.toHexDump()} (${it.size} bytes)") }
         for (sub in rec.subrecords) describeRecord(sub, indent + 1, out)
     }
 

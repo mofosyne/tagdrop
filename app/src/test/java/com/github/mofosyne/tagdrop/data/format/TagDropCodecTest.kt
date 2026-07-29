@@ -307,8 +307,10 @@ class TagDropCodecTest {
         // a QDEF global Type (namespace = null, no namespace item of its own) — Content
         // Extension already carries its own real `h''` cascade item, so the root Bundle wrapper
         // below is what supplies the real namespace declaration.
+        // Split Wrapper's field keys per SPEC.md v15: fragment data at reserved map key `0`,
+        // group_id/index/count shifted up two keys each (2/4/6), total_bytes unchanged (7).
         val tamperedSplit = MiniCbor.encodeRecord(1, listOf(
-            0 to frag.groupId, 2 to frag.index, 4 to frag.count, 6 to tamperedData, 7 to frag.total
+            0 to tamperedData, 2 to frag.groupId, 4 to frag.index, 6 to frag.count, 7 to frag.total
         ), listOf(victim.mediaPreviewRaw!!))
         val tamperedFull = MiniCbor.encodeRootBundle(listOf(victim.extensionRaw, tamperedSplit), TagDropCodec.TAGDROP_NAMESPACE)
         val tamperedRecord = (TagDropCodec.decodeRaw(tamperedFull) as TagDropScan.RecordScan).record
@@ -546,8 +548,10 @@ class TagDropCodecTest {
         // apart. A bare Split-Wrapper-shaped Record with no namespace item at all (exactly how a
         // real Split Wrapper is encoded — see splitFragments) must never be misread as Content
         // Extension just because its typeId number matches.
+        // Split Wrapper's field keys per SPEC.md v15: fragment data at reserved map key `0`,
+        // group_id/index/count shifted up two keys each (2/4/6), total_bytes unchanged (7).
         val splitShaped = MiniCbor.encodeRecord(1, listOf(
-            0 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 2 to 0, 4 to 1, 6 to byteArrayOf(9, 9), 7 to 2
+            0 to byteArrayOf(9, 9), 2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 4 to 0, 6 to 1, 7 to 2
         )) // namespace = null (default), exactly what a real Split Wrapper looks like on the wire
         assertNull(TagDropCodec.decodeRaw(splitShaped))
     }

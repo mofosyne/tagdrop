@@ -303,26 +303,24 @@ object MiniCbor {
         return out.toByteArray()
     }
 
-    // ── QDEF array-wrapped Records (QDEF-SPEC.md §3.1, SPEC.md v9 §2, v11 §2) ──────────
-    // Every Record is its own self-delimited CBOR array, [typeId, map?, payload?, subrecord*]
+    // ── QDEF array-wrapped Records (QDEF-SPEC.md §3.1, SPEC.md v9 §2, v11 §2, v15 §3.1) ──
+    // Every Record is its own self-delimited CBOR array, [namespace?, typeId, map?, subrecord*]
     // — not a bare typeId-then-map pair. The map is omitted entirely when every field is
-    // null (saves its header byte — e.g. Compress Wrapper, which has no fields of its own
-    // once its one value moves to the payload slot). The payload slot, when present, is
-    // always the item immediately after the map (or after typeId, if no map) that is NOT
-    // itself a CBOR array — an array in that position is unconditionally subrecord 0
-    // instead (QDEF-SPEC.md §3.1: payload can never be array-shaped, precisely so this is
-    // unambiguous with no marker needed). TagDrop only ever uses a byte-string payload
-    // (Compress Wrapper's deflated bytes, Media Payload's content), never text/scalar/map/
-    // tag, so [encodeRecord]/[DecodedRecord.payload] are narrowly typed to ByteArray rather
-    // than the full general shape QDEF allows. `subrecords` are already-encoded
-    // `[typeId, ...]` byte sequences (each itself built by a nested encodeRecord call),
-    // spliced in as their own array items. Mirrors the JS reference's cborRecord/craw
-    // pattern (tools/generator/index.html).
+    // declared null (saves its header byte). As of SPEC.md v15, QDEF's positional `payload`
+    // array slot is gone entirely from the grammar: a Record's "one genuinely singular value,"
+    // when it has one, now lives at reserved map key `0` (QDEF-SPEC.md §3.6) exactly like any
+    // other field — there is no longer any ambiguity to resolve between "next item is the
+    // payload" vs. "next item is subrecord 0," since every item after the map is
+    // unconditionally a subrecord array. `subrecords` are already-encoded `[typeId, ...]` byte
+    // sequences (each itself built by a nested encodeRecord call), spliced in as their own
+    // array items. Mirrors the JS reference's cborRecord/craw pattern (tools/generator/index.html).
 
     /**
-     * Encodes a QDEF Record: `[namespace?, typeId, map?, payload?, subrecord*]` as one CBOR
-     * array (major type 4) — QDEF-SPEC.md §2.1a/§3.5's namespace-pairing prefix, SPEC.md v14
-     * §2.1a. [namespace], when non-null, is encoded as a CBOR byte string (major type 2) and
+     * Encodes a QDEF Record: `[namespace?, typeId, map?, subrecord*]` as one CBOR array (major
+     * type 4) — QDEF-SPEC.md §2.1a/§3.5's namespace-pairing prefix, SPEC.md v14 §2.1a. There is
+     * no positional payload slot as of SPEC.md v15 (§3.6's reserved map key `0` replaces it — a
+     * caller that needs one just includes `0 to someBytes` as an ordinary entry in [fields]).
+     * [namespace], when non-null, is encoded as a CBOR byte string (major type 2) and
      * prepended as the array's very first item, ahead of the typeId item: pass the real 4-byte
      * value (`TagDropCodec.TAGDROP_NAMESPACE`) to declare it explicitly (the root Bundle's own
      * leading element, or a lone top-level Record's own leading element in the key-only case),
@@ -333,22 +331,19 @@ object MiniCbor {
      * canonical/deterministic order — by their *encoded* key bytes (shorter first, then
      * bytewise), not by plain integer value; see [CANONICAL_KEY_BYTES_ORDER] (QDEF-SPEC.md
      * §3.4). The map is omitted entirely only when [fields] itself is empty — a static,
-     * per-call-site choice (e.g. Compress Wrapper, whose one value moved entirely to the
-     * payload slot) — NOT whenever every declared field's *value* happens to be null: a Type
-     * that always declares fields (Content Extension, Paper-Preview/Body) must keep writing
-     * `{}` even when every optional field is unset this time, since [stripKeys] and any
-     * signature-hash formula covering its bytes need a stable map to exist. [payload], if
-     * non-null, is encoded as a CBOR byte string (major type 2) in the payload slot.
+     * per-call-site choice — NOT whenever every declared field's *value* happens to be null: a
+     * Type that always declares fields (Content Extension, Paper-Preview/Body) must keep
+     * writing `{}` even when every optional field is unset this time, since [stripKeys] and any
+     * signature-hash formula covering its bytes need a stable map to exist.
      */
     fun encodeRecord(
         typeId: Int, fields: List<Pair<Int, Any?>>, subrecords: List<ByteArray> = emptyList(),
-        payload: ByteArray? = null, namespace: ByteArray? = null
+        namespace: ByteArray? = null
     ): ByteArray {
         val items = mutableListOf<ByteArray>()
         if (namespace != null) items.add(encodeBytes(namespace))
         items.add(encodeUInt(typeId.toLong()))
         if (fields.isNotEmpty()) items.add(encodeMap(fields.sortedWith(compareBy(CANONICAL_KEY_BYTES_ORDER) { encodeKey(it.first) })))
-        if (payload != null) items.add(encodeBytes(payload))
         items.addAll(subrecords)
         val out = ByteArrayOutputStream()
         writeHead(out, 4, items.size.toLong())
@@ -360,13 +355,11 @@ object MiniCbor {
     data class DecodedRecord(
         /** The Record's own Type ID (the array's typeId element, after any leading namespace item). */
         val typeId: Int,
-        /** The Record's decoded field map — empty if the map was omitted from the wire entirely. */
+        /** The Record's decoded field map — empty if the map was omitted from the wire entirely. As of SPEC.md v15, a Record's "one genuinely singular value," if it has one, is an ordinary entry at reserved map key `0` (QDEF-SPEC.md §3.6) rather than a separate positional payload item. */
         val record: Map<Int, Any>,
-        /** This Record's own exact byte range — namespace? + typeId + map + payload + all subrecords — what signature/group-id hashes are computed over. */
+        /** This Record's own exact byte range — namespace? + typeId + map + all subrecords — what signature/group-id hashes are computed over. */
         val raw: ByteArray,
-        /** The Record's own payload slot value (decoded byte-string content), or null if absent. */
-        val payload: ByteArray?,
-        /** Nested Records carried after this Record's own map/payload, each with [raw] relative to the ORIGINAL top-level bytes passed to the outermost [decodeRecordPrefix] call. */
+        /** Nested Records carried after this Record's own map, each with [raw] relative to the ORIGINAL top-level bytes passed to the outermost [decodeRecordPrefix] call. */
         val subrecords: List<DecodedRecord>,
         /** Whatever follows this Record in the CBOR Sequence. */
         val trailing: ByteArray,
@@ -385,17 +378,17 @@ object MiniCbor {
     )
 
     /**
-     * Determines where a Record's optional namespace/map/payload/subrecords fall within its own
-     * top-level item [ranges] — QDEF-SPEC.md §3.1/§3.5's grammar, dispatched purely by CBOR
-     * major type: an optional leading namespace item (major 2, byte string) comes first, then
-     * typeId (major 0); then the map (major 5) if present; then, if the next item is NOT an
-     * array (major 4), it's the payload; everything from the first remaining array onward is
-     * subrecords. The namespace item is unambiguous at position 0 only, since typeId (always
+     * Determines where a Record's optional namespace/map/subrecords fall within its own
+     * top-level item [ranges] — QDEF-SPEC.md §3.1/§3.5's grammar (no positional payload slot as
+     * of SPEC.md v15), dispatched purely by CBOR major type: an optional leading namespace item
+     * (major 2, byte string) comes first, then typeId (major 0); then the map (major 5) if
+     * present; everything from there onward is subrecords (each unconditionally a CBOR array,
+     * major 4). The namespace item is unambiguous at position 0 only, since typeId (always
      * major 0, never major 2) is guaranteed to immediately follow it. Shared by
      * [decodeRecordPrefix]/[stripKeys]/[stripSubrecordType]/[stripAllSubrecords] so all four
      * agree on the same layout.
      */
-    private class RecordLayout(val hasNamespace: Boolean, val typeIdIdx: Int, val mapIdx: Int, val payloadIdx: Int, val subrecordsFrom: Int)
+    private class RecordLayout(val hasNamespace: Boolean, val typeIdIdx: Int, val mapIdx: Int, val subrecordsFrom: Int)
 
     private fun majorOf(bytes: ByteArray, pos: Int): Int = (bytes[pos].toInt() and 0xFF) ushr 5
 
@@ -406,14 +399,12 @@ object MiniCbor {
         idx++
         var mapIdx = -1
         if (idx < ranges.size && majorOf(bytes, ranges[idx].first) == 5) { mapIdx = idx; idx++ }
-        var payloadIdx = -1
-        if (idx < ranges.size && majorOf(bytes, ranges[idx].first) != 4) { payloadIdx = idx; idx++ }
-        return RecordLayout(hasNamespace, typeIdIdx, mapIdx, payloadIdx, idx)
+        return RecordLayout(hasNamespace, typeIdIdx, mapIdx, idx)
     }
 
     /**
      * Decodes one QDEF Record (a self-delimited CBOR array, `[namespace?, typeId, map?,
-     * payload?, subrecord*]`) from the head of [bytes] — see [DecodedRecord]. Returns null if
+     * subrecord*]`) from the head of [bytes] — see [DecodedRecord]. Returns null if
      * the head of [bytes] isn't a well-formed Record.
      *
      * [ambientNamespace] is whatever namespace value is already in scope from this Record's own
@@ -458,10 +449,6 @@ object MiniCbor {
                         val (mapStart, mapEnd) = ranges[layout.mapIdx]
                         decodeSequencePrefix(bytes.copyOfRange(mapStart, mapEnd), 1).first[0] as? Map<Int, Any> ?: throw IllegalStateException("bad map")
                     }
-                    val payload: ByteArray? = if (layout.payloadIdx < 0) null else {
-                        val (pStart, pEnd) = ranges[layout.payloadIdx]
-                        decodeSequencePrefix(bytes.copyOfRange(pStart, pEnd), 1).first[0] as? ByteArray ?: throw IllegalStateException("bad payload")
-                    }
                     val subrecords = mutableListOf<DecodedRecord>()
                     var failed = false
                     for (i in layout.subrecordsFrom until ranges.size) {
@@ -471,7 +458,7 @@ object MiniCbor {
                         subrecords.add(sub)
                     }
                     if (failed) null
-                    else DecodedRecord(typeId, record, bytes.copyOfRange(0, cur.pos), payload, subrecords, bytes.copyOfRange(cur.pos, bytes.size), ownNamespace)
+                    else DecodedRecord(typeId, record, bytes.copyOfRange(0, cur.pos), subrecords, bytes.copyOfRange(cur.pos, bytes.size), ownNamespace)
                 }
             }
         }
@@ -595,17 +582,21 @@ object MiniCbor {
     }
 
     /**
-     * Re-encodes [recordBytes] (a Record's own array, `[typeId, map?, payload?, subrecord*]`)
+     * Re-encodes [recordBytes] (a Record's own array, `[namespace?, typeId, map?, subrecord*]`)
      * with every field-map pair whose key is in [keysToStrip] removed, regardless of position
      * — SPEC §2.2's fixed ascending key-encoding order means a higher-numbered field (e.g.
      * `source_url`, key 55) can legitimately sort after the ones being stripped (e.g. the
      * signature fields, 45/47/49), so this walks and keeps every surviving pair by its own
-     * byte range rather than assuming the stripped keys form a truncatable trailing run. The
-     * payload slot and any subrecords, if present, are carried through byte-for-byte,
-     * untouched — including a leading namespace item (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a),
-     * carried through unchanged as the first item of the rebuilt array, exactly like the typeId
-     * item. Mirrors the JS reference's `stripKeys`. Requires a map to be present (every caller
-     * strips keys from a Record Type that always carries required fields).
+     * byte range rather than assuming the stripped keys form a truncatable trailing run. Any
+     * subrecords, if present, are carried through byte-for-byte, untouched — including a
+     * leading namespace item (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a), carried through unchanged
+     * as the first item of the rebuilt array, exactly like the typeId item. Note: key `0`
+     * (QDEF-SPEC.md §3.6's reserved "singular value" key, SPEC.md v15) is stripped exactly like
+     * any other key if it's in [keysToStrip] — none of the current callers ever ask to strip it
+     * (only `signature_algorithm`/`signer_id`/`signer_label`-type keys are stripped, never a
+     * Record's own mandatory content), but this function itself has no special-cased protection
+     * for key `0` beyond that. Mirrors the JS reference's `stripKeys`. Requires a map to be
+     * present (every caller strips keys from a Record Type that always carries required fields).
      */
     fun stripKeys(recordBytes: ByteArray, keysToStrip: Set<Int>): ByteArray {
         val cur = Cursor(recordBytes, 0)
@@ -630,7 +621,6 @@ object MiniCbor {
         if (layout.hasNamespace) items.add(recordBytes.copyOfRange(ranges[0].first, ranges[0].second))
         items.add(recordBytes.copyOfRange(ranges[layout.typeIdIdx].first, ranges[layout.typeIdIdx].second))
         items.add(mapOut.toByteArray())
-        if (layout.payloadIdx >= 0) { val (ps, pe) = ranges[layout.payloadIdx]; items.add(recordBytes.copyOfRange(ps, pe)) }
         for (i2 in layout.subrecordsFrom until ranges.size) { val (s, e) = ranges[i2]; items.add(recordBytes.copyOfRange(s, e)) }
         val out = ByteArrayOutputStream()
         writeHead(out, 4, items.size.toLong())
@@ -644,8 +634,9 @@ object MiniCbor {
      * removal. Used to build "what an unsigned Media Payload would contain" (no Content
      * Signature subrecord at all, SPEC.md v9 §10) from a placeholder-signed build or a
      * reassembled/decoded signed Media Payload. Mirrors the JS reference's `stripSubrecordType`.
-     * Carries a leading namespace item (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a) through unchanged,
-     * same as [stripKeys].
+     * Carries a leading namespace item (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a) and the field map
+     * (including its key `0`, if any — SPEC.md v15's reserved "singular value" key, e.g. Media
+     * Payload's own `content`) through unchanged, same as [stripKeys].
      */
     fun stripSubrecordType(recordBytes: ByteArray, typeIdToStrip: Int): ByteArray {
         val cur = Cursor(recordBytes, 0)
@@ -661,7 +652,6 @@ object MiniCbor {
         if (layout.hasNamespace) items.add(recordBytes.copyOfRange(ranges[0].first, ranges[0].second))
         items.add(recordBytes.copyOfRange(ranges[layout.typeIdIdx].first, ranges[layout.typeIdIdx].second))
         if (layout.mapIdx >= 0) { val (s, e) = ranges[layout.mapIdx]; items.add(recordBytes.copyOfRange(s, e)) }
-        if (layout.payloadIdx >= 0) { val (s, e) = ranges[layout.payloadIdx]; items.add(recordBytes.copyOfRange(s, e)) }
         for ((s, e) in kept) items.add(recordBytes.copyOfRange(s, e))
         val out = ByteArrayOutputStream()
         writeHead(out, 4, items.size.toLong())
@@ -674,9 +664,10 @@ object MiniCbor {
      * — used to recover a Record's own bare bytes (e.g. a scanned Media Preview with Media
      * Payload nested inside it for wire transmission, single-code case, SPEC.md v9 §3.1a) for
      * hashing purposes (§10), where only the OWN Record's canonical bytes belong in the signed
-     * message, not whatever happens to be nested inside it on the wire. The map and payload
-     * slot (if present) are kept — only subrecords are dropped. Carries a leading namespace item
-     * (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a) through unchanged, same as [stripKeys].
+     * message, not whatever happens to be nested inside it on the wire. The map (including its
+     * key `0`, if any — SPEC.md v15's reserved "singular value" key) is kept — only subrecords
+     * are dropped. Carries a leading namespace item (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a)
+     * through unchanged, same as [stripKeys].
      */
     fun stripAllSubrecords(recordBytes: ByteArray): ByteArray {
         val cur = Cursor(recordBytes, 0)
@@ -686,7 +677,6 @@ object MiniCbor {
         if (layout.hasNamespace) items.add(recordBytes.copyOfRange(ranges[0].first, ranges[0].second))
         items.add(recordBytes.copyOfRange(ranges[layout.typeIdIdx].first, ranges[layout.typeIdIdx].second))
         if (layout.mapIdx >= 0) { val (s, e) = ranges[layout.mapIdx]; items.add(recordBytes.copyOfRange(s, e)) }
-        if (layout.payloadIdx >= 0) { val (s, e) = ranges[layout.payloadIdx]; items.add(recordBytes.copyOfRange(s, e)) }
         val out = ByteArrayOutputStream()
         writeHead(out, 4, items.size.toLong())
         for (item in items) out.write(item)

@@ -37,29 +37,37 @@ class SectorAssemblerTest {
     /**
      * A minimal Media Preview Record (QDEF Type 7, SPEC §3.1a), optionally nesting
      * [subrecords]. `contentHash`/`filename` are back to Type-specific keys as of SPEC.md v14
-     * (were QDEF Common Field Keys -11/-15 in versions 11-13). A QDEF standard/global Type —
-     * never carries a namespace item of its own.
+     * (were QDEF Common Field Keys -11/-15 in versions 11-13), renumbered again in v15 (key `0`
+     * reserved for a Record's own singular value, which Media Preview never has — every field
+     * shifts up two keys: mediaType/contentHash/filename now 2/3/5). A QDEF standard/global
+     * Type — never carries a namespace item of its own.
      */
     private fun mediaPreviewBytes(
         cacheId: ByteArray?, mimeType: String = "text/plain", filename: String? = null,
         subrecords: List<ByteArray> = emptyList()
     ): ByteArray = MiniCbor.encodeRecord(7, listOf(
-        0 to mimeType, 1 to cacheId?.let { byteArrayOf(0x12) + it }, 3 to filename
+        2 to mimeType, 3 to cacheId?.let { byteArrayOf(0x12) + it }, 5 to filename
     ), subrecords)
 
-    /** A minimal Media Payload Record (QDEF Type 3, SPEC §3.1a) carrying [content] in the payload slot (SPEC.md v11). */
+    /** A minimal Media Payload Record (QDEF Type 3, SPEC §3.1a) carrying [content] at reserved map key `0` (SPEC.md v15) — mediaType displaced to key `1` to make room. */
     private fun mediaPayloadBytes(content: ByteArray, mimeType: String = "text/plain", subrecords: List<ByteArray> = emptyList()): ByteArray =
-        MiniCbor.encodeRecord(3, listOf(0 to mimeType), subrecords, payload = content)
+        MiniCbor.encodeRecord(3, listOf(0 to content, 1 to mimeType), subrecords)
 
-    /** A Compress Wrapper Record (Type 4, QDEF-SPEC.md §4.1) DEFLATEing [inner] into its payload slot (SPEC.md v11: no field map at all). */
-    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(4, emptyList(), payload = TagDropCodec.compress(inner))
+    /** A Compress Wrapper Record (Type 4, QDEF-SPEC.md §4.1) DEFLATEing [inner] into reserved map key `0` (SPEC.md v15: `[4, {0: deflated_bytes}]`). */
+    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(4, listOf(0 to TagDropCodec.compress(inner)))
 
-    /** A Split Wrapper Record (Type 1, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes, optionally nesting [subrecords] (Media Preview, multi-code case). */
+    /**
+     * A Split Wrapper Record (Type 1, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes,
+     * optionally nesting [subrecords] (Media Preview, multi-code case). Renumbered in
+     * SPEC.md v15: fragment `data` moves onto reserved map key `0`; `group_id`/`index`/`count`
+     * shift up two keys each (2/4/6) to make room; `total_bytes`/`parity_scheme` are unchanged
+     * (7/9).
+     */
     private fun splitFragmentBytes(
         groupId: ByteArray, index: Int, count: Int, data: ByteArray, total: Int, parity: Boolean = false,
         subrecords: List<ByteArray> = emptyList()
     ): ByteArray = MiniCbor.encodeRecord(1, listOf(
-        0 to groupId, 2 to index, 4 to count, 6 to data, 7 to total, 9 to (1.takeIf { parity })
+        0 to data, 2 to groupId, 4 to index, 6 to count, 7 to total, 9 to (1.takeIf { parity })
     ), subrecords)
 
     /** Decodes [extensionRaw]/[secondRaw] the same way a real scan would (SPEC §2, §2.1a, §5.1): wrapped as the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1), namespace declared as the root Bundle's own leading element. */

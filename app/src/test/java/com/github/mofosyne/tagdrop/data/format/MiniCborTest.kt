@@ -361,14 +361,17 @@ class MiniCborTest {
         assertArrayEquals(expected, stripped)
     }
 
-    // ── encodeRecord/decodeRecordPrefix payload slot + negative keys (QDEF-SPEC.md §3.1/§3.6, SPEC.md v11) ──
+    // ── encodeRecord/decodeRecordPrefix reserved key `0` + negative keys (QDEF-SPEC.md §3.1/§3.6, SPEC.md v11/v15) ──
+    // As of SPEC.md v15, QDEF's positional `payload` array slot is gone from the grammar
+    // entirely -- a Record's "one genuinely singular value," if it has one, is just an
+    // ordinary field at reserved map key `0` (QDEF-SPEC.md §3.6). These tests exercise that
+    // directly rather than via a removed `payload` parameter/field.
 
-    @Test fun recordWithNoMapNoPayloadNoSubrecords() {
+    @Test fun recordWithNoMapNoSubrecords() {
         val rec = MiniCbor.encodeRecord(9, emptyList())
         val decoded = MiniCbor.decodeRecordPrefix(rec)!!
         assertEquals(9, decoded.typeId)
         assertTrue(decoded.record.isEmpty())
-        assertNull(decoded.payload)
         assertTrue(decoded.subrecords.isEmpty())
     }
 
@@ -377,44 +380,42 @@ class MiniCborTest {
         // (e.g. Compress Wrapper) -- NOT whenever every declared field's value happens to be
         // null (a Type that always declares fields, e.g. Content Extension, must keep writing
         // `{}` so stripKeys/signature-hash formulas always find a stable map to work with).
-        val declaredFieldsAllNull = MiniCbor.encodeRecord(8, listOf(1 to null, 2 to null), payload = byteArrayOf(1, 2, 3))
-        val noFieldsDeclaredAtAll = MiniCbor.encodeRecord(8, emptyList(), payload = byteArrayOf(1, 2, 3))
+        val declaredFieldsAllNull = MiniCbor.encodeRecord(8, listOf(1 to null, 2 to null))
+        val noFieldsDeclaredAtAll = MiniCbor.encodeRecord(8, emptyList())
         assertFalse(declaredFieldsAllNull.contentEquals(noFieldsDeclaredAtAll)) // the former still writes `{}`, one byte longer
         val decodedWithEmptyMap = MiniCbor.decodeRecordPrefix(declaredFieldsAllNull)!!
         assertTrue(decodedWithEmptyMap.record.isEmpty())
-        assertArrayEquals(byteArrayOf(1, 2, 3), decodedWithEmptyMap.payload)
         val decodedWithNoMap = MiniCbor.decodeRecordPrefix(noFieldsDeclaredAtAll)!!
         assertTrue(decodedWithNoMap.record.isEmpty())
-        assertArrayEquals(byteArrayOf(1, 2, 3), decodedWithNoMap.payload)
     }
 
-    @Test fun recordWithMapAndPayloadNoSubrecords() {
-        val rec = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), payload = "hello".toByteArray())
+    @Test fun recordWithMapIncludingKeyZeroFieldNoSubrecords() {
+        val rec = MiniCbor.encodeRecord(6, listOf(0 to "hello".toByteArray(), 1 to "text/plain"))
         val decoded = MiniCbor.decodeRecordPrefix(rec)!!
-        assertEquals("text/plain", decoded.record[0])
-        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertEquals("text/plain", decoded.record[1])
+        assertArrayEquals("hello".toByteArray(), decoded.record[0] as ByteArray)
         assertTrue(decoded.subrecords.isEmpty())
     }
 
-    @Test fun recordWithMapAndPayloadAndSubrecord() {
+    @Test fun recordWithMapIncludingKeyZeroFieldAndSubrecord() {
         val sub = MiniCbor.encodeRecord(3, listOf(3 to byteArrayOf(9, 9)))
-        val rec = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), listOf(sub), payload = "hello".toByteArray())
+        val rec = MiniCbor.encodeRecord(6, listOf(0 to "hello".toByteArray(), 1 to "text/plain"), listOf(sub))
         val decoded = MiniCbor.decodeRecordPrefix(rec)!!
-        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertArrayEquals("hello".toByteArray(), decoded.record[0] as ByteArray)
         assertEquals(1, decoded.subrecords.size)
         assertEquals(3, decoded.subrecords[0].typeId)
     }
 
-    @Test fun recordWithMapAndSubrecordButNoPayload() {
-        // No mandatory-null marker needed (SPEC.md v11): an array right after the map is
-        // unconditionally subrecord 0, never mistaken for the payload.
-        val sub = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), payload = "x".toByteArray())
-        val rec = MiniCbor.encodeRecord(14, listOf(0 to "text/plain", 3 to "photo.png"), listOf(sub))
+    @Test fun recordWithMapAndSubrecordButNoKeyZeroField() {
+        // An array right after the map is unconditionally subrecord 0 -- there is no positional
+        // payload slot to disambiguate against at all any more (SPEC.md v15).
+        val sub = MiniCbor.encodeRecord(6, listOf(0 to "x".toByteArray(), 1 to "text/plain"))
+        val rec = MiniCbor.encodeRecord(14, listOf(2 to "text/plain", 3 to "photo.png"), listOf(sub))
         val decoded = MiniCbor.decodeRecordPrefix(rec)!!
-        assertNull(decoded.payload)
+        assertFalse(decoded.record.containsKey(0))
         assertEquals(1, decoded.subrecords.size)
         assertEquals(6, decoded.subrecords[0].typeId)
-        assertArrayEquals("x".toByteArray(), decoded.subrecords[0].payload)
+        assertArrayEquals("x".toByteArray(), decoded.subrecords[0].record[0] as ByteArray)
     }
 
     @Test fun recordWithNegativeCommonFieldKeys() {
@@ -451,27 +452,26 @@ class MiniCborTest {
         assertEquals(posKeyByte, declaredNegativeFirst[firstKeyOffset].toInt() and 0xFF)
     }
 
-    @Test fun compressWrapperShapeNoMapJustPayload() {
-        // The actual Compress Wrapper shape adopted in SPEC.md v11: [8, deflated_bytes], no map at all.
+    @Test fun compressWrapperShapeMapWithKeyZeroField() {
+        // The actual Compress Wrapper shape adopted in SPEC.md v15: [8, {0: deflated_bytes}].
         val deflated = byteArrayOf(0x78, 0x9c.toByte(), 1, 2, 3)
-        val rec = MiniCbor.encodeRecord(8, emptyList(), payload = deflated)
+        val rec = MiniCbor.encodeRecord(8, listOf(0 to deflated))
         val decoded = MiniCbor.decodeRecordPrefix(rec)!!
         assertEquals(8, decoded.typeId)
-        assertTrue(decoded.record.isEmpty())
-        assertArrayEquals(deflated, decoded.payload)
+        assertArrayEquals(deflated, decoded.record[0] as ByteArray)
     }
 
-    @Test fun stripSubrecordTypePreservesPayloadSlot() {
+    @Test fun stripSubrecordTypePreservesKeyZeroField() {
         val sig = MiniCbor.encodeRecord(3, listOf(3 to byteArrayOf(9, 9)))
-        val rec = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), listOf(sig), payload = "hello".toByteArray())
+        val rec = MiniCbor.encodeRecord(6, listOf(0 to "hello".toByteArray()), listOf(sig))
         val stripped = MiniCbor.stripSubrecordType(rec, 3)
         val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
-        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertArrayEquals("hello".toByteArray(), decoded.record[0] as ByteArray)
         assertTrue(decoded.subrecords.isEmpty())
     }
 
-    @Test fun stripAllSubrecordsPreservesPayloadSlot() {
-        val sub = MiniCbor.encodeRecord(6, listOf(0 to "text/plain"), payload = "x".toByteArray())
+    @Test fun stripAllSubrecordsPreservesKeyZeroField() {
+        val sub = MiniCbor.encodeRecord(6, listOf(0 to "x".toByteArray()))
         val rec = MiniCbor.encodeRecord(14, listOf(0 to "text/plain"), listOf(sub))
         val stripped = MiniCbor.stripAllSubrecords(rec)
         val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
@@ -621,7 +621,7 @@ class MiniCborTest {
         // nested inside it -- mirrors Media Payload (global) carrying a Content Signature
         // (TagDrop-scoped, emits h'') subrecord.
         val signatureLike = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
-        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(signatureLike), payload = "hello".toByteArray())
+        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "hello".toByteArray(), 1 to "text/plain"), listOf(signatureLike))
         val decoded = MiniCbor.decodeRecordPrefix(mediaPayloadLike, ambientNamespace = NS)!!
         assertNull(decoded.namespace) // Media Payload itself: no namespace item -> global
         assertEquals(1, decoded.subrecords.size)
@@ -634,13 +634,13 @@ class MiniCborTest {
         // the innermost TagDrop-scoped Record's `h''` still resolves all the way back to the
         // root's one declaration.
         val signatureLike = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
-        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(signatureLike), payload = "hello".toByteArray())
+        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "hello".toByteArray(), 1 to "text/plain"), listOf(signatureLike))
         val mediaPreviewLike = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"), listOf(mediaPayloadLike))
         val decoded = MiniCbor.decodeRecordPrefix(mediaPreviewLike, ambientNamespace = NS)!!
         assertNull(decoded.namespace)
-        val payloadDecoded = decoded.subrecords[0]
-        assertNull(payloadDecoded.namespace)
-        val signatureDecoded = payloadDecoded.subrecords[0]
+        val mediaPayloadDecoded = decoded.subrecords[0]
+        assertNull(mediaPayloadDecoded.namespace)
+        val signatureDecoded = mediaPayloadDecoded.subrecords[0]
         assertArrayEquals(NS, signatureDecoded.namespace)
     }
 
@@ -680,7 +680,7 @@ class MiniCborTest {
         // wrapping a global Type wrapping a TagDrop-scoped Content-Signature-like Record that
         // cascades via h'' -- the whole point of SPEC.md v14 §2.1a's redesign.
         val signatureLike = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
-        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(signatureLike), payload = "hello".toByteArray())
+        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "hello".toByteArray(), 1 to "text/plain"), listOf(signatureLike))
         val mediaPreviewLike = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"), listOf(mediaPayloadLike))
         val extensionLike = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
         val root = MiniCbor.encodeRootBundle(listOf(extensionLike, mediaPreviewLike), namespace = NS)
@@ -722,16 +722,16 @@ class MiniCborTest {
 
     @Test fun stripSubrecordTypePreservesLeadingNamespaceItem() {
         val sig = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
-        val rec = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(sig), payload = "hello".toByteArray(), namespace = NS)
+        val rec = MiniCbor.encodeRecord(3, listOf(0 to "hello".toByteArray(), 1 to "text/plain"), listOf(sig), namespace = NS)
         val stripped = MiniCbor.stripSubrecordType(rec, 2)
         val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
         assertArrayEquals(NS, decoded.namespace)
         assertTrue(decoded.subrecords.isEmpty())
-        assertArrayEquals("hello".toByteArray(), decoded.payload)
+        assertArrayEquals("hello".toByteArray(), decoded.record[0] as ByteArray)
     }
 
     @Test fun stripAllSubrecordsPreservesLeadingNamespaceItem() {
-        val sub = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), payload = "x".toByteArray())
+        val sub = MiniCbor.encodeRecord(3, listOf(0 to "x".toByteArray()))
         val rec = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"), listOf(sub), namespace = ByteArray(0))
         val stripped = MiniCbor.stripAllSubrecords(rec)
         val decoded = MiniCbor.decodeRecordPrefix(stripped, ambientNamespace = NS)!!
