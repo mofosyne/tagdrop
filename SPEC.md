@@ -2611,19 +2611,24 @@ field-level changes.
 
 **Status:** both the web tools (generator, reader, examples) and the
 Kotlin Android app encode and decode Content and Paper using **version
-9**'s QDEF Record wire shape — array-wrapped Records with subrecords
-(§2, §3.1's Content Extension/Media Preview/Media Payload/Content
-Signature restructuring), Compress Wrapper, Split Wrapper (§2-§5) — no
-wire format left on the old version-1 `core_meta_item`/`bulky_meta_item`/
-`part_meta` envelope, and no version-8 Content-Preview/Content-Body shape
-left, in either implementation (a small old-format decode path is
-deliberately kept in the web reader only, for backward compatibility
-with codes scanned before the version-8 port). Signing (§10) uses
-version 9's key layout — `signature`/`signer_pubkey` on the Content
-Signature Record (Type 3), nested as Media Payload's own subrecord — in
-both implementations. Paper is unaffected by version 9 and needed no
-changes. File paths and high-level responsibilities below stay accurate
-either way.
+14**'s wire shape — array-wrapped Records with subrecords (§2, §3.1's
+Content Extension/Media Preview/Media Payload/Content Signature
+restructuring, first landed at version 9), Compress Wrapper, Split
+Wrapper (§2-§5), and, as of version 14, mandatory namespace transmission
+on every carrier (§2.1a) with TagDrop's four Type IDs at `1`/`2`/`3`/`4`
+— no wire format left on the old version-1 `core_meta_item`/
+`bulky_meta_item`/`part_meta` envelope, and no pre-version-9
+Content-Preview/Content-Body shape left, in either implementation (a
+small old-format decode path is deliberately kept in the web reader
+only, for backward compatibility with codes scanned before the
+version-8 port). Signing (§10) uses the Content Signature Record (Type
+`2` as of version 14, nested as Media Payload's own subrecord) in both
+implementations; Paper is unaffected by the Content-side field
+restructuring. This note has drifted behind SPEC.md's actual version
+before (last updated at version 9, silently stale through versions
+10-13) — re-check it against §14's current entry rather than trust it
+by default. File paths and high-level responsibilities below stay
+accurate regardless of version.
 
 - **Android app:** `app/src/main/java/com/github/mofosyne/tagdrop/data/format/`
   - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
