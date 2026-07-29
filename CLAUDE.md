@@ -956,6 +956,89 @@ wrapper still can't download its own distribution. The standalone
 `kotlinc`+JUnit harness is the same substitute verification this
 project has relied on throughout its QDEF history.
 
+### QDEF removes the positional payload slot, folded into reserved map key 0 (SPEC.md version 15)
+
+Found only because the user independently ran a real generator-produced
+hex dump through QDEF's own validator tool (`qdef-format.github.io/
+tools/validator.html`) after the version-14 port above shipped, and
+noticed Media Payload's content sitting as a bare trailing array item
+where the validator's own generic "payload (key 0)" annotation implied
+it should be a map entry instead. This was a genuine miss, not a new
+upstream change: the very first research pass into what changed
+upstream (the one that led to version 14's namespace work) had already
+flagged "payload slot removed, folded into map key 0" as **action
+required** — it just got dropped when the namespace-transmission
+question consumed the rest of that session's attention, and version 14
+shipped without it.
+
+**The change:** QDEF's grammar dropped the positional `payload` array
+item entirely. A Record is now strictly `[namespace?, typeId, map?,
+subrecord*]` — a Record's "one genuinely singular value," when it has
+one, lives at reserved map key `0` (QDEF-SPEC.md §3.6) like any other
+field, not a separate array position. Confirmed directly against the
+live spec's own worked examples (§4.1, §4.3, §4.5), not the validator's
+generic annotation alone — the validator turned out to check QDEF
+grammar/namespace-cascade correctness, not whether a *standard* Type's
+own fields match its documented shape, so it had accepted TagDrop's
+stale version-14-only encoding as fully "valid" with no warning at all.
+Renumbers every QDEF standard Type TagDrop uses that has (or had) a
+payload:
+
+- **Compress Wrapper (Type 4):** `[4, deflated_bytes]` → `[4, {0:
+  deflated_bytes}]`.
+- **Media Payload (Type 3):** `content` moves to map key `0`;
+  `mediaType` (previously key `0`) displaced to key `1`.
+- **Media Preview (Type 7):** never had a payload of its own, but key
+  `0`'s reservation means it can't use it either — `mediaType`/
+  `contentHash`/`filename`/`label` all shift up two keys
+  (`0`/`1`/`3`/`5` → `2`/`3`/`5`/`7`), key `0` now unused on this Type
+  entirely.
+- **Split Wrapper (Type 1):** fragment data moves to map key `0`;
+  `group_id`/`index`/`count` shift up two keys (`0`/`2`/`4` →
+  `2`/`4`/`6`); `total_bytes`/`parity_scheme` (`7`/`9`) are untouched,
+  since neither collided with anything vacating a slot.
+
+None of TagDrop's own four namespace-scoped Types (Content Extension,
+Content Signature, Paper-Preview, Paper-Body) are affected — none of
+them ever had a payload.
+
+**One real gap in the spec text itself, not guessed past:** Split
+Wrapper's `parity_scheme` had never been given an explicit key number
+anywhere in the current spec — discussed narratively in §4.1, never
+shown in a worked example. Rather than assume the natural next-odd-slot
+inference (`9`, matching its pre-redesign position) was right, it was
+relayed to qdef bot, which confirmed `9` was correct — the prototype's
+own working code already used it, only the spec prose had dropped it
+during an earlier numbering pass — and fixed the spec's own gap
+upstream in the same reply.
+
+**New verification asset acquired this session, not just used once:**
+`qdef-format.github.io`'s `scripts/qdef-validate.js` — a headless CLI
+wrapper around the exact same `validateQDEF()` the browser validator
+page runs, loading `tools/validator.js` + `assets/cbor-util.js` +
+`registry.rec` into a plain Node context via `scripts/load-validator.js`
+(itself a real, intentional export the qdef-format maintainer added "for
+an external adopter (TagDrop) [who] asked for" a headless path — per
+that file's own header comment). Fetched and assembled locally
+(`raw.githubusercontent.com` was reachable throughout this session even
+when the rendered `*.github.io` Pages site briefly 403'd on this
+environment's egress policy — confirmed via the proxy's own status
+endpoint/README, not assumed, and resolved once the user adjusted
+permissions) — both codec ports used it as an independent cross-check
+against real generated Content codes (single-code, Split multi-code,
+Compress-wrapped), confirming the exact new key layout on every affected
+Type, not just self-consistency. Worth keeping around for future spec
+changes; consider vendoring it properly (alongside `qdef-lint.cjs`) if
+this kind of drift recurs.
+
+Both codec ports (Kotlin and JS) again ran as parallel background
+tasks, fully specified this time (no ambiguity left after the parity_
+scheme confirmation), then reviewed diff-by-diff before merging, same
+discipline as version 14. Verified: Kotlin 163/163 tests
+(`kotlinc`+JUnit); JS `test-qdef-roundtrip.mjs` 11/11, `qdef-lint.cjs`
+clean (15 codes, 0 errors/warnings), `test-qr-roundtrip.mjs` still
+failing only on its pre-existing, unrelated `zxing-wasm` sandbox issue.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -1038,16 +1121,18 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `14` — QDEF Records with Type IDs
-`1`/`2`/`3`/`4` under an explicitly-transmitted namespace, §2.1a; both
-the Kotlin app and the web tools are on this shape now, see "Two
-parallel wire-format implementations" above and the version-14 history
-entry) is independent of the Android app's `versionName` (currently
-`2.5.1`, already accepted by F-Droid) — bumping one never requires
-bumping the other. (This note previously said `8`/`2.1.0`, several
-versions and one F-Droid release behind by the time it was next
-touched — a reminder to re-check this line's own numbers against SPEC.md
-§14's actual current entry rather than trust it silently.)
+SPEC.md's `version` field (currently `15` — QDEF Records with Type IDs
+`1`/`2`/`3`/`4` under an explicitly-transmitted namespace [§2.1a,
+version 14], and QDEF's own standard Types' payload values at reserved
+map key `0` rather than a positional payload slot [§3.1a/§5, version
+15]; both the Kotlin app and the web tools are on this shape now, see
+"Two parallel wire-format implementations" above and the version-14/15
+history entries) is independent of the Android app's `versionName`
+(currently `2.5.1`, already accepted by F-Droid) — bumping one never
+requires bumping the other. (This note has drifted stale before —
+previously said `8`/`2.1.0` for a while — a reminder to re-check this
+line's own numbers against SPEC.md §14's actual current entry rather
+than trust it silently.)
 
 SPEC.md as a whole is currently a **draft, not frozen** (see its `Status`
 line): no real TagDrop code has been printed or distributed yet, so no
