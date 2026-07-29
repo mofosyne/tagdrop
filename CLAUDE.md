@@ -1102,6 +1102,25 @@ substitute this environment has relied on throughout (this environment
 itself still can't run Gradle; CI runs on GitHub's own runners, unaffected
 by that limitation).
 
+**The recurring gap above is now closed.** `tools/test-cross-tool-
+roundtrip.mjs` (new) drives the real `generator/index.html` encode
+functions into the real `reader/index.html` decode functions in one Node
+process, via `jsdom` (`runScripts: 'dangerously'`, loading each file as a
+whole HTML document rather than extracting just the `<script>` text, so
+top-level DOM-touching statements resolve against real elements instead
+of needing hand-stubbing — the friction every earlier ad hoc attempt at
+this, per the notes above, ran into). Covers single-code Content,
+multi-code Split Content, single-code Paper, and key-only codes,
+including the `tagdrop:` URI carrier. Verified it actually catches what
+it's meant to, not just that it runs: reintroduced the historical stale-
+5-argument `cborRecord` bug into a scratch copy of `generator/index.html`
+and confirmed all 4 tests fail with the exact "unsupported code" symptom
+the real bug caused; confirmed all 4 pass again against the real, current
+code. Wired into `tools/package.json` (`test:crosstool`) and
+`.github/workflows/ci.yml`'s `web-tools-roundtrip` job, so this class of
+bug — which has now shipped to `master` undetected at least four times —
+finally has a standing, automated check watching for it.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
