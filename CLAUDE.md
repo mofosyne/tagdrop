@@ -1039,6 +1039,69 @@ discipline as version 14. Verified: Kotlin 163/163 tests
 clean (15 codes, 0 errors/warnings), `test-qr-roundtrip.mjs` still
 failing only on its pre-existing, unrelated `zxing-wasm` sandbox issue.
 
+**Real bug found by the user's own end-to-end device testing, missed by
+every check above.** All of the version-15 verification — both codecs'
+unit tests, `qdef-lint.cjs`, the independent `qdef-validate.js`
+cross-check — passed clean, but none of it actually drove the real web
+generator and scanned the result with the real Android app. Doing
+exactly that surfaced a severe bug in `tools/generator/index.html` and
+`tools/examples/index.html` (not `test-qdef-roundtrip.mjs`, a separate,
+independently-duplicated codec copy per "Known duplication" below):
+`buildContentExtension`/`buildContentSignature`/`buildPaperPreview`/
+`buildPaperBody` still called `cborRecord(typeId, fields, [], undefined,
+namespace)` — five arguments, left over from *before* this same
+version-15 pass removed `cborRecord`'s `payload` parameter (shifting
+`namespace` from the 5th argument position to the 4th). The trailing
+`undefined` silently bound to the new `namespace` parameter instead, and
+the real namespace value became a discarded 5th argument — every
+TagDrop-scoped Record these four functions build (i.e. every real
+generator-produced code) shipped with no `h''` cascade marker at all,
+so the Android app's `recordScanResult` namespace check rejected every
+one as "unsupported code." This is the identical bug pattern the
+version-15 JS port's own background agent found and fixed in
+`test-qdef-roundtrip.mjs` — but that fix didn't extend to the actual
+browser tools, since they're a separately duplicated codec copy with no
+automated cross-check between them (the same standing gap "Known
+duplication" and the version-13 entry's Playwright note both already
+flag). **This session's own diff review of the version-15 JS port did
+not catch it either, despite quoting the exact buggy line
+(`buildContentExtension`'s `}, [], undefined, namespace);`) verbatim
+during that review** — the reviewer counted the pattern as "looks
+right" without actually counting the arguments against `cborRecord`'s
+just-changed 4-parameter signature. Fixed by the user directly: dropped
+the stray `undefined`, added namespace assertions on QDEF global types
+to `test-qdef-roundtrip.mjs` so a missing cascade marker fails the test
+suite regardless of which encoder introduces it next time, and set the
+examples page's binary-QR toggle to default on (so the QDEF-framed form
+the validator actually checks is what a visitor sees first). Also
+landed in the same commit: a multi-tier fallback in
+`ReceiveActivity.kt`'s byte-mode QR scan handling (ZXing's
+`BYTE_SEGMENTS` metadata isn't always populated; falls through to
+`Result.rawBytes`, then the scanned text re-decoded as ISO-8859-1 —
+ZXing's own default byte-mode encoding — then UTF-8) and a refreshed
+`QDEF-SPEC-cached.md`.
+
+**Lesson for future sessions, stated plainly:** a diff review that
+pattern-matches "this looks like what I asked for" is not the same as
+verifying it — counting an unfamiliar function's actual argument list
+against its current signature is cheap and this session skipped it.
+Self-consistent unit tests plus an independent spec-grammar validator
+both passed clean on the broken code; only driving the real tool with
+the real consuming app caught it. This is at least the fourth time this
+project's history records exactly this pattern (see the version-13
+entry's negative-Common-Field-Key gap, and the version-14 entry's
+`RECORD_TYPE_INFO` collision) — cross-tool, real-artifact testing keeps
+finding what layered self-consistency checks don't, and is still not a
+committed, automated part of this repo's own test suite.
+
+CI (GitHub Actions, not this session's local `kotlinc`/`npm` harnesses)
+confirmed green after this fix, including — for the first time this
+entire QDEF port's history — a real `./gradlew`-based `Unit tests & APK
+builds` job succeeding, not just the standalone `kotlinc`+JUnit
+substitute this environment has relied on throughout (this environment
+itself still can't run Gradle; CI runs on GitHub's own runners, unaffected
+by that limitation).
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
