@@ -1,14 +1,18 @@
 # TagDrop Encoding Specification
 
-**Version:** 14 (QDEF-SPEC.md dropped the odd/even Type-ID parity
-mechanism and its fail-closed "no namespace ⇒ abort" guarantee — every
-carrier, including `tagdrop:` URI and NFC NDEF, now MUST transmit
-TagDrop's namespace on the wire instead of implying it from carrier
-context; TagDrop's four Record Types are renumbered `1`/`2`/`3`/`4`
-(parity no longer means anything); and the four fields TagDrop had
-migrated onto QDEF's shared Common Field Keys move back to TagDrop-scoped
-keys, since QDEF's own shared registry shrank to just ID/UUID. See §14
-"Version history")
+**Version:** 15 (QDEF's own Wrapper/standard-type field-key layouts
+shifted independently of TagDrop's version-14 changes above: the
+positional `payload` array slot is gone from QDEF's grammar entirely,
+folded into reserved map key `0` — Compress Wrapper and Media Payload's
+`content` move from a bare trailing array item into `{0: ...}`; Media
+Preview's fields shift up two keys each (`mediaType`/`contentHash`/
+`filename`/`label` now `2`/`3`/`5`/`7`, with key `0` unused — Media
+Preview has no payload of its own); Split Wrapper's fields renumber
+too (`fragment`/`group_id`/`index`/`count`/`total_bytes`/`parity_scheme`
+now `0`/`2`/`4`/`6`/`7`/`9`, fragment data moving into the payload-slot
+key exactly like Compress/Media Payload). See §14 "Version history".
+Version 14's own changes (namespace transmission, TagDrop's own Type ID
+renumbering, Common Field Key reversion) are unaffected by this version.
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -44,7 +48,7 @@ The format is designed to:
 
 ## 2. Wire Framing
 
-Every TagDrop code carries a **Record Sequence**: the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1, version 14) — exactly one definite-length CBOR array, the *same* self-delimited shape as any **Record** (QDEF terminology — `[namespace?, typeId*, map?, subrecord*]`, routed by its `typeId`; a Record MAY carry other Records nested after its own map, as subrecords). Since version 14, the root's own leading element is TagDrop's namespace declaration (§2.1a) whenever the root contains any TagDrop-scoped Record — this is now mandatory on every carrier, not just byte-mode QR. A code carrying a single top-level Record (e.g. a key-only code, §9) writes that Record's own array directly as the root, with the namespace as *that Record's own* leading element — no extra wrapping. A code carrying two top-level Records (Content Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-fragment — the common case) wraps them as the two subrecords of an implied, never-transmitted Bundle (typeId absent): one more definite-length array around them, with the namespace as the *Bundle's* leading element — each scoped child then cascades from it via an empty byte string (`h''`, QDEF-SPEC.md §3.5's "Namespace must be transmitted, never merely implied") rather than re-declaring it in full. Being a genuine CBOR array (not a bare RFC 8742 Sequence) means the root is self-delimiting by construction — a decoder finds where it ends from the array's own header, not by counting how many Records it expects to see (§9's "Decoders tolerate trailing bytes" relies on exactly this). Two of QDEF's own stdlib Types — Compress Wrapper (Type `4`) and Media Payload (Type `3`) — use the `payload` slot for their one genuinely singular value (§3.1a, §4.1); every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields and stays field-map-only, no payload slot. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions. A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
+Every TagDrop code carries a **Record Sequence**: the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1, version 14) — exactly one definite-length CBOR array, the *same* self-delimited shape as any **Record** (QDEF terminology — `[namespace?, typeId*, map?, subrecord*]`, routed by its `typeId`; a Record MAY carry other Records nested after its own map, as subrecords). Since version 14, the root's own leading element is TagDrop's namespace declaration (§2.1a) whenever the root contains any TagDrop-scoped Record — this is now mandatory on every carrier, not just byte-mode QR. A code carrying a single top-level Record (e.g. a key-only code, §9) writes that Record's own array directly as the root, with the namespace as *that Record's own* leading element — no extra wrapping. A code carrying two top-level Records (Content Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-fragment — the common case) wraps them as the two subrecords of an implied, never-transmitted Bundle (typeId absent): one more definite-length array around them, with the namespace as the *Bundle's* leading element — each scoped child then cascades from it via an empty byte string (`h''`, QDEF-SPEC.md §3.5's "Namespace must be transmitted, never merely implied") rather than re-declaring it in full. Being a genuine CBOR array (not a bare RFC 8742 Sequence) means the root is self-delimiting by construction — a decoder finds where it ends from the array's own header, not by counting how many Records it expects to see (§9's "Decoders tolerate trailing bytes" relies on exactly this). Two of QDEF's own stdlib Types — Compress Wrapper (Type `4`) and Media Payload (Type `3`) — use reserved map key `0` (QDEF-SPEC.md §3.6) for their one genuinely singular value (§3.1a, §4.1, version 15) — there's no longer a separate positional `payload` array slot in QDEF's grammar at all, only an ordinary field at a reserved key; every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields at other keys and never uses key `0`. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions. A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
 
 **Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
@@ -334,31 +338,36 @@ are globally-interpreted standard Types (QDEF-SPEC.md §4.5/§4.3), not
 namespace-scoped — any QDEF-aware decoder can read them, and neither
 ever carries a namespace item of its own.
 
-**Media Preview (Type `7`) field map:**
+**Media Preview (Type `7`) field map** (renumbered in version 15 — see
+§14 "Version history"; **key `0` is never used on this Type**, since
+Media Preview carries no payload of its own, only identification
+fields for content that travels as its own subrecord):
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
-| 0 | `mediaType` | uint or text | CRITICAL — IANA media type or CoAP Content-Format uint (QDEF-SPEC.md §4.3 key 0) |
-| 1 | `contentHash` | bytes | Multihash-style, `SHA-256(content bytes)[0:8]` with multihash prefix. Back to this Type-specific key as of version 14 (was QDEF Common Field Key `-11` in versions 11–13; was this same key `1` before version 11 too — see §14 "Version history"). |
-| 3 | `filename` | text (opt) | Back to this Type-specific key as of version 14 (was QDEF Common Field Key `-15` in versions 11–13; was this same key `3` before version 11 too). |
-| 5 | `label` | text (opt) | Maps to old Content Extension `title`. Back to this Type-specific key as of version 14 (was QDEF Common Field Key `-7` in versions 11–13; was this same key `5` before version 11 too). |
+| 2 | `mediaType` | uint or text | CRITICAL — IANA media type or CoAP Content-Format uint (QDEF-SPEC.md §4.5 key 2). Was key `0` through version 14. |
+| 3 | `contentHash` | bytes | Multihash-style, `SHA-256(content bytes)[0:8]` with multihash prefix. Was QDEF Common Field Key `-11` in versions 11–13, Type-specific key `1` in version 14, key `1` before version 11 too. |
+| 5 | `filename` | text (opt) | Was QDEF Common Field Key `-15` in versions 11–13, Type-specific key `3` in version 14, key `3` before version 11 too. |
+| 7 | `label` | text (opt) | Maps to old Content Extension `title`. Was QDEF Common Field Key `-7` in versions 11–13, Type-specific key `5` in version 14, key `5` before version 11 too. |
 
-**Media Payload (Type `3`) field map:**
+**Media Payload (Type `3`) field map** (renumbered in version 15):
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
-| 0 | `mediaType` | uint or text | CRITICAL — same mediaType as Media Preview |
+| 0 | `content` | bytes | The content bytes themselves — QDEF's reserved Payload key (QDEF-SPEC.md §3.6/§4.3). Was the array's separate `payload` position through version 14; see below. |
+| 1 | `mediaType` | uint or text | CRITICAL — same mediaType as Media Preview. Was key `0` through version 14, displaced by `content` moving here. |
 
-**`content` lives in the payload slot (version 11):** Media Payload's
-whole point is carrying exactly one blob, which is precisely what QDEF's
-payload slot exists for (§3.1) — `content` is no longer a field-map entry
-(it was Type-specific key `2` before version 11) and instead occupies the
-`payload` position of `[typeId, map?, payload?, subrecord*]`: `[3,
-{mediaType}, content_bytes]`. `content` is mandatory whenever a Media
-Payload Record exists, so the payload slot is never absent here — no
-ambiguity with a following Content Signature subrecord, since QDEF-SPEC.md
-§3.1's decode rule is purely positional (map, then payload if the next
-item isn't an array, then subrecords).
+**`content` moved from a positional payload slot into map key `0`
+(version 15).** QDEF-SPEC.md dropped the `[typeId, map?, payload?,
+subrecord*]` grammar's separate positional `payload` array item
+entirely — every Record is now `[namespace?, typeId, map?,
+subrecord*]`, full stop, with "the record's one genuinely singular
+value" (§3.1's old framing) now living at map key `0` instead, a
+reserved key any Record MAY use the same way (QDEF-SPEC.md §3.6). Net
+effect for Media Payload: `[3, {0: content_bytes, 1: mediaType}]`
+instead of the version-14-and-earlier `[3, {1: mediaType},
+content_bytes]` shape. `content` is mandatory whenever a Media Payload
+Record exists, so key `0` is never absent here.
 
 **Content Signature (Type `2`, TagDrop-scoped) field map** — present only
 when the payload is signed (§10), nested as Media Payload's own
@@ -375,28 +384,32 @@ TagDrop-scoped Record:
 | 5 | `signer_pubkey` | bytes (1312, opt) | See §10 — omittable once the verifier already has this `signer_id` cached |
 
 **Nesting: single code vs. Split-wrapped.** The base shape is Media
-Payload nested as Media Preview's own subrecord — `[7, {mediaType,
-contentHash, ...}, [3, {mediaType}, content_bytes]]` — with Content
-Signature, if the payload is signed, nested one level deeper, as Media
-Payload's *own* subrecord (following its payload slot, not replacing
-it): `[7, {...}, [3, {mediaType}, content_bytes, [h'', 2, {signature,
-signer_pubkey}]]]` — Content Signature's `h''` cascade (§2.1a) as the
-leading element of its array, reaching through both intervening global
-Types back to the root's declaration. This is the whole shape when it
-fits on one code.
+Payload nested as Media Preview's own subrecord — `[7, {2: mediaType,
+3: contentHash, ...}, [3, {0: content_bytes, 1: mediaType}]]` — with
+Content Signature, if the payload is signed, nested one level deeper,
+as Media Payload's *own* subrecord (following its field map, not
+replacing anything): `[7, {...}, [3, {0: content_bytes, 1: mediaType},
+[h'', 2, {signature, signer_pubkey}]]]` — Content Signature's `h''`
+cascade (§2.1a) as the leading element of its array, reaching through
+both intervening global Types back to the root's declaration. This is
+the whole shape when it fits on one code.
 
 **When Split is needed** (QDEF-SPEC.md §4.1/§4.5), the nesting inverts:
-**Split is outermost**, wrapping the canonical bytes of the `[3, {...},
-content_bytes, [h'', 2, {...}]?]` array — Media Payload *and* its
-own Content Signature subrecord, if present — as its opaque, fragmented
-`fragment` field; Media Preview becomes *Split's* subrecord instead,
-unwrapped and repeated identically on every code in the group, exactly
-like Content Extension:
+**Split is outermost**, wrapping the canonical bytes of the `[3, {0:
+content_bytes, 1: mediaType}, [h'', 2, {...}]?]` array — Media Payload
+*and* its own Content Signature subrecord, if present — as its own
+payload-slot (map key `0`) fragment data; Media Preview becomes
+*Split's* subrecord instead, unwrapped and repeated identically on
+every code in the group, exactly like Content Extension:
 
 ```
-[ 1, { 0: h'<group_id>', 2: <index>, 4: <count>, 6: h'<fragment bytes>', 7: <total> },
-  [ 7, { 0: "image/png", 1: h'<contentHash>', 3: "photo.png" } ] ]
+[ 1, { 0: h'<fragment bytes>', 2: h'<group_id>', 4: <index>, 6: <count>, 7: <total> },
+  [ 7, { 2: "image/png", 3: h'<contentHash>', 5: "photo.png" } ] ]
 ```
+
+(Split Wrapper's field keys are also renumbered in version 15 — see
+§5's own field table below; a ninth key, `9`, is `parity_scheme` when a
+parity fragment is present, omitted from this example since it isn't.)
 
 Because Content Signature travels *inside* the bytes Split fragments —
 not as a separate repeated Record — `signature`/`signer_pubkey` are
@@ -676,7 +689,7 @@ Signature Record rather than on the always-repeated Content Extension
 per-code repetition cost), not meaning. May be Compress-wrapped (QDEF-
 SPEC.md §4.1 Type 4, §8) before Split-wrapping.
 
-**Body's `content`** is the actual bytes (Media Payload's payload slot, §3.1a): a Content
+**Body's `content`** is the actual bytes (Media Payload's map key `0`, §3.1a): a Content
 payload's cache (raw or Compress-wrapped), or absent entirely for a Paper,
 which has no content of its own — Paper-Body only ever carries `files`/
 `related`. For a Content payload, `content` may also be a hidden encrypted
@@ -698,14 +711,14 @@ Example — a Content payload, single code:
     17: "springtrail2026",       // collection_tag — optional, §7 Collections
     19: "🌳",                     // icon — optional, §7 Icons
   }
-  Media Preview (Type 7) {       // global — no namespace item
-    0: "text/html",              // mediaType — CRITICAL, even key
-    1: h'12<h8 of SHA-256>',     // contentHash
-    3: "poem.html",              // filename
-    5: "Spring poem",            // label
+  Media Preview (Type 7) {       // global — no namespace item; no key 0 (no payload of its own)
+    2: "text/html",              // mediaType — CRITICAL, even key
+    3: h'12<h8 of SHA-256>',     // contentHash
+    5: "poem.html",              // filename
+    7: "Spring poem",            // label
     Media Payload (Type 3, Media Preview's subrecord — §3.1a) {  // global — no namespace item
-      0: "text/html",            // mediaType — must match Media Preview
-      payload: h'<page bytes>',  // content — moved to the payload slot, §3.1
+      0: h'<page bytes>',        // content — reserved Payload key, §3.6/v15
+      1: "text/html",            // mediaType — must match Media Preview
     }
   }
 ]
@@ -856,7 +869,7 @@ Two payloads encoding the same content bytes will have the same `contentHash`,
 regardless of Media Preview's other fields (`filename`/`label`) or the
 Content Extension's fields (`hint`/collection fields/etc.) — this enables
 deduplication across multiple papers and payloads made by different authors.
-`content` here means Media Payload's own payload-slot bytes, decompressed
+`content` here means Media Payload's own map key `0` bytes, decompressed
 if it was Compress-wrapped — never the compressed or Split-fragmented wire
 bytes, so the same logical content always produces the same `contentHash`
 regardless of which DEFLATE implementation, level, or Split chunking happened
@@ -865,7 +878,7 @@ it's computed over are in Media Payload (Type 3) — different Records, so
 there's no self-reference to worry about. As before, `contentHash` MUST be
 random instead, when a hidden override map might be present (§9).
 
-The multihash-style encoding (QDEF-SPEC.md §4.5 key 1) prepends a 1-byte
+The multihash-style encoding (QDEF-SPEC.md §4.5 key 3) prepends a 1-byte
 function code (`0x12` = SHA-256) before the digest, so the on-wire value is
 9 bytes: `h'12<8 bytes>'`.
 
@@ -973,7 +986,7 @@ exact nesting):
   when it fits on the same code as the small part, Media Payload nests as
   *Media Preview's own subrecord* rather than sitting alongside it as a
   separate top-level Record (§3.1a) — `[h'89d414e0', [1, {h'', ext
-  fields}], [7, {preview fields}, [3, {mediaType, content}, [h'', 2,
+  fields}], [7, {preview fields}, [3, {0: content, 1: mediaType}, [h'', 2,
   {sig}]?]]]` as the root array (namespace declared once, Content
   Extension and, if present, Content Signature both cascading via `h''`).
   When it doesn't fit, Media Payload (with its Content Signature
@@ -1589,7 +1602,7 @@ DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively
 ## 9. Encryption
 
 A Content payload's `hint`, `mime_type`, and `filename` (Content Extension
-keys 3/5/7), plus `content` (Media Payload's payload slot, §3.1a) — may optionally be
+keys 3/5/7), plus `content` (Media Payload's map key `0`, §3.1a) — may optionally be
 shadowed by a hidden, encrypted **override map**, independently of
 compression (§8). Unlike most of this format, the override map's presence
 is **never required to be declared** — see "Discovery, not declaration"
@@ -1642,8 +1655,9 @@ local key namespace (§3.1a) — 1 (`hint`), 3 (`mime_type`), 5 (`content`), 7
 The nonce travels with the blob — nothing in Content Extension is needed to
 locate or interpret it.
 
-**Where this blob lives:** Media Payload's payload slot (§3.1a; `content`
-moved there from field-map key `2` in version 11) — the same slot a
+**Where this blob lives:** Media Payload's map key `0` (§3.1a; `content`
+moved there from field-map key `2` in version 11, then from a positional
+payload slot to this reserved map key in version 15) — the same key a
 Content payload's cache normally occupies. Once Body has
 been reassembled (§5) and any Compress Wrapper unwrapped, `content`'s bytes
 — if their length is ≥ 28 (the minimum possible blob: 12-byte nonce +
@@ -2079,12 +2093,12 @@ Content Extension (Type 1) {
   47: h'<8-byte signer_id>',
   49: "Alice's Trail",               // optional human-readable label
 }
-Media Preview (Type 7) {              // global — no namespace item
-  0: "text/markdown",                // mediaType
-  1: h'12<contentHash>',             // multihash-style contentHash
+Media Preview (Type 7) {              // global — no namespace item; no key 0
+  2: "text/markdown",                // mediaType
+  3: h'12<contentHash>',             // multihash-style contentHash
   Media Payload (Type 3, Media Preview's subrecord) {  // global — no namespace item
-    0: "text/markdown",              // mediaType, same as Media Preview
-    payload: h'<content bytes>',     // content — moved to the payload slot, §3.1
+    0: h'<content bytes>',           // content — reserved Payload key, §3.6/v15
+    1: "text/markdown",              // mediaType, same as Media Preview
     Content Signature (Type 2, Media Payload's own subrecord) {
       (h'', namespace cascade)       // reaches through both global ancestors, §2.1a
       3: h'<2420-byte signature>',
@@ -2232,7 +2246,80 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 14** (current) — QDEF's own redesign dropped the odd/even
+**Version 15** (current) — a second, independent correction found while
+verifying version 14 against the live spec: QDEF's positional `payload`
+array slot (`[typeId, map?, payload?, subrecord*]`, adopted at version
+11) is gone entirely from the current grammar — every Record is now
+`[namespace?, typeId, map?, subrecord*]`, with "the one genuinely
+singular value" a Record might carry now living at reserved map key `0`
+(QDEF-SPEC.md §3.6) instead of its own array position. This shifted
+field-key layouts on every QDEF standard Type TagDrop uses that has (or
+had) a payload:
+
+- **Compress Wrapper (Type 4):** `[4, deflated_bytes]` → `[4, {0:
+  deflated_bytes}]`.
+- **Media Payload (Type 3):** `content` moves from the array's payload
+  slot to map key `0`; `mediaType`, which used to sit at key `0`, moves
+  to key `1` to make room. `[3, {mediaType}, content_bytes]` → `[3, {0:
+  content_bytes, 1: mediaType}]`.
+- **Media Preview (Type 7):** never had a payload of its own (its
+  content travels as Media Payload's own subrecord), but key `0`'s
+  reservation means Media Preview can no longer use it either — every
+  field shifts up two keys: `mediaType`/`contentHash`/`filename`/`label`
+  go from `0`/`1`/`3`/`5` to `2`/`3`/`5`/`7`, with key `0` now unused on
+  this Type entirely.
+- **Split Wrapper (Type 1):** fragment data moves from the array's
+  payload slot to map key `0`, the same shift as Compress/Media
+  Payload; `group_id`/`index`/`count`/`total_bytes`/`parity_scheme` shift
+  from `0`/`2`/`4`/`6`/`7`/`9` to `2`/`4`/`6`/`7`/`9` (i.e. `group_id`
+  moves off key `0` onto `2`, `index` `2`→`4`, `count` `4`→`6`;
+  `total_bytes` stays `7` and `parity_scheme` stays `9`, since neither
+  collided with anything vacating a slot).
+
+None of TagDrop's own four namespace-scoped Types (Content Extension,
+Content Signature, Paper-Preview, Paper-Body) are affected — none of
+them ever had a payload, all four always carry several fields and stay
+field-map-only, so key `0` was never something they needed to avoid or
+reclaim.
+
+**How this was found and fixed.** The very first research pass into
+what changed upstream (the same pass that led to version 14's namespace
+work) flagged the payload-slot removal explicitly as "action required"
+— but that finding got dropped when the namespace-transmission question
+took over the rest of that session's attention, and version 14 shipped
+without it. The gap surfaced only when the user independently ran a
+real TagDrop-generated code's hex dump through QDEF's own validator
+tool (`qdef-format.github.io/tools/validator.html`, reachable this
+time — an earlier attempt in the same session had hit a 403 from this
+environment's egress policy on the `*.github.io` domain specifically,
+confirmed via the proxy's own status/README rather than assumed, since
+`raw.githubusercontent.com` was reachable throughout) and noticed the
+payload sitting as a bare trailing array item where the validator's own
+"payload (key 0)" annotation implied it should be a map entry instead.
+Re-verified directly against the spec's own worked examples (§4.1,
+§4.3, §4.5) rather than trusting the validator's generic annotation
+alone, confirming every key number above. One number wasn't in the spec
+text at all — Split Wrapper's `parity_scheme` is discussed narratively
+(§4.1) but was never shown in a worked example with an explicit key —
+relayed to qdef bot rather than guessed, which confirmed key `9` (the
+project's own inference, correct) and fixed the spec's own prose gap
+upstream in the same reply.
+
+Also **vendored a genuinely independent verification tool this same
+session**: `qdef-format.github.io`'s `scripts/qdef-validate.js` (a
+headless CLI wrapper around the same `validateQDEF()` the browser
+validator page uses, loading `tools/validator.js` + `assets/cbor-util.js`
++ `registry.rec` into a plain Node context) — fetched and run directly
+against a real generated code's hex dump as part of confirming this
+fix. Worth noting for its own sake: this validator accepted TagDrop's
+pre-fix, version-14-only encoding as fully "valid" (it checks QDEF
+grammar/namespace-cascade correctness, not whether a *standard* Type's
+own field keys match that Type's documented shape) — a reminder that a
+generic grammar validator passing is not the same claim as "matches the
+current field-level spec," the same category of gap `qdef-lint.cjs`
+has relative to this project's own self-consistency tests.
+
+**Version 14** — QDEF's own redesign dropped the odd/even
 Type-ID parity mechanism (§2.1's previous rationale for TagDrop's four
 Type IDs being deliberately odd) and, with it, the fail-closed "scoped
 Type ID + no namespace present ⇒ MUST abort" guarantee that versions 6–8
