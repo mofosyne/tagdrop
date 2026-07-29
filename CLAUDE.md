@@ -805,6 +805,303 @@ non-TagDrop content handling — `application/octet-stream`, no filename
 and NFC NDEF codes were never affected, only the byte-mode QR/JABCode
 carrier.
 
+### QDEF drops namespace-implication and Type-ID parity entirely (SPEC.md version 14)
+
+Started from "qdef was updated, let's adjust tagdrop to the new system"
+— a same-day (2026-07-28) commit burst on `qdef-format/qdef-format.
+github.io`'s `docs/QDEF-SPEC.md`, all by `mofosyne` (the user, same as
+this repo's maintainer). An initial research pass fetching the live spec
+found it self-contradictory in places (worked examples in §4.5/§4.6
+still citing pre-renumbering Type IDs; §4.7 saying "Type 16" while its
+own registry table said `8`; §3 saying "range 2–22" instead of "1–22")
+— evidence of a redesign genuinely still in progress, not a settled
+target. Rather than guess at intent against a moving, self-contradicting
+document, the open questions were relayed directly to qdef bot and
+answered in three rounds, each correcting the last:
+
+1. **First reply**: namespace must now be transmitted on the wire,
+   never merely implied by carrier context — the odd/even Type-ID
+   parity rule (and its fail-closed "scoped Type ID + no namespace ⇒
+   abort" guarantee, which versions 6–8's implied-namespace design was
+   built around) is gone with no replacement. TagDrop's four Type IDs
+   renumbered `1`/`3`/`5`/`7` → `1`/`2`/`3`/`4` in `registry.rec`,
+   sequential since parity no longer carries meaning.
+2. **Follow-up, asking for an exact byte-level worked example** against
+   TagDrop's actual structure (implied/never-transmitted root Bundle,
+   Content Signature nested inside two non-namespace-declaring QDEF
+   standard Types, Paper-Body a sibling not descendant of Paper-Preview)
+   surfaced that the first reply's cascading model was incomplete: a
+   Record's namespace slot being entirely *absent* (not `h''`) was said
+   to reset the ambient namespace for everything nested inside it too
+   — meaning Content Signature and Compress/Split-wrapped Paper-Body
+   would each need their own explicit 5-byte namespace, unable to
+   cascade through Media Preview/Payload or Compress/Split Wrapper.
+3. **A third reply, unprompted** ("even better than last answer"):
+   qdef bot revised the underlying rule again after further thought — a
+   Record's own namespace token now governs only how *that Record's
+   own* Type ID resolves, never whether the ambient namespace continues
+   flowing to its own subrecords. A standard/global Type stays global
+   for itself but still relays whatever ambient namespace it received
+   through to whatever's nested inside it, regardless of whether it
+   declared one itself. Net effect: **all of TagDrop's own Records now
+   cascade uniformly via a 1-byte `h''`**, including Content Signature
+   three levels deep through two non-namespaced ancestors — the
+   intermediate (second-round) answer's "some Records need their own
+   explicit namespace" was wrong and is explicitly documented as
+   superseded, both in SPEC.md's version-14 history entry and here, per
+   this project's standing practice of leaving a visible trail rather
+   than silently overwriting an earlier documented belief that turned
+   out wrong (see the FINDINGS.md #51 precedent, and the version-12
+   key-ordering self-correction above).
+
+**The change, net:** every carrier (`tagdrop:` URI, NFC NDEF, byte-mode
+QR/JABCode alike) now transmits TagDrop's namespace explicitly, once,
+as the root array's own leading element — `tagdrop:` URI and NFC NDEF
+never did this before (byte-mode QR already did, per the "container
+discriminator removed" entry above). Every TagDrop-scoped Record
+present on a code cascades from that one declaration via `h''` (1 byte),
+regardless of nesting depth or how many QDEF standard Types sit in
+between. TagDrop's four Type IDs are `1`/`2`/`3`/`4` now, which happen
+to numerically collide with several of QDEF's own renumbered standard
+Types (Split/Media Payload/Compress are also `1`/`3`/`4`) — expected and
+safe, since the two sets resolve in different spaces (namespace-scoped
+vs. global) and every decoder must resolve the namespace before
+deciding which registry a given Type ID belongs to; this is also why
+**getting namespace resolution right became a genuine security check**,
+not just a byte-format detail. Separately, QDEF's own Common Field Key
+registry shrank in the same redesign from 8 entries to just `-1`/`-3`
+(ID/UUID), dropping the four keys TagDrop had migrated onto in version
+11 (`contentHash`/`filename`/`label`/`source_url`) — reverted back to
+their pre-version-11 Type-specific positions, since continuing to use
+keys a shared registry no longer defines would no longer be backed by
+the governance rationale that justified adopting them in the first
+place. Full detail (exact field tables, byte costs, worked examples) is
+in SPEC.md §2.1/§2.1a/§3.1/§3.1a/§3.2/§3.4/§14 — not duplicated here.
+
+**Both codec implementations ported in parallel**, each as a
+self-contained background task given the full technical spec derived
+above, then reviewed by reading the actual diffs (not just trusting
+the completion summary) before merging — per this project's own "trust
+but verify" practice for delegated work:
+
+- **Kotlin**: `MiniCbor.kt`'s `encodeRecord`/`decodeRecordPrefix` gained
+  a `namespace`/`ambientNamespace` parameter implementing the final
+  cascade rule (a Record's own `h''` resolves to whatever ambient value
+  it received; a Record with no namespace item resolves to global for
+  *itself* but still forwards whatever ambient value *it* received,
+  untouched, to its own subrecords — the crux distinction the
+  second-round wrong answer got backwards); `layoutOf` and
+  `stripKeys`/`stripSubrecordType`/`stripAllSubrecords` updated to
+  detect and carry through an optional leading namespace item;
+  `encodeRootBundle`/`decodeRootBundle` thread the root's declaration.
+  `TagDropCodec.kt`'s Type IDs and Common Field Keys renumbered/reverted
+  per above, with a genuine security check added in `recordScanResult`
+  (validates the root's resolved namespace before treating anything as
+  a TagDrop Record). **A real bug caught by the port's own test suite,
+  not by inspection**: `TYPE_COMPRESS` and `TYPE_PAPER_BODY` both being
+  `4` is an intentional, namespace-disambiguated collision, but
+  `unwrapPaperBody`'s `cur.typeId == TYPE_COMPRESS` check looked at the
+  bare integer alone — misidentifying *every* uncompressed Paper as a
+  Compress Wrapper, since Paper-Body's `h''` cascade and Compress
+  Wrapper's absent-namespace-item both produce Type ID `4` at that
+  position. All 12 Paper round-trip tests failed until fixed by
+  requiring `cur.namespace == null` (genuinely unnamespaced/global)
+  before taking that branch — applied symmetrically to the equivalent
+  Content-side dispatch too, though that one turned out to be pure
+  defensive hardening (Media Payload's Type ID is `3`, not `4`, so
+  there's no legitimate way for genuine Content encoder output to hit
+  the collision there — confirmed by tracing the call sites before
+  assuming the fix needed to be symmetric). Verified via the same
+  standalone `kotlinc`+JUnit harness this project has used throughout
+  (fetched fresh — this environment resets between sessions — including
+  a BouncyCastle version bump to 1.80, since 1.78.1 predates the
+  `pqc.crypto.mldsa` package `MLDSA44.kt` needs): 163/163 tests pass.
+- **JS** (generator/examples/reader, plus the independent
+  `test-qdef-roundtrip.mjs` Node reimplementation — `test-qr-
+  roundtrip.mjs` deliberately left untouched, per the version-10 entry's
+  standing exemption): same design mirrored into each tool's own
+  independently duplicated codec copy. The reader's `recordScanResult`
+  gained the same root-namespace security check as Kotlin's.
+  **A real bug found via a from-scratch cross-tool check** (loading the
+  actual generator/reader script bodies in a Node `vm` context and
+  driving `createContentSectors`/`recordScanResult` directly end to
+  end, not just each tool's own self-consistency tests — the same
+  technique that caught the negative-Common-Field-Key decode gap noted
+  earlier in this file): `RECORD_TYPE_INFO`, in all three HTML tools,
+  was a `Map` keyed by plain `String(typeId)` — since v14 deliberately
+  makes TagDrop's Type IDs collide with QDEF's globals, later-inserted
+  global entries silently clobbered the TagDrop ones sharing the same
+  key, mislabeling Content Extension as "Split Wrapper" and Media
+  Payload as "Paper-Preview" in the "🔍 Inspect CBOR" debug view. Never
+  affected real decode logic (already correctly disambiguated by
+  position + namespace) — fixed with a composite `(namespace-scope,
+  typeId)` key. **Caught during this session's own review of the
+  agent's diff, not by the agent itself**: the JS reader's
+  `_unwrapMediaPayload` was missing the same defensive
+  `cur.namespace === null` guard the Kotlin port added symmetrically to
+  its equivalent — added to match, keeping the two implementations'
+  defensive posture consistent even though (per the Kotlin bug analysis
+  above) it isn't reachable via genuine Content encoder output either.
+  Verified: `test-qdef-roundtrip.mjs` 11/11 pass (including a new
+  `testWrongNamespaceRejected`), `qdef-lint.cjs` clean (15 codes, 0
+  errors/warnings); `test-qr-roundtrip.mjs` fails in this sandbox on an
+  unrelated, pre-existing `zxing-wasm` WASM MIME-type error (confirmed
+  via an empty `git diff` on that file — not something this session's
+  changes touched or could have caused).
+
+**Outstanding gap, same as every prior port**: a full Android Studio
+build (Room codegen, resource linking, the 15 caller Activities/
+Fragments) hasn't run against this change — this environment's Gradle
+wrapper still can't download its own distribution. The standalone
+`kotlinc`+JUnit harness is the same substitute verification this
+project has relied on throughout its QDEF history.
+
+### QDEF removes the positional payload slot, folded into reserved map key 0 (SPEC.md version 15)
+
+Found only because the user independently ran a real generator-produced
+hex dump through QDEF's own validator tool (`qdef-format.github.io/
+tools/validator.html`) after the version-14 port above shipped, and
+noticed Media Payload's content sitting as a bare trailing array item
+where the validator's own generic "payload (key 0)" annotation implied
+it should be a map entry instead. This was a genuine miss, not a new
+upstream change: the very first research pass into what changed
+upstream (the one that led to version 14's namespace work) had already
+flagged "payload slot removed, folded into map key 0" as **action
+required** — it just got dropped when the namespace-transmission
+question consumed the rest of that session's attention, and version 14
+shipped without it.
+
+**The change:** QDEF's grammar dropped the positional `payload` array
+item entirely. A Record is now strictly `[namespace?, typeId, map?,
+subrecord*]` — a Record's "one genuinely singular value," when it has
+one, lives at reserved map key `0` (QDEF-SPEC.md §3.6) like any other
+field, not a separate array position. Confirmed directly against the
+live spec's own worked examples (§4.1, §4.3, §4.5), not the validator's
+generic annotation alone — the validator turned out to check QDEF
+grammar/namespace-cascade correctness, not whether a *standard* Type's
+own fields match its documented shape, so it had accepted TagDrop's
+stale version-14-only encoding as fully "valid" with no warning at all.
+Renumbers every QDEF standard Type TagDrop uses that has (or had) a
+payload:
+
+- **Compress Wrapper (Type 4):** `[4, deflated_bytes]` → `[4, {0:
+  deflated_bytes}]`.
+- **Media Payload (Type 3):** `content` moves to map key `0`;
+  `mediaType` (previously key `0`) displaced to key `1`.
+- **Media Preview (Type 7):** never had a payload of its own, but key
+  `0`'s reservation means it can't use it either — `mediaType`/
+  `contentHash`/`filename`/`label` all shift up two keys
+  (`0`/`1`/`3`/`5` → `2`/`3`/`5`/`7`), key `0` now unused on this Type
+  entirely.
+- **Split Wrapper (Type 1):** fragment data moves to map key `0`;
+  `group_id`/`index`/`count` shift up two keys (`0`/`2`/`4` →
+  `2`/`4`/`6`); `total_bytes`/`parity_scheme` (`7`/`9`) are untouched,
+  since neither collided with anything vacating a slot.
+
+None of TagDrop's own four namespace-scoped Types (Content Extension,
+Content Signature, Paper-Preview, Paper-Body) are affected — none of
+them ever had a payload.
+
+**One real gap in the spec text itself, not guessed past:** Split
+Wrapper's `parity_scheme` had never been given an explicit key number
+anywhere in the current spec — discussed narratively in §4.1, never
+shown in a worked example. Rather than assume the natural next-odd-slot
+inference (`9`, matching its pre-redesign position) was right, it was
+relayed to qdef bot, which confirmed `9` was correct — the prototype's
+own working code already used it, only the spec prose had dropped it
+during an earlier numbering pass — and fixed the spec's own gap
+upstream in the same reply.
+
+**New verification asset acquired this session, not just used once:**
+`qdef-format.github.io`'s `scripts/qdef-validate.js` — a headless CLI
+wrapper around the exact same `validateQDEF()` the browser validator
+page runs, loading `tools/validator.js` + `assets/cbor-util.js` +
+`registry.rec` into a plain Node context via `scripts/load-validator.js`
+(itself a real, intentional export the qdef-format maintainer added "for
+an external adopter (TagDrop) [who] asked for" a headless path — per
+that file's own header comment). Fetched and assembled locally
+(`raw.githubusercontent.com` was reachable throughout this session even
+when the rendered `*.github.io` Pages site briefly 403'd on this
+environment's egress policy — confirmed via the proxy's own status
+endpoint/README, not assumed, and resolved once the user adjusted
+permissions) — both codec ports used it as an independent cross-check
+against real generated Content codes (single-code, Split multi-code,
+Compress-wrapped), confirming the exact new key layout on every affected
+Type, not just self-consistency. Worth keeping around for future spec
+changes; consider vendoring it properly (alongside `qdef-lint.cjs`) if
+this kind of drift recurs.
+
+Both codec ports (Kotlin and JS) again ran as parallel background
+tasks, fully specified this time (no ambiguity left after the parity_
+scheme confirmation), then reviewed diff-by-diff before merging, same
+discipline as version 14. Verified: Kotlin 163/163 tests
+(`kotlinc`+JUnit); JS `test-qdef-roundtrip.mjs` 11/11, `qdef-lint.cjs`
+clean (15 codes, 0 errors/warnings), `test-qr-roundtrip.mjs` still
+failing only on its pre-existing, unrelated `zxing-wasm` sandbox issue.
+
+**Real bug found by the user's own end-to-end device testing, missed by
+every check above.** All of the version-15 verification — both codecs'
+unit tests, `qdef-lint.cjs`, the independent `qdef-validate.js`
+cross-check — passed clean, but none of it actually drove the real web
+generator and scanned the result with the real Android app. Doing
+exactly that surfaced a severe bug in `tools/generator/index.html` and
+`tools/examples/index.html` (not `test-qdef-roundtrip.mjs`, a separate,
+independently-duplicated codec copy per "Known duplication" below):
+`buildContentExtension`/`buildContentSignature`/`buildPaperPreview`/
+`buildPaperBody` still called `cborRecord(typeId, fields, [], undefined,
+namespace)` — five arguments, left over from *before* this same
+version-15 pass removed `cborRecord`'s `payload` parameter (shifting
+`namespace` from the 5th argument position to the 4th). The trailing
+`undefined` silently bound to the new `namespace` parameter instead, and
+the real namespace value became a discarded 5th argument — every
+TagDrop-scoped Record these four functions build (i.e. every real
+generator-produced code) shipped with no `h''` cascade marker at all,
+so the Android app's `recordScanResult` namespace check rejected every
+one as "unsupported code." This is the identical bug pattern the
+version-15 JS port's own background agent found and fixed in
+`test-qdef-roundtrip.mjs` — but that fix didn't extend to the actual
+browser tools, since they're a separately duplicated codec copy with no
+automated cross-check between them (the same standing gap "Known
+duplication" and the version-13 entry's Playwright note both already
+flag). **This session's own diff review of the version-15 JS port did
+not catch it either, despite quoting the exact buggy line
+(`buildContentExtension`'s `}, [], undefined, namespace);`) verbatim
+during that review** — the reviewer counted the pattern as "looks
+right" without actually counting the arguments against `cborRecord`'s
+just-changed 4-parameter signature. Fixed by the user directly: dropped
+the stray `undefined`, added namespace assertions on QDEF global types
+to `test-qdef-roundtrip.mjs` so a missing cascade marker fails the test
+suite regardless of which encoder introduces it next time, and set the
+examples page's binary-QR toggle to default on (so the QDEF-framed form
+the validator actually checks is what a visitor sees first). Also
+landed in the same commit: a multi-tier fallback in
+`ReceiveActivity.kt`'s byte-mode QR scan handling (ZXing's
+`BYTE_SEGMENTS` metadata isn't always populated; falls through to
+`Result.rawBytes`, then the scanned text re-decoded as ISO-8859-1 —
+ZXing's own default byte-mode encoding — then UTF-8) and a refreshed
+`QDEF-SPEC-cached.md`.
+
+**Lesson for future sessions, stated plainly:** a diff review that
+pattern-matches "this looks like what I asked for" is not the same as
+verifying it — counting an unfamiliar function's actual argument list
+against its current signature is cheap and this session skipped it.
+Self-consistent unit tests plus an independent spec-grammar validator
+both passed clean on the broken code; only driving the real tool with
+the real consuming app caught it. This is at least the fourth time this
+project's history records exactly this pattern (see the version-13
+entry's negative-Common-Field-Key gap, and the version-14 entry's
+`RECORD_TYPE_INFO` collision) — cross-tool, real-artifact testing keeps
+finding what layered self-consistency checks don't, and is still not a
+committed, automated part of this repo's own test suite.
+
+CI (GitHub Actions, not this session's local `kotlinc`/`npm` harnesses)
+confirmed green after this fix, including — for the first time this
+entire QDEF port's history — a real `./gradlew`-based `Unit tests & APK
+builds` job succeeding, not just the standalone `kotlinc`+JUnit
+substitute this environment has relied on throughout (this environment
+itself still can't run Gradle; CI runs on GitHub's own runners, unaffected
+by that limitation).
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -887,12 +1184,18 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `8` — QDEF Records with Type IDs
-`1`/`3`/`5`/`7` under a fixed implied namespace, §14; both the Kotlin
-app and the web tools are on this shape now, see "Two parallel
-wire-format implementations" above) is independent of the Android app's
-`versionName` (currently `2.1.0`, already accepted by F-Droid as of June
-2026) — bumping one never requires bumping the other.
+SPEC.md's `version` field (currently `15` — QDEF Records with Type IDs
+`1`/`2`/`3`/`4` under an explicitly-transmitted namespace [§2.1a,
+version 14], and QDEF's own standard Types' payload values at reserved
+map key `0` rather than a positional payload slot [§3.1a/§5, version
+15]; both the Kotlin app and the web tools are on this shape now, see
+"Two parallel wire-format implementations" above and the version-14/15
+history entries) is independent of the Android app's `versionName`
+(currently `2.5.1`, already accepted by F-Droid) — bumping one never
+requires bumping the other. (This note has drifted stale before —
+previously said `8`/`2.1.0` for a while — a reminder to re-check this
+line's own numbers against SPEC.md §14's actual current entry rather
+than trust it silently.)
 
 SPEC.md as a whole is currently a **draft, not frozen** (see its `Status`
 line): no real TagDrop code has been printed or distributed yet, so no

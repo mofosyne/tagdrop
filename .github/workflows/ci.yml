@@ -44,6 +44,13 @@ jobs:
         working-directory: tools
         run: npm run lint:qdef
 
+      # Same lint but through the carrier framing (QDEF magic header) that the examples
+      # page and byte-mode QR path actually use — confirms the magic is present and the
+      # framed container is well-formed, not just the bare logical codes.
+      - name: Run framed QDEF-lint check (examples/binary QR path)
+        working-directory: tools
+        run: npm run lint:examples
+
   test-and-build:
     name: Unit tests & APK builds
     runs-on: ubuntu-latest

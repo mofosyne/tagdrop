@@ -9,6 +9,7 @@ import android.location.LocationManager
 import android.net.Uri
 import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
+import android.util.Log
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -119,14 +120,45 @@ class ReceiveActivity : AppCompatActivity() {
         override fun barcodeResult(result: BarcodeResult) {
             val now = System.currentTimeMillis()
 
-            // Fully-binary codes carry the raw CBOR sequence directly in the symbol's byte-mode
-            // segment, with no `tagdrop:`/Base41 text wrapper (SPEC §13's "raw CBOR sequence
-            // form") -- denser than Base41, worthwhile for non-initial sectors since those are
-            // always camera-scanned and never hand-typed/shared as text, unlike a `tagdrop:` link.
-            val rawBytes = rawByteSegment(result)
-            val rawScan = rawBytes?.let { TagDropCodec.decodeRaw(it) }
+            // Try every source of raw bytes, stopping on the first that decodes as
+            // TagDrop content.  For alphanumeric QR (tagdrop: URI) no source produces
+            // a valid decode, so the text-based path below handles it unchanged.
+            // Also track the first raw bytes available (even if decodeRaw fails) for
+            // use by completeRawScan's MIME guessing for non-TagDrop binary QRs.
+            var firstRawBytes: ByteArray? = null
+
+            fun tryBytes(bytes: ByteArray, source: String): TagDropScan? {
+                if (firstRawBytes == null) firstRawBytes = bytes
+                val scan = TagDropCodec.decodeRaw(bytes)
+                if (scan != null) Log.d("ReceiveActivity", "decodeRaw OK ($source): ${bytes.size}B")
+                else Log.d("ReceiveActivity", "decodeRaw null ($source): ${bytes.size}B, first=${bytes.firstOrNull()?.let{"%02x".format(it)}}")
+                return scan
+            }
+
+            // 1. ZXing BYTE_SEGMENTS metadata (byte-mode QR segments)
+            var rawScan = rawByteSegment(result)?.let { tryBytes(it, "BYTE_SEGMENTS") }
+
+            // 2. ZXing Result.getRawBytes() — null for alphanumeric QR
+            if (rawScan == null) {
+                result.rawBytes?.takeIf { it.isNotEmpty() }?.let {
+                    rawScan = tryBytes(it, "result.rawBytes")
+                }
+            }
+
+            // 3. Text reconstructed as ISO-8859-1 (default ZXing byte-mode encoding)
+            if (rawScan == null && result.text != null) {
+                val text = result.text
+                var asBytes = text.toByteArray(Charsets.ISO_8859_1)
+                rawScan = tryBytes(asBytes, "text→ISO-8859-1")
+                // 4. Text reconstructed as UTF-8 (some ZXing configs)
+                if (rawScan == null) {
+                    asBytes = text.toByteArray(Charsets.UTF_8)
+                    rawScan = tryBytes(asBytes, "text→UTF-8")
+                }
+            }
+
             if (rawScan != null) {
-                val key = "raw:" + rawBytes.toHex()
+                val key = "raw:" + (firstRawBytes ?: return).toHex()
                 if (key == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
                 lastDecodedText = key
                 lastDecodedAt = now
@@ -138,9 +170,10 @@ class ReceiveActivity : AppCompatActivity() {
             if (text == lastDecodedText && (now - lastDecodedAt) < SCAN_COOLDOWN_MS) return
             lastDecodedText = text
             lastDecodedAt = now
-            // Pass rawBytes so completeRawScan can use them directly for non-TagDrop binary QRs
-            // (byte-mode content that didn't decode as TagDrop — e.g. a raw PNG stored in a code).
-            processScanned(text, result.result.barcodeFormat, rawBytes)
+            // Pass firstRawBytes so completeRawScan can use them directly for
+            // non-TagDrop binary QRs (byte-mode content that didn't decode as
+            // TagDrop — e.g. a raw PNG stored in a code).
+            processScanned(text, result.result.barcodeFormat, firstRawBytes)
         }
         override fun possibleResultPoints(resultPoints: MutableList<ResultPoint>) {}
     }
@@ -313,8 +346,8 @@ class ReceiveActivity : AppCompatActivity() {
         // Prefer original wire bytes (with QDEF framing if present) for the inspector;
         // fall back to reconstructed Record Sequence if wire bytes unavailable (NFC, paste).
         val raw = lastScannedWireBytes ?: when (record) {
-            is ScannedRecord.Content -> MiniCbor.encodeRootBundle(listOfNotNull(record.extensionRaw, record.secondRaw))
-            is ScannedRecord.Paper -> MiniCbor.encodeRootBundle(listOfNotNull(record.previewRaw, record.secondRaw))
+            is ScannedRecord.Content -> MiniCbor.encodeRootBundle(listOfNotNull(record.extensionRaw, record.secondRaw), TagDropCodec.TAGDROP_NAMESPACE)
+            is ScannedRecord.Paper -> MiniCbor.encodeRootBundle(listOfNotNull(record.previewRaw, record.secondRaw), TagDropCodec.TAGDROP_NAMESPACE)
         }
         showCborDebugDialog(raw, title)
     }

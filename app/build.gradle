@@ -14,8 +14,8 @@ tasks.register("copySpecToRawRes", Copy) {
 }
 
 // QDEF-SPEC.md itself is just a short pointer to the real, always-current spec at
-// mofosyne/qdef (kept that way deliberately -- a hand-maintained full copy here just
-// drifts, see its own header and CLAUDE.md). For the in-app viewer to still show real
+// https://qdef-format.github.io (kept that way deliberately -- a hand-maintained full
+// copy here just drifts, see its own header and CLAUDE.md). For the in-app viewer to still show real
 // content offline, this bundles QDEF-SPEC-cached.md instead -- a periodically refreshed
 // mirror, updated by running `scripts/sync-qdef-spec.sh` and committing the result (not
 // fetched at build time: keeps builds hermetic/offline-safe and avoids depending on
