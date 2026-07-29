@@ -448,8 +448,10 @@ function cborFieldMap(fields) {
 // `subrecords` (array, major type 4) with no marker needed. `subrecords`
 // are already-encoded [typeId, ...] byte sequences (each built by a nested
 // cborRecord call), spliced in raw as their own array items.
-function cborRecord(typeId, fields, subrecords = [], payload = undefined) {
-  const items = [typeId];
+function cborRecord(typeId, fields, subrecords = [], payload = undefined, namespace = undefined) {
+  const items = [];
+  if (namespace !== undefined) items.push(namespace);
+  items.push(typeId);
   if (Object.keys(fields).length > 0) items.push(craw(cborFieldMap(fields)));
   if (payload !== undefined) items.push(payload);
   items.push(...subrecords.map(craw));
@@ -459,75 +461,51 @@ function cborRecord(typeId, fields, subrecords = [], payload = undefined) {
   return new Uint8Array(out);
 }
 
-// QDEF Record Type IDs. SPLIT/COMPRESS/MEDIA_PREVIEW/MEDIA_PAYLOAD are QDEF
-// standard (even, globally-interpreted) types; the four TagDrop Type IDs are
-// small odd values under TagDrop's implied namespace (SPEC.md §2.1).
-const TYPE_SPLIT = 2, TYPE_COMPRESS = 8;
-const TYPE_MEDIA_PAYLOAD = 6, TYPE_MEDIA_PREVIEW = 14;
+// QDEF Record Type IDs (SPEC.md §2.1, version 14 — sequential renumbering,
+// parity no longer means anything, see §2.1a). SPLIT/COMPRESS/MEDIA_PREVIEW/
+// MEDIA_PAYLOAD are QDEF's own standard, globally-interpreted types (never
+// namespace-scoped); the four TagDrop Type IDs are namespace-scoped under
+// TagDrop's own explicitly-transmitted namespace (SPEC.md §2.1a) — several
+// numerically collide with QDEF's own standard Type IDs on purpose (§2.1's
+// note), disambiguated only by namespace resolution, never by the bare
+// integer alone.
+const TYPE_SPLIT = 1, TYPE_COMPRESS = 4;
+const TYPE_MEDIA_PAYLOAD = 3, TYPE_MEDIA_PREVIEW = 7;
 const TYPE_CONTENT_EXTENSION = 1;
-const TYPE_CONTENT_SIGNATURE = 3;
-const TYPE_PAPER_PREVIEW = 5;
-const TYPE_PAPER_BODY = 7;
+const TYPE_CONTENT_SIGNATURE = 2;
+const TYPE_PAPER_PREVIEW = 3;
+const TYPE_PAPER_BODY = 4;
 
-// QDEF binary-mode QR framing (QDEF-SPEC.md §2, §3.5): 4-byte "QDEF" magic,
-// then the root array's own leading namespace element (CBOR bstr h'89d414e0',
-// SHA-256("io.github.mofosyne.tagdrop")[0:4]) = 9 bytes of overhead total.
-// tagdrop: URI and NFC NDEF are exempt from carrying a namespace at all —
-// their own dispatch signal (scheme, MIME type) already gives the decoder
-// the same context an on-wire namespace would.
-// Kept as one flat 9-byte constant purely for overhead/display math
-// (QDEF_FRAMING.length, and slicing out the namespace bytes to show) —
-// there's no longer a separate discriminator CBOR item to prepend as-is;
-// qdefFrame below splices these same bytes into the root array itself.
-const QDEF_FRAMING = new Uint8Array([
-  0x51, 0x44, 0x45, 0x46,  // "QDEF" magic (4 bytes)
-  0x44,                     // CBOR byte string header, length 4 (1 byte)
-  0x89, 0xD4, 0x14, 0xE0,  // SHA-256("io.github.mofosyne.tagdrop")[0:4]
-]);
-// Folds the QDEF byte-mode QR carrier's namespace into `recordBytes` (the
-// plain, unnamespaced root array from encodeRootBundle) as QDEF-SPEC.md §3.5
-// now requires: "no separate container-level discriminator item anymore — a
-// namespace is declared exactly the same way for the container root as for
-// any subrecord: the ordinary namespace-pairing prefix." Splices the
-// namespace bstr in as the root array's new first element (bumping its
-// declared item count by one) rather than prepending it as a sibling CBOR
-// item ahead of the array the way the old discriminator did. The 4-byte
-// magic header itself is unchanged — still a flat prefix outside the CBOR
-// entirely. Total byte cost is unchanged (9 bytes), only the namespace's
-// position moved from "before the array" to "inside it."
+// TagDrop's namespace (SPEC.md §2.1a): SHA-256("io.github.mofosyne.tagdrop")[0:4].
+// Declared in full as the root array's own leading element (§2 framing table);
+// every TagDrop-scoped Record nested underneath (Content Extension when a
+// Bundle child, Content Signature, Paper-Preview, Paper-Body) cascades from it
+// via a zero-length byte string instead of repeating the full value.
+const TAGDROP_NAMESPACE = new Uint8Array([0x89, 0xD4, 0x14, 0xE0]);
+const NAMESPACE_CASCADE = new Uint8Array(0); // h'' — "same namespace as whatever's ambient"
+
+function isTagDropNamespace(ns) {
+  return ns instanceof Uint8Array && ns.length === TAGDROP_NAMESPACE.length &&
+    ns.every((b, i) => b === TAGDROP_NAMESPACE[i]);
+}
+
+// QDEF binary-mode QR framing (QDEF-SPEC.md §2, §3.5): a 4-byte "QDEF" magic
+// prefix, then the Record Sequence bytes exactly as-is. As of SPEC.md v14,
+// the namespace declaration is no longer specific to this carrier — it's
+// baked into the root array itself by encodeRootBundle (or by the relevant
+// build*() function, for a single-Record root), the same as every other
+// carrier (`tagdrop:` URI, NFC NDEF) now gets it too — so this carrier's own
+// framing job shrinks to just the magic bytes; there's no more separate
+// namespace splice to do here.
+const QDEF_MAGIC = new Uint8Array([0x51, 0x44, 0x45, 0x46]); // "QDEF"
 function qdefFrame(recordBytes) {
-  const cur = { bytes: recordBytes, pos: 0 };
-  const ranges = cborItemRanges(cur, 4);
-  const itemsStart = ranges.length ? ranges[0][0] : cur.pos;
-  const items = recordBytes.slice(itemsStart);
-  const head = [];
-  writeHead(head, 4, ranges.length + 1);
-  return concatBytes(QDEF_FRAMING.slice(0, 4), new Uint8Array(head), QDEF_FRAMING.slice(4, 9), items);
-}
-// Inverse of qdefFrame's splice: given the bytes immediately after the 4-byte
-// magic header (a QDEF-framed root array whose first element is the
-// namespace bstr), returns { namespace, rest } where `rest` is the plain,
-// unnamespaced root array — exactly what decodeRootBundle/describeRecords
-// already know how to read — with the namespace item removed and the array
-// header's count decremented back by one. Returns null if `bytes` isn't a
-// well-formed CBOR array or its first element isn't a byte string (i.e. no
-// namespace present).
-function qdefUnframeNamespace(bytes) {
-  const cur = { bytes, pos: 0 };
-  let ranges;
-  try { ranges = cborItemRanges(cur, 4); } catch (e) { return null; }
-  if (ranges.length === 0 || majorOf(bytes, ranges[0][0]) !== 2) return null;
-  const namespace = bytes.slice(ranges[0][0], ranges[0][1]);
-  const itemsStart = ranges.length > 1 ? ranges[1][0] : ranges[0][1];
-  const items = bytes.slice(itemsStart);
-  const head = [];
-  writeHead(head, 4, ranges.length - 1);
-  return { namespace, rest: concatBytes(new Uint8Array(head), items) };
+  return concatBytes(QDEF_MAGIC, recordBytes);
 }
 
-// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 8) — DEFLATEs
-// `bytes` into the payload slot (SPEC.md v11): [8, deflated_bytes], no
-// field map at all. Async: zlibCompress uses CompressionStream.
+// QDEF Compress Wrapper Record (QDEF-SPEC.md §4.1 Type 4) — DEFLATEs
+// `bytes` into the payload slot (SPEC.md v11): [4, deflated_bytes], no
+// field map at all, no namespace item (global Type). Async: zlibCompress
+// uses CompressionStream.
 async function compressWrap(bytes) {
   return cborRecord(TYPE_COMPRESS, {}, [], await zlibCompress(bytes));
 }
@@ -580,7 +558,14 @@ function encodeCode(code) {
 // Content Extension (Type 1) — TagDrop-specific fields only; file
 // identification (cache_id/mime_type/filename/title) moved to Media
 // Preview, and the large signing fields moved to Content Signature.
-function buildContentExtension(f) {
+// `namespace` (SPEC.md §2.1a): defaults to the `h''` cascade — correct
+// whenever this Record is a child of a two-Record Bundle root (the common
+// case, Content Extension + Media Preview/Split), which already declares
+// the namespace in full as the Bundle's own leading element. The one
+// exception is a key-only code (§9) — a lone Content Extension IS the
+// root, so its caller (createKeyCodeSector) passes TAGDROP_NAMESPACE
+// explicitly instead.
+function buildContentExtension(f, namespace = NAMESPACE_CASCADE) {
   return cborRecord(TYPE_CONTENT_EXTENSION, {
     3: f.hint, 11: f.description,
     13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag, 19: f.icon,
@@ -589,46 +574,55 @@ function buildContentExtension(f) {
     33: f.keyMaterial, 35: f.retainKey, 37: f.encryption,
     39: f.kdfAlg, 41: f.kdfSalt, 43: f.kdfIters,
     45: f.signatureAlgorithm, 47: f.signerId, 49: f.signerLabel,
-    51: f.inReplyTo, 53: f.createdAt, [-13]: f.sourceUrl,
-  });
+    51: f.inReplyTo, 53: f.createdAt, 55: f.sourceUrl,
+  }, [], undefined, namespace);
 }
 
-// Media Preview (QDEF standard Type 14, SPEC.md §3.1a) — file identification.
-// `contentHash`/`filename`/`label` are QDEF Common Field Keys (§3.6,
-// SPEC.md v11: -11/-15/-7) -- mediaType is the only field left that's
-// specific to this Type. `contentHash` is multihash-style: a 1-byte
-// function code (0x12 = sha2-256) prepended to the 8-byte digest TagDrop
-// already computes elsewhere. `subrecords` carries Media Payload when it
-// fits nested here (single-code case) or is omitted (multi-code case,
-// where Media Preview itself becomes Split's subrecord instead — SPEC.md
-// §5.1).
+// Media Preview (QDEF standard Type 7, SPEC.md §3.1a) — file identification.
+// Global Type — no namespace item, ever. `contentHash`/`filename`/`label`
+// are back to Type-specific keys 1/3/5 as of SPEC.md v14 (were QDEF Common
+// Field Keys -11/-15/-7 in versions 11-13; QDEF's own registry shrank back
+// down to just ID/UUID) -- mediaType is the only field that was ever
+// Type-specific. `contentHash` is multihash-style: a 1-byte function code
+// (0x12 = sha2-256) prepended to the 8-byte digest TagDrop already computes
+// elsewhere. `subrecords` carries Media Payload when it fits nested here
+// (single-code case) or is omitted (multi-code case, where Media Preview
+// itself becomes Split's subrecord instead — SPEC.md §5.1).
 function buildMediaPreview(f, subrecords = []) {
   return cborRecord(TYPE_MEDIA_PREVIEW, {
     0: f.mediaType,
-    [-11]: f.contentHash ? concatBytes(new Uint8Array([0x12]), f.contentHash) : undefined,
-    [-15]: f.filename, [-7]: f.label,
+    1: f.contentHash ? concatBytes(new Uint8Array([0x12]), f.contentHash) : undefined,
+    3: f.filename, 5: f.label,
   }, subrecords);
 }
 
-// Media Payload (QDEF standard Type 6, SPEC.md §3.1a) — mediaType stays in
+// Media Payload (QDEF standard Type 3, SPEC.md §3.1a) — mediaType stays in
 // the field map; the content bytes moved to the payload slot (SPEC.md
 // v11), since Media Payload's whole point is carrying exactly one blob.
-// `subrecords` carries Content Signature (Type 3) when the payload is
-// signed, so `signature`/`signer_pubkey` travel wherever Media Payload's
-// own bytes travel (nested once, not repeated per code — SPEC.md §3.1).
+// Global Type — no namespace item, ever, but transparently passes whatever
+// ambient namespace it received through to Content Signature nested inside
+// it (SPEC.md §2.1a's cascading rule). `subrecords` carries Content
+// Signature (Type 2) when the payload is signed, so `signature`/
+// `signer_pubkey` travel wherever Media Payload's own bytes travel (nested
+// once, not repeated per code — SPEC.md §3.1).
 function buildMediaPayload(f, subrecords = []) {
   return cborRecord(TYPE_MEDIA_PAYLOAD, { 0: f.mediaType }, subrecords, f.content);
 }
 
-// Content Signature (Type 3, TagDrop-scoped, SPEC.md §3.1a) — signature/
+// Content Signature (Type 2, TagDrop-scoped, SPEC.md §3.1a) — signature/
 // signer_pubkey for a signed Content payload, nested as Media Payload's own
-// subrecord. Absent entirely (no Record at all) when unsigned.
-function buildContentSignature(f) {
-  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey });
+// subrecord. Absent entirely (no Record at all) when unsigned. Always
+// cascades `h''` (SPEC.md §2.1a) — Content Signature is never the root's
+// sole Record, so it never needs the full explicit namespace value.
+function buildContentSignature(f, namespace = NAMESPACE_CASCADE) {
+  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey }, [], undefined, namespace);
 }
 
-// Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4).
-function buildPaperPreview(f) {
+// Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4). Paper always has
+// exactly two top-level Records (Preview + Body-or-wrapped), so both always
+// cascade `h''` — neither is ever the root's sole Record the way a key-only
+// Content Extension can be.
+function buildPaperPreview(f, namespace = NAMESPACE_CASCADE) {
   return cborRecord(TYPE_PAPER_PREVIEW, {
     1: f.rootHash, 3: f.hint, 5: f.set, 7: f.slug, 9: f.domain,
     11: f.step, 13: f.collectionId, 15: f.collectionLabel, 17: f.collectionTag,
@@ -637,15 +631,15 @@ function buildPaperPreview(f) {
     25: f.radiusM != null ? cfloat(f.radiusM) : undefined,
     27: f.preferDeclaredLocation, 29: f.locationLabel,
     31: f.signatureAlgorithm, 33: f.signerId, 35: f.signerLabel,
-    37: f.inReplyTo, 39: f.createdAt, [-13]: f.sourceUrl,
+    37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
     43: f.title, 45: f.description,
     47: f.keyMaterial, 49: f.retainKey,
-  });
+  }, [], undefined, namespace);
 }
-function buildPaperBody(f) {
+function buildPaperBody(f, namespace = NAMESPACE_CASCADE) {
   return cborRecord(TYPE_PAPER_BODY, {
     1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
-  });
+  }, [], undefined, namespace);
 }
 
 // ── Low-level CBOR item-boundary walkers (encoder-side stripping only). Used
@@ -714,18 +708,25 @@ function cborReadInt(cur) {
   return major === 1 ? -(arg + 1) : arg;
 }
 
-// Determines where a Record's map/payload/subrecords fall within its own
-// top-level item `ranges` (ranges[0] is always typeId) — QDEF-SPEC.md
-// §3.1's grammar (v11), dispatched purely by CBOR major type. Shared by
-// stripKeys/stripSubrecordType so both agree on the same layout.
+// Determines where a Record's namespace/typeId/map/payload/subrecords fall
+// within its own top-level item `ranges` — QDEF-SPEC.md §3.1/§3.5's grammar
+// (SPEC.md v14), dispatched purely by CBOR major type: an optional leading
+// byte string (major 2) is the namespace item; the next item is always
+// typeId; the map (major 5) comes next if present; then, if the next item
+// is NOT an array (major 4), it's the payload; everything from the first
+// remaining array onward is subrecords. Shared by stripKeys/
+// stripSubrecordType so both agree on the same layout.
 function majorOf(bytes, pos) { return bytes[pos] >> 5; }
-function layoutOf(bytes, ranges) {
-  let idx = 1;
+function recordLayout(bytes, ranges) {
+  let idx = 0;
+  let nsIdx = -1;
+  if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) === 2) { nsIdx = idx; idx++; }
+  const typeIdIdx = idx; idx++;
   let mapIdx = -1;
   if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) === 5) { mapIdx = idx; idx++; }
   let payloadIdx = -1;
   if (idx < ranges.length && majorOf(bytes, ranges[idx][0]) !== 4) { payloadIdx = idx; idx++; }
-  return { mapIdx, payloadIdx, subrecordsFrom: idx };
+  return { nsIdx, typeIdIdx, mapIdx, payloadIdx, subrecordsFrom: idx };
 }
 
 /**
@@ -743,7 +744,7 @@ function layoutOf(bytes, ranges) {
 function stripKeys(recordBytes, keysToStrip) {
   const cur = { bytes: recordBytes, pos: 0 };
   const ranges = cborItemRanges(cur, 4);
-  const layout = layoutOf(recordBytes, ranges);
+  const layout = recordLayout(recordBytes, ranges);
   if (layout.mapIdx < 0) throw new Error('stripKeys requires a field map');
   const mapRange = ranges[layout.mapIdx];
   const mapCur = { bytes: recordBytes, pos: mapRange[0] };
@@ -757,7 +758,9 @@ function stripKeys(recordBytes, keysToStrip) {
   const mapHeader = [];
   writeHead(mapHeader, 5, survivors.length);
   const newMap = concatBytes(new Uint8Array(mapHeader), ...survivors);
-  const items = [recordBytes.slice(...ranges[0]), newMap];
+  const items = [];
+  if (layout.nsIdx >= 0) items.push(recordBytes.slice(...ranges[layout.nsIdx]));
+  items.push(recordBytes.slice(...ranges[layout.typeIdIdx]), newMap);
   if (layout.payloadIdx >= 0) items.push(recordBytes.slice(...ranges[layout.payloadIdx]));
   for (let i = layout.subrecordsFrom; i < ranges.length; i++) items.push(recordBytes.slice(...ranges[i]));
   const arrHeader = [];
@@ -775,13 +778,16 @@ function stripKeys(recordBytes, keysToStrip) {
 function stripSubrecordType(recordBytes, typeIdToStrip) {
   const cur = { bytes: recordBytes, pos: 0 };
   const ranges = cborItemRanges(cur, 4);
-  const layout = layoutOf(recordBytes, ranges);
+  const layout = recordLayout(recordBytes, ranges);
   const keptSubrecords = ranges.slice(layout.subrecordsFrom).filter(r => {
     const subCur = { bytes: recordBytes, pos: r[0] };
-    const [subTypeIdRange] = cborItemRanges(subCur, 4);
-    return cborReadInt({ bytes: recordBytes, pos: subTypeIdRange[0] }) !== typeIdToStrip;
+    const subRanges = cborItemRanges(subCur, 4);
+    const subLayout = recordLayout(recordBytes, subRanges);
+    return cborReadInt({ bytes: recordBytes, pos: subRanges[subLayout.typeIdIdx][0] }) !== typeIdToStrip;
   });
-  const items = [recordBytes.slice(...ranges[0])];
+  const items = [];
+  if (layout.nsIdx >= 0) items.push(recordBytes.slice(...ranges[layout.nsIdx]));
+  items.push(recordBytes.slice(...ranges[layout.typeIdIdx]));
   if (layout.mapIdx >= 0) items.push(recordBytes.slice(...ranges[layout.mapIdx]));
   if (layout.payloadIdx >= 0) items.push(recordBytes.slice(...ranges[layout.payloadIdx]));
   items.push(...keptSubrecords.map(r => recordBytes.slice(...r)));
@@ -934,42 +940,56 @@ const KEY_NAMES = {
   57: 'step',
 };
 
-// New-format (QDEF Record) field-name tables — keyed by String(typeId) since TagDrop's
-// Type IDs decode as BigInt, which can't be a plain object key. Mirrors ../reader/index.html.
+// New-format (QDEF Record) field-name tables. Mirrors ../reader/index.html.
 // Type ID is a QDEF prefix item (§3), not a map key — no key 0 in field maps.
+//
+// Keyed by a composite (namespace-scope, typeId) key, NOT typeId alone: as of SPEC.md
+// v14 (§2.1), several of TagDrop's own Type IDs deliberately collide numerically with
+// QDEF's own standard Type IDs (Content Extension/Split both `1`, Paper-Preview/Media
+// Payload both `3`, Paper-Body/Compress both `4`) — a plain `Map` keyed by
+// `String(typeId)` alone would let whichever entry is inserted last silently clobber
+// the other under the same key, exactly the ambiguity §2.1a's namespace resolution
+// exists to prevent. recordTypeInfoKey/lookupRecordTypeInfo below resolve each Record
+// against the right table half using its own resolved namespace (rec.namespace).
+function recordTypeInfoKey(typeId, isTagDropScoped) {
+  return (isTagDropScoped ? 'td:' : 'std:') + typeId;
+}
+function lookupRecordTypeInfo(rec) {
+  return RECORD_TYPE_INFO.get(recordTypeInfoKey(rec.typeId, isTagDropNamespace(rec.namespace)));
+}
 const RECORD_TYPE_INFO = new Map([
-  [String(TYPE_CONTENT_EXTENSION), { name: 'Content Extension', keyNames: {
+  [recordTypeInfoKey(TYPE_CONTENT_EXTENSION, true), { name: 'Content Extension', keyNames: {
     3:'hint', 11:'description',
     13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon', 21:'pixel_art',
     23:'lat', 25:'lng', 27:'radius_m', 29:'prefer_declared_location', 31:'location_label',
     33:'key_material', 35:'retain_key', 37:'encryption', 39:'kdf_alg', 41:'kdf_salt', 43:'kdf_iters',
     45:'signature_algorithm', 47:'signer_id', 49:'signer_label',
-    51:'in_reply_to', 53:'created_at', [-13]:'source',
+    51:'in_reply_to', 53:'created_at', 55:'source_url',
   } }],
-  [String(TYPE_CONTENT_SIGNATURE), { name: 'Content Signature', keyNames: {
+  [recordTypeInfoKey(TYPE_CONTENT_SIGNATURE, true), { name: 'Content Signature', keyNames: {
     3:'signature', 5:'signer_pubkey',
   } }],
-  [String(TYPE_MEDIA_PREVIEW), { name: 'Media Preview', keyNames: {
-    0:'mediaType', [-11]:'contentHash', [-15]:'filename', [-7]:'label',
+  [recordTypeInfoKey(TYPE_MEDIA_PREVIEW, false), { name: 'Media Preview', keyNames: {
+    0:'mediaType', 1:'contentHash', 3:'filename', 5:'label',
   } }],
-  [String(TYPE_MEDIA_PAYLOAD), { name: 'Media Payload', keyNames: {
+  [recordTypeInfoKey(TYPE_MEDIA_PAYLOAD, false), { name: 'Media Payload', keyNames: {
     0:'mediaType',
   } }],
-  [String(TYPE_PAPER_PREVIEW), { name: 'Paper-Preview', keyNames: {
+  [recordTypeInfoKey(TYPE_PAPER_PREVIEW, true), { name: 'Paper-Preview', keyNames: {
     1:'root_hash', 3:'hint', 5:'set', 7:'slug', 9:'domain', 11:'step',
     13:'collection_id', 15:'collection_label', 17:'collection_tag', 19:'icon',
     21:'lat', 23:'lng', 25:'radius_m', 27:'prefer_declared_location', 29:'location_label',
     31:'signature_algorithm', 33:'signer_id', 35:'signer_label',
-    37:'in_reply_to', 39:'created_at', [-13]:'source', 43:'title', 45:'description',
+    37:'in_reply_to', 39:'created_at', 41:'source_url', 43:'title', 45:'description',
     47:'key_material', 49:'retain_key',
   } }],
-  [String(TYPE_PAPER_BODY), { name: 'Paper-Body', keyNames: {
+  [recordTypeInfoKey(TYPE_PAPER_BODY, true), { name: 'Paper-Body', keyNames: {
     1:'files', 3:'related', 5:'signature', 7:'signer_pubkey',
   } }],
-  [String(TYPE_SPLIT), { name: 'Split Wrapper', keyNames: {
+  [recordTypeInfoKey(TYPE_SPLIT, false), { name: 'Split Wrapper', keyNames: {
     0:'group_id', 2:'index', 4:'count', 6:'data', 7:'total_bytes', 9:'parity',
   } }],
-  [String(TYPE_COMPRESS), { name: 'Compress Wrapper', keyNames: {} }],
+  [recordTypeInfoKey(TYPE_COMPRESS, false), { name: 'Compress Wrapper', keyNames: {} }],
 ]);
 
 function toHexDump(bytes) {
@@ -983,24 +1003,43 @@ function isCborMap(v) {
 }
 
 /**
- * Decodes one QDEF Record (QDEF-SPEC.md §3.1, v11: a self-delimited CBOR
- * array, [typeId, map?, payload?, subrecord*]) from the head of `bytes`,
- * byte-range aware so it correctly handles a map-less Record (Compress
- * Wrapper) or a payload slot (Media Payload's content).
- * Returns { typeId, record, payload, subrecords, raw, trailing } — `record`
+ * Decodes one QDEF Record (QDEF-SPEC.md §3.1/§3.5, SPEC.md v14: a
+ * self-delimited CBOR array, [namespace?, typeId, map?, payload?,
+ * subrecord*]) from the head of `bytes`, byte-range aware so it correctly
+ * handles a map-less Record (Compress Wrapper), a payload slot (Media
+ * Payload's content), or an optional leading namespace item.
+ *
+ * `ambientNamespace` is whatever namespace this Record's own PARENT
+ * received from ITS parent, in turn (SPEC.md §2.1a's cascading rule) — NOT
+ * this Record's own resolved value; every recursive call below passes it
+ * straight through unchanged to subrecords, never this Record's own
+ * resolved `namespace`. Call with no second argument (or `null`) at the
+ * true root.
+ *
+ * Returns { typeId, namespace, record, payload, subrecords, raw, trailing }
+ * — `namespace` is this Record's own RESOLVED namespace: the explicit value
+ * if it declared one, the inherited `ambientNamespace` if it cascaded
+ * (`h''`), or `null` if it carries no namespace item at all (global). `record`
  * is `{}` when the map was omitted, `payload` the decoded byte-string
- * payload-slot value (or null), `raw` the record's own exact byte range,
- * `trailing` whatever follows in the sequence — or null if the head of
- * `bytes` isn't a well-formed Record.
+ * payload-slot value (or null), `raw` the record's own exact byte range
+ * (namespace item included, if present), `trailing` whatever follows in the
+ * sequence — or null if the head of `bytes` isn't a well-formed Record.
  */
-function decodeRecordPrefix(bytes) {
+function decodeRecordPrefix(bytes, ambientNamespace = null) {
   try {
     const cur = { bytes, pos: 0 };
     const ranges = cborItemRanges(cur, 4);
     if (ranges.length === 0) return null;
-    const typeId = cborDecodeSequencePrefix(bytes.slice(ranges[0][0]), 1).items[0];
+    const layout = recordLayout(bytes, ranges);
+    if (layout.typeIdIdx >= ranges.length) return null;
+    let namespace = null;
+    if (layout.nsIdx >= 0) {
+      const nsVal = cborDecodeSequencePrefix(bytes.slice(ranges[layout.nsIdx][0]), 1).items[0];
+      if (!(nsVal instanceof Uint8Array)) return null;
+      namespace = nsVal.length > 0 ? nsVal : ambientNamespace;
+    }
+    const typeId = cborDecodeSequencePrefix(bytes.slice(ranges[layout.typeIdIdx][0]), 1).items[0];
     if (typeof typeId !== 'number') return null;
-    const layout = layoutOf(bytes, ranges);
     const record = layout.mapIdx < 0 ? {} : cborDecodeSequencePrefix(bytes.slice(ranges[layout.mapIdx][0]), 1).items[0];
     if (!isCborMap(record)) return null;
     let payload = null;
@@ -1012,11 +1051,13 @@ function decodeRecordPrefix(bytes) {
     const subrecords = [];
     for (let i = layout.subrecordsFrom; i < ranges.length; i++) {
       const r = ranges[i];
-      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]));
+      // Subrecords inherit AMBIENT namespace unchanged — not `namespace` (this
+      // Record's own resolved value) — per SPEC.md §2.1a's cascading rule.
+      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]), ambientNamespace);
       if (!sub) return null;
       subrecords.push({ ...sub, raw: bytes.slice(r[0], r[1]) });
     }
-    return { typeId, record, payload, raw: bytes.slice(0, cur.pos), subrecords, trailing: bytes.slice(cur.pos) };
+    return { typeId, namespace, record, payload, raw: bytes.slice(0, cur.pos), subrecords, trailing: bytes.slice(cur.pos) };
   } catch (e) {
     return null;
   }
@@ -1024,41 +1065,66 @@ function decodeRecordPrefix(bytes) {
 
 /**
  * Encodes 1+ already-encoded top-level Record byte-arrays as the QDEF self-delimited root
- * (QDEF-SPEC.md §2/§3.1): a single Record is returned as-is — its own array already IS the
- * root, "no Bundle indirection" — while two or more become subrecords of an implied, never-
- * transmitted Bundle (typeId 0, omitted): one more definite-length CBOR array wrapping them.
- * Bytes appended after the returned array are provably outside the container, and MUST be
+ * (QDEF-SPEC.md §2/§3.1/§3.5, SPEC.md v14): a single Record is returned as-is — its own
+ * array already IS the root, "no Bundle indirection", and its own leading item (built by its
+ * own build*() call, per SPEC.md §2.1a) is whatever namespace declaration it needs — while
+ * two or more become subrecords of an implied, never-transmitted Bundle (typeId 0, omitted):
+ * one more definite-length CBOR array wrapping them, with TagDrop's namespace declared in
+ * full (TAGDROP_NAMESPACE) as the Bundle's own new leading element — each TagDrop-scoped
+ * child then cascades from it via its own `h''` rather than repeating the full value. Bytes
+ * appended after the returned array are provably outside the container, and MUST be
  * tolerated by a decoder (SPEC §9's deniability feature) — decodeRootBundle's own
  * self-delimiting length is what makes that safe without any app-specific record-count
  * foreknowledge.
  */
 function encodeRootBundle(records) {
   if (records.length === 1) return records[0];
+  const items = [TAGDROP_NAMESPACE, ...records.map(craw)];
   const out = [];
-  writeHead(out, 4, records.length);
-  return concatBytes(new Uint8Array(out), ...records);
+  writeHead(out, 4, items.length);
+  items.forEach(item => cborValue(out, item));
+  return new Uint8Array(out);
 }
 
 /**
- * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one definite-length
- * CBOR array. If its first item is a uint, the whole array IS one Record's own item list
- * (delegated to decodeRecordPrefix exactly as for any other Record). Otherwise typeId
- * defaults to 0 (Bundle, never transmitted for TagDrop's own Types) and every item of the
- * root array is itself a nested Record, decoded independently. Returns null if the root
- * isn't a well-formed, definite-length CBOR array, or if any of its items fails to decode as
- * a Record.
+ * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1/§3.5, SPEC.md v14): exactly one
+ * definite-length CBOR array, whose own leading element may be a namespace declaration
+ * (SPEC.md §2.1a) — mandatory on every carrier as of v14, but tolerated as absent for
+ * non-TagDrop/legacy input. Peeks past any leading namespace byte string to see whether what
+ * follows is an array (a Bundle) or a uint (this lone Record's own leading item, not a
+ * Bundle's — delegate the WHOLE bytes to decodeRecordPrefix, "no Bundle indirection"). With
+ * no leading namespace bstr at all, falls back to the original by-shape dispatch (bare
+ * Bundle vs. bare single Record, both tolerated with no ambient namespace). Returns null if
+ * the root isn't a well-formed, definite-length CBOR array, or if any of its items fails to
+ * decode as a Record.
  */
 function decodeRootBundle(bytes) {
   try {
     const ranges = cborItemRanges({ bytes, pos: 0 }, 4);
     if (ranges.length === 0) return null;
+    if (majorOf(bytes, ranges[0][0]) === 2) {
+      if (ranges.length > 1 && majorOf(bytes, ranges[1][0]) === 4) {
+        const nsVal = cborDecodeSequencePrefix(bytes.slice(ranges[0][0]), 1).items[0];
+        const ambientNamespace = (nsVal instanceof Uint8Array && nsVal.length > 0) ? nsVal : null;
+        const out = [];
+        for (let i = 1; i < ranges.length; i++) {
+          const [s, e] = ranges[i];
+          const rec = decodeRecordPrefix(bytes.slice(s, e), ambientNamespace);
+          if (!rec) return null;
+          out.push(rec);
+        }
+        return out;
+      }
+      const rec = decodeRecordPrefix(bytes, null);
+      return rec ? [rec] : null;
+    }
     if (majorOf(bytes, ranges[0][0]) !== 4) {
-      const rec = decodeRecordPrefix(bytes);
+      const rec = decodeRecordPrefix(bytes, null);
       return rec ? [rec] : null;
     }
     const out = [];
     for (const [s, e] of ranges) {
-      const rec = decodeRecordPrefix(bytes.slice(s, e));
+      const rec = decodeRecordPrefix(bytes.slice(s, e), null);
       if (!rec) return null;
       out.push(rec);
     }
@@ -1068,12 +1134,29 @@ function decodeRootBundle(bytes) {
   }
 }
 
+// The QDEF self-delimited root's own total consumed byte length (QDEF-SPEC.md §2/§3.1) —
+// used by describeRecords (below) to find where any bytes trailing the root array begin
+// (SPEC §9's deniability feature), without re-encoding decoded Records (which would need
+// to guess the original namespace shape back correctly) just to measure their combined
+// length.
+function rootArrayByteLength(bytes) {
+  const cur = { bytes, pos: 0 };
+  cborItemRanges(cur, 4);
+  return cur.pos;
+}
+
 /** Pretty-prints one decoded Record (as returned by decodeRecordPrefix/interpretRecordArray)
- *  and, recursively indented, any subrecords it carries. */
+ *  and, recursively indented, any subrecords it carries. Shows the Record's own resolved
+ *  namespace (SPEC.md §2.1a) when it carried a namespace item at all, flagged "NOT
+ *  TagDrop's!" when it resolves to something other than TAGDROP_NAMESPACE. */
 function describeOneRecord(rec, indent, label) {
-  const info = RECORD_TYPE_INFO.get(String(rec.typeId));
+  const info = lookupRecordTypeInfo(rec);
   const pad = '  '.repeat(indent);
   let out = pad + label + (info ? info.name : 'unknown type ' + rec.typeId) + ' [' + toHexDump(rec.raw) + ']\n';
+  if (rec.namespace !== null) {
+    const tag = isTagDropNamespace(rec.namespace) ? '' : ' — NOT TagDrop\'s!';
+    out += '  '.repeat(indent + 1) + 'namespace: ' + toHexDump(rec.namespace) + tag + '\n';
+  }
   out += describeMap(rec.record, indent + 1, info ? info.keyNames : {});
   if (rec.payload) out += '  '.repeat(indent + 1) + 'payload: ' + toHexDump(rec.payload) + ' (' + rec.payload.length + ' bytes)\n';
   if (rec.subrecords) for (const sub of rec.subrecords) out += describeOneRecord(sub, indent + 1, 'subrecord: ');
@@ -1084,12 +1167,13 @@ function describeOneRecord(rec, indent, label) {
  *  top-level Record's type and fields (and any subrecords it carries) per
  *  RECORD_TYPE_INFO. Mirrors ../reader/index.html.
  *
- *  The scanned bytes are the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1): exactly one
- *  definite-length CBOR array, either a single Record directly or a Bundle wrapping several
- *  — decodeRootBundle handles both. Whatever's left after the root array's own length (SPEC
- *  §9: possibly tolerated padding, or a wholly independent second Sequence) falls through to
- *  a best-effort decodeRecordPrefix/trailing walk, so a genuinely malformed/legacy input
- *  still shows something rather than nothing. */
+ *  The scanned bytes are the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1/§3.5): exactly
+ *  one definite-length CBOR array, either a single Record directly or a Bundle wrapping
+ *  several, either possibly namespace-prefixed — decodeRootBundle handles all shapes.
+ *  Whatever's left after the root array's own length (SPEC §9: possibly tolerated padding,
+ *  or a wholly independent second Sequence) falls through to a best-effort
+ *  decodeRecordPrefix/trailing walk, so a genuinely malformed/legacy input still shows
+ *  something rather than nothing. */
 function describeRecords(bytes) {
   let out = '';
   let n = 0;
@@ -1100,7 +1184,7 @@ function describeRecords(bytes) {
       out += describeOneRecord(decoded, 0, 'Record ' + (++n) + ' (' + decoded.raw.length + ' bytes): ');
       out += '\n';
     }
-    rest = bytes.slice(encodeRootBundle(records.map(r => r.raw)).length);
+    rest = bytes.slice(rootArrayByteLength(bytes));
   }
   while (rest.length > 0) {
     const decoded = decodeRecordPrefix(rest);
@@ -1157,33 +1241,19 @@ async function splitReassembledStream(stream) {
  */
 async function describeCbor(bytes) {
   let out = bytes.length + ' bytes\n' + toHexDump(bytes) + '\n\n';
-  // Detect QDEF framing: "QDEF" magic (4 bytes), then the root array's own
-  // leading namespace element (QDEF-SPEC.md §3.5 — no separate discriminator
-  // item anymore; qdefUnframeNamespace reverses qdefFrame's splice).
+  // Detect on-wire QDEF magic (binary QR carrier only, QDEF-SPEC.md §2) — as of
+  // SPEC.md v14 the namespace declaration itself is no longer carrier-specific
+  // (§2.1a): it's baked into the root array on every carrier, and shown per-Record
+  // by describeRecords/describeOneRecord below rather than unfolded separately here.
   if (bytes.length >= 4 &&
-      bytes[0] === 0x51 && bytes[1] === 0x44 && bytes[2] === 0x45 && bytes[3] === 0x46) {
-    const unframed = qdefUnframeNamespace(bytes.slice(4));
-    if (!unframed) {
-      out += '── QDEF magic present, but no well-formed namespaced root array followed ──\n';
-      return out + toHexDump(bytes.slice(4)) + '\n';
-    }
-    out += '── QDEF framing (on wire, QDEF-SPEC.md §3.5) ──\n';
-    out += '  magic: 51444546 ("QDEF")\n';
-    out += '  namespace: ' + toHexDump(unframed.namespace) + ' (root array\'s own leading element — no separate discriminator item)\n';
-    out += '  framing overhead: ' + (4 + unframed.namespace.length) + ' bytes\n\n';
-    const inner = unframed.rest;
-    if (inner.length > 0 && (inner[0] >> 5) === 4) {
-      out += '── Record Sequence (' + inner.length + ' bytes) ──\n';
-      return out + describeRecords(inner);
-    }
-    out += '── Inner bytes (' + inner.length + ' bytes, not a recognized Record Sequence) ──\n';
-    return out + toHexDump(inner) + '\n';
+      bytes[0] === QDEF_MAGIC[0] && bytes[1] === QDEF_MAGIC[1] &&
+      bytes[2] === QDEF_MAGIC[2] && bytes[3] === QDEF_MAGIC[3]) {
+    out += '── QDEF magic present (binary/byte-mode QR carrier, QDEF-SPEC.md §2) ──\n';
+    out += '  magic: 51444546 ("QDEF")\n\n';
+    bytes = bytes.slice(4);
+  } else {
+    out += '── No QDEF magic (tagdrop: URI / NFC NDEF — own dispatch signal already identifies the byte stream, SPEC.md §2) ──\n\n';
   }
-  // No on-wire framing — show implied QDEF context (tagdrop: URI / NFC NDEF)
-  out += '── QDEF framing (implied, not on wire) ──\n';
-  out += '  magic: 51444546 ("QDEF")\n';
-  out += '  namespace: ' + toHexDump(QDEF_FRAMING.slice(4, 9)) + ' (CBOR bstr h\'' + toHexDump(QDEF_FRAMING.slice(5, 9)) + '\')\n';
-  out += '  framing overhead saved: ' + QDEF_FRAMING.length + ' bytes (tagdrop: URI / NFC NDEF)\n\n';
   if (bytes.length > 0 && (bytes[0] >> 5) === 4) {
     out += '── Record Sequence (' + bytes.length + ' bytes) ──\n';
     try { return out + describeRecords(bytes); } catch (e2) { out += 'Record decode error: ' + e2.message + '\n'; }
@@ -1533,7 +1603,11 @@ async function createContentSectorsAutoSized(args, targetSectorBytes = DEFAULT_S
  * key unlocks — a reader tries it against any encrypted content it has cached.
  */
 function createKeyCodeSector({ keyMaterial, retainKey = true, hint }) {
-  const raw = buildContentExtension({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false });
+  // A lone Content Extension IS the root here (§9's "no Bundle indirection"), so it
+  // declares TagDrop's namespace in full as its own leading item (SPEC.md §2.1a) —
+  // unlike the common two-Record case, where the Bundle wrapping it does that instead
+  // and Content Extension itself just cascades via `h''`.
+  const raw = buildContentExtension({ hint: hint || undefined, keyMaterial, retainKey: retainKey ? undefined : false }, TAGDROP_NAMESPACE);
   return { raw, cacheId: null, totalBytes: raw.length, index: 0, count: 1, isParity: false };
 }
 
@@ -2556,7 +2630,7 @@ async function addBinaryQrCard(grid, { label, mime, rawBytes, uri, id }) {
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-label">${escHtml(label)}</div>
     <div><span class="qr-badge">${escHtml(mime)}</span> <span class="qr-badge binary">binary QDEF QR</span></div>
-    <div class="qr-id">${id} · ${rawBytes.length} raw bytes + ${QDEF_FRAMING.length} byte framing · byte mode</div>`);
+    <div class="qr-id">${id} · ${rawBytes.length} raw bytes (namespace declaration included, SPEC.md §2.1a) + ${QDEF_MAGIC.length} byte QDEF magic · byte mode</div>`);
   div.appendChild(infoEl);
   div.insertAdjacentHTML('beforeend', `
     <div class="qr-uri"><input type="text" readonly value="${escHtml(uri)}"></div>
@@ -2618,9 +2692,9 @@ async function main() {
     document.getElementById('binary-info').innerHTML = `
       <strong>${escHtml(ex.label)}</strong> — ${escHtml(ex.mimeType)}<br>
       Cache ID: <code>${idHex}</code><br>
-      URI length: <code>${enc.uri.length}</code> chars · Raw bytes: <code>${enc.raw.length}</code> bytes (+ ${QDEF_FRAMING.length} byte QDEF framing)
+      URI length: <code>${enc.uri.length}</code> chars · Raw bytes: <code>${enc.raw.length}</code> bytes (namespace declaration already included, SPEC.md §2.1a; + ${QDEF_MAGIC.length} byte QDEF magic for the binary carrier only)
       <div class="step">① <strong>Text QR</strong> (left): <code>tagdrop:</code> + Base41-encoded bytes, QR alphanumeric mode — human-readable, copyable, typeable.</div>
-      <div class="step">② <strong>Binary QR</strong> (right): QDEF magic + the root array's own namespace element (9 bytes) + raw Record Sequence bytes, QR byte mode — denser, but not text-sharable.</div>
+      <div class="step">② <strong>Binary QR</strong> (right): QDEF magic (4 bytes) + raw Record Sequence bytes (namespace declaration already baked into the root array, SPEC.md §2.1a — no separate item needed here), QR byte mode — denser, but not text-sharable.</div>
       <div class="step">③ Both decode to the same payload. The toggle above switches all TagDrop codes between these two carriers.</div>`;
 
     const binaryGrid = document.getElementById('binary-grid');
