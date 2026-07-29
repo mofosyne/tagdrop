@@ -313,8 +313,8 @@ class ReceiveActivity : AppCompatActivity() {
         // Prefer original wire bytes (with QDEF framing if present) for the inspector;
         // fall back to reconstructed Record Sequence if wire bytes unavailable (NFC, paste).
         val raw = lastScannedWireBytes ?: when (record) {
-            is ScannedRecord.Content -> MiniCbor.encodeRootBundle(listOfNotNull(record.extensionRaw, record.secondRaw))
-            is ScannedRecord.Paper -> MiniCbor.encodeRootBundle(listOfNotNull(record.previewRaw, record.secondRaw))
+            is ScannedRecord.Content -> MiniCbor.encodeRootBundle(listOfNotNull(record.extensionRaw, record.secondRaw), TagDropCodec.TAGDROP_NAMESPACE)
+            is ScannedRecord.Paper -> MiniCbor.encodeRootBundle(listOfNotNull(record.previewRaw, record.secondRaw), TagDropCodec.TAGDROP_NAMESPACE)
         }
         showCborDebugDialog(raw, title)
     }

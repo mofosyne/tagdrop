@@ -11,7 +11,7 @@ import java.security.MessageDigest
  * paper scenarios) — isolates the assembler's own reassembly/grouping/state logic from the
  * codec's encode-side field layout. Every fragment here is self-describing (carries its own
  * group_id inline, SPEC §5), matching the real wire format. Records are hand-built as raw QDEF
- * array-wrapped bytes (SPEC.md v9 §2, §3.1/§3.1a) and turned into [ScannedRecord]s via
+ * array-wrapped bytes (SPEC.md v14 §2, §2.1a, §3.1/§3.1a) and turned into [ScannedRecord]s via
  * [TagDropCodec.decodeRaw] — the same decode path a real scan uses — so this file only needs to
  * get the wire *bytes* right, not reimplement Record/subrecord decoding a second time.
  */
@@ -19,44 +19,52 @@ class SectorAssemblerTest {
 
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
-    /** A minimal Content Extension Record (Type 1, SPEC §3.1) — only the fields these tests need. */
+    /**
+     * A minimal Content Extension Record (Type 1, SPEC §3.1) — only the fields these tests
+     * need. Always declares TagDrop's namespace explicitly (§2.1a) rather than cascading via
+     * `h''` — a Record's own explicit declaration resolves to the identical value a cascade
+     * would (both end up as [TagDropCodec.TAGDROP_NAMESPACE]), so this is correct regardless of
+     * whether [recordOf] later pairs it with a second Record or not (the key-only case), just
+     * costing a few extra bytes no test here cares about.
+     */
     private fun extensionBytes(
         hint: String?, keyMaterial: ByteArray? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null, preferDeclaredLocation: Boolean = false
     ): ByteArray = MiniCbor.encodeRecord(1, listOf(
         3 to hint, 23 to lat, 25 to lng, 27 to radiusM, 29 to (true.takeIf { preferDeclaredLocation }), 33 to keyMaterial
-    ))
+    ), namespace = TagDropCodec.TAGDROP_NAMESPACE)
 
     /**
-     * A minimal Media Preview Record (QDEF Type 14, SPEC §3.1a), optionally nesting
-     * [subrecords]. `contentHash`/`filename` are QDEF Common Field Keys (§3.6, SPEC.md v11:
-     * -11/-15), not Type-specific fields.
+     * A minimal Media Preview Record (QDEF Type 7, SPEC §3.1a), optionally nesting
+     * [subrecords]. `contentHash`/`filename` are back to Type-specific keys as of SPEC.md v14
+     * (were QDEF Common Field Keys -11/-15 in versions 11-13). A QDEF standard/global Type —
+     * never carries a namespace item of its own.
      */
     private fun mediaPreviewBytes(
         cacheId: ByteArray?, mimeType: String = "text/plain", filename: String? = null,
         subrecords: List<ByteArray> = emptyList()
-    ): ByteArray = MiniCbor.encodeRecord(14, listOf(
-        0 to mimeType, -11 to cacheId?.let { byteArrayOf(0x12) + it }, -15 to filename
+    ): ByteArray = MiniCbor.encodeRecord(7, listOf(
+        0 to mimeType, 1 to cacheId?.let { byteArrayOf(0x12) + it }, 3 to filename
     ), subrecords)
 
-    /** A minimal Media Payload Record (QDEF Type 6, SPEC §3.1a) carrying [content] in the payload slot (SPEC.md v11). */
+    /** A minimal Media Payload Record (QDEF Type 3, SPEC §3.1a) carrying [content] in the payload slot (SPEC.md v11). */
     private fun mediaPayloadBytes(content: ByteArray, mimeType: String = "text/plain", subrecords: List<ByteArray> = emptyList()): ByteArray =
-        MiniCbor.encodeRecord(6, listOf(0 to mimeType), subrecords, payload = content)
+        MiniCbor.encodeRecord(3, listOf(0 to mimeType), subrecords, payload = content)
 
-    /** A Compress Wrapper Record (Type 8, QDEF-SPEC.md §4.1) DEFLATEing [inner] into its payload slot (SPEC.md v11: no field map at all). */
-    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(8, emptyList(), payload = TagDropCodec.compress(inner))
+    /** A Compress Wrapper Record (Type 4, QDEF-SPEC.md §4.1) DEFLATEing [inner] into its payload slot (SPEC.md v11: no field map at all). */
+    private fun compressWrapBytes(inner: ByteArray): ByteArray = MiniCbor.encodeRecord(4, emptyList(), payload = TagDropCodec.compress(inner))
 
-    /** A Split Wrapper Record (Type 2, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes, optionally nesting [subrecords] (Media Preview, multi-code case). */
+    /** A Split Wrapper Record (Type 1, QDEF-SPEC.md §4.1, SPEC §5) fragment's raw bytes, optionally nesting [subrecords] (Media Preview, multi-code case). */
     private fun splitFragmentBytes(
         groupId: ByteArray, index: Int, count: Int, data: ByteArray, total: Int, parity: Boolean = false,
         subrecords: List<ByteArray> = emptyList()
-    ): ByteArray = MiniCbor.encodeRecord(2, listOf(
+    ): ByteArray = MiniCbor.encodeRecord(1, listOf(
         0 to groupId, 2 to index, 4 to count, 6 to data, 7 to total, 9 to (1.takeIf { parity })
     ), subrecords)
 
-    /** Decodes [extensionRaw]/[secondRaw] the same way a real scan would (SPEC §2, §5.1): wrapped as the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1). */
+    /** Decodes [extensionRaw]/[secondRaw] the same way a real scan would (SPEC §2, §2.1a, §5.1): wrapped as the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1), namespace declared as the root Bundle's own leading element. */
     private fun recordOf(extensionRaw: ByteArray, secondRaw: ByteArray?): ScannedRecord.Content =
-        (TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOfNotNull(extensionRaw, secondRaw))) as TagDropScan.RecordScan).record as ScannedRecord.Content
+        (TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOfNotNull(extensionRaw, secondRaw), TagDropCodec.TAGDROP_NAMESPACE)) as TagDropScan.RecordScan).record as ScannedRecord.Content
 
     /**
      * Splits [mediaPayloadRaw] into [chunkCount]-many Split Wrapper fragment [ScannedRecord.
@@ -285,7 +293,7 @@ class SectorAssemblerTest {
         assertFalse("a terminal ContentReady group is dropped from tracking", a.hasPending)
     }
 
-    // ── Compressed payload (Compress Wrapper, QDEF Type 8) ──────────────────────
+    // ── Compressed payload (Compress Wrapper, QDEF Type 4) ──────────────────────
 
     @Test fun compressedPayloadDecompressedOnAssembly() {
         val raw = "The quick brown fox jumps over the lazy dog".repeat(5).toByteArray()
@@ -302,8 +310,8 @@ class SectorAssemblerTest {
 
     @Test fun failedStateWhenPayloadSubrecordTypeIsWrong() {
         // Media Preview decodes fine (only its own field map and subrecord count are checked at
-        // scan time, SPEC §5.1) but its one subrecord isn't Media Payload (Type 6) or a Compress
-        // Wrapper (Type 8) around one — caught only once reassembly/unwrap actually happens.
+        // scan time, SPEC §5.1) but its one subrecord isn't Media Payload (Type 3) or a Compress
+        // Wrapper (Type 4) around one — caught only once reassembly/unwrap actually happens.
         val bogusPayload = MiniCbor.encodeRecord(999, listOf(1 to "not media payload".toByteArray()))
         val record = recordOf(
             extensionBytes(null),

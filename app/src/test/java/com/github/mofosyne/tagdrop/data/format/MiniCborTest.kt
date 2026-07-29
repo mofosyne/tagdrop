@@ -556,4 +556,187 @@ class MiniCborTest {
         out.write(notARecord)
         assertNull(MiniCbor.decodeRootBundle(out.toByteArray()))
     }
+
+    // ── Namespace declaration (QDEF-SPEC.md §2.1a/§3.5, SPEC.md v14 §2.1a) ───────────
+
+    private val NS = byteArrayOf(0x89.toByte(), 0xD4.toByte(), 0x14.toByte(), 0xE0.toByte())
+    private val OTHER_NS = byteArrayOf(0x11, 0x22, 0x33, 0x44)
+
+    @Test fun encodeRecordWithNullNamespaceHasNoLeadingItem() {
+        val withNamespace = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = null)
+        val withoutParam = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        assertArrayEquals(withoutParam, withNamespace)
+        val decoded = MiniCbor.decodeRecordPrefix(withNamespace)!!
+        assertNull(decoded.namespace)
+        assertEquals(1, decoded.typeId)
+    }
+
+    @Test fun encodeRecordWithExplicitNamespaceRoundTrips() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = NS)
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!!
+        assertArrayEquals(NS, decoded.namespace)
+        assertEquals(1, decoded.typeId)
+        assertEquals("hint", decoded.record[3])
+    }
+
+    @Test fun encodeRecordCascadeCostsExactlyOneByte() {
+        val withoutNamespace = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val cascaded = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
+        assertEquals(withoutNamespace.size + 1, cascaded.size)
+        // Cascade item is `h''` -- CBOR byte string (major 2), length 0 -> single byte 0x40.
+        // Byte 0 is the record array's own header; the namespace item, when present, is byte 1.
+        assertEquals(0x40, cascaded[1].toInt() and 0xFF)
+    }
+
+    @Test fun decodeRecordPrefixCascadesFromAmbientNamespace() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
+        val decoded = MiniCbor.decodeRecordPrefix(rec, ambientNamespace = NS)!!
+        assertArrayEquals(NS, decoded.namespace)
+    }
+
+    @Test fun decodeRecordPrefixCascadeWithNoAmbientResolvesNull() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
+        val decoded = MiniCbor.decodeRecordPrefix(rec)!! // no ambientNamespace passed -> null
+        assertNull(decoded.namespace)
+    }
+
+    @Test fun decodeRecordPrefixExplicitNamespaceIgnoresAmbient() {
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = NS)
+        val decoded = MiniCbor.decodeRecordPrefix(rec, ambientNamespace = OTHER_NS)!!
+        assertArrayEquals(NS, decoded.namespace) // own explicit declaration wins, ambient ignored
+    }
+
+    @Test fun decodeRecordPrefixNoNamespaceItemResolvesGlobalRegardlessOfAmbient() {
+        // A QDEF standard/global Type never carries a namespace item of its own -- present
+        // ambient context doesn't rescue it into being namespace-scoped.
+        val rec = MiniCbor.encodeRecord(7, listOf(0 to "image/png")) // namespace = null (default)
+        val decoded = MiniCbor.decodeRecordPrefix(rec, ambientNamespace = NS)!!
+        assertNull(decoded.namespace)
+        assertEquals(7, decoded.typeId)
+    }
+
+    @Test fun decodeRecordPrefixForwardsAmbientToSubrecordEvenWhenItDeclaresNoNamespaceItself() {
+        // The crux of SPEC.md v14 §2.1a's cascading rule: a global Type (no namespace item of
+        // its own, ever) still relays whatever ambient namespace IT received on to whatever's
+        // nested inside it -- mirrors Media Payload (global) carrying a Content Signature
+        // (TagDrop-scoped, emits h'') subrecord.
+        val signatureLike = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
+        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(signatureLike), payload = "hello".toByteArray())
+        val decoded = MiniCbor.decodeRecordPrefix(mediaPayloadLike, ambientNamespace = NS)!!
+        assertNull(decoded.namespace) // Media Payload itself: no namespace item -> global
+        assertEquals(1, decoded.subrecords.size)
+        assertArrayEquals(NS, decoded.subrecords[0].namespace) // Content Signature: cascaded through
+    }
+
+    @Test fun decodeRecordPrefixCascadesThroughTwoNonNamespacedIntermediates() {
+        // Three levels deep, mirroring Content Signature nested inside Media Payload inside
+        // Media Preview -- neither intervening global Type declares a namespace of its own, yet
+        // the innermost TagDrop-scoped Record's `h''` still resolves all the way back to the
+        // root's one declaration.
+        val signatureLike = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
+        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(signatureLike), payload = "hello".toByteArray())
+        val mediaPreviewLike = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"), listOf(mediaPayloadLike))
+        val decoded = MiniCbor.decodeRecordPrefix(mediaPreviewLike, ambientNamespace = NS)!!
+        assertNull(decoded.namespace)
+        val payloadDecoded = decoded.subrecords[0]
+        assertNull(payloadDecoded.namespace)
+        val signatureDecoded = payloadDecoded.subrecords[0]
+        assertArrayEquals(NS, signatureDecoded.namespace)
+    }
+
+    @Test fun encodeRootBundleSingleRecordIgnoresNamespaceParam() {
+        // Per SPEC.md v14 §2.1a: the caller is expected to have already baked the real
+        // namespace into the lone Record's own encodeRecord call -- encodeRootBundle's own
+        // namespace param is unused/ignored in the single-Record case.
+        val rec = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = NS)
+        val root = MiniCbor.encodeRootBundle(listOf(rec), namespace = OTHER_NS)
+        assertArrayEquals(rec, root)
+        val decoded = MiniCbor.decodeRootBundle(root)!!
+        assertArrayEquals(NS, decoded[0].namespace) // rec's own baked-in namespace, not OTHER_NS
+    }
+
+    @Test fun encodeRootBundleTwoRecordsPrependsNamespaceAsLeadingElement() {
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
+        val b = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"))
+        val withoutNamespace = MiniCbor.encodeRootBundle(listOf(a, b))
+        val withNamespace = MiniCbor.encodeRootBundle(listOf(a, b), namespace = NS)
+        // +1 byte header (major 2, length 4) + 4 bytes value = 5 bytes total (SPEC §2.1a/§14).
+        assertEquals(withoutNamespace.size + 5, withNamespace.size)
+        assertEquals(0x83, withNamespace[0].toInt() and 0xFF) // major 4 (array), count now 3
+    }
+
+    @Test fun decodeRootBundleBundleNamespaceCascadesToBothChildren() {
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
+        val b = MiniCbor.encodeRecord(3, listOf(5 to "set"), namespace = ByteArray(0))
+        val root = MiniCbor.encodeRootBundle(listOf(a, b), namespace = NS)
+        val records = MiniCbor.decodeRootBundle(root)!!
+        assertEquals(2, records.size)
+        assertArrayEquals(NS, records[0].namespace)
+        assertArrayEquals(NS, records[1].namespace)
+    }
+
+    @Test fun decodeRootBundleNamespaceReachesNestedSubrecordThroughGlobalTypes() {
+        // Full end-to-end shape: root Bundle (2 top-level Records) -> one of them a global Type
+        // wrapping a global Type wrapping a TagDrop-scoped Content-Signature-like Record that
+        // cascades via h'' -- the whole point of SPEC.md v14 §2.1a's redesign.
+        val signatureLike = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
+        val mediaPayloadLike = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(signatureLike), payload = "hello".toByteArray())
+        val mediaPreviewLike = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"), listOf(mediaPayloadLike))
+        val extensionLike = MiniCbor.encodeRecord(1, listOf(3 to "hint"), namespace = ByteArray(0))
+        val root = MiniCbor.encodeRootBundle(listOf(extensionLike, mediaPreviewLike), namespace = NS)
+
+        val records = MiniCbor.decodeRootBundle(root)!!
+        assertEquals(2, records.size)
+        assertArrayEquals(NS, records[0].namespace) // Content Extension-like
+        val mediaPreviewDecoded = records[1]
+        assertNull(mediaPreviewDecoded.namespace) // Media Preview-like: global
+        val mediaPayloadDecoded = mediaPreviewDecoded.subrecords[0]
+        assertNull(mediaPayloadDecoded.namespace) // Media Payload-like: global
+        val signatureDecoded = mediaPayloadDecoded.subrecords[0]
+        assertArrayEquals(NS, signatureDecoded.namespace) // Content Signature-like: cascaded through both
+    }
+
+    @Test fun decodeRootBundleToleratesLegacyBundleWithNoNamespaceAtAll() {
+        // A bare two-item array with no leading namespace bstr at all -- every Record resolves
+        // global (no ambient to inherit).
+        val a = MiniCbor.encodeRecord(1, listOf(3 to "hint"))
+        val b = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"))
+        val out = java.io.ByteArrayOutputStream()
+        out.write(0x82) // array header, count 2, no namespace item
+        out.write(a)
+        out.write(b)
+        val records = MiniCbor.decodeRootBundle(out.toByteArray())!!
+        assertEquals(2, records.size)
+        assertNull(records[0].namespace)
+        assertNull(records[1].namespace)
+    }
+
+    @Test fun stripKeysPreservesLeadingNamespaceItem() {
+        val rec = MiniCbor.encodeRecord(1, listOf(45 to 1L, 47 to byteArrayOf(1, 2, 3)), namespace = NS)
+        val stripped = MiniCbor.stripKeys(rec, setOf(45))
+        val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
+        assertArrayEquals(NS, decoded.namespace)
+        assertFalse(decoded.record.containsKey(45))
+        assertArrayEquals(byteArrayOf(1, 2, 3), decoded.record[47] as ByteArray)
+    }
+
+    @Test fun stripSubrecordTypePreservesLeadingNamespaceItem() {
+        val sig = MiniCbor.encodeRecord(2, listOf(3 to byteArrayOf(9, 9)), namespace = ByteArray(0))
+        val rec = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), listOf(sig), payload = "hello".toByteArray(), namespace = NS)
+        val stripped = MiniCbor.stripSubrecordType(rec, 2)
+        val decoded = MiniCbor.decodeRecordPrefix(stripped)!!
+        assertArrayEquals(NS, decoded.namespace)
+        assertTrue(decoded.subrecords.isEmpty())
+        assertArrayEquals("hello".toByteArray(), decoded.payload)
+    }
+
+    @Test fun stripAllSubrecordsPreservesLeadingNamespaceItem() {
+        val sub = MiniCbor.encodeRecord(3, listOf(0 to "text/plain"), payload = "x".toByteArray())
+        val rec = MiniCbor.encodeRecord(7, listOf(0 to "text/plain"), listOf(sub), namespace = ByteArray(0))
+        val stripped = MiniCbor.stripAllSubrecords(rec)
+        val decoded = MiniCbor.decodeRecordPrefix(stripped, ambientNamespace = NS)!!
+        assertArrayEquals(NS, decoded.namespace)
+        assertTrue(decoded.subrecords.isEmpty())
+        assertEquals("text/plain", decoded.record[0])
+    }
 }

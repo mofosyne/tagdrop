@@ -210,12 +210,14 @@ class WriteNfcTagActivity : AppCompatActivity() {
 
         // Wrapped (post-compress, if applicable) Media Payload size — the actual bytes Split
         // divides — recovered as this single unsplit code's length minus its (always-plain)
-        // Content Extension and the 1-byte root Bundle array header wrapping the two top-level
-        // Records together (QDEF-SPEC.md §2/§3.1 self-delimited root — a definite-length array
-        // of exactly 2 items always costs 1 header byte). This is only an estimate feeding the
+        // Content Extension, the 1-byte root Bundle array header wrapping the three top-level
+        // items together (QDEF-SPEC.md §2/§3.1 self-delimited root — a definite-length array of
+        // exactly 3 items, namespace + Extension + Media Preview, still costs 1 header byte),
+        // and the root's own namespace declaration (SPEC.md v14 §2.1a — mandatory on every
+        // carrier, including NFC NDEF, as of this version). This is only an estimate feeding the
         // retry loop below, not a byte-exact requirement — [fitsCapacity] re-measures the real
         // rebuilt code every iteration.
-        val total = single.codes.first().size - single.extensionRaw.size - 1
+        val total = single.codes.first().size - single.extensionRaw.size - 1 - TagDropCodec.NAMESPACE_DECLARATION_BYTES
         for (count in 2..MAX_SECTOR_PROBES) {
             val candidate = build((total + count - 1) / count)
             if (fitsCapacity(candidate.codes.first())) return candidate.codes

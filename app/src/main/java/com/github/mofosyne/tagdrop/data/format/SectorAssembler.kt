@@ -311,7 +311,7 @@ class SectorAssembler {
         if (bodyWireBytes == null) return State.Failed
         val paper = TagDropCodec.parsePaperStream(record, bodyWireBytes) ?: return State.Failed
         val bodyRaw = TagDropCodec.logicalPaperBodyBytes(bodyWireBytes) ?: return State.Failed
-        return State.PaperReady(paper, record.previewRaw, bodyRaw, MiniCbor.encodeRootBundle(listOf(record.previewRaw, bodyRaw)))
+        return State.PaperReady(paper, record.previewRaw, bodyRaw, MiniCbor.encodeRootBundle(listOf(record.previewRaw, bodyRaw), TagDropCodec.TAGDROP_NAMESPACE))
     }
 
     /** Concatenated fragment data for a complete group (with XOR parity reconstruction of a single missing fragment, SPEC §5), or null while fragments are still missing. */
