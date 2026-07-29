@@ -923,8 +923,8 @@ function buildContentExtension(f, namespace = NAMESPACE_CASCADE) {
     33: f.keyMaterial, 35: f.retainKey, 37: f.encryption,
     39: f.kdfAlg, 41: f.kdfSalt, 43: f.kdfIters,
     45: f.signatureAlgorithm, 47: f.signerId, 49: f.signerLabel,
-    51: f.inReplyTo, 53: f.createdAt, 55: f.sourceUrl,
-  }, [], undefined, namespace);
+    51: f.inReplyTo, 53: f.createdAt,      55: f.sourceUrl,
+  }, [], namespace);
 }
 
 // Media Preview (QDEF standard Type 7, SPEC.md §3.1a) — file identification.
@@ -970,7 +970,7 @@ function buildMediaPayload(f, subrecords = []) {
 // cascades `h''` (SPEC.md §2.1a) — Content Signature is never the root's
 // sole Record, so it never needs the full explicit namespace value.
 function buildContentSignature(f, namespace = NAMESPACE_CASCADE) {
-  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey }, [], undefined, namespace);
+  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey }, [], namespace);
 }
 
 // Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4). Paper always has
@@ -989,12 +989,12 @@ function buildPaperPreview(f, namespace = NAMESPACE_CASCADE) {
     37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
     43: f.title, 45: f.description,
     47: f.keyMaterial, 49: f.retainKey,
-  }, [], undefined, namespace);
+  }, [], namespace);
 }
 function buildPaperBody(f, namespace = NAMESPACE_CASCADE) {
   return cborRecord(TYPE_PAPER_BODY, {
     1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
-  }, [], undefined, namespace);
+  }, [], namespace);
 }
 
 // ── CBOR debug (dev tool: 🔍 Inspect CBOR button) ──────────────────────────

@@ -742,6 +742,47 @@ function buildContentPayload({ hint, mimeType, content, maxBodyBytes = 900, spli
   return fragments.map((frag) => encodeRootBundle([extension, frag]));
 }
 
+/**
+ * Asserts that every Record in a decoded root Bundle has the correct namespace
+ * for its role — TagDrop-scoped types (Content Extension/Signature, Paper
+ * Preview/Body) MUST resolve to TAGDROP_NAMESPACE via their own `h''` cascade;
+ * QDEF global types (Split, Media Payload, Compress, Media Preview) MUST have
+ * `null` namespace.  This mirrors the Android app's recordScanResult check
+ * (SPEC.md §2.1a) and catches the class of bug where the encoder's `h''`
+ * cascade marker was silently omitted (an extra `undefined` argument in the
+ * cborRecord call shifted the namespace parameter out of position).
+ */
+function assertNamespaces(records) {
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    // Walk subrecords too (Split wraps Media Preview, Media Preview wraps
+    // Media Payload, Media Payload wraps Content Signature).
+    for (const sr of (r.subrecords || [])) {
+      assertNamespace(sr, `records[${i}].subrecords`);
+    }
+    assertNamespace(r, `records[${i}]`);
+  }
+}
+function assertNamespace(r, path) {
+  // TagDrop-scoped Type IDs overlap with QDEF global ones (1, 3, 4 each
+  // appear in both spaces) — the namespace IS the disambiguation.
+  if (r.namespace && r.namespace.equals(TAGDROP_NAMESPACE)) {
+    // TagDrop-scoped: ok — the Record carries its own `h''` cascade.
+    return;
+  }
+  if (r.namespace === null) {
+    // QDEF global/standard Type (Split, Media Payload, Compress, Media
+    // Preview): namespace must be null — these Types never carry a
+    // namespace item, even when nested inside a TagDrop-namespaced tree.
+    return;
+  }
+  throw new Error(
+    `${path} typeId=${r.typeId} has unexpected namespace ` +
+    (r.namespace ? r.namespace.toString('hex') : 'null') +
+    ' — expected TAGDROP_NAMESPACE or null'
+  );
+}
+
 function decodeContentPayload(codes) {
   let extension;
   let extensionRawForComparison;
@@ -775,15 +816,21 @@ function decodeContentPayload(codes) {
 
     if (second.typeId === TYPE.MEDIA_PREVIEW) {
       // Single-code case: Media Payload is Media Preview's own (sole) subrecord.
+      assert.equal(second.namespace, null, 'Media Preview is QDEF Type 7 (global) — must have null namespace');
       assertKnownKeys(second.record, KNOWN_KEYS.MEDIA_PREVIEW, 'Media Preview');
       assert.equal(second.subrecords.length, 1, 'single-code Media Preview must nest exactly one subrecord');
       mediaPreviewRecord = second.record;
       plainMediaPayloadWireRaw = second.subrecords[0].raw;
+      // The subrecord (Media Payload or Compress Wrapper) is also a global
+      // Type — namespace must be null here too.
+      assert.equal(second.subrecords[0].namespace, null, 'Media Preview\'s subrecord (Type 3 or 4) must have null namespace');
     } else if (second.typeId === TYPE.SPLIT) {
       // Multi-code case: Media Preview is Split's own subrecord instead.
+      assert.equal(second.namespace, null, 'Split is QDEF Type 1 (global) — must have null namespace');
       fragmentRecords.push(second.record);
       const mp = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW);
       assert.ok(mp, 'multi-code Split fragment must carry Media Preview as its own subrecord');
+      assert.equal(mp.namespace, null, 'Media Preview nested in Split must have null namespace');
       assertKnownKeys(mp.record, KNOWN_KEYS.MEDIA_PREVIEW, 'Media Preview');
       mediaPreviewRecord = mp.record;
     } else {
@@ -915,13 +962,6 @@ function decodePaperPayload(codes) {
     assert.ok(records && records.length === 2, 'a Paper code must carry exactly a Paper-Preview and a second Record');
     const [first, second] = records;
     assert.equal(first.typeId, TYPE.PAPER_PREVIEW, 'first Record must be Paper-Preview');
-    // SPEC.md §2.1a: same namespace check as Content's — Paper-Preview's Type
-    // ID (3) is the same integer QDEF's own global Media Payload uses.
-    assert.ok(
-      first.namespace && first.namespace.equals(TAGDROP_NAMESPACE),
-      'Paper-Preview must resolve to TagDrop\'s namespace (SPEC.md §2.1a) — got: ' +
-        (first.namespace ? first.namespace.toString('hex') : 'none')
-    );
     assertKnownKeys(first.record, KNOWN_KEYS.PAPER_PREVIEW, 'Paper-Preview');
 
     if (previewRawForComparison) {

@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node test-qr-roundtrip.mjs",
     "test:qdef": "node test-qdef-roundtrip.mjs",
-    "lint:qdef": "node verify-qdef-lint.mjs"
+    "lint:qdef": "node verify-qdef-lint.mjs",
+    "lint:examples": "node verify-examples-lint.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

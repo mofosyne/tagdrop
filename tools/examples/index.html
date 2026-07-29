@@ -138,7 +138,7 @@
     </nav>
   </div>
   <label id="binary-toggle" style="margin-left:auto;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.82rem;white-space:nowrap;" title="Toggle between tagdrop: URI (text QR, alphanumeric mode) and QDEF binary QR (byte-mode with framing header)">
-    <input type="checkbox" id="binary-toggle-cb"> QDEF binary QR
+    <input type="checkbox" id="binary-toggle-cb" checked> QDEF binary QR
   </label>
 </header>
 
@@ -580,8 +580,8 @@ function buildContentExtension(f, namespace = NAMESPACE_CASCADE) {
     33: f.keyMaterial, 35: f.retainKey, 37: f.encryption,
     39: f.kdfAlg, 41: f.kdfSalt, 43: f.kdfIters,
     45: f.signatureAlgorithm, 47: f.signerId, 49: f.signerLabel,
-    51: f.inReplyTo, 53: f.createdAt, 55: f.sourceUrl,
-  }, [], undefined, namespace);
+    51: f.inReplyTo, 53: f.createdAt,      55: f.sourceUrl,
+  }, [], namespace);
 }
 
 // Media Preview (QDEF standard Type 7, SPEC.md §3.1a) — file identification.
@@ -626,7 +626,7 @@ function buildMediaPayload(f, subrecords = []) {
 // cascades `h''` (SPEC.md §2.1a) — Content Signature is never the root's
 // sole Record, so it never needs the full explicit namespace value.
 function buildContentSignature(f, namespace = NAMESPACE_CASCADE) {
-  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey }, [], undefined, namespace);
+  return cborRecord(TYPE_CONTENT_SIGNATURE, { 3: f.signature, 5: f.signerPubkey }, [], namespace);
 }
 
 // Paper-Preview / Paper-Body Records (SPEC.md §3.3-§3.4). Paper always has
@@ -645,12 +645,12 @@ function buildPaperPreview(f, namespace = NAMESPACE_CASCADE) {
     37: f.inReplyTo, 39: f.createdAt, 41: f.sourceUrl,
     43: f.title, 45: f.description,
     47: f.keyMaterial, 49: f.retainKey,
-  }, [], undefined, namespace);
+  }, [], namespace);
 }
 function buildPaperBody(f, namespace = NAMESPACE_CASCADE) {
   return cborRecord(TYPE_PAPER_BODY, {
     1: f.files, 3: f.related, 5: f.signature, 7: f.signerPubkey,
-  }, [], undefined, namespace);
+  }, [], namespace);
 }
 
 // ── Low-level CBOR item-boundary walkers (encoder-side stripping only). Used
@@ -2460,8 +2460,10 @@ const messages = document.getElementById('page-messages');
 
 // Binary QR toggle: when set, all TagDrop-encoded cards render as byte-mode QR
 // (raw Record Sequence bytes) instead of tagdrop: URI (alphanumeric mode).
-// Raw QR cards (vCard, URL etc.) are unaffected.
-let useBinaryQr = false;
+// Defaults to true so visitors see the QDEF binary format (with magic header)
+// on first load, which is the format the validator checks; uncheck to see the
+// URI text-qr equivalent. Raw QR cards (vCard, URL etc.) are unaffected.
+let useBinaryQr = document.getElementById('binary-toggle-cb').checked;
 const qrCards = []; // { slot, uri, rawBytes, infoEl }
 
 function rerenderQrSlot(slot, data) {
@@ -2642,11 +2644,12 @@ async function addBinaryQrCard(grid, { label, mime, rawBytes, uri, id }) {
     <button class="copy-btn inspect-cbor">🔍 Inspect CBOR</button>`);
   grid.appendChild(div);
   try {
-    const info = await renderQr(qrSlot, qdefFrame(rawBytes));
+    const info = await renderQr(qrSlot, useBinaryQr ? qdefFrame(rawBytes) : uri);
     if (info) infoEl.textContent = `QR v${info.version} · ${info.modules}×${info.modules} modules · ${info.dataBytes} bytes`;
   } catch (e) {
     qrSlot.innerHTML = '<div class="err">QR render failed</div>';
   }
+  qrCards.push({ slot: qrSlot, uri, rawBytes, infoEl });
   div.querySelector('.copy-uri').addEventListener('click', (ev) => {
     navigator.clipboard.writeText(uri).then(() => {
       const btn = ev.target;
