@@ -6,11 +6,16 @@
   "scripts": {
     "test": "node test-qr-roundtrip.mjs",
     "test:qdef": "node test-qdef-roundtrip.mjs",
+    "test:crosstool": "node test-cross-tool-roundtrip.mjs",
     "lint:qdef": "node verify-qdef-lint.mjs",
     "lint:examples": "node verify-examples-lint.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",
     "zxing-wasm": "^3.1.0"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^30.0.1"
   }
 }

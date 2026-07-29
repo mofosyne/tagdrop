@@ -51,6 +51,16 @@ jobs:
         working-directory: tools
         run: npm run lint:examples
 
+      # None of the checks above ever call generator/index.html's own encode functions and
+      # feed the result into reader/index.html's own decode functions — each is its own
+      # self-consistent codec copy (see test-cross-tool-roundtrip.mjs's own header comment
+      # for the real bug this gap let ship: a stale cborRecord call silently dropped every
+      # real generator-produced code's namespace declaration, and every check above passed
+      # clean throughout). This drives both real tools together, via jsdom, in-process.
+      - name: Run cross-tool round-trip test (real generator -> real reader)
+        working-directory: tools
+        run: npm run test:crosstool
+
   test-and-build:
     name: Unit tests & APK builds
     runs-on: ubuntu-latest
