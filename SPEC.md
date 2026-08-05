@@ -1,18 +1,23 @@
 # TagDrop Encoding Specification
 
-**Version:** 15 (QDEF's own Wrapper/standard-type field-key layouts
-shifted independently of TagDrop's version-14 changes above: the
-positional `payload` array slot is gone from QDEF's grammar entirely,
-folded into reserved map key `0` — Compress Wrapper and Media Payload's
-`content` move from a bare trailing array item into `{0: ...}`; Media
-Preview's fields shift up two keys each (`mediaType`/`contentHash`/
-`filename`/`label` now `2`/`3`/`5`/`7`, with key `0` unused — Media
-Preview has no payload of its own); Split Wrapper's fields renumber
-too (`fragment`/`group_id`/`index`/`count`/`total_bytes`/`parity_scheme`
-now `0`/`2`/`4`/`6`/`7`/`9`, fragment data moving into the payload-slot
-key exactly like Compress/Media Payload). See §14 "Version history".
-Version 14's own changes (namespace transmission, TagDrop's own Type ID
-renumbering, Common Field Key reversion) are unaffected by this version.
+**Version:** 16 (QDEF's namespace-scoping rule changed again: a namespace
+byte string's *only* effect is now cascading to subrecords — it never
+scopes the Record that carries it. Whether a Record's own typeId is
+global or namespace-scoped is instead decided purely by that typeId's
+own **sign**: non-negative = global, negative = scoped, adopting
+whatever namespace is ambient from an ancestor. `h''` ["inherit the
+ambient namespace as my own scope"] is gone from QDEF's grammar
+entirely — TagDrop's four Record Types are unchanged in identity but now
+wire-encode as **negative** typeIds (`-1`/`-2`/`-3`/`-4` instead of
+`1`/`2`/`3`/`4`) and carry no namespace item of their own at all. One
+structural consequence: a Record can no longer both introduce a
+namespace and be scoped by it in the same array, so the version-13
+"a single top-level Record needs no Bundle wrapping" exception is gone
+— every TagDrop code, including a key-only code, is now a namespace-
+carrying root Bundle wrapping one or two scoped subrecords. See §14
+"Version history" for the byte-cost accounting and §2.1a for the full
+rule. Versions 14/15's other changes (which fields exist, QDEF standard
+Type field-key layouts) are unaffected by this version.
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -48,7 +53,7 @@ The format is designed to:
 
 ## 2. Wire Framing
 
-Every TagDrop code carries a **Record Sequence**: the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1, version 14) — exactly one definite-length CBOR array, the *same* self-delimited shape as any **Record** (QDEF terminology — `[namespace?, typeId*, map?, subrecord*]`, routed by its `typeId`; a Record MAY carry other Records nested after its own map, as subrecords). Since version 14, the root's own leading element is TagDrop's namespace declaration (§2.1a) whenever the root contains any TagDrop-scoped Record — this is now mandatory on every carrier, not just byte-mode QR. A code carrying a single top-level Record (e.g. a key-only code, §9) writes that Record's own array directly as the root, with the namespace as *that Record's own* leading element — no extra wrapping. A code carrying two top-level Records (Content Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-fragment — the common case) wraps them as the two subrecords of an implied, never-transmitted Bundle (typeId absent): one more definite-length array around them, with the namespace as the *Bundle's* leading element — each scoped child then cascades from it via an empty byte string (`h''`, QDEF-SPEC.md §3.5's "Namespace must be transmitted, never merely implied") rather than re-declaring it in full. Being a genuine CBOR array (not a bare RFC 8742 Sequence) means the root is self-delimiting by construction — a decoder finds where it ends from the array's own header, not by counting how many Records it expects to see (§9's "Decoders tolerate trailing bytes" relies on exactly this). Two of QDEF's own stdlib Types — Compress Wrapper (Type `4`) and Media Payload (Type `3`) — use reserved map key `0` (QDEF-SPEC.md §3.6) for their one genuinely singular value (§3.1a, §4.1, version 15) — there's no longer a separate positional `payload` array slot in QDEF's grammar at all, only an ordinary field at a reserved key; every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields at other keys and never uses key `0`. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions. A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
+Every TagDrop code carries a **Record Sequence**: the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1) — exactly one definite-length CBOR array, the *same* self-delimited shape as any **Record** (QDEF terminology — `[namespace?, typeId*, map?, subrecord*]`, routed by its `typeId`; a Record MAY carry other Records nested after its own map, as subrecords). The root's own leading element is always TagDrop's namespace declaration (§2.1a) — mandatory on every carrier. As of version 16, a namespace bstr's *only* effect is cascading to whatever's nested underneath it — it never scopes the typeId on the Record that carries it (QDEF-SPEC.md §3.5); a Record's own scope is instead decided purely by its own typeId's **sign** (negative = scoped, adopting whatever namespace is ambient). One consequence: a Record can't simultaneously introduce a namespace and be scoped by it, so **every TagDrop code is now a root Bundle** — the root always carries the namespace as its own leading element, with typeId absent (structurally a Bundle) and one or two subrecords following. A code carrying a single top-level payload (e.g. a key-only code, §9) still wraps that one Record as the Bundle's sole subrecord — there is no "no wrapping" case anymore, unlike version 13–15. A code carrying two top-level Records (Content Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-fragment — the common case) wraps them as the Bundle's two subrecords, exactly as before. Each scoped child (Content Extension, Content Signature, Paper-Preview, Paper-Body) carries **no namespace item of its own** and a **negative** typeId — `-1`/`-2`/`-3`/`-4` for the four Types registered as declared (positive) magnitudes `1`/`2`/`3`/`4` (§2.1) — which resolves it to the ambient namespace it received, whether that's the root Bundle directly or reached through any number of intervening QDEF standard Types that don't declare a namespace of their own but still pass the ambient one through (§2.1a). Being a genuine CBOR array (not a bare RFC 8742 Sequence) means the root is self-delimiting by construction — a decoder finds where it ends from the array's own header, not by counting how many Records it expects to see (§9's "Decoders tolerate trailing bytes" relies on exactly this). Two of QDEF's own stdlib Types — Compress Wrapper (Type `4`) and Media Payload (Type `3`) — use reserved map key `0` (QDEF-SPEC.md §3.6) for their one genuinely singular value (§3.1a, §4.1, version 15) — there's no longer a separate positional `payload` array slot in QDEF's grammar at all, only an ordinary field at a reserved key; every TagDrop-scoped Record (Content Extension, Paper-Preview/Body) always carries several fields at other keys and never uses key `0`. See CLAUDE.md for the fuller note on this grammar update and QDEF's other recent additions. A code always carries the small, always-plain part of whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §2.1/§4.1); a payload with a large part (§4) also carries either that part complete (if it fits alongside the small part in one code) or one **Split-Wrapper**-wrapped fragment of it (§5, multi-code case).
 
 **Outer framing differs by carrier — the Record Sequence bytes themselves do not:**
 
@@ -62,18 +67,18 @@ This is the "near 1:1" property: an encoder builds the Record Sequence bytes onc
 
 ### 2.1 Record Types
 
-TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed):
+TagDrop registers four QDEF Record Type IDs, each with its own independent key namespace (QDEF-SPEC.md §3.1's Type-ID routing gives every registered Type its own field table for free — no more "valid in Content only" / "Paper only" footnotes sharing one key space, as the old design needed). Each is registered in `registry.rec` as a **declared magnitude** — always positive, the type's actual identity — and, as of version 16, **wire-encoded negated** (QDEF-SPEC.md §3.5's "declared vs. wire-encoded typeId" — the sign is a wire-encoding decision, not part of the type's identity): a Record whose ambient namespace resolves to TagDrop's (§2.1a) carries `-1` on the wire to mean declared magnitude `1`, and so on.
 
-| Type ID | Record | Contains |
+| Declared / wire typeId | Record | Contains |
 |---|---|---|
-| `1` | Content Extension | TagDrop-specific Content fields — hint, location, collection, encryption/signing metadata. See §3.1. |
-| `2` | Content Signature | `signature`/`signer_pubkey` for a signed Content payload — travels as Media Payload's own subrecord (QDEF Type `3`), never repeated per code. Absent entirely when unsigned. See §3.1a. |
-| `3` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
-| `4` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
+| `1` / `-1` | Content Extension | TagDrop-specific Content fields — hint, location, collection, encryption/signing metadata. See §3.1. |
+| `2` / `-2` | Content Signature | `signature`/`signer_pubkey` for a signed Content payload — travels as Media Payload's own subrecord (QDEF Type `3`), never repeated per code. Absent entirely when unsigned. See §3.1a. |
+| `3` / `-3` | Paper-Preview | Small, always-plain fields — identity, `set`/`slug`/`domain`, location, collection. See §3.3. |
+| `4` / `-4` | Paper-Body | `files[]`/`related[]` directory data, plus the large signature fields. See §3.4. |
 
-**Renumbered in version 14** (previously `1`/`3`/`5`/`7`, chosen odd on purpose under the parity rule below, since retired — see §2.1a). The new numbers are sequential, matching `registry.rec`'s current allocation (mofosyne/qdef-format collaboration) — parity carries no meaning anymore, so there was no longer a reason to skip the even values.
+**Renumbered in version 14** (previously `1`/`3`/`5`/`7`, chosen odd on purpose under the parity rule then in force, since retired — see §2.1a). The declared magnitudes are sequential, matching `registry.rec`'s current allocation (mofosyne/qdef-format collaboration); **as of version 16 they wire-encode negated** — negation, not magnitude choice, is now what signals "scoped to the ambient namespace" (§2.1a).
 
-TagDrop's decoder also recognizes QDEF's standard Record Types (QDEF-SPEC.md §4), notably:
+TagDrop's decoder also recognizes QDEF's standard Record Types (QDEF-SPEC.md §4), notably, all of which are **global** — non-negative typeId, no namespace item of their own, always the same meaning regardless of ambient namespace:
 
 | Type ID | Record | TagDrop usage |
 |---|---|---|
@@ -82,15 +87,43 @@ TagDrop's decoder also recognizes QDEF's standard Record Types (QDEF-SPEC.md §4
 | `1` | Split Wrapper | Fragment reassembly for multi-code payloads. |
 | `4` | Compress Wrapper | DEFLATE compression. |
 
-(Previously `14`/`6`/`2`/`8` respectively — QDEF's own standard registry was renumbered sequentially in the same upstream pass, unrelated to TagDrop's own renumbering above but landing at the same time.)
+(Previously `14`/`6`/`2`/`8` respectively — QDEF's own standard registry was renumbered sequentially in an earlier upstream pass, unrelated to TagDrop's own renumbering above but landing around the same time.)
 
-Note that TagDrop's own `3` (Paper-Preview) and QDEF's standard `3` (Media Payload) are literally the same integer — likewise TagDrop's `1`/`2`/`4` against QDEF's `1`/`4`. This is expected and safe, not a collision, because these two sets of Type IDs live in different resolution spaces: TagDrop's four are **namespace-scoped** (§2.1a) and QDEF's four are **global** (interpreted the same regardless of namespace). A decoder resolves a Record's namespace first (from the wire, per §2.1a — never assumed), then interprets the Type ID against TagDrop's registry only if that resolved namespace matches TagDrop's; otherwise (no namespace resolved, or a different one) it falls through to QDEF's own global registry instead. Getting this resolution right is why §2.1a's namespace transmission is no longer optional on any carrier, as of this version.
+Note that TagDrop's own declared `3` (Paper-Preview) and QDEF's standard `3` (Media Payload) are literally the same magnitude — likewise TagDrop's `1`/`2`/`4` against QDEF's `1`/`4`. This is expected and safe, not a collision, because these two sets of Type IDs live in different resolution spaces and, as of version 16, are additionally disambiguated by **sign alone**: TagDrop's four always wire-encode negative (namespace-scoped, §2.1a) and QDEF's standard Types always wire-encode non-negative (global) — a decoder never has to guess which registry applies from magnitude, only read the sign, then (for a negative typeId) resolve the ambient namespace to confirm it's actually TagDrop's before applying TagDrop's registry. A negative typeId whose ambient namespace resolves to something other than TagDrop's `89d414e0` (or to nothing at all) is some *other* application's scoped type, not TagDrop's, regardless of which magnitude it carries.
 
-A **key-only** code (§9, "Decryption keys") is a Content Extension Record (Type 1) with no accompanying Media Preview/Payload — carrying `key_material` but no content, exactly as today's key codes do; nothing about that case changes.
+A **key-only** code (§9, "Decryption keys") is a Content Extension Record (declared Type 1) with no accompanying Media Preview/Payload — carrying `key_material` but no content, exactly as today's key codes do; its *fields* are unchanged. Its wire *framing* did change at version 16 (§2.1a): it's now a root Bundle wrapping that one Record as its sole subrecord, like every other TagDrop code, rather than that Record's own array written directly as the root.
 
 ### 2.1a Namespace declaration
 
-**Version 14 supersedes this section's previous design.** Versions 6–13
+**Version 16 changes how a Record's own scope is decided, without changing
+*when* TagDrop declares its namespace or what value it declares.** QDEF-
+SPEC.md §3.5 now draws a hard line between two previously-conflated jobs a
+namespace bstr used to do at once: cascading to subrecords, and scoping the
+Record that carries it. As of version 16 a namespace bstr does **only** the
+first — an explicit `h'ns'` becomes the ambient namespace for whatever's
+nested inside that Record; it has **no effect whatsoever** on that Record's
+own typeId. Whether *this* Record's own typeId is global or scoped is
+instead decided purely by that typeId's own **sign**: non-negative is
+always global, negative always means "scoped, adopting whatever namespace
+is ambient from an ancestor" — regardless of whether a namespace bstr sits
+on that same Record. `h''` (the old "inherit the ambient namespace as my
+own scope" marker) is gone from QDEF's grammar entirely, replaced by
+sign alone, at zero extra bytes either way (both a small non-negative and a
+small negative integer cost 1 CBOR byte).
+
+One structural consequence follows directly: **a Record can no longer both
+introduce a fresh namespace and be scoped by it in the same array** — since
+the namespace bstr on a Record only ever affects that Record's *own*
+subrecords, getting both "declare namespace X" and "a Record scoped to X"
+needs two Records, a namespace-carrying parent and a negative-typeId child.
+TagDrop's namespace declaration was already always on a Bundle-shaped root
+for the two-Record case (§2); as of version 16 it's a root Bundle in the
+single-Record case too — a key-only code (§9) is no longer written as that
+one Record's own array directly, it's a Bundle with that one Record as its
+sole subrecord, exactly like the two-Record case one level down.
+
+**Version 14 originally superseded this section's pre-version-14 design,
+for unrelated reasons — kept here for history.** Versions 6–13
 implied TagDrop's namespace from carrier context (the `tagdrop:` scheme,
 the `application/vnd.tagdrop` MIME type) on two of three carriers,
 transmitting it explicitly only on byte-mode QR/JABCode — justified at
@@ -111,34 +144,28 @@ carrier-inferred namespace that's never actually on the wire no longer
 has any spec-level backing, so TagDrop no longer does that on any
 carrier — the namespace bstr must be present, always, in-band.
 
-**How the namespace is transmitted.** Per QDEF-SPEC.md §3.5's cascading
-rule, a namespace declared on a Record is inherited by every Record
-nested underneath it, at any depth, without needing to repeat the full
-value — a descendant emits an empty byte string (`h''`, cascade: "same as
-whatever's already ambient") instead of the 4-byte value again, at a cost
-of 1 byte instead of 5. A Record's own namespace token governs only how
-*that Record's own* Type ID is interpreted — it does not gate whether the
-ambient namespace keeps flowing to whatever's nested inside it: a
-standard/global Type (Media Preview, Media Payload, Split Wrapper,
-Compress Wrapper) stays global *for its own Type ID* regardless of
-ambient namespace, but still passes that ambient namespace through
-transparently to any subrecord nested inside it, unless it substitutes
-its own explicit namespace instead. (This is a genuine, one-time
-simplification of QDEF-SPEC.md §3.5 itself, landed and confirmed directly
-with qdef bot mid-port — an earlier version of this same rule broke the
-cascade at any non-namespace-declaring intermediate Record, which would
-have forced Content Signature and Compress/Split-wrapped Paper-Body to
-each declare their own explicit namespace; that intermediate rule never
-shipped as TagDrop's own design, only as this document's own draft
-text, corrected before landing — see §14 "Version history" for the
-full account.) A namespace slot that's entirely *absent* on a given
-Record (not even `h''`) still means that Record's own Type ID resolves
-to global — that discipline hasn't changed, and a scoped Record's
-namespace must never be left absent on the assumption an ancestor covers
-it implicitly. TagDrop's own root array — the implied, never-transmitted
-Bundle wrapping two top-level Records (§2), or a lone Record's own array
-in the single-Record case — declares TagDrop's namespace exactly once,
-as its own leading element:
+**How the namespace is transmitted.** TagDrop's root array — always a
+Bundle as of version 16 (§2), whether it wraps one subrecord (the
+key-only case, §9) or two (the common case) — declares TagDrop's
+namespace exactly once, as its own leading element. Nothing nested
+underneath ever repeats the 4-byte value: per QDEF-SPEC.md §3.5's cascade
+rule, a Record with no namespace bstr of its own simply passes through
+whatever ambient namespace *it* received, unchanged, to its own
+subrecords — this applies uniformly to a plain pass-through Record and to
+a standard/global Type alike (Media Preview, Media Payload, Split
+Wrapper, Compress Wrapper all stay global *for their own typeId*
+regardless of ambient namespace, but still relay it on to whatever's
+nested inside them). A TagDrop-scoped Record (Content Extension, Content
+Signature, Paper-Preview, Paper-Body) resolves to *that* ambient
+namespace by carrying **no namespace item of its own** and a **negative**
+typeId — the sign alone is the scoping signal now, at zero extra bytes,
+where version 14–15 spent 1 byte on `h''` for the same job. A namespace
+slot that's entirely *absent* on a given Record still has no bearing on
+that Record's own scope either way — only the typeId's sign does — but
+absence does mean *this* Record isn't introducing a fresh ambient value
+for its own subrecords; a Record meant to be scoped MUST carry a negative
+typeId regardless of what it does or doesn't do with its own namespace
+slot (which, for all of TagDrop's own Types, is simply never present).
 
 ```
 namespace = SHA-256("io.github.mofosyne.tagdrop")[0:4] = 89 D4 14 E0
@@ -158,40 +185,56 @@ Types (Media Preview, Media Payload, Split Wrapper, Compress Wrapper) are
 global for their own Type ID and carry no namespace item of their own,
 ever, but — per the cascading rule above — transparently pass the root's
 declared namespace through to whatever's nested inside them regardless.
-So every TagDrop-scoped Record, at any nesting depth, just emits `h''`:
-Content Extension and Paper-Preview (direct root children); Paper-Body,
-whether it fits unwrapped as the root's direct child or sits
-Compress-/Split-wrapped several levels deep; and Content Signature,
-nested inside Media Payload inside Media Preview. None of them need to
-repeat the full 4-byte value — the one intervening global Type between
-them and the root's declaration doesn't matter.
+So every TagDrop-scoped Record, at any nesting depth, carries no
+namespace item and a negative typeId: Content Extension and Paper-Preview
+(direct root children); Paper-Body, whether it fits unwrapped as the
+root's direct child or sits Compress-/Split-wrapped several levels deep;
+and Content Signature, nested inside Media Payload inside Media Preview.
+None of them need to repeat the full 4-byte value, or spend any per-Record
+byte at all on cascading — the one or more intervening global Types
+between them and the root's declaration don't matter, and negation costs
+the same single byte a positive typeId would have anyway.
 
-**Byte cost, versus version 13's fully-implied design:** +5 bytes per
-code (the root's own declaration) in the common case, plus +1 byte
-(`h''`) on every TagDrop-scoped Record present on that code — uniformly,
-regardless of nesting depth. Byte-mode QR/JABCode's own cost is
-unchanged from version 13 — it already paid the same 5-byte root
-declaration; what's new is that `tagdrop:` URI and NFC NDEF now pay it
-too, where they previously paid nothing.
+**Byte cost, versus version 15's `h''`-cascade design:** every
+TagDrop-scoped Record present on a code (Content Extension, Content
+Signature, Paper-Preview, Paper-Body) **saves 1 byte** — the `h''` marker
+version 14–15 required is gone, and negating the typeId costs nothing
+extra. A **key-only** code (§9) instead **costs 1 byte more**: it's now
+always Bundle-wrapped, where versions 13–15 let a lone top-level Record
+skip that wrapping entirely. Net effect on a typical single-code payload
+(Content Extension + Media Preview, one TagDrop-scoped Record): break
+even. A signed single-code Content payload (Content Extension + Content
+Signature, two TagDrop-scoped Records): −2 bytes. A key-only code (zero
+other TagDrop-scoped Records, but now Bundle-wrapped): +1 byte. The
+root's own 5-byte namespace declaration itself, and which carriers pay
+it, are unchanged from version 14 — see that version's entry in the
+history below for the `tagdrop:`-URI/NFC-NDEF context.
 
-**Why this still matters even without a fail-closed abort guarantee.**
-The safety property this section relied on through version 13 — an
-out-of-context decoder refusing to interpret TagDrop's Type IDs rather
-than silently misreading them — no longer holds in the strong,
-spec-mandated form it used to. What remains true, and is why TagDrop
-still declares its namespace explicitly rather than treating it as
-optional overhead: a decoder that resolves no namespace (or a namespace
-other than `89d414e0`) on a Record has no basis to apply TagDrop's
-Record Types to it at all, and per §2.1's note above, TagDrop's own
-small Type IDs are the *same integers* QDEF's own now-renumbered
-standard Types use globally — so a generic QDEF decoder that saw
-TagDrop's Type IDs with no namespace attached would, at best, find them
-meaningless, and at worst, silently misapply QDEF's own global
-semantics to them (e.g. treating a bare Type `1` as QDEF's Split Wrapper
-rather than TagDrop's Content Extension). Transmitting the namespace is
-what avoids that outcome — not a guarantee that a hostile or malformed
-decoder aborts, but the only mechanism left that lets a well-behaved one
-resolve TagDrop's Records correctly at all.
+**Why this still matters, and a version-16 correctness improvement over
+version 14–15's account of it.** The safety property this section relied
+on through version 13 — an out-of-context decoder refusing to interpret
+TagDrop's Type IDs rather than silently misreading them — still doesn't
+hold in that strong, spec-mandated form (there's no abort guarantee for
+an unresolvable negative typeId, only "this Record's meaning depends on a
+namespace I don't have"). But version 16's sign-based scoping closes one
+specific gap version 14–15 actually had: since TagDrop's typeIds now wire-
+encode negative and every QDEF standard Type wire-encodes non-negative,
+**the two are different CBOR values by major type, not just by
+convention** — a decoder can never mistake TagDrop's wire `-1` for QDEF's
+global Type `1` (Split Wrapper) by magnitude alone, the way version 14–15
+theoretically could have if a decoder ever conflated the two spaces
+without checking namespace first. What the namespace declaration still
+resolves, and is still why TagDrop declares it explicitly on every
+carrier: a decoder that recognizes a negative typeId as "some scoped
+type" still doesn't know *which* application's registry to consult until
+it resolves the ambient namespace — magnitude `1` scoped to TagDrop's
+`89d414e0` is Content Extension; the identical magnitude `1` scoped to a
+different application's namespace is that application's own, unrelated
+type. A decoder that resolves no namespace (or a namespace other than
+`89d414e0`) on a negative-typeId Record has no basis to apply TagDrop's
+Record Types to it — it correctly reads the Record as globally
+uninterpretable rather than TagDrop's, but never as some *other* global
+Type by mistake.
 
 ### 2.2 Even/odd key criticality
 
@@ -270,11 +313,11 @@ this payload (§5.1). Travels alongside QDEF's standard Media Preview
 (Type `7`) + Media Payload (Type `3`), which carry the file identification
 and content bytes respectively (§3.1a). A generic QDEF decoder reads
 Media Preview + Media Payload to extract the file; TagDrop's own decoder
-reads this Extension Record for the full feature set. As this Record's
-own array's leading element, it declares TagDrop's namespace (§2.1a) —
-`h''` cascading from the root when this is the root's direct child (the
-common case), or the full `h'89d414e0'` if it's the root's own single
-Record (the key-only case, §9).
+reads this Extension Record for the full feature set. This Record carries
+**no namespace item of its own** — it resolves to TagDrop's namespace via
+its wire typeId's negative sign alone (`-1`, declared magnitude `1`,
+§2.1a), whether it's the root Bundle's direct child (the common case) or
+its sole subrecord (the key-only case, §9).
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
@@ -374,8 +417,9 @@ when the payload is signed (§10), nested as Media Payload's own
 subrecord (see nesting rules below), never as a bare top-level Record.
 Even though neither Media Payload nor Media Preview declares a namespace
 of its own, the root's declaration still reaches Content Signature
-transparently (§2.1a's cascading rule) — it emits `h''` (1 byte) as its
-own array's leading element whenever present, same as any other
+transparently (§2.1a's cascading rule): it carries **no namespace item of
+its own** and resolves to the ambient namespace via its negative wire
+typeId (`-2`, declared magnitude `2`) alone, same as any other
 TagDrop-scoped Record:
 
 | Key | Field | Type | Notes |
@@ -389,14 +433,15 @@ Payload nested as Media Preview's own subrecord — `[7, {2: mediaType,
 Content Signature, if the payload is signed, nested one level deeper,
 as Media Payload's *own* subrecord (following its field map, not
 replacing anything): `[7, {...}, [3, {0: content_bytes, 1: mediaType},
-[h'', 2, {signature, signer_pubkey}]]]` — Content Signature's `h''`
-cascade (§2.1a) as the leading element of its array, reaching through
-both intervening global Types back to the root's declaration. This is
-the whole shape when it fits on one code.
+[-2, {signature, signer_pubkey}]]]` — Content Signature's negative wire
+typeId is what resolves it to the ambient namespace, reaching through
+both intervening global Types back to the root's declaration; it needs
+no namespace item of its own to do so. This is the whole shape when it
+fits on one code.
 
 **When Split is needed** (QDEF-SPEC.md §4.1/§4.5), the nesting inverts:
 **Split is outermost**, wrapping the canonical bytes of the `[3, {0:
-content_bytes, 1: mediaType}, [h'', 2, {...}]?]` array — Media Payload
+content_bytes, 1: mediaType}, [-2, {...}]?]` array — Media Payload
 *and* its own Content Signature subrecord, if present — as its own
 payload-slot (map key `0`) fragment data; Media Preview becomes
 *Split's* subrecord instead, unwrapped and repeated identically on
@@ -476,10 +521,10 @@ given the registry's own shrinkage.
 ### 3.2 Paper-Preview (Type `3`)
 
 Always plain, unwrapped, present on every code carrying this payload
-(§5.1). As this Record's own array's leading element, it declares
-TagDrop's namespace (§2.1a) — `h''` cascading from the root when this is
-the root's direct child (the common case), or the full `h'89d414e0'` if
-it's the root's own single Record.
+(§5.1). This Record carries **no namespace item of its own** — it
+resolves to TagDrop's namespace via its wire typeId's negative sign alone
+(`-3`, declared magnitude `3`, §2.1a), whether it's the root Bundle's
+direct child (the common case) or its sole subrecord.
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
@@ -518,11 +563,12 @@ that shared key no longer exists in QDEF's own registry.
 
 Optionally Compress-wrapped and/or Split-wrapped, same as Media Payload.
 A Paper has no `content` of its own — its body is entirely directory
-data. It always cascades TagDrop's namespace via `h''` (§2.1a) as its
-own array's leading element — whether it's the root's direct second
-child (fits-unwrapped case) or nested inside a Compress and/or Split
-Wrapper, since those global Wrapper Types pass the ambient namespace
-through transparently regardless of nesting depth.
+data. It carries **no namespace item of its own** — it resolves to
+TagDrop's namespace via its wire typeId's negative sign alone (`-4`,
+declared magnitude `4`, §2.1a), whether it's the root Bundle's direct
+second child (fits-unwrapped case) or nested inside a Compress and/or
+Split Wrapper, since those global Wrapper Types pass the ambient
+namespace through transparently regardless of nesting depth.
 
 | Key | Field | Type | Notes |
 |---|---|---|---|
@@ -703,8 +749,9 @@ Example — a Content payload, single code:
 ```
 [ h'89d414e0',                 // root namespace (§2.1a) — Bundle's own
                                 //   leading element
-  Content Extension (Type 1) {
-    (h'', namespace cascade)     // §2.1a — inherits root's declaration
+  Content Extension (wire typeId -1, declared magnitude 1) {
+                                // no namespace item — negative typeId
+                                //   resolves to the ambient namespace, §2.1a
     3: "under the bridge",       // hint
     13: h'<8 random bytes>',     // collection_id — optional, §7 Collections
     15: "Spring Sticker Hunt",   // collection_label — optional, §7 Collections
@@ -728,8 +775,9 @@ Example — a Paper, single code:
 
 ```
 [ h'89d414e0',                    // root namespace (§2.1a) — Bundle's own leading element
-Paper-Preview {
-  (h'', namespace cascade)        // §2.1a — inherits root's declaration
+Paper-Preview (wire typeId -3, declared magnitude 3) {
+                                   // no namespace item — negative typeId
+                                   //   resolves to the ambient namespace, §2.1a
   3: "Trail Stop 3 — Oak Tree",  // hint
   45: "Day 2 of the sunset trail: a poem and a hand-drawn map", // description
   5: "sunset-trail",             // set
@@ -744,8 +792,10 @@ Paper-Preview {
   11: 3,                          // step — this paper is stop 3 of the "sunset-trail" set
   1: h'<root_hash>',              // §4.4
 }
-Paper-Body {                     // fits unwrapped, so also a direct root child
-  (h'', namespace cascade)        // §2.1a — inherits root's declaration
+Paper-Body (wire typeId -4, declared magnitude 4) {
+                                  // fits unwrapped, so also a direct root child;
+                                  //   no namespace item — negative typeId
+                                  //   resolves to the ambient namespace, §2.1a
   1: h'<CBOR([                   // files — directory of codes on this paper (local keys, see §3)
     {1: "index", 2: "text/html",    3: h'<file_id>', 4: "A poem to read"},
     {1: "map",   2: "image/svg+xml", 3: h'<file_id>', 4: "A hand-drawn map"},
@@ -985,16 +1035,17 @@ exact nesting):
   exactly mirroring Paper's Body above, with one nesting difference:
   when it fits on the same code as the small part, Media Payload nests as
   *Media Preview's own subrecord* rather than sitting alongside it as a
-  separate top-level Record (§3.1a) — `[h'89d414e0', [1, {h'', ext
-  fields}], [7, {preview fields}, [3, {0: content, 1: mediaType}, [h'', 2,
+  separate top-level Record (§3.1a) — `[h'89d414e0', [-1, {ext
+  fields}], [7, {preview fields}, [3, {0: content, 1: mediaType}, [-2,
   {sig}]?]]]` as the root array (namespace declared once, Content
-  Extension and, if present, Content Signature both cascading via `h''`).
-  When it doesn't fit, Media Payload (with its Content Signature
-  subrecord embedded, if present) is Split-wrapped (QDEF-SPEC.md §4.1 Type
+  Extension and, if present, Content Signature both resolving to it via
+  their own negative typeId, no namespace item needed on either). When it
+  doesn't fit, Media Payload (with its Content Signature subrecord
+  embedded, if present) is Split-wrapped (QDEF-SPEC.md §4.1 Type
   1) into `count` fragments; each of those codes carries Content Extension
   plus Media Preview (now Split's own subrecord instead of Media Payload's
   parent — §3.1a) plus one fragment. `group_id` is a content hash of the
-  fully reassembled, unwrapped `[3, {...}, [h'', 2, {...}]?]` bytes —
+  fully reassembled, unwrapped `[3, {...}, [-2, {...}]?]` bytes —
   decoders MUST verify it after reassembly (QDEF-SPEC.md FINDINGS.md #5)
   and reject a mismatch, same as Paper's `group_id` above.
 - **Why Content Signature isn't just "part of Body" the way Paper's
@@ -1998,7 +2049,7 @@ overhead; for content already spanning multiple codes (§5) — e.g. an essay
 of a few KB — a constant ~2.4 KB signature is proportionally minor, and the
 public key (§ below) is amortized across an entire trail or collection.
 
-**Signed message for Content:** `SHA-256(MediaPreview' || MediaPayload'' || Extension')` (full, untruncated 32 bytes), where `MediaPreview'` is Media Preview's canonical CBOR bytes (Type 7, nothing to strip — it never carries a signature field), `MediaPayload''` is Media Payload's canonical CBOR bytes (Type 3) with its own Content Signature subrecord (Type 2, §3.1a) omitted entirely if present, and `Extension'` is the Content Extension Record's canonical CBOR bytes (Type 1) with `signature_algorithm`/`signer_id`/`signer_label` (its only signing-related fields now — `signature`/`signer_pubkey` no longer live here, §3.1) omitted — i.e. the SHA-256 of exactly what an unsigned payload's three Records would contain. Compress/Split Wrapper layers sit outside the signed region. The formula covers all three Records because the signature must bind the TagDrop-specific metadata (in the Extension Record) to the file content (in Media Preview + Media Payload). Content Extension's namespace-cascade item (`h''`, §2.1a) is part of its array's own bytes like any other element, so it's naturally included in `Extension'` — this is harmless for the "signing feeds back into nothing" invariant (below) since its value never changes between an unsigned and signed build of the same Record.
+**Signed message for Content:** `SHA-256(MediaPreview' || MediaPayload'' || Extension')` (full, untruncated 32 bytes), where `MediaPreview'` is Media Preview's canonical CBOR bytes (Type 7, nothing to strip — it never carries a signature field), `MediaPayload''` is Media Payload's canonical CBOR bytes (Type 3) with its own Content Signature subrecord (Type 2, §3.1a) omitted entirely if present, and `Extension'` is the Content Extension Record's canonical CBOR bytes (Type 1) with `signature_algorithm`/`signer_id`/`signer_label` (its only signing-related fields now — `signature`/`signer_pubkey` no longer live here, §3.1) omitted — i.e. the SHA-256 of exactly what an unsigned payload's three Records would contain. Compress/Split Wrapper layers sit outside the signed region. The formula covers all three Records because the signature must bind the TagDrop-specific metadata (in the Extension Record) to the file content (in Media Preview + Media Payload). Content Extension's own negative wire typeId (§2.1a) is part of its array's own bytes like any other element, so it's naturally included in `Extension'` — this is harmless for the "signing feeds back into nothing" invariant (below) since its value never changes between an unsigned and signed build of the same Record.
 
 **Signed message for Paper:** `SHA-256(Preview' || Body')` (full, untruncated 32 bytes), same formula as before — `Preview'` is Paper-Preview's canonical CBOR bytes with signature fields omitted, `Body'` is Paper-Body's canonical CBOR bytes with signature/signer_pubkey omitted. For a Paper, `root_hash` already strips exactly these same fields before hashing, so computing `root_hash` and computing the signed message are **one and the same SHA-256 call**: compute it once, take the first 8 bytes for `root_hash`, and feed the full 32 bytes to `Sign`/`Verify`. There is no separate bootstrapping step or ordering question beyond what §4.4 already requires for `root_hash` alone.
 
@@ -2087,8 +2138,9 @@ use cases of the same format, not a combination.
 
 ```
 [ h'89d414e0',                        // root namespace (§2.1a)
-Content Extension (Type 1) {
-  (h'', namespace cascade)
+Content Extension (wire typeId -1, declared magnitude 1) {
+                                      // no namespace item — negative typeId
+                                      //   resolves to the ambient namespace
   45: 1,                             // signature_algorithm: ML-DSA-44
   47: h'<8-byte signer_id>',
   49: "Alice's Trail",               // optional human-readable label
@@ -2099,8 +2151,9 @@ Media Preview (Type 7) {              // global — no namespace item; no key 0
   Media Payload (Type 3, Media Preview's subrecord) {  // global — no namespace item
     0: h'<content bytes>',           // content — reserved Payload key, §3.6/v15
     1: "text/markdown",              // mediaType, same as Media Preview
-    Content Signature (Type 2, Media Payload's own subrecord) {
-      (h'', namespace cascade)       // reaches through both global ancestors, §2.1a
+    Content Signature (wire typeId -2, declared magnitude 2, Media Payload's own subrecord) {
+      // no namespace item — negative typeId resolves to the ambient
+      //   namespace, reaching through both global ancestors, §2.1a
       3: h'<2420-byte signature>',
       5: h'<1312-byte public key>',  // only on first code from this signer
     }
@@ -2246,7 +2299,54 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 15** (current) — a second, independent correction found while
+**Version 16** (current) — QDEF-SPEC.md §3.5 changed how a Record's own
+scope is decided, again: a namespace bstr's effect is now *cascade to
+subrecords only* — it never scopes the typeId on the Record that carries
+it. Whether a Record's own typeId is global or scoped is instead decided
+purely by that typeId's own sign (non-negative = global, negative =
+scoped, adopting the ambient namespace from an ancestor); `h''`
+("inherit the ambient namespace as my own scope") is removed from QDEF's
+grammar entirely, replaced by sign at zero extra bytes. Net effect for
+TagDrop (§2.1a has the full account):
+
+- TagDrop's four Record Types keep their declared magnitudes (`1`–`4`,
+  §2.1) but now wire-encode **negative** (`-1`–`-4`) and carry **no
+  namespace item of their own** — the `h''` marker every TagDrop-scoped
+  Record emitted in versions 14–15 is gone, replaced by the typeId's own
+  sign. This is a net byte *savings* of 1 byte per TagDrop-scoped Record
+  present on a code (Content Extension, Content Signature, Paper-Preview,
+  Paper-Body).
+- A Record can no longer both introduce a namespace and be scoped by it
+  in the same array, so the version-13 "a lone top-level Record needs no
+  Bundle wrapping" exception for key-only codes (§9) is gone — every
+  TagDrop code is now a namespace-declaring root Bundle, wrapping either
+  one or two subrecords. This costs key-only codes specifically **+1
+  byte** (the subrecord's own array header) that versions 13–15 didn't
+  pay.
+- A version-16 side effect strengthens (not weakens) the correctness
+  argument §2.1a makes for declaring the namespace explicitly: since
+  TagDrop's typeIds now wire-encode negative and every QDEF standard Type
+  wire-encodes non-negative, the two spaces are disjoint CBOR major types,
+  not just disjoint by convention — a decoder can never mistake TagDrop's
+  wire `-1` for QDEF's global Type `1` by magnitude alone, regardless of
+  namespace resolution.
+- QDEF's own Common Field Key registry was separately simplified in the
+  same redesign to just `-1` (Record ID; UUID now travels as CBOR tag 37
+  wrapping that same key, rather than its own key `-3`) — no TagDrop
+  action needed, since TagDrop reverted off all shared Common Field Keys
+  back in version 14 already and doesn't use `-1`/UUID either.
+- QDEF's global-typeId allocation-range boundaries were also re-tiered by
+  CBOR byte cost (1–22/23–255/256–65535/65536+) — no TagDrop action
+  needed, since TagDrop's own typeId numbering is namespace-scoped, which
+  QDEF-SPEC.md §4 explicitly leaves to the namespace owner regardless of
+  these global-range boundaries.
+
+See CLAUDE.md for the full account of both codec ports, including which
+files were touched in each of the Kotlin and JS ports, what got caught
+during diff review versus what the test suites themselves caught, and
+how this was verified.
+
+**Version 15** — a second, independent correction found while
 verifying version 14 against the live spec: QDEF's positional `payload`
 array slot (`[typeId, map?, payload?, subrecord*]`, adopted at version
 11) is gone entirely from the current grammar — every Record is now
@@ -2386,7 +2486,9 @@ definite-length CBOR array, on every carrier, including `tagdrop:` URI
 and NFC NDEF, which do change TagDrop's wire bytes. A code carrying a
 single top-level Record (a key-only code, §9) writes that Record's own
 array directly as the root — unchanged, since a lone Record was already
-exactly this shape. A code carrying two top-level Records (Content
+exactly this shape. (**Superseded by version 16:** a lone top-level
+Record is Bundle-wrapped too, as of version 16 — see that entry above
+for why.) A code carrying two top-level Records (Content
 Extension + Media Preview/Split, or Paper-Preview + Body/Compress/Split-
 fragment — the common case for both payload types) now wraps them as the
 two subrecords of an implied, never-transmitted Bundle (typeId `0`,

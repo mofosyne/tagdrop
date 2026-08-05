@@ -88,15 +88,25 @@ end-of-buffer guesswork, no marker needed.
 | `0x51 0x44 0x45 0x46` ("QDEF") | One self-delimited CBOR array: `[namespace?, typeId*, map?, sub*]`. Anything after it is provably outside the container. |
 
 The root Record follows the same grammar as every other Record (§3):
-an optional byte-string **namespace** (empty string = inherit from
-parent), then zero or more consecutive uints forming the **typeId**
-sequence, then an optional CBOR **map** (key `0` reserved for payload),
-then **subrecords**:
+an optional byte-string **namespace** (cascades to subrecords only —
+never scopes this Record's own typeId, §3.5), then zero or more
+consecutive integers forming the **typeId** sequence (scope decided
+purely by its own sign), then an optional CBOR **map** (key `0`
+reserved for payload), then **subrecords**:
 
 ```
 QDEF [5, {0: "https://..."}]                 -- typeId [5] = Open/Hint URI (standard)
-QDEF [h'deadbeef', 1, {0: "data"}]         -- namespace + typeId [1], scoped
 QDEF [[5, {0: "..."}], [100, {2: "SSID"}]]   -- Bundle, two subrecords
+QDEF [h'deadbeef', [-100, {2: "child"}]]     -- Bundle w/ namespace,
+                                              --   subrecord's negative
+                                              --   typeId inherits it
+QDEF [h'deadbeef', 5, {0: "https://..."}]    -- namespace present, but
+                                              --   typeId [5] stays
+                                              --   global (Open/Hint URI)
+                                              --   -- the bstr only
+                                              --   cascades, unused here
+                                              --   since there are no
+                                              --   subrecords
 ```
 
 Both the root array and every subrecord's own array header (its CBOR
@@ -132,24 +142,31 @@ namespace?, ns_annotation?, typeId*, type_annotation?, map?, subrecord*
 ```
 
 - **namespace** (optional): a CBOR **byte string** (major type 2) at
-  position 0. Empty (`h''`) = inherit parent's namespace. Absent = no
-  scoping for following app typeIds.
+  position 0, non-empty. Its only effect is on **subrecords** — it
+  becomes the ambient namespace they inherit from. It never scopes
+  *this* Record's own typeId (§3.5); an empty byte string (`h''`) is
+  not a valid namespace token.
 - **ns_annotation** (optional): a **text string** (major type 3)
   immediately after a namespace — a human-readable label for the
   namespace, never load-bearing for routing. Present only if a
   namespace precedes it.
-- **typeId** (optional): zero or more consecutive CBOR **uints** (major
-  type 0). Global when no namespace is present; scoped to the namespace
-  otherwise. Low values `1`–`22` are reserved for standard QDEF types
-  (§4); all other values are available for application types. Absent
-  (no uints) = **Bundle**.
+- **typeId** (optional): zero or more consecutive CBOR integers forming
+  the X.X.X hierarchy. Scope is decided purely by the *first* element's
+  own sign, independent of whether a namespace bstr precedes it on this
+  same Record — a non-negative **uint** (major type 0) is global, a
+  **negative int** (major type 1) is scoped, adopting the ambient
+  namespace from an ancestor Record (§3.5) — and every element after the
+  first is a plain uint. Low non-negative values `1`–`22` are reserved
+  for standard QDEF types (§4); all other non-negative values are
+  available for application types. Absent (no integers) = **Bundle**.
 - **type_annotation** (optional): a **text string** immediately after
-  the last typeId uint — a human-readable label for the type, never
-  load-bearing. Present only if at least one uint precedes it.
+  the last typeId element — a human-readable label for the type, never
+  load-bearing. Present only if at least one typeId element precedes it.
 - **map** (optional): the first non-bstr, non-uint, non-tstr item, if
   it is a CBOR **map** (major type 5), is the field Map. Key `0` is
-  reserved for the payload. Negative keys `-1` and `-3` are QDEF common
-  headers (ID and UUID). Positive keys carry application fields with
+  reserved for the payload. Key `-1` is the spec-reserved Record ID.
+  Positive keys (≥ 2) carry application fields, and negative keys
+  (≤ -2) are reserved for future QDEF common headers, both with
   even/odd criticality (§3.2).
 - **subrecord***: remaining items after the map.
 
@@ -165,32 +182,49 @@ using ordinary CBOR array-skipping, without Record-grammar knowledge.
 | Wire shape | Typical use |
 |---|---|
 | `[ [ ... ], ... ]` | Bundle (no ns, no typeId) |
-| `[h'ns', [ ... ], ...]` | Bundle with namespace |
-| `[N, { ... }]` | App type (no namespace), or standard type (§4) when N is 1–22 |
-| `[N, "name", { ... }]` | App type with type annotation |
-| `[h'ns', "name", N, { ... }]` | Namespace + ns annotation + type |
-| `[h'ns', N, "name", { ... }]` | Namespace + type + type annotation |
-| `[h'', N, { ... }]` | App type inheriting parent's ns |
+| `[h'ns', [ ... ], ...]` | Bundle with namespace, cascading to its subrecords |
+| `[N, { ... }]` | Global type — standard (§4) when N is 1–22, otherwise app-chosen |
+| `[N, "name", { ... }]` | Global type with type annotation |
+| `[h'ns', [-N, { ... }]]` | Bundle with namespace, whose subrecord's negative typeId adopts it |
+| `[-N, { ... }]` | App type inheriting an *already-ambient* namespace (negative typeId, no namespace bstr of its own) |
+
+A namespace bstr's only job is cascading to subrecords — it never
+scopes the typeId on the same Record that carries it. `[h'ns', N, {
+... }]` (an explicit namespace alongside a non-negative typeId) is
+legal, but `N` still reads as **global**; the namespace has no local
+effect, it only becomes ambient for any subrecords. To get a scoped
+type, the typeId itself has to be negative.
 
 ### TypeId + Namespace system
 
-Two axes, one rule each:
+TypeId scope is decided **purely by its own sign** — a namespace bstr
+on the same Record never affects it, present or not:
 
-| Axis | Rule |
+| Case | Rule |
 |---|---|
-| **namespace** absent | typeId is **global** — same meaning for every decoder |
-| **namespace** present (bstr, or empty `h''` inherit) | typeId is **scoped** to that namespace |
+| first typeId element **negative** | typeId is **scoped**, adopting the ambient namespace from an ancestor Record |
+| first typeId element **non-negative** | typeId is **global** — same meaning for every decoder, regardless of any namespace bstr on this same Record |
 | **typeId** absent | **Bundle** — structural only |
-| **typeId** present | Defines the Record's type, globally or scoped per namespace |
+| **typeId** present | Standard Record |
 
-Namespace presence is the sole scoping signal. A typeId `[2]` without a
-namespace is globally the Split wrapper (§4.1). The same `[2]` within
-a namespace `h'deadbeef'` is an app-chosen type, unrelated to Split.
+A typeId `[2]` is globally the Split wrapper (§4.1) whether or not a
+namespace bstr sits next to it on the same Record — the bstr only ever
+affects subrecords. `[-2]` (negative, with an ambient namespace
+`h'deadbeef'` in scope from some ancestor) is instead an app-chosen
+type local to that namespace, unrelated to Split. This makes a
+namespace bstr useful as a one-shot, container-wide declaration: the
+root Record of a whole QDEF payload can carry a namespace purely to
+identify which app/vendor the container belongs to — a "magic" for the
+payload as a whole — without that declaration ever accidentally
+reinterpreting a global type it happens to sit next to, and regardless
+of whether the root itself carries a typeId at all.
 
-Standard QDEF Record Types (§4) are global (no namespace) with reserved
-low typeId numbers 1–22. Application types are global when no namespace
-is declared, or scoped when one is. The X.X.X hierarchical space is
-shared — namespace presence, not the typeId value, determines scope.
+Standard QDEF Record Types (§4) are always global (non-negative typeId,
+no namespace) with reserved low typeId numbers 1–22. Application types
+are global when non-negative with no namespace, or scoped when either
+an explicit namespace is present or the first typeId element is
+negative. The X.X.X hierarchical space is shared — namespace presence
+together with typeId sign, not the typeId magnitude, determines scope.
 
 ### Map key conventions
 
@@ -198,13 +232,25 @@ shared — namespace presence, not the typeId value, determines scope.
 |---|---|---|
 | `0` | Payload | RESERVED — same meaning in every Record |
 | `1` | Payload descriptor | RESERVED — optional hint for what key 0 holds (MIME type, URI, label, etc.) |
-| `< 0` | Common header keys | Spec-governed — only `-1` (ID) and `-3` (UUID) |
+| `-1` | Record ID | Spec-reserved — NDEF-ID-equivalent correlation token (§3.6) |
+| `<= -2` | Future common headers | Standards Action only, never app-allocated — even/odd criticality (§3.2) reserved now so a future header is safe to add without breaking already-deployed decoders |
 | `>= 2` | Application fields | Per-Type numbering, with even/odd criticality (§3.2) |
 
 Key `0` carries the Record's payload when present. Key `1` is an
 optional hint describing the payload — never load-bearing for routing,
 a decoder MUST NOT rely on it for correctness. A Bundle (no typeId)
 MUST NOT have either key.
+
+**Why these numbers.** Key `0` encodes in 1 CBOR byte — the most-used
+key gets the cheapest encoding. Key `1` (odd) enforces "never
+load-bearing" through the even/odd criticality rule (§3.2) rather than
+prose alone. Key `-1` as the Record ID occupies the negative space,
+which costs nothing to application types and leaves positive key `2`
+as the first (even, critical) application field by default — the right
+starting parity for data that must not be silently ignored. Keys `≤ -2`
+stay unallocated on purpose, but already carry a parity: whichever one
+the spec claims next for a future common header, that choice of even or
+odd is what tells an already-deployed decoder how to fail safely.
 
 Key 0 and 1 form a natural pair: the heavy data and its description.
 All standard types follow this convention, and application types are
@@ -226,9 +272,12 @@ Application types that don't follow this convention shift their fields
 to start at key 2, which also gets the first even/odd criticality
 signal.
 
-**Implementer caution:** a uint typeId element MUST be encoded as a
-native CBOR uint (major type 0), never wrapped in a bignum tag (CBOR
-tag `2`/`3`).
+**Implementer caution:** a typeId element MUST be encoded as a native
+CBOR integer — uint (major type 0) or, for the first element only,
+negative int (major type 1) — never wrapped in a bignum tag (CBOR tag
+`2`/`3`). Only the first element of a typeId sequence may be negative;
+every element after it is a plain uint regardless of the first
+element's sign.
 
 ### 3.1 Annotations
 
@@ -249,20 +298,31 @@ cost zero net bytes (they occupy what would otherwise be padding).
 ### 3.2 The Extensibility Rule (Even/Odd Keys)
 
 Borrowed from PNG's critical/ancillary chunk convention. This rule
-applies to **positive map keys only** — key `0` is spec-reserved for
-payload and negative keys are spec-governed common headers (§3.6);
-neither is governed by per-Type even/odd.
+applies to **positive map keys (≥ 2)** and **negative map keys (≤ -2)**
+— keys `0`, `1`, and `-1` have fixed spec-reserved meanings and are not
+governed by per-Type even/odd.
 
-- **Even keys (> 0) are CRITICAL.** An unrecognized even-numbered key
-  MUST cause the parser to abort processing *that record* (not the whole
+- **Even keys are CRITICAL.** An unrecognized even-numbered key MUST
+  cause the parser to abort processing *that record* (not the whole
   container — sibling records sharing the same array are unaffected).
-- **Odd keys (> 0) are OPTIONAL.** An unrecognized odd-numbered key
-  MUST be silently ignored; the rest of the record still processes
-  normally.
+- **Odd keys are OPTIONAL.** An unrecognized odd-numbered key MUST be
+  silently ignored; the rest of the record still processes normally.
 
 This gives per-field forward compatibility: a future critical field
 doesn't require any version-bump mechanism, only choosing an even key
 number the current Record Type doesn't yet define.
+
+**Positive and negative keys differ in who allocates them, not in this
+rule.** Positive keys (≥ 2) are Type-scoped: each Record Type's own
+author numbers its own fields, and the same number means different
+things in different Types. Negative keys (≤ -2) stay Standards
+Action-governed — only the QDEF spec itself may allocate one, so a
+given negative key means the same thing on every Record Type, the same
+as `-1` already does today. Fixing the parity rule now, before any of
+`≤ -2` is assigned, means a future spec-defined common header can be
+introduced exactly the way a Type adds a new field: no version-bump
+mechanism, and decoders deployed before that key existed already have
+defined, safe fallback behavior for it.
 
 **A Record field's value MAY be any well-formed CBOR item** — a scalar,
 a string, or a nested array, map, or tag of any depth.
@@ -362,10 +422,11 @@ cheap, since Record Maps are small by construction.
 
 ### 3.5 Namespace Scoping
 
-A namespace is a byte string prefix on a Record. When present, the
-Record's typeId is scoped to that namespace — a different namespace (or
-no namespace) treats the same typeId as a different type. When absent,
-the typeId is global, interpreted the same by every decoder.
+A namespace is a byte string prefix on a Record. Its **only** effect is
+on subrecords — it becomes the ambient namespace they inherit. It never
+scopes the typeId on the same Record that carries it: that Record's own
+typeId is global or scoped purely by its own sign (§3.2), regardless of
+whether a namespace bstr sits right next to it.
 
 The namespace value is self-chosen by the application — typically a
 hash-derived value from a reverse-domain string, 4+ bytes long for
@@ -373,82 +434,104 @@ collision safety (SHA-256 prefix, self-certify at 4+ bytes). Two
 independent apps picking the same namespace collide every type within
 it.
 
-**Special values:**
-- **Empty byte string `h''`**: adopt the ambient namespace — whatever
-  the immediate parent passed down — as this Record's own scope.
-- **Absent (no bstr at position 0)**: this Record's own typeId is
-  global/standard-managed space, full stop, regardless of any ambient
-  namespace flowing through it.
+**Namespace token, two forms only** (an empty byte string `h''` is not
+a valid namespace token):
+- **Explicit `h'ns'`** (non-empty): becomes the ambient namespace for
+  this Record's subrecords. Has no effect on this Record's own typeId.
+- **Absent**: no new ambient is introduced; subrecords (if any) inherit
+  whatever ambient this Record itself received.
 
-**Best practice: every scoped Record carries its own namespace token —
-`h''` or a real value — never absent.** Absence always means global for
-*that Record's own typeId*, no matter what ambient namespace is present
-— this is the only way a Record that's meant to be scoped actually
-stays scoped.
+**A Record's own scope is decided purely by its own typeId's sign,
+full stop** — never by a namespace bstr on that same Record:
+- **Non-negative typeId** = global, unconditional. The same meaning to
+  every decoder, regardless of any namespace bstr present here or any
+  ambient namespace flowing through.
+- **Negative typeId** = scoped, adopting the ambient namespace received
+  from an ancestor Record. Never this Record's own bstr — a Record
+  cannot scope itself to a namespace it is simultaneously introducing;
+  getting both a fresh namespace declaration and a Record scoped to it
+  needs two Records: a namespace-carrying parent and a negative-typeId
+  child (the `[h'deadbeef', [-100, ...]]` shape below).
 
-**Cascade.** A Record's own namespace token decides only how *that
-Record's own typeId* is interpreted — it does not, by itself, decide
-what namespace continues on to its subrecords:
+**Best practice: a Record meant to be scoped always uses a negative
+typeId.** A non-negative typeId always means global, no matter what
+namespace bstr sits on the same Record or flows through as ambient —
+that's the only sign a decoder ever reads for scope.
 
-- **Own scope:** absent = global (unconditional, regardless of
-  ambient); `h''` = the ambient namespace received from the immediate
-  parent; an explicit `h'ns'` = that value.
-- **What passes to subrecords:** an explicit `h'ns'` becomes the new
-  ambient namespace for everything nested inside it. Anything else —
-  `h''`, or namespace absent entirely — passes the ambient namespace it
-  received straight through, unchanged, independent of how *this*
-  Record's own typeId got interpreted.
+**Declared vs. wire-encoded typeId.** A namespace's own type numbering
+(e.g. a `registry.rec` `ScopedTypeId`, or any spec's own scheme) is
+always a positive magnitude — that's the type's identity, chosen once
+by the namespace owner and never signed. The sign is purely a
+wire-encoding decision made at encode time, not a property of the type
+itself: to actually encode a Record as that scoped type, negate the
+declared magnitude in the typeId position (`ScopedTypeId 1` → wire
+typeId `-1`), on a Record whose ambient namespace (from an ancestor)
+resolves to the namespace that number was registered under. The same
+magnitude appearing as a non-negative typeId elsewhere is a different,
+unrelated global type (§4's allocation-range table) — magnitude alone
+never implies scope either way.
 
-This applies uniformly — a QDEF standard type (§4), a plain Bundle, and
-an application-defined type are all the same Record shape for this
-purpose. A standard type's own typeId is always global by construction
-(no namespace value changes what `Type 7` means), but that's a fact
-about *its own* interpretation only — it doesn't stop the ambient
-namespace from reaching whatever's nested inside it. Standard types
-aren't a structurally different kind of thing from application types
-here: per §4's allocation-range table, they're the same global typeId
-space under different governance tiers (Standards Action for `1`–`22`,
-Specification Required or First Come First Served above that), not two
-separate mechanisms.
+**Cascade.** Only an explicit `h'ns'` changes what subrecords receive as
+ambient; everything else (no bstr at all, on *any* Record — Bundle,
+standard type, or scoped app type) passes the ambient it received
+straight through unchanged. This is independent of, and never decided
+by, how that Record's own typeId got interpreted:
 
 ```
 QDEF [10, {0: "https://..."}]                    // Global (standard) type [10]
-QDEF [h'deadbeef', 1, {0: h'<payload>'}]         // Namespace-scoped type [1]
-QDEF [h'deadbeef', [100, {2: "child"}]]          // Bundle with namespace,
-                                                  //   subrecord inherits
-QDEF [h'deadbeef', [h'', 100, {2: "child"}]]    // Explicit inherit
-QDEF [h'deadbeef', [7, [h'', 200, {}]]]         // typeId [7] (Media
+QDEF [h'deadbeef', 1, {0: h'<payload>'}]         // typeId [1] stays global
+                                                  //   (Split!) -- deadbeef
+                                                  //   only cascades, has no
+                                                  //   local effect here
+QDEF [h'deadbeef', [100, {2: "child"}]]          // Subrecord's typeId is
+                                                  //   non-negative --
+                                                  //   GLOBAL type 100,
+                                                  //   deadbeef unused
+QDEF [h'deadbeef', [-100, {2: "child"}]]         // Negative typeId --
+                                                  //   correctly scoped,
+                                                  //   inherits deadbeef
+QDEF [h'deadbeef', [7, [-200, {}]]]             // typeId [7] (Media
                                                   //   Preview) is global
-                                                  //   for ITSELF, but
-                                                  //   still passes
-                                                  //   h'deadbeef' on to
-                                                  //   its own subrecord,
-                                                  //   whose h'' correctly
-                                                  //   resolves to it
+                                                  //   regardless; still
+                                                  //   passes deadbeef on
+                                                  //   to its own
+                                                  //   subrecord, whose
+                                                  //   negative typeId
+                                                  //   correctly resolves
+                                                  //   to it
 ```
 
-**Namespace must be transmitted, never merely implied.** "Absent" above
-is unconditional for a Record's own scope: a Record with no namespace
-bstr of its own is standard/global typeId space, full stop — there is
-no carrier-level exception where a namespace is inferred from context
-outside the QDEF bytes themselves (a URI scheme, a carrier-specific NDEF
-MIME type) rather than actually present on the wire somewhere in its
-ancestry. An application that wants any of its typeIds scoped MUST
-declare that namespace in-band — either explicitly on that Record, or
-via `h''`, or via an ancestor's explicit declaration reaching it through
-any number of intervening pass-through Records. A decoder has no way to
-reconstruct a namespace it was never given anywhere on the wire, and
-correctly reads a bare typeId as its standard/global meaning instead.
+A namespace bstr on the *root* Record of a whole QDEF payload is a
+useful pattern even when the root itself carries no typeId at all (a
+plain Bundle): a one-shot, container-wide declaration of which
+app/vendor the payload belongs to — a "magic" for the container as a
+whole — cascading to every subrecord underneath without needing to be
+repeated, and with no risk of it silently reinterpreting some unrelated
+global type it happens to sit beside.
+
+**Namespace must be transmitted, never merely implied.** A Record with
+no namespace bstr of its own has whatever ambient it received (or
+none) — there is no carrier-level exception where a namespace is
+inferred from context outside the QDEF bytes themselves (a URI scheme,
+a carrier-specific NDEF MIME type) rather than actually present on the
+wire somewhere in its ancestry. An application that wants any of its
+typeIds scoped MUST declare that namespace in-band, on an ancestor
+Record, reaching the scoped Record through any number of intervening
+pass-through Records. A decoder has no way to reconstruct a namespace
+it was never given anywhere on the wire, and correctly reads a bare
+non-negative typeId as its standard/global meaning instead.
 
 This costs little in practice: declare the namespace once, at the
 outermost Record that needs it, and every scoped descendant inherits it
-for 1 byte (`h''`) each — including through any number of standard-type
-or Bundle Records in between — rather than repeating the full value.
+for free — a negative typeId, no extra byte — including through any
+number of standard-type or Bundle Records in between, rather than
+repeating the full value.
 
-Standard QDEF Record Types (§4) use global (no-namespace) typeIds with
-reserved low numbers 1–22. An app could assign `[2]` inside its own
+Standard QDEF Record Types (§4) use global, non-negative typeIds with
+reserved low numbers 1–22. An app could assign `[-2]` scoped to its own
 namespace for a completely different purpose — no collision with Split,
-because the namespace is different.
+because the namespace is different and the sign already tells a decoder
+these are two unrelated readings.
 
 **Byte-length guidance:** self-allocate at 4 bytes or longer (birthday
 bound: ~9k namespaces before 1% collision risk at 4 bytes). Shorter is
@@ -461,44 +544,54 @@ lookup.
 
 ### 3.6 Reserved Map Keys
 
-The field Map in every Record has two reserved key ranges, neither of
-which is governed by per-Type even/odd criticality:
+The field Map in every Record has three keys with fixed, spec-reserved
+meanings — `0`, `1`, and `-1` — none of which is governed by per-Type
+even/odd criticality:
 
 **Key `0` — Payload (RESERVED).** The Record's content payload. A
 text string value is assumed plaintext; a byte string is opaque content
 whose meaning is defined by the Record's own Type. Any other CBOR type
 is also valid. A Bundle (no typeId) MUST NOT carry key `0`, but it MAY
-carry a map with only metadata keys (e.g. `-3` for a container UUID):
+carry a map with a Record ID (see "Key `-1`" below):
 
 ```
-QDEF [{-3: h'<16B UUID>'}, [10, {0: "uri"}]]   // Bundle with UUID + subrecord
+QDEF [{-1: h'<id>'}, [10, {0: "uri"}]]   // Bundle with ID + subrecord
 ```
 
-**Negative keys — QDEF Common Headers (spec-governed).** These are
-few, spec-maintained only, and never self-allocatable by an
-application — an application-invented negative key would break the
-consistent, Type-independent recognition this tier exists for:
+**Key `1` — Payload descriptor (RESERVED).** An optional hint describing
+what key `0` holds — never load-bearing for routing, a decoder MUST NOT
+rely on it for correctness. A Bundle MUST NOT have key `1`.
 
-| Key | Name | Value shape |
-|---|---|---|
-| -1 | ID | `bstr` or `tstr` — an NDEF-ID-equivalent correlation token |
-| -3 | UUID | `bstr`, exactly 16 bytes — standard RFC 4122/9562 UUID |
+**Key `-1` — Record ID (spec-reserved).** Value shape: `bstr` or
+`tstr`. An NDEF-ID-equivalent correlation token for correlating Records
+*within* the same scan/tap — cheap, scoped, no uniqueness requirement.
+A Record MAY carry this key or not. Unlike annotation strings (§3.1), an
+ID is load-bearing (decoders use it for intra-container correlation),
+but it carries no semantics beyond identity. If the ID is a UUID, it
+MUST be wrapped in CBOR tag 37: `{-1: 37(h'<16 bytes>')}`. A decoder
+that only needs the raw bytes can ignore the tag; a generic scanner
+seeing tag 37 knows unambiguously that the value is a UUID without
+sniffing byte length.
 
-**ID vs. UUID: two different jobs, not two shapes of the same field.**
-ID is for correlating Records *within* the same scan/tap — cheap,
-scoped, no uniqueness requirement, the direct equivalent of NDEF's own
-`ID` field. UUID is a stronger, standardized identifier meant to survive
-outside the container entirely — tracking a specific piece of content
-across scans, sessions, or systems. A Record MAY carry either, both, or
-neither.
+**Keys `≤ -2` — future common headers (Standards Action, unallocated).**
+Unassigned today, but already governed by §3.2's even/odd rule: an
+unrecognized even negative key MUST abort that record, an unrecognized
+odd negative key MUST be silently ignored. This is allocation-reserved,
+not self-allocatable by an application — the same Type-independent
+recognition property `-1` already has depends on every negative key
+meaning the same thing on every Record Type, which only holds if the
+spec is the sole allocator. Fixing the parity rule ahead of allocation
+means the spec can add a header later exactly the way a Record Type
+adds a field: no version-bump mechanism, and decoders deployed before
+that key existed already have defined, safe behavior for it.
 
-**A Type's own key `0` (payload) and the common `ID` key (`-1`) can
-never collide** — CBOR's major-type distinction between non-negative
-(major 0) and negative (major 1) integers keeps the two key spaces
-disjoint.
+**Key `≥ 2` — application fields.** Governed by that Record Type's own
+field numbering, with the same even/odd criticality rule (§3.2) — but
+Type-scoped, not spec-governed: the same number may carry a different
+meaning in a different Record Type.
 
-All other keys are positive integers (`> 0`) governed by that Record
-Type's own field numbering, with even/odd criticality (§3.2).
+**CBOR's major-type distinction between non-negative (major 0) and
+negative (major 1) integers keeps the two key spaces disjoint.**
 
 ### Typical use of reserved keys
 
@@ -507,7 +600,6 @@ Type's own field numbering, with even/odd criticality (§3.2).
 | `0` | Primary content | Media Payload carries image bytes; Compress carries deflated stream; Open/Hint URI carries the URL; App Route carries the domain |
 | `1` | Content descriptor | Media Payload describes key 0's MIME type; Open/Hint URI gives the link text; App Route labels the routing target |
 | `-1` (ID) | Intra-container correlation | A Signature Record references its covered Records by ID; a Split fragment shares ID with other fragments in the group |
-| `-3` (UUID) | Cross-session identity | A Media Payload carries the same UUID across scans so a client can deduplicate content it already saw on a different QR code |
 
 An application type that carries a heavy binary blob and a short label
 should use key 0 for the blob and key 1 for the label — this is the
@@ -538,7 +630,7 @@ namespace for scoping.
 **Currently assigned type IDs:**
 
 | TypeId | Record Type | Section | Notes |
-|---|---|---|---|---|
+|---|---|---|---|
 | (absent) | Bundle | §4.6 | Structural grouping |
 | [1] | Split | §4.1 | Fragment reassembly / parity |
 | [2] | Encrypt | §4.1 | AEAD (e.g. AES-256-GCM) |
@@ -552,15 +644,26 @@ namespace for scoping.
 All nine are global types (no namespace), spec-reserved in the 1–22
 range.
 
-**Type ID allocation ranges.** Scope is determined by namespace
-presence, not the typeId value:
+The field-level shape of each numbered type (1–8) is also tracked
+machine-readably in
+[`standard-types.rec`](https://github.com/qdef-format/qdef-format.github.io/blob/main/standard-types.rec)
+— the counterpart to `registry.rec` (§3.5's community namespace
+registry), but Standards Action governed: changes go through the spec
+itself, not a standalone registration PR. Bundle has no fixed field
+shape and so has no entry there.
 
-| Range | Governance | Scope |
+**Type ID allocation ranges.** Boundaries follow CBOR's integer encoding
+sizes — the most broadly useful types get the cheapest encoding. These
+ranges apply to global typeIds only. Namespace-scoped typeIds are the
+namespace owner's responsibility — numbering within a namespace is
+local.
+
+| Range | CBOR bytes | Governance |
 |---|---|---|
-| 1–22 | Standards Action — QDEF standard types (§4) | global (by spec) |
-| 23–98 | Specification Required — reserved | global |
-| 100–32767 | Specification Required — reviewed app types | global (no ns) or scoped (with ns) |
-| 32768+ | First Come First Served — self-allocated | global (no ns) or scoped (with ns) |
+| 1–22 | 1 | Standards Action — QDEF infrastructure (wrappers, routing, signatures) |
+| 23–255 | 2 | Specification Required — well known record types (Wi-Fi, vCard, etc.) |
+| 256–65535 | 3 | Specification Required — community record types |
+| 65536+ | 5+ | First Come First Served — self-allocated, cross-app sharing |
 
 **Choosing a type ID form:**
 
@@ -569,10 +672,12 @@ presence, not the typeId value:
      YES -> use assigned number 1-22, no namespace
 
 2. Does your app need collision isolation from other apps?
-     YES -> declare a byte-string namespace (§3.5) and use any
-            typeId within it — numbers are local to your namespace
+     YES -> declare a byte-string namespace (§3.5) on an ancestor
+            Record, and use a negative typeId on the Record that's
+            actually typed — magnitude is local to your namespace,
+            chosen by you
 
-     NO  -> pick any number 100+ without a namespace (global)
+     NO  -> pick any number 24+ without a namespace (global)
 ```
 
 ### 4.1 Wrapper Records (optional)
@@ -678,8 +783,8 @@ a plain, unwrapped Record.
 
 ### 4.2 Open/Hint URI (optional)
 
-Unlike §4.1, this is deliberately **not** a wrapper — a plain standard record type Record
-Type meant to sit as a *sibling* alongside real content records in the same
+Unlike §4.1, this is deliberately **not** a wrapper — a plain standard
+Record Type meant to sit as a *sibling* alongside real content records in the same
 array, carrying a URI any generic tool can follow if it doesn't
 understand anything else in the container. It's not exclusively a
 fallback: the identical Record is also the right choice for a QR code
@@ -698,7 +803,6 @@ Type 5:                            // Open/Hint URI (standard record type)
                                         //   0 = perform the action (open
                                         //   the URI), 1 = save for later,
                                         //   2 = open for editing
-}
 ```
 
 This is what gives a QDEF container the "something useful happens even
@@ -718,10 +822,10 @@ restricts how many Records of the same Type appear in one array.
 
 ### 4.3 Media Payload (optional)
 
-A plain standard record type Record Type — not a wrapper — for attaching a standard,
+A plain standard Record Type — not a wrapper — for attaching a standard,
 already-widely-recognized media type (a JPEG thumbnail, a vCard, a PDF
 snippet) without registering a bespoke Type ID for every possible file
-format the way Examples does for application-specific content:
+format, the way an application-specific Record Type (§5) would:
 
 ```
 Type 3:                            // Media Payload (standard record type)
@@ -749,7 +853,7 @@ if that registry ever goes unmaintained.
 
 ### 4.4 App Route (optional)
 
-A plain standard record type Record — not a wrapper — for letting a generic
+A plain standard Record Type — not a wrapper — for letting a generic
 QDEF-aware scanner offer to launch a specific handling application,
 comparable to NFC's Android Application Record (AAR) or platform
 Intent-filter dispatch, without the scanner needing any
@@ -767,7 +871,6 @@ Type 6:                            // App Route (standard record type) — hash-
   0: h'<truncated SHA-256>',        // PAYLOAD: hash-derived byte string
                                      //   value (key 0)
   1: "com.example/tagdrop-paper"    // OPTIONAL: Hint name
-}
 ```
 
 **Key `0` may be a domain string or a hash-derived byte string — two
@@ -811,7 +914,12 @@ it finds any recognized Record Type (§3).
 - *The domain form* SHOULD repeat verbatim on every code if the adopter
   wants auto-launch to work from whichever code is scanned first.
   Restricting it to one designated code is also valid; auto-launch then
-  only fires from that code.
+  only fires from that code. **When restricting it, put it on the code
+  carrying Split's `Fragment Index` (§4.1) `0`** — reusing that existing
+  field as the designation instead of an ad hoc printed label, so a
+  scanner (and a human choosing where to point a camera first) has one
+  unambiguous "start here" code rather than needing new out-of-band
+  convention.
 - *The hash-derived form* SHOULD repeat on every code, more strongly
   than the domain form — its entire value is rejecting an
   obviously-unrelated scan *before* reassembly, which a copy on only
@@ -823,7 +931,7 @@ else first.
 
 ### 4.5 Media Preview (optional)
 
-A plain standard record type Record — not a wrapper — for identifying a
+A plain standard Record Type — not a wrapper — for identifying a
 content item (media type, content hash, filename, human-readable label)
 independently of the content bytes themselves, which travel as this
 Record's own subrecord (§3):
@@ -838,7 +946,6 @@ Type 7:                            // Media Preview (standard record type)
                                      //   hash -- see below
   5: "photo.png",                   // OPTIONAL: filename or slug
   7: "Trail photo"                  // OPTIONAL: human-readable label
-}
 ```
 
 **Key `3` is a multihash-style value, not raw SHA-256** (and not §3.5's
@@ -900,14 +1007,14 @@ here too).
 
 A **Bundle** is a structural Record — not a wrapper, not application
 data — for grouping related Records together as subrecords. It has no
-typeId (absent) and no payload (no key 0). It MAY carry a map with
-metadata keys (UUID, ID, etc.) for container-level identity. Its
-meaning is otherwise entirely in its subrecords:
+typeId (absent) and no payload (no key 0). It MAY carry a map with a Record ID
+(`-1`) for container-level identity. Its meaning is otherwise entirely
+in its subrecords:
 
 ```
 []                              // Empty Bundle (no map)
 [[100, {2: "SSID"}], [10, ...]] // Bundle with two subrecords
-[{-3: h'<16B>'}, [100, ...]]   // Bundle with container UUID
+[{-1: h'<id>'}, [100, ...]]    // Bundle with Record ID
 ```
 
 The container root is implicitly a Bundle whenever its array leads with
