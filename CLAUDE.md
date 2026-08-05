@@ -1121,6 +1121,184 @@ code. Wired into `tools/package.json` (`test:crosstool`) and
 bug — which has now shipped to `master` undetected at least four times —
 finally has a standing, automated check watching for it.
 
+### QDEF namespace scoping decided by typeId sign instead of h'' (SPEC.md version 16)
+
+Started the same way as the version-14 namespace redesign did: "let's
+update tagdrop to use the latest draft of qdef." Pulling the live
+`docs/QDEF-SPEC.md` (`scripts/sync-qdef-spec.sh`) surfaced a real,
+substantial change to §3.5 — traced to five upstream commits
+(`5cbbaea` through `8132961`, all same-day) on
+`qdef-format/qdef-format.github.io`. Unlike the version-14 exchange,
+this one needed no relay to qdef bot — the upstream commit messages and
+the resulting spec text were internally consistent and unambiguous on
+a first read, so the whole port (spec rewrite, both codecs) happened
+without any back-and-forth clarification round.
+
+**The change:** a namespace byte string's job split into two, and only
+one survived on the Record that carries it. Before, a Record's own
+leading namespace item decided both (a) how *that Record's own* typeId
+resolved (absent = global, `h''` = adopt ambient, explicit = new value)
+and (b) what ambient value flowed to its subrecords. As of version 16,
+a namespace bstr does **only** (b) — cascading to subrecords — and has
+**zero effect** on the Record that carries it. Whether a Record's own
+typeId is global or scoped is instead decided **purely by that typeId's
+own sign**: non-negative = global (unconditionally, regardless of any
+namespace bstr present), negative = scoped, adopting whatever namespace
+is ambient from an ancestor. `h''` is gone from QDEF's grammar
+entirely — sign carries the same signal at zero extra bytes instead of
+`h''`'s 1 byte per occurrence.
+
+**Structural consequence for TagDrop:** a Record can no longer both
+introduce a namespace and be scoped by it in the same array (declaring
+a namespace and being scoped by it now genuinely need two Records — a
+namespace-carrying parent, a negative-typeId child). TagDrop's four
+Record Types (Content Extension, Content Signature, Paper-Preview,
+Paper-Body) keep their `registry.rec` declared magnitudes (`1`–`4`) but
+now wire-encode **negated** (`-1`–`-4`) and carry no namespace item of
+their own at all. The version-13 "a lone top-level Record needs no
+Bundle wrapping" exception for key-only codes is gone as a direct
+result — every TagDrop code, including a key-only code, is now a
+namespace-declaring root Bundle wrapping one or two subrecords,
+uniformly. Net byte cost: **saves** 1 byte per TagDrop-scoped Record
+present on a code (no more `h''`), but **costs** key-only codes
+specifically +1 byte (the now-mandatory wrapping array header) — see
+SPEC.md's version-16 history entry for the exact per-shape accounting.
+A genuine, if secondary, correctness improvement fell out of this for
+free: since TagDrop's typeIds now wire-encode negative and every QDEF
+standard Type wire-encodes non-negative, the two are disjoint CBOR
+major types, not just disjoint by convention — a decoder can never
+mistake TagDrop's wire `-1` for QDEF's global Split Wrapper (`1`) by
+magnitude alone, the way version 14–15's design theoretically could
+have without a namespace check first.
+
+Separately, the same upstream commit burst simplified QDEF's Common
+Field Key registry (already just `-1`/`-3` as of version 14) down to
+`-1` only (UUID now travels as CBOR tag 37 wrapping that same key,
+rather than its own `-3`), and re-tiered the global-typeId allocation
+ranges by CBOR byte cost. Neither needed any TagDrop action: TagDrop
+reverted off all shared Common Field Keys back at version 14 already
+and never adopted UUID, and TagDrop's own typeId numbering is
+namespace-scoped, which QDEF-SPEC.md §4 explicitly leaves to the
+namespace owner regardless of the global-range boundaries.
+
+**SPEC.md rewritten directly** (not delegated) — the namespace-scoping
+section (§2.1a) needed the same close, careful reasoning the version-14
+rewrite did, including working through the "declared vs. wire-encoded
+sign" distinction upstream's own `8132961` commit had just made
+explicit in `registry.rec`. Every worked CBOR example, the byte-cost
+accounting, and the "why this still matters" security argument were
+rewritten in place; a version-16 history entry added; the version-13
+history entry's "single top-level Record, no Bundle indirection" claim
+was marked superseded in place (this project's standing practice of
+leaving a visible trail rather than silently rewriting an earlier
+documented belief — see the version-12 key-ordering and FINDINGS.md #51
+precedents) rather than deleted.
+
+**Both codec ports ran as parallel background tasks**, each given the
+full technical delta derived above — including the exact call sites
+already traced by reading both codebases first, not left for the agent
+to rediscover — then reviewed diff-by-diff before merging, same
+discipline as versions 14/15. Both were correct on the first pass, a
+change from versions 14/15's history (each of which had at least one
+real bug caught during review or by the user's own later testing):
+
+- **Kotlin**: `MiniCbor.kt`'s `encodeRecord` now encodes `typeId`
+  through the same signed-int path already used for negative map keys
+  (`encodeKey`, generalized rather than duplicated); `decodeRecordPrefix`
+  separates "this Record's own resolved scope" (`ambientNamespace` if
+  the decoded typeId is negative, else `null`) from "what ambient value
+  passes to subrecords" (this Record's own explicit namespace item if
+  present, else the incoming ambient passed through unchanged) — the
+  same two-part cascade as before, just re-keyed off sign instead of
+  namespace-item-presence. `encodeRootBundle`/`decodeRootBundle` lost
+  their single-Record special case entirely — always wrap now.
+  `TagDropCodec.kt`: every encode call site for the four TagDrop-scoped
+  Types negates its typeId constant and drops the `NAMESPACE_CASCADE`
+  (`h''`) argument, now deleted; `createKeyCodeSector` rebuilt to
+  Bundle-wrap its lone Record via `encodeRootBundle`; decode-side typeId
+  comparisons against a TagDrop-scoped constant negated to match. The
+  `cur.typeId == TYPE_COMPRESS && cur.namespace == null`-style collision
+  guards (disambiguating a shared magnitude between a TagDrop-scoped
+  Record and a QDEF global Type, added at version 14 after a real bug)
+  are now provably-always-true defense-in-depth, since sign alone makes
+  the two disjoint CBOR values — left in place rather than removed,
+  comments updated to say so. **Two real display-only bugs caught by
+  this port**, both in the "🔍 Inspect CBOR" debug pretty-printer, not
+  the wire format itself: the root namespace summary line was reading
+  `records.firstOrNull()?.namespace`, which resolves to `null`
+  whenever the first Record happens to be global-typed — reading the
+  root's own leading item directly via
+  `MiniCbor.unframeNamespaceFromRootArray` instead; and
+  `TAGDROP_TYPE_NAMES`/`TAGDROP_KEY_NAMES_BY_TYPE` lookups (keyed by
+  positive declared magnitude, matching `registry.rec`) needed
+  `rec.typeId` negated back before indexing, since records now decode
+  with a negative typeId. Verified via the same standalone
+  `kotlinc`+JUnit harness this project's QDEF port has used throughout
+  (fetched fresh, this environment resets between sessions): 164/164
+  tests pass.
+- **JS** (generator/examples/reader, plus the independent
+  `test-qdef-roundtrip.mjs` — `test-qr-roundtrip.mjs` deliberately
+  untouched, confirmed via an empty `git diff`, per the version-10
+  entry's standing exemption): a new shared `writeSignedInt` helper
+  (major-type-1 negative-int CBOR encoding at any value position, not
+  just a map key) backs both `writeKey` (which now just delegates to
+  it) and `cborValue`'s number/bigint branches, needed since a Record's
+  typeId can now be negative too. `decodeRecordPrefix` split into the
+  same two-part cascade as the Kotlin side. `encodeRootBundle`/
+  `decodeRootBundle` lost their single-Record special case. The debug
+  "🔍 Inspect CBOR" `RECORD_TYPE_INFO` table — a composite
+  `(namespace-scope, typeId)` key as of version 14, to prevent
+  TagDrop/QDEF-global entries sharing a magnitude from clobbering each
+  other — simplified back down to a **plain signed-typeId key**, since
+  sign alone now makes every key collision-free by construction (a
+  genuine simplification the Kotlin side's equivalent tables don't
+  parallel 1:1, since Kotlin already used two separate lookup tables
+  rather than one composite-keyed map). **One real bug caught by this
+  port**, in generator/examples/reader alike:
+  `contentSignedMessageHash`'s `stripSubrecordType(mediaPayload,
+  TYPE_CONTENT_SIGNATURE)` call was still matching against the
+  *positive* declared constant instead of `-TYPE_CONTENT_SIGNATURE` —
+  since `stripSubrecordType` matches the exact wire typeId, this would
+  have silently failed to strip Content Signature before hashing,
+  breaking every signed Content payload's signature verification
+  (caught before it shipped, by this port's own diff review, not by
+  the test suite — worth noting since the test suite's own real
+  ML-DSA-44 sign/verify round trips evidently didn't exercise this
+  path in a way that surfaced it, an actual coverage gap worth
+  revisiting). Verified: `test-qdef-roundtrip.mjs` 11/11,
+  `qdef-lint.cjs` clean (15 codes/11 fixtures, 0 errors/warnings),
+  `verify-examples-lint.mjs` clean, `test-cross-tool-roundtrip.mjs`
+  4/4 (real generator→reader HTML round trip via jsdom), and
+  `test-qr-roundtrip.mjs` 14/14 (confirmed unaffected). Additionally
+  cross-checked against `qdef-format.github.io`'s own
+  `scripts/qdef-validate.js` (at its current HEAD, which includes the
+  exact upstream commits introducing this rule) — all 15 fixture codes
+  `VALID`, 0 errors, with `typeId=-1`/`-2` correctly resolving to
+  Content Extension/Content Signature three levels deep through two
+  non-namespaced global ancestors (Media Preview/Media Payload),
+  matching `registry.rec`'s real entry for TagDrop's namespace. All
+  test suites independently re-run and confirmed by this session
+  directly, not just taken on the porting agent's word.
+
+**Outstanding gap, same as every prior port**: a full Android Studio
+build hasn't run against this change — this environment's Gradle
+wrapper still can't download its own distribution. The standalone
+`kotlinc`+JUnit harness remains the substitute verification this
+project has relied on throughout its QDEF history.
+
+**A real coverage gap worth flagging for a future session**, surfaced
+by the `stripSubrecordType` bug above: this project's own real
+ML-DSA-44 sign/verify round-trip tests (`testSingleCodeSignedContent`
+in `test-qdef-roundtrip.mjs`, and `TagDropCodecTest.kt`'s equivalents)
+evidently don't independently re-verify a signature against
+*hand-recomputed* signed-message bytes — only against whatever the
+encoder itself produced, so a bug that's consistently wrong on both
+the sign and verify sides (as this one nearly was, had it shipped)
+could plausibly round-trip clean anyway. Not chased down further this
+session, since the bug was caught by diff review before it ever ran,
+but worth a closer look at what these tests actually assert versus
+what they'd need to assert to catch this specific failure mode.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -1203,18 +1381,21 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `15` — QDEF Records with Type IDs
-`1`/`2`/`3`/`4` under an explicitly-transmitted namespace [§2.1a,
-version 14], and QDEF's own standard Types' payload values at reserved
-map key `0` rather than a positional payload slot [§3.1a/§5, version
-15]; both the Kotlin app and the web tools are on this shape now, see
-"Two parallel wire-format implementations" above and the version-14/15
-history entries) is independent of the Android app's `versionName`
-(currently `2.5.1`, already accepted by F-Droid) — bumping one never
+SPEC.md's `version` field (currently `16` — QDEF Records with declared
+Type IDs `1`/`2`/`3`/`4` wire-encoded **negated** under an
+explicitly-transmitted namespace, scope decided by typeId sign rather
+than namespace-item presence [§2.1a, version 16, superseding version
+14's `h''`-based design]; QDEF's own standard Types' payload values at
+reserved map key `0` rather than a positional payload slot [§3.1a/§5,
+version 15]; both the Kotlin app and the web tools are on this shape
+now, see "Two parallel wire-format implementations" above and the
+version-14/15/16 history entries) is independent of the Android app's
+`versionName` (currently `2.6.0`, `versionCode` 12) — bumping one never
 requires bumping the other. (This note has drifted stale before —
-previously said `8`/`2.1.0` for a while — a reminder to re-check this
-line's own numbers against SPEC.md §14's actual current entry rather
-than trust it silently.)
+previously said `8`/`2.1.0`, then `15`/`2.5.1`, for a while — a
+reminder to re-check this line's own numbers against SPEC.md §14's
+actual current entry and `app/build.gradle` rather than trust it
+silently.)
 
 SPEC.md as a whole is currently a **draft, not frozen** (see its `Status`
 line): no real TagDrop code has been printed or distributed yet, so no
