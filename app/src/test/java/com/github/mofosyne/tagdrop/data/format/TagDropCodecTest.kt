@@ -5,20 +5,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Tests TagDropCodec against the QDEF array-wrapped Record wire format (SPEC.md v14): Content
- * Extension (Type 1) + Media Preview (QDEF Type 7) + Media Payload (QDEF Type 3, nested as
- * Media Preview's subrecord, or Split's when multi-code) + Content Signature (Type 2, nested as
- * Media Payload's subrecord when signed), and Paper-Preview/Paper-Body (Type 3/4), Split Wrapper
- * (Type 1) and Compress Wrapper (Type 4). As of v14, TagDrop's own namespace-scoped Type IDs and
- * QDEF's own global standard Type IDs deliberately share the same small integers (§2.1's note) —
- * every root array's own leading element declares TagDrop's namespace (§2.1a,
- * `TagDropCodec.TAGDROP_NAMESPACE`), and every TagDrop-scoped Record nested underneath cascades
- * from it via `h''` (`ByteArray(0)`) — this is what a decoder actually keys off of to tell
- * TagDrop's Content Extension (Type 1) apart from QDEF's own global Split Wrapper (also Type 1),
- * not the bare typeId number. Mirrors `tools/test-qdef-roundtrip.mjs`'s adversarial coverage
- * (tamper detection via group_id/root_hash recomputation, SPEC §2.2 even/odd key criticality,
- * key-only codes, the placeholder-then-strip signing round trip) rather than porting the old
- * version-1 envelope's byte-layout assertions, which no longer apply.
+ * Tests TagDropCodec against the QDEF array-wrapped Record wire format (SPEC.md v16): Content
+ * Extension (declared Type 1, wire `-1`) + Media Preview (QDEF Type 7) + Media Payload (QDEF Type
+ * 3, nested as Media Preview's subrecord, or Split's when multi-code) + Content Signature
+ * (declared Type 2, wire `-2`, nested as Media Payload's subrecord when signed), and
+ * Paper-Preview/Paper-Body (declared Type 3/4, wire `-3`/`-4`), Split Wrapper (Type 1) and
+ * Compress Wrapper (Type 4). TagDrop's own namespace-scoped Type IDs and QDEF's own global
+ * standard Type IDs deliberately share the same small magnitudes (§2.1's note) — every root
+ * array's own leading element declares TagDrop's namespace (§2.1a, `TagDropCodec.TAGDROP_NAMESPACE`),
+ * and every TagDrop-scoped Record nested underneath resolves back to it purely via its own
+ * **negative** wire typeId (as of SPEC.md v16 — `h''` is gone, sign is the scoping signal now) —
+ * this is what a decoder actually keys off of to tell TagDrop's Content Extension (wire `-1`)
+ * apart from QDEF's own global Split Wrapper (wire `+1`), not the bare typeId magnitude alone.
+ * Mirrors `tools/test-qdef-roundtrip.mjs`'s adversarial coverage (tamper detection via
+ * group_id/root_hash recomputation, SPEC §2.2 even/odd key criticality, key-only codes, the
+ * placeholder-then-strip signing round trip) rather than porting the old version-1 envelope's
+ * byte-layout assertions, which no longer apply.
  */
 class TagDropCodecTest {
 
@@ -304,9 +306,10 @@ class TagDropCodecTest {
         val tamperedData = frag.data.copyOf().also { it[0] = (it[0].toInt() xor 0xFF).toByte() }
         // Multi-code Content's Split Wrapper (Type 1) carries Media Preview as its own subrecord
         // (SPEC.md §3.1a) — preserve it so the tampered fragment still decodes. Split Wrapper is
-        // a QDEF global Type (namespace = null, no namespace item of its own) — Content
-        // Extension already carries its own real `h''` cascade item, so the root Bundle wrapper
-        // below is what supplies the real namespace declaration.
+        // a QDEF global Type (namespace = null, no namespace item of its own); victim.extensionRaw
+        // is likewise already built with no namespace item of its own (its wire typeId is
+        // negative, SPEC.md v16 §2.1a) — the root Bundle wrapper below is what supplies the real
+        // namespace declaration both resolve back to.
         // Split Wrapper's field keys per SPEC.md v15: fragment data at reserved map key `0`,
         // group_id/index/count shifted up two keys each (2/4/6), total_bytes unchanged (7).
         val tamperedSplit = MiniCbor.encodeRecord(1, listOf(
@@ -475,11 +478,11 @@ class TagDropCodecTest {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
         val decoded = MiniCbor.decodeRecordPrefix(build.extensionRaw)!!
         val fields = decoded.record.toList() + (9001 to "unknown but odd")
-        // Content Extension always cascades TagDrop's namespace via `h''` when paired with a
-        // second top-level Record (§2.1a) — rebuild with that same leading item, not bare,
-        // or the tampered Record would resolve to no namespace at all and get rejected before
-        // even reaching the even/odd key check this test means to exercise.
-        val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields, namespace = ByteArray(0))
+        // Content Extension's wire typeId is already negative (-1, SPEC.md v16 §2.1a) and it
+        // carries no namespace item of its own — rebuild with the same negative typeId and no
+        // namespace param, letting it resolve back to the root Bundle's own declaration exactly
+        // like the genuine build did.
+        val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields)
         val second = MiniCbor.decodeRootBundle(build.codes.first())!![1]
         val record = TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOf(tamperedExtension, second.raw), TagDropCodec.TAGDROP_NAMESPACE)) as? TagDropScan.RecordScan
         assertNotNull("an unknown ODD key must be safely ignored, not rejected", record)
@@ -489,7 +492,7 @@ class TagDropCodecTest {
         val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hi".toByteArray())
         val decoded = MiniCbor.decodeRecordPrefix(build.extensionRaw)!!
         val fields = decoded.record.toList() + (9002 to "unknown and even")
-        val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields, namespace = ByteArray(0))
+        val tamperedExtension = MiniCbor.encodeRecord(decoded.typeId, fields)
         val second = MiniCbor.decodeRootBundle(build.codes.first())!![1]
         val scan = TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOf(tamperedExtension, second.raw), TagDropCodec.TAGDROP_NAMESPACE))
         assertNull("an unknown EVEN key must reject the whole Record (forward-compat safety valve)", scan)
@@ -542,18 +545,20 @@ class TagDropCodecTest {
         assertNull("same rejection applies with no magic at all (e.g. a malformed tagdrop: URI payload)", TagDropCodec.decodeRaw(bareBundle))
     }
 
-    @Test fun decodeRawDoesNotMisinterpretGlobalTypeIdCollisionAsTagDropRecord() {
-        // TagDrop's Content Extension (Type 1) and QDEF's own global Split Wrapper (also Type 1)
-        // are literally the same integer (SPEC §2.1's note) — only resolved namespace tells them
-        // apart. A bare Split-Wrapper-shaped Record with no namespace item at all (exactly how a
-        // real Split Wrapper is encoded — see splitFragments) must never be misread as Content
-        // Extension just because its typeId number matches.
+    @Test fun decodeRawDoesNotMisinterpretGlobalTypeIdAsTagDropRecord() {
+        // TagDrop's Content Extension (declared magnitude 1) and QDEF's own global Split Wrapper
+        // (also magnitude 1) are literally the same integer (SPEC §2.1's note) — as of SPEC.md
+        // v16 they're disjoint CBOR values by SIGN (Content Extension wire-encodes -1, Split
+        // Wrapper always +1), not just by namespace convention, so a root Bundle whose first
+        // Record has POSITIVE typeId 1 — even wrapped under TagDrop's own declared namespace —
+        // must never be read as Content Extension.
         // Split Wrapper's field keys per SPEC.md v15: fragment data at reserved map key `0`,
         // group_id/index/count shifted up two keys each (2/4/6), total_bytes unchanged (7).
         val splitShaped = MiniCbor.encodeRecord(1, listOf(
             0 to byteArrayOf(9, 9), 2 to byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 4 to 0, 6 to 1, 7 to 2
-        )) // namespace = null (default), exactly what a real Split Wrapper looks like on the wire
-        assertNull(TagDropCodec.decodeRaw(splitShaped))
+        )) // typeId +1, no namespace item of its own -- exactly how a real Split Wrapper looks
+        val root = MiniCbor.encodeRootBundle(listOf(splitShaped), TagDropCodec.TAGDROP_NAMESPACE)
+        assertNull(TagDropCodec.decodeRaw(root))
     }
 
     @Test fun realCodesRootRecordResolvesToTagDropNamespace() {
@@ -743,10 +748,11 @@ class TagDropCodecTest {
         val decoded = MiniCbor.decodeRecordPrefix(build.previewRaw)!!
         val fields = decoded.record.toMutableMap()
         fields[1] = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0) // forged root_hash
-        // Paper-Preview always cascades TagDrop's namespace via `h''` (§2.1a) — preserve that
-        // leading item, and wrap with the real namespace declaration the same way createPaper's
-        // own buildCodes does, or the forged Record wouldn't even scan as TagDrop content.
-        val forgedPreview = MiniCbor.encodeRecord(decoded.typeId, fields.toList(), namespace = ByteArray(0))
+        // Paper-Preview's wire typeId is already negative (-3, SPEC.md v16 §2.1a) and it carries
+        // no namespace item of its own — rebuild with that same negative typeId and no namespace
+        // param, wrapping with the real declaration the same way createPaper's own buildCodes
+        // does, or the forged Record wouldn't even scan as TagDrop content.
+        val forgedPreview = MiniCbor.encodeRecord(decoded.typeId, fields.toList())
         val record = (TagDropCodec.decodeRaw(MiniCbor.encodeRootBundle(listOf(forgedPreview, build.bodyRaw), TagDropCodec.TAGDROP_NAMESPACE)) as TagDropScan.RecordScan).record as ScannedRecord.Paper
         assertNull(TagDropCodec.parsePaperStream(record, build.bodyRaw))
     }

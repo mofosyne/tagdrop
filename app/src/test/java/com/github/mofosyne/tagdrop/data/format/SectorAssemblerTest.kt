@@ -11,7 +11,7 @@ import java.security.MessageDigest
  * paper scenarios) — isolates the assembler's own reassembly/grouping/state logic from the
  * codec's encode-side field layout. Every fragment here is self-describing (carries its own
  * group_id inline, SPEC §5), matching the real wire format. Records are hand-built as raw QDEF
- * array-wrapped bytes (SPEC.md v14 §2, §2.1a, §3.1/§3.1a) and turned into [ScannedRecord]s via
+ * array-wrapped bytes (SPEC.md v16 §2, §2.1a, §3.1/§3.1a) and turned into [ScannedRecord]s via
  * [TagDropCodec.decodeRaw] — the same decode path a real scan uses — so this file only needs to
  * get the wire *bytes* right, not reimplement Record/subrecord decoding a second time.
  */
@@ -20,19 +20,19 @@ class SectorAssemblerTest {
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
     /**
-     * A minimal Content Extension Record (Type 1, SPEC §3.1) — only the fields these tests
-     * need. Always declares TagDrop's namespace explicitly (§2.1a) rather than cascading via
-     * `h''` — a Record's own explicit declaration resolves to the identical value a cascade
-     * would (both end up as [TagDropCodec.TAGDROP_NAMESPACE]), so this is correct regardless of
-     * whether [recordOf] later pairs it with a second Record or not (the key-only case), just
-     * costing a few extra bytes no test here cares about.
+     * A minimal Content Extension Record (declared Type 1, SPEC §3.1) — only the fields these
+     * tests need. As of SPEC.md v16 (§2.1a), a TagDrop-scoped Record wire-encodes its NEGATIVE
+     * typeId (`-1` here) and carries no namespace item of its own at all — it resolves back to
+     * whatever namespace is ambient from its enclosing root Bundle, which [recordOf] always
+     * supplies via [TagDropCodec.TAGDROP_NAMESPACE], whether it later pairs this with a second
+     * Record or not (the key-only case).
      */
     private fun extensionBytes(
         hint: String?, keyMaterial: ByteArray? = null,
         lat: Double? = null, lng: Double? = null, radiusM: Double? = null, preferDeclaredLocation: Boolean = false
-    ): ByteArray = MiniCbor.encodeRecord(1, listOf(
+    ): ByteArray = MiniCbor.encodeRecord(-1, listOf(
         3 to hint, 23 to lat, 25 to lng, 27 to radiusM, 29 to (true.takeIf { preferDeclaredLocation }), 33 to keyMaterial
-    ), namespace = TagDropCodec.TAGDROP_NAMESPACE)
+    ))
 
     /**
      * A minimal Media Preview Record (QDEF Type 7, SPEC §3.1a), optionally nesting

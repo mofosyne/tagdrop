@@ -13,7 +13,7 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Encodes and decodes TagDrop codes — the wire-format codec (SPEC.md §2-§5, §9, §10, v14).
+ * Encodes and decodes TagDrop codes — the wire-format codec (SPEC.md §2-§5, §9, §10, v16).
  *
  * Encoding URI scheme:  tagdrop:<base41-cbor-root>
  *   <base41-cbor-root> = Base41( QDEF self-delimited root array of Records )
@@ -21,26 +21,29 @@ import javax.crypto.spec.SecretKeySpec
  * (QDEF-SPEC.md §3.1/§3.5) — not a bare typeId-then-map pair. As of SPEC.md v15, a Record's "one
  * genuinely singular value," if it has one (Compress Wrapper's deflated bytes, Media Payload's
  * content), lives at reserved map key `0` (QDEF-SPEC.md §3.6) rather than a separate positional
- * payload item — there is no positional payload slot in the grammar at all any more. The root array's
- * own leading element declares TagDrop's namespace (§2.1a, [TAGDROP_NAMESPACE]) — mandatory
- * on every carrier as of SPEC.md v14, not just byte-mode QR — either directly on a lone
- * top-level Record's own array (the key-only case, §9) or as the implied, never-transmitted
- * Bundle's own leading element wrapping two top-level Records (the common case); every
- * TagDrop-scoped Record nested anywhere underneath then cascades from it via `h''` rather than
- * repeating the full value. A code always carries the small, always-plain part of whatever
- * payload it's part of (Paper: Preview; Content: Content Extension + Media Preview, §3.1/§3.1a)
- * and, if the payload has a large part, either that part complete (single code) or one
- * Split-Wrapper-wrapped (QDEF Type 1) fragment of it (multi-code). No magic header on this
+ * payload item — there is no positional payload slot in the grammar at all any more. The root
+ * array's own leading element always declares TagDrop's namespace (§2.1a, [TAGDROP_NAMESPACE]) —
+ * mandatory on every carrier as of SPEC.md v14, not just byte-mode QR. As of SPEC.md v16, EVERY
+ * TagDrop code is this Bundle shape, wrapping one (the key-only case, §9) or two (the common
+ * case) top-level Records as its own subrecords — a Record can no longer both introduce a
+ * namespace and be scoped by it in the same array, so the old "a lone top-level Record needs no
+ * Bundle wrapping" exception is gone. Every TagDrop-scoped Record nested anywhere underneath
+ * resolves back to the root's one declaration purely via its own **negative** wire typeId
+ * (`h''`'s old cascade job, now done by sign alone at zero extra bytes) — it carries no
+ * namespace item of its own at all. A code always carries the small, always-plain part of
+ * whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview,
+ * §3.1/§3.1a) and, if the payload has a large part, either that part complete (single code) or
+ * one Split-Wrapper-wrapped (QDEF Type 1) fragment of it (multi-code). No magic header on this
  * carrier (or on NFC NDEF) — the `tagdrop:` scheme itself is still the dispatch signal, but the
  * namespace itself is transmitted on the wire the same as on every other carrier (§2.1a).
  *
- * Content (SPEC §3.1/§3.1a, §5.1): Content Extension (Type 1, TagDrop-scoped) carries
+ * Content (SPEC §3.1/§3.1a, §5.1): Content Extension (declared Type 1, wire `-1`, TagDrop-scoped) carries
  * hint/collection/location/small-signing fields and is always whole, unwrapped, and repeated
  * on every code. Media Preview (QDEF standard Type 7) carries file identification
  * (mediaType/contentHash/filename/label). Media Payload (QDEF standard Type 3) carries the
  * content bytes — nested as Media Preview's own subrecord when the payload fits on one code,
  * or Split-wrapped (with Media Preview becoming *Split's* subrecord instead) when it doesn't.
- * Content Signature (Type 2, TagDrop-scoped), present only when signed, nests as Media
+ * Content Signature (declared Type 2, wire `-2`, TagDrop-scoped), present only when signed, nests as Media
  * Payload's own subrecord, so `signature`/`signer_pubkey` travel once per payload regardless
  * of how many codes it spans. [decode]/[decodeRaw] return a [TagDropScan]; feed each
  * [ScannedRecord] to [SectorAssembler] to reassemble and parse the payload it belongs to.
@@ -106,22 +109,21 @@ object TagDropCodec {
 
     /**
      * SPEC §2.1a: TagDrop's namespace token — `SHA-256("io.github.mofosyne.tagdrop")[0:4]`.
-     * Passed to [MiniCbor.encodeRecord]/[MiniCbor.encodeRootBundle] as the full value (`h'
-     * 89d414e0'`, 5 bytes on the wire) when declaring it explicitly — the root Bundle's own
-     * leading element in the common two-top-level-Records case, or a lone top-level Record's
-     * own leading element in the key-only case (SPEC §9) — or as `ByteArray(0)` (`h''`, 1 byte)
-     * to cascade from an already-declared ambient value on every other TagDrop-scoped Record,
-     * regardless of nesting depth. As of SPEC.md v14 this is mandatory on *every* carrier
-     * (`tagdrop:` URI, NFC NDEF, byte-mode QR/JABCode alike) — versions 6-13's carrier-implied
-     * namespace (never actually on the wire on the first two) no longer has any spec-level
-     * backing (§2.1a).
+     * Passed to [MiniCbor.encodeRootBundle] as the full value (`h'89d414e0'`, 5 bytes on the
+     * wire) as the root Bundle's own leading element — as of SPEC.md v16 this is EVERY TagDrop
+     * code's shape, including the former key-only "no Bundle indirection" case (SPEC §9; see
+     * [createKeyCodeSector]), since a Record can no longer both introduce a namespace and be
+     * scoped by it in the same array. Every TagDrop-scoped Record nested underneath then
+     * resolves back to this value purely via its own **negative** typeId (the negation of one
+     * of the declared magnitudes below) and carries no namespace item of its own at all — `h''`
+     * (the old "cascade" marker) no longer exists on the wire; sign alone is the scoping signal
+     * now, at zero extra bytes either way (see [MiniCbor.encodeRecord]/
+     * [MiniCbor.decodeRecordPrefix]). As of SPEC.md v14 this declaration is mandatory on *every*
+     * carrier (`tagdrop:` URI, NFC NDEF, byte-mode QR/JABCode alike) — versions 6-13's
+     * carrier-implied namespace (never actually on the wire on the first two) no longer has any
+     * spec-level backing (§2.1a).
      */
     val TAGDROP_NAMESPACE: ByteArray = byteArrayOf(0x89.toByte(), 0xD4.toByte(), 0x14.toByte(), 0xE0.toByte())
-
-    /** `h''` — the empty-byte-string cascade marker every non-root TagDrop-scoped Record emits as
-     *  its own leading element to inherit [TAGDROP_NAMESPACE] from whatever's already ambient
-     *  (SPEC §2.1a), instead of repeating the full 4-byte value. */
-    private val NAMESPACE_CASCADE: ByteArray = ByteArray(0)
 
     /** On-wire byte cost of declaring [TAGDROP_NAMESPACE] explicitly as a CBOR byte string —
      *  1-byte header + 4-byte value (SPEC §2.1a/§14's "+5 bytes per code"). */
@@ -148,11 +150,18 @@ object TagDropCodec {
         return bytes.copyOfRange(4, bytes.size)
     }
 
-    // ── QDEF Record Type IDs (SPEC.md v14 §2.1) — TagDrop's four are small sequential values,
-    // namespace-scoped (§2.1a) — parity carries no meaning as of v14. Split/Compress/Media
-    // Preview/Media Payload are QDEF's own small well-known, globally-interpreted standard
-    // types; TagDrop's own numbers happen to coincide with some of them (expected and safe, not
-    // a collision — the two sets resolve in different spaces, see §2.1's note) ──
+    // ── QDEF Record Type IDs (SPEC.md v14 §2.1) — TagDrop's four are small sequential DECLARED
+    // magnitudes, namespace-scoped (§2.1a) — parity carries no meaning as of v14. As of SPEC.md
+    // v16, every call site that builds one of these four Records on the wire passes the
+    // NEGATION of the constant below (e.g. `-TYPE_CONTENT_EXTENSION`) to MiniCbor.encodeRecord,
+    // and every decode-side comparison against a DecodedRecord.typeId must do the same — sign is
+    // now the namespace-scoping signal (§2.1a), so these constants themselves stay the positive
+    // declared magnitude (matching registry.rec) but are never passed bare to encodeRecord or
+    // compared bare against a decoded typeId. Split/Compress/Media Preview/Media Payload are
+    // QDEF's own small well-known, globally-interpreted standard types (wire-encoded
+    // non-negative, unaffected by v16); TagDrop's own numbers happen to coincide with some of
+    // them (expected and safe, not a collision — the two sets resolve in different spaces, and
+    // as of v16 are additionally disjoint by CBOR major type, see §2.1's note) ──
     const val TYPE_CONTENT_EXTENSION = 1
     const val TYPE_CONTENT_SIGNATURE = 2
     const val TYPE_PAPER_PREVIEW     = 3
@@ -615,11 +624,11 @@ object TagDropCodec {
             encryption = ENCRYPTION_NONE
         }
 
-        // Content Extension is TagDrop-scoped and always paired with a second top-level Record
-        // here (Media Preview, single-code; Split Wrapper, multi-code) — cascades TagDrop's
-        // namespace (§2.1a) via `h''` from the root Bundle's own declaration rather than
-        // repeating the full value (see createKeyCodeSector for the key-only/lone-Record case).
-        val extensionRaw = MiniCbor.encodeRecord(TYPE_CONTENT_EXTENSION, listOf(
+        // Content Extension is TagDrop-scoped — as of SPEC.md v16 it resolves back to the root
+        // Bundle's own namespace declaration (§2.1a) purely via its negative wire typeId
+        // (-TYPE_CONTENT_EXTENSION), carrying no namespace item of its own at all (see
+        // createKeyCodeSector for the key-only/lone-Record case, still Bundle-wrapped as of v16).
+        val extensionRaw = MiniCbor.encodeRecord(-TYPE_CONTENT_EXTENSION, listOf(
             EK_HINT to hint, EK_DESCRIPTION to description,
             EK_COLLECTION_ID to collectionId, EK_COLLECTION_LABEL to collectionLabel, EK_COLLECTION_TAG to collectionTag,
             EK_ICON to icon, EK_PIXEL_ART to (true.takeIf { pixelArt }),
@@ -631,7 +640,7 @@ object TagDropCodec {
             EK_SIGNATURE_ALGORITHM to (signatureAlgorithm.takeIf { it != SIGNATURE_ALG_NONE }),
             EK_SIGNER_ID to signerId, EK_SIGNER_LABEL to signerLabel,
             EK_IN_REPLY_TO to inReplyTo, EK_CREATED_AT to createdAt, EK_SOURCE_URL to null
-        ), namespace = NAMESPACE_CASCADE)
+        ))
 
         // Media Preview is a QDEF standard/global Type — never carries a namespace item of its own.
         fun buildMediaPreview(subrecords: List<ByteArray> = emptyList()) = MiniCbor.encodeRecord(TYPE_MEDIA_PREVIEW, listOf(
@@ -644,9 +653,10 @@ object TagDropCodec {
         val mediaPreviewRaw = buildMediaPreview()
 
         // Content Signature is TagDrop-scoped, always nested as Media Payload's own subrecord —
-        // never a lone top-level Record — so it always cascades via `h''` too.
+        // never a lone top-level Record — so it always resolves back to the ambient namespace via
+        // its own negative wire typeId too (no namespace item of its own).
         val contentSignatureRecord = if (signature != null) {
-            MiniCbor.encodeRecord(TYPE_CONTENT_SIGNATURE, listOf(CSK_SIGNATURE to signature, CSK_SIGNER_PUBKEY to signerPubkey), namespace = NAMESPACE_CASCADE)
+            MiniCbor.encodeRecord(-TYPE_CONTENT_SIGNATURE, listOf(CSK_SIGNATURE to signature, CSK_SIGNER_PUBKEY to signerPubkey))
         } else null
         // Media Payload is a QDEF standard/global Type — no namespace item of its own. `content`
         // lives at reserved map key `0` (§3.1/§3.6, v15) rather than a separate payload item.
@@ -732,12 +742,16 @@ object TagDropCodec {
      */
     fun createKeyCodeSector(keyMaterial: ByteArray, retainKey: Boolean = true, hint: String? = null): ByteArray {
         require(keyMaterial.size == AES_KEY_BYTES) { "key_material must be $AES_KEY_BYTES bytes" }
-        // The lone top-level Record (SPEC §9, "no Bundle indirection") — its own leading element
-        // declares TagDrop's namespace explicitly (§2.1a), since there's no root Bundle here to
-        // carry it instead.
-        return MiniCbor.encodeRecord(TYPE_CONTENT_EXTENSION, listOf(
+        // As of SPEC.md v16, a Record can no longer both introduce a namespace and be scoped by
+        // it in the same array — so even this lone-Record/key-only code (SPEC §9) is now a root
+        // Bundle wrapping one subrecord, the same uniform shape every other TagDrop code has
+        // (the version-13-15 "no Bundle indirection" exception is gone). The Content Extension
+        // Record itself carries no namespace item of its own — its negative wire typeId
+        // (-TYPE_CONTENT_EXTENSION) resolves it back to the Bundle's own declaration.
+        val extension = MiniCbor.encodeRecord(-TYPE_CONTENT_EXTENSION, listOf(
             EK_HINT to hint, EK_KEY_MATERIAL to keyMaterial, EK_RETAIN_KEY to (false.takeIf { !retainKey })
-        ), namespace = TAGDROP_NAMESPACE)
+        ))
+        return MiniCbor.encodeRootBundle(listOf(extension), TAGDROP_NAMESPACE)
     }
 
     /**
@@ -755,7 +769,7 @@ object TagDropCodec {
      */
     fun contentSignedMessageHash(extensionRaw: ByteArray, mediaPreviewRaw: ByteArray?, mediaPayloadRaw: ByteArray?): ByteArray {
         val unsignedExtension = MiniCbor.stripKeys(extensionRaw, CONTENT_EXTENSION_SIGNATURE_KEYS)
-        val unsignedMediaPayload = mediaPayloadRaw?.let { MiniCbor.stripSubrecordType(it, TYPE_CONTENT_SIGNATURE) } ?: ByteArray(0)
+        val unsignedMediaPayload = mediaPayloadRaw?.let { MiniCbor.stripSubrecordType(it, -TYPE_CONTENT_SIGNATURE) } ?: ByteArray(0)
         return sha256((mediaPreviewRaw ?: ByteArray(0)) + unsignedMediaPayload + unsignedExtension)
     }
 
@@ -816,16 +830,18 @@ object TagDropCodec {
             ))
         })
 
-        // Paper-Body always cascades TagDrop's namespace via `h''` (§2.1a) — whether it's the
-        // root's direct second child or nested inside a Compress/Split Wrapper (a global Type
-        // that passes the ambient namespace through transparently regardless of nesting depth).
-        fun buildBody(sig: ByteArray?, pubkey: ByteArray?) = MiniCbor.encodeRecord(TYPE_PAPER_BODY, listOf(
+        // Paper-Body is TagDrop-scoped — as of SPEC.md v16 it resolves back to the ambient
+        // namespace purely via its negative wire typeId (§2.1a), carrying no namespace item of
+        // its own, whether it's the root's direct second child or nested inside a Compress/Split
+        // Wrapper (a global Type that passes the ambient namespace through transparently
+        // regardless of nesting depth).
+        fun buildBody(sig: ByteArray?, pubkey: ByteArray?) = MiniCbor.encodeRecord(-TYPE_PAPER_BODY, listOf(
             PBK_FILES to filesCbor, PBK_RELATED to relatedCbor,
             PBK_SIGNATURE to sig, PBK_SIGNER_PUBKEY to pubkey
-        ), namespace = NAMESPACE_CASCADE)
+        ))
         // Paper-Preview is always the root Bundle's direct first child (paired with Body or its
-        // wrapper) — cascades the same way.
-        fun buildPreview(rootHash: ByteArray?, sigAlg: Int?, sId: ByteArray?, sLabel: String?) = MiniCbor.encodeRecord(TYPE_PAPER_PREVIEW, listOf(
+        // wrapper) — resolves the same way.
+        fun buildPreview(rootHash: ByteArray?, sigAlg: Int?, sId: ByteArray?, sLabel: String?) = MiniCbor.encodeRecord(-TYPE_PAPER_PREVIEW, listOf(
             PPK_ROOT_HASH to rootHash, PPK_HINT to label, PPK_SET to set, PPK_SLUG to slug, PPK_DOMAIN to domain,
             PPK_STEP to step,
             PPK_COLLECTION_ID to collectionId, PPK_COLLECTION_LABEL to collectionLabel, PPK_COLLECTION_TAG to collectionTag,
@@ -836,7 +852,7 @@ object TagDropCodec {
             PPK_IN_REPLY_TO to inReplyTo, PPK_CREATED_AT to createdAt, PPK_SOURCE_URL to null,
             PPK_TITLE to title, PPK_DESCRIPTION to description,
             PPK_KEY_MATERIAL to keyMaterial, PPK_RETAIN_KEY to (false.takeIf { keyMaterial != null && !retainKey })
-        ), namespace = NAMESPACE_CASCADE)
+        ))
 
         val isSigned = signatureAlgorithm != SIGNATURE_ALG_NONE || signature != null ||
             signerPubkey != null || signerId != null || signerLabel != null
@@ -1017,9 +1033,11 @@ object TagDropCodec {
         // typeId happens to number-match.
         if (!isTagDropNamespace(first.namespace)) return null
         val second = records.getOrNull(1)
+        // As of SPEC.md v16, TagDrop's own scoped Types wire-encode NEGATIVE (§2.1a) — compare
+        // against the negated declared magnitude, not the bare positive constant.
         return when (first.typeId) {
-            TYPE_CONTENT_EXTENSION -> contentScanResult(first, second)
-            TYPE_PAPER_PREVIEW -> paperScanResult(first, second)
+            -TYPE_CONTENT_EXTENSION -> contentScanResult(first, second)
+            -TYPE_PAPER_PREVIEW -> paperScanResult(first, second)
             else -> null
         }
     }
@@ -1044,10 +1062,13 @@ object TagDropCodec {
         }
         if (second.typeId == TYPE_SPLIT && second.namespace == null) {
             // Multi-code case: Media Preview is Split's own subrecord instead. Split Wrapper's
-            // Type ID (1) happens to numerically collide with Content Extension's own (also 1,
-            // §2.1's note) — `second.namespace == null` is what actually tells a genuine global
-            // Split Wrapper apart from a (never legitimately occurring here, but not otherwise
-            // ruled out by typeId alone) TagDrop-namespaced Record that merely shares the number.
+            // declared magnitude (1) happens to numerically match Content Extension's own (also
+            // 1, §2.1's note) — but as of SPEC.md v16 the two are disjoint CBOR values by sign
+            // (Split Wrapper always wire-encodes +1/global, Content Extension always -1/scoped),
+            // so `second.typeId == TYPE_SPLIT` alone already can't match a genuine Content
+            // Extension; `&& second.namespace == null` stays as harmless defense-in-depth
+            // (provably always true here, same reasoning as unwrapMediaPayload/unwrapPaperBody's
+            // Compress Wrapper checks).
             if (!checkRecordKeys(second.record, KNOWN_SPLIT)) return null
             val mediaPreviewSub = second.subrecords.find { it.typeId == TYPE_MEDIA_PREVIEW } ?: return null
             if (!checkRecordKeys(mediaPreviewSub.record, KNOWN_MEDIA_PREVIEW)) return null
@@ -1082,27 +1103,31 @@ object TagDropCodec {
         // Signature); seed that ambient explicitly here since this is a fresh top-level decode
         // of just these bytes, with no surrounding root Bundle to have threaded it through.
         var cur = MiniCbor.decodeRecordPrefix(bodyWireBytes, TAGDROP_NAMESPACE) ?: return null
-        // Compress Wrapper's Type ID (4) happens to numerically collide with Paper-Body's own
-        // (also 4, §2.1's note) — a global Type is only genuinely Compress Wrapper if it also
-        // resolved to NO namespace (`cur.namespace == null`); without that check this would
-        // misidentify any Record that merely shares the number, not just here but symmetrically
-        // in unwrapPaperBody below (a real bug caught by this port's own test suite, not by
-        // inspection).
+        // Compress Wrapper's declared magnitude (4) happens to numerically match Paper-Body's own
+        // (also 4, §2.1's note) — but as of SPEC.md v16 the two are different CBOR values by sign
+        // alone (Compress Wrapper always wire-encodes +4/global; Paper-Body always wire-encodes
+        // -4/scoped), so `cur.typeId == TYPE_COMPRESS` alone can never match a genuine Paper-Body.
+        // `&& cur.namespace == null` is kept as harmless defense-in-depth (it's now provably
+        // always true whenever the typeId check passes, since a non-negative typeId always
+        // resolves to namespace == null per decodeRecordPrefix) rather than removed, matching the
+        // equivalent check in unwrapPaperBody below.
         if (cur.typeId == TYPE_COMPRESS && cur.namespace == null) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
             val payload = cur.record.bytesOrNull(CK_PAYLOAD) ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = MiniCbor.decodeRecordPrefix(inflated, TAGDROP_NAMESPACE) ?: return null
         }
-        // Media Payload's Type ID (3) happens to numerically collide with Paper-Preview's own
-        // (also 3) — require global (no namespace) here too, same reasoning as the Compress
-        // Wrapper check above.
+        // Media Payload's declared magnitude (3) happens to numerically match Paper-Preview's own
+        // (also 3) — same v16 sign-disjointness reasoning as above: Media Payload always
+        // wire-encodes +3/global, so `cur.typeId != TYPE_MEDIA_PAYLOAD` alone already rules out a
+        // genuine Paper-Preview here. `cur.namespace != null` is kept as the same harmless
+        // defense-in-depth as the Compress Wrapper check above.
         if (cur.typeId != TYPE_MEDIA_PAYLOAD || cur.namespace != null || !checkRecordKeys(cur.record, KNOWN_MEDIA_PAYLOAD)) return null
         var contentSignature: Map<Int, Any>? = null
-        // Content Signature is TagDrop-scoped (§2.1a) — only accept a subrecord that actually
-        // resolved to TagDrop's namespace as a genuine one, same reasoning as recordScanResult's
-        // own check.
-        val cs = cur.subrecords.find { it.typeId == TYPE_CONTENT_SIGNATURE && isTagDropNamespace(it.namespace) }
+        // Content Signature is TagDrop-scoped (§2.1a) and wire-encodes NEGATIVE as of v16 — only
+        // accept a subrecord that actually resolved to TagDrop's namespace as a genuine one, same
+        // reasoning as recordScanResult's own check.
+        val cs = cur.subrecords.find { it.typeId == -TYPE_CONTENT_SIGNATURE && isTagDropNamespace(it.namespace) }
         if (cs != null) {
             if (!checkRecordKeys(cs.record, KNOWN_CONTENT_SIGNATURE)) return null
             contentSignature = cs.record
@@ -1124,18 +1149,20 @@ object TagDropCodec {
         // (and necessary, since this is a fresh top-level decode) to seed the ambient namespace
         // explicitly rather than default to none.
         var cur = MiniCbor.decodeRecordPrefix(bodyWireBytes, TAGDROP_NAMESPACE) ?: return null
-        // See unwrapMediaPayload's matching comment above — Compress Wrapper's Type ID (4) is
-        // literally the same integer as Paper-Body's own, so a global-with-no-namespace check is
-        // required to tell them apart, not just the bare typeId number.
+        // See unwrapMediaPayload's matching comment above — Compress Wrapper's declared magnitude
+        // (4) is the same integer as Paper-Body's own, but as of v16 they're disjoint CBOR values
+        // by sign (Compress Wrapper +4, Paper-Body -4), so `cur.typeId == TYPE_COMPRESS` alone
+        // already can't match a genuine Paper-Body; `&& cur.namespace == null` stays as the same
+        // harmless defense-in-depth.
         if (cur.typeId == TYPE_COMPRESS && cur.namespace == null) {
             if (!checkRecordKeys(cur.record, KNOWN_COMPRESS)) return null
             val payload = cur.record.bytesOrNull(CK_PAYLOAD) ?: return null
             val inflated = runCatching { decompress(payload) }.getOrNull() ?: return null
             cur = MiniCbor.decodeRecordPrefix(inflated, TAGDROP_NAMESPACE) ?: return null
         }
-        // Paper-Body is TagDrop-scoped (§2.1a) — its own resolved namespace must actually be
-        // TagDrop's, same check as recordScanResult's.
-        if (cur.typeId != TYPE_PAPER_BODY || !isTagDropNamespace(cur.namespace) || !checkRecordKeys(cur.record, KNOWN_PAPER_BODY)) return null
+        // Paper-Body is TagDrop-scoped (§2.1a) and wire-encodes NEGATIVE as of v16 — its own
+        // resolved namespace must actually be TagDrop's, same check as recordScanResult's.
+        if (cur.typeId != -TYPE_PAPER_BODY || !isTagDropNamespace(cur.namespace) || !checkRecordKeys(cur.record, KNOWN_PAPER_BODY)) return null
         return cur.record to cur.raw
     }
 
@@ -1487,23 +1514,26 @@ object TagDropCodec {
             appendLine("── Record Sequence (${bytes.size} bytes) ──")
         }
         runCatching {
-            // The self-delimited QDEF root (QDEF-SPEC.md §2/§3.1, §3.5/SPEC.md v14 §2.1a): try
-            // the strict, structured decode first — a single Record, or a Bundle wrapping
-            // several, its own leading element the namespace declaration (mandatory on every
-            // carrier as of v14) — since that's what any real TagDrop code now is. Whatever's
-            // left after the root array's own self-delimited length (SPEC §9: possibly tolerated
-            // padding, or a wholly independent second Sequence) falls through to the same
-            // best-effort walk this function always used, so a genuinely malformed/legacy input
-            // still shows something rather than nothing.
+            // The self-delimited QDEF root (QDEF-SPEC.md §2/§3.1, §3.5/SPEC.md v16 §2.1a): try
+            // the strict, structured decode first — as of v16, always a namespace-declaring
+            // Bundle wrapping one (key-only) or two (the common case) subrecords, since that's
+            // what any real TagDrop code now is. Whatever's left after the root array's own
+            // self-delimited length (SPEC §9: possibly tolerated padding, or a wholly independent
+            // second Sequence) falls through to the same best-effort walk this function always
+            // used, so a genuinely malformed/legacy input still shows something rather than
+            // nothing.
             var i = 0
             var rest = bytes
             val records = MiniCbor.decodeRootBundle(bytes)
             if (records != null) {
-                // Every top-level Record's own DecodedRecord.namespace already resolves to the
-                // root's declared value (explicit on a lone Record, cascaded via `h''` on each
-                // of a Bundle's children) — reading it off the first Record is enough to display
-                // it, regardless of which of those two shapes this code is.
-                val namespace = records.firstOrNull()?.namespace
+                // As of SPEC.md v16, a top-level Record's own DecodedRecord.namespace resolves to
+                // null whenever that Record's own typeId happens to be non-negative/global —
+                // regardless of what the root itself declared — so reading it off the first
+                // Record is no longer a reliable way to display the root's own declaration (only
+                // true when that first Record happens to be TagDrop-scoped, i.e. negative typeId).
+                // Read the root's own leading item directly instead — decodeRootBundle already
+                // guarantees it's present whenever [records] is non-null.
+                val namespace = MiniCbor.unframeNamespaceFromRootArray(bytes)?.first
                 appendLine("namespace: ${namespace?.let { "${it.toHexDump()} (${if (isTagDropNamespace(it)) "TagDrop" else "unrecognized"})" } ?: "(none — global/standard Types only)"}")
                 appendLine()
                 for (rec in records) {
@@ -1527,11 +1557,14 @@ object TagDropCodec {
 
     private fun describeRecord(rec: MiniCbor.DecodedRecord, indent: Int, out: StringBuilder) {
         val pad = "  ".repeat(indent - 1)
-        // A Record's typeId alone is ambiguous as of v14 (TagDrop's own small IDs deliberately
-        // coincide with some of QDEF's own global ones, §2.1) — pick the name/key tables that
-        // match how this Record's own namespace actually resolved.
+        // A Record's bare typeId magnitude alone is ambiguous as of v14 (TagDrop's own small IDs
+        // deliberately coincide with some of QDEF's own global ones, §2.1) — pick the name/key
+        // tables that match how this Record's own namespace actually resolved. As of SPEC.md v16
+        // TagDrop's own Types wire-encode NEGATIVE (§2.1a) while [TAGDROP_TYPE_NAMES]/
+        // [TAGDROP_KEY_NAMES_BY_TYPE] are keyed by the positive DECLARED magnitude (matching
+        // registry.rec) — negate rec.typeId back to that declared magnitude before looking it up.
         val tagDrop = isTagDropNamespace(rec.namespace)
-        val typeName = if (tagDrop) TAGDROP_TYPE_NAMES[rec.typeId] else QDEF_GLOBAL_TYPE_NAMES[rec.typeId]
+        val typeName = if (tagDrop) TAGDROP_TYPE_NAMES[-rec.typeId] else QDEF_GLOBAL_TYPE_NAMES[rec.typeId]
         val typeNameStr = if (typeName != null) "$typeName (${rec.typeId})" else "Type ${rec.typeId}"
         out.appendLine("$pad$typeNameStr [${rec.raw.toHexDump()}]")
         val nsLine = rec.namespace?.let { "${it.toHexDump()}${if (tagDrop) " (TagDrop)" else " (unrecognized)"}" } ?: "(global — no namespace)"
@@ -1540,7 +1573,7 @@ object TagDropCodec {
         // ordinary field at reserved map key `0` — describeMap already renders it by name
         // (e.g. Compress Wrapper's/Media Payload's "payload"/"content" key), no separate
         // payload-slot line needed any more.
-        val keyNames = if (tagDrop) TAGDROP_KEY_NAMES_BY_TYPE[rec.typeId] else QDEF_GLOBAL_KEY_NAMES_BY_TYPE[rec.typeId]
+        val keyNames = if (tagDrop) TAGDROP_KEY_NAMES_BY_TYPE[-rec.typeId] else QDEF_GLOBAL_KEY_NAMES_BY_TYPE[rec.typeId]
         describeMap(rec.record, indent + 1, out, keyNames ?: emptyMap())
         for (sub in rec.subrecords) describeRecord(sub, indent + 1, out)
     }

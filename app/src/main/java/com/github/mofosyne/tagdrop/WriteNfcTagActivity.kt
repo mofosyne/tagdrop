@@ -214,9 +214,13 @@ class WriteNfcTagActivity : AppCompatActivity() {
         // items together (QDEF-SPEC.md §2/§3.1 self-delimited root — a definite-length array of
         // exactly 3 items, namespace + Extension + Media Preview, still costs 1 header byte),
         // and the root's own namespace declaration (SPEC.md v14 §2.1a — mandatory on every
-        // carrier, including NFC NDEF, as of this version). This is only an estimate feeding the
-        // retry loop below, not a byte-exact requirement — [fitsCapacity] re-measures the real
-        // rebuilt code every iteration.
+        // carrier, including NFC NDEF, as of this version). This formula's own arithmetic is
+        // unchanged by SPEC.md v16 (Content Extension no longer carries its own `h''` cascade
+        // marker, but `single.extensionRaw.size` is read dynamically here, not hard-coded, so
+        // that 1-byte saving is already reflected automatically — the three-item root Bundle
+        // shape this subtracts around is otherwise identical). This is only an estimate feeding
+        // the retry loop below, not a byte-exact requirement — [fitsCapacity] re-measures the
+        // real rebuilt code every iteration.
         val total = single.codes.first().size - single.extensionRaw.size - 1 - TagDropCodec.NAMESPACE_DECLARATION_BYTES
         for (count in 2..MAX_SECTOR_PROBES) {
             val candidate = build((total + count - 1) / count)
