@@ -44,7 +44,6 @@
     <string name="delete_collection_confirm_message">Remove \"%1$s\" and all %2$d cached item(s) in this collection from this device? This cannot be undone.</string>
 
     <!-- Receive screen -->
-    <string name="button_launch">Launch Content (legacy)</string>
     <string name="button_clear">Clear</string>
     <string name="hint_paste_uri">Or paste a tagdrop: URI</string>
     <string name="button_decode_uri">Decode</string>
@@ -54,15 +53,12 @@
     <string name="button_qdef_spec">QDEF Wire Format Spec</string>
     <string name="status_ready">Point the camera at a TagDrop code to begin.</string>
     <string name="status_collecting">Collecting chunks: %1$d / %2$d\nHint: %3$s\n\nStill need: %4$s</string>
-    <string name="status_legacy">Legacy mode: %1$d fragment(s) accumulated.\n\nTap \'Launch Content\' when done.</string>
     <string name="manifest_scanned">Manifest scanned (%1$d chunks expected). Scan chunks now.</string>
     <string name="chunk_progress">Chunk %1$d of %2$d received. Still need: %3$s</string>
     <string name="hash_mismatch">Assembly failed: integrity check failed. Try rescanning.</string>
     <string name="key_code_scanned">🔑 Key received — scan its matching content code to unlock it.</string>
     <string name="awaiting_key">🔒 All chunks assembled, but still locked — scan the key code to unlock.</string>
     <string name="unlocked_items">🔓 Unlocked %1$d item(s) with this key.</string>
-    <string name="legacy_fragment">Legacy fragment %1$d received. Scan more or tap Launch.</string>
-    <string name="unknown_fragment">Fragment %1$d added. Scan more or tap Launch.</string>
     <string name="nav_link_scanned">That\'s a link for use inside a page, not a code to scan directly.</string>
     <string name="unsupported_code">This TagDrop code can\'t be read — it may use an unsupported version or be corrupted.</string>
     <string name="camera_permission_denied">Camera access is needed to scan codes.\nTap here to enable it in Settings.</string>
@@ -70,6 +66,15 @@
     <string name="location_permission_message">TagDrop can record where you scan and create drops, so they show up on the Map tab. This is optional — scanning still works without it.</string>
     <string name="location_permission_allow">Allow</string>
     <string name="location_permission_not_now">Not now</string>
+    <string name="raw_scan_preview_title">Unrecognized code</string>
+    <string name="raw_scan_preview_message">Not a TagDrop code — guessed type: %1$s\n\n%2$s</string>
+    <string name="raw_scan_preview_hex_label">Hex:</string>
+    <string name="raw_scan_preview_utf8_label">UTF-8:</string>
+    <string name="raw_scan_preview_truncated">Showing first %1$d of %2$d bytes.</string>
+    <string name="raw_scan_preview_full">%1$d byte(s).</string>
+    <string name="raw_scan_import">Import</string>
+    <string name="raw_scan_discard">Discard</string>
+    <string name="raw_scan_discarded">Discarded.</string>
 
     <!-- Collection detail ("map") screen -->
     <string name="button_open">Open</string>

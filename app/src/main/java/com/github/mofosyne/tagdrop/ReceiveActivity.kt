@@ -71,15 +71,13 @@ import kotlinx.coroutines.launch
  * Every `tagdrop:` code is a sector ([SectorAssembler]); a single-sector cache is saved and
  * opened immediately, while a multi-sector cache accumulates until every sector is collected
  * (order-independent — useful for geographic distribution across a trail). Papers are saved
- * as directories and displayed for browsing. Legacy data: URI fragments use dumb-append mode
- * for backward compatibility.
+ * as directories and displayed for browsing.
  */
 class ReceiveActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityReceiveBinding
 
     private val assembler = SectorAssembler()
-    private val legacyChunks = mutableListOf<String>()
     private var lastPaper: TagDropPayload.Paper? = null
 
     /** All cached items, used to mark a scanned paper's files as found on the scan board. */
@@ -127,7 +125,7 @@ class ReceiveActivity : AppCompatActivity() {
             // use by completeRawScan's MIME guessing for non-TagDrop binary QRs.
             var firstRawBytes: ByteArray? = null
 
-            fun tryBytes(bytes: ByteArray, source: String): TagDropScan? {
+            fun tryBytes(bytes: ByteArray, source: String): TagDropScan.RecordScan? {
                 if (firstRawBytes == null) firstRawBytes = bytes
                 val scan = TagDropCodec.decodeRaw(bytes)
                 if (scan != null) Log.d("ReceiveActivity", "decodeRaw OK ($source): ${bytes.size}B")
@@ -263,7 +261,6 @@ class ReceiveActivity : AppCompatActivity() {
         }
 
         binding.buttonClear.setOnClickListener  { clearState() }
-        binding.buttonLaunch.setOnClickListener { launchLegacyContent() }
         binding.buttonPasteUri.setOnClickListener { decodePastedUri() }
         binding.editPasteUri.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_GO) { decodePastedUri(); true } else false
@@ -378,7 +375,6 @@ class ReceiveActivity : AppCompatActivity() {
     private fun showCameraPermissionDenied() {
         binding.barcodeScanner.visibility = View.GONE
         binding.recyclerScanBoard.visibility = View.GONE
-        binding.buttonLaunch.visibility = View.GONE
         binding.buttonClear.visibility = View.GONE
         binding.textStatus.text = getString(R.string.camera_permission_denied)
         binding.textStatus.setOnClickListener { openAppSettings() }
@@ -387,7 +383,6 @@ class ReceiveActivity : AppCompatActivity() {
     /** Restores the normal scanning UI once camera access is granted. */
     private fun restoreScannerUi() {
         binding.barcodeScanner.visibility = View.VISIBLE
-        binding.buttonLaunch.visibility = View.VISIBLE
         binding.buttonClear.visibility = View.VISIBLE
         binding.textStatus.setOnClickListener(null)
         updateDisplay()
@@ -427,47 +422,25 @@ class ReceiveActivity : AppCompatActivity() {
         when {
             // tagdrop://... is a navigation link meant for use inside a page, not a code to scan.
             scanned.startsWith("tagdrop://") -> toast(getString(R.string.nav_link_scanned))
-            // tagdrop:... that failed to decode: unsupported version or corrupted data — not a legacy fragment.
+            // tagdrop:... that failed to decode: unsupported version or corrupted data.
             scanned.startsWith("tagdrop:") -> toast(getString(R.string.unsupported_code))
-            // Already mid-accumulating a legacy data: URI split across codes (SPEC §11, started by
-            // a prior data:-prefixed scan, handled via TagDropScan.LegacyScan) -- this fragment
-            // continues it.
-            legacyChunks.isNotEmpty() -> {
-                legacyChunks.add(scanned)
-                if (!tryCompleteLegacy()) {
-                    updateDisplay()
-                    toast(getString(R.string.unknown_fragment, legacyChunks.size))
-                }
-            }
-            // A complete, standalone non-TagDrop code (URL, plain text, vCard, Wi-Fi config, ...)
-            // -- SPEC.md defines no multi-fragment scheme for these (§11 is data: URIs only), so
-            // there's no "more fragments" to wait for. Cache it immediately as content-addressed
-            // raw content instead of stranding it in legacyChunks with no way to complete.
+            // A complete, standalone non-TagDrop code (URL, plain text, vCard, Wi-Fi config, ...,
+            // including a raw data: URI, no longer given special multi-fragment handling) — cache
+            // it immediately as content-addressed raw content.
             else -> completeRawScan(scanned, format, rawBytes)
         }
     }
 
     /**
-     * Dispatches an already-decoded scan, regardless of whether it arrived as `tagdrop:` URI
-     * text (Base41) or a fully-binary code's raw CBOR sequence (SPEC §13) — see [barcodeCallback].
-     * A record is fed to [SectorAssembler]; a legacy data: URI joins the dumb-append buffer.
+     * Dispatches an already-decoded [TagDropScan.RecordScan], regardless of whether it arrived
+     * as `tagdrop:` URI text (Base41) or a fully-binary code's raw CBOR sequence (SPEC §13) —
+     * see [barcodeCallback]. Fed straight to [SectorAssembler].
      */
-    private fun processScan(scan: TagDropScan) {
-        when (scan) {
-            is TagDropScan.RecordScan -> {
-                lastScannedRecord = scan.record
-                lastScannedWireBytes = scan.rawWireBytes
-                invalidateOptionsMenu()
-                handleState(assembler.add(scan.record))
-            }
-            is TagDropScan.LegacyScan -> {
-                legacyChunks.add(scan.payload.dataUri)
-                if (!tryCompleteLegacy()) {
-                    updateDisplay()
-                    toast(getString(R.string.legacy_fragment, legacyChunks.size))
-                }
-            }
-        }
+    private fun processScan(scan: TagDropScan.RecordScan) {
+        lastScannedRecord = scan.record
+        lastScannedWireBytes = scan.rawWireBytes
+        invalidateOptionsMenu()
+        handleState(assembler.add(scan.record))
     }
 
     /** Routes a freshly-computed [SectorAssembler.State] for the just-scanned record's payload. */
@@ -825,6 +798,43 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     /**
+     * Suspends the coroutine while showing a preview of unrecognized, non-TagDrop scanned
+     * content — the first [RAW_SCAN_PREVIEW_BYTES] bytes as hex and as best-effort UTF-8, so
+     * the user can visually guess what it is before deciding whether it's worth keeping.
+     * Random/unsolicited content (a QR code found on a sticker, a gibberish NFC tag, ...) is
+     * never auto-imported or auto-opened; the user must explicitly opt in. Returns true if the
+     * user chose to import.
+     */
+    private suspend fun askImportRawScan(bytes: ByteArray, mimeType: String, title: String?): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle(title ?: getString(R.string.raw_scan_preview_title))
+                .setMessage(getString(R.string.raw_scan_preview_message, mimeType, previewBytesText(bytes)))
+                .setPositiveButton(getString(R.string.raw_scan_import)) { _, _ -> deferred.complete(true) }
+                .setNegativeButton(getString(R.string.raw_scan_discard)) { _, _ -> deferred.complete(false) }
+                .setOnCancelListener { deferred.complete(false) }
+                .show()
+        }
+        return deferred.await()
+    }
+
+    /** First [RAW_SCAN_PREVIEW_BYTES] of [bytes], rendered as hex and as best-effort UTF-8 (invalid
+     *  sequences become U+FFFD) side by side, for [askImportRawScan]'s preview dialog. */
+    private fun previewBytesText(bytes: ByteArray): String {
+        val slice = bytes.copyOfRange(0, minOf(RAW_SCAN_PREVIEW_BYTES, bytes.size))
+        val hex = slice.joinToString(" ") { "%02x".format(it) }
+        val utf8 = String(slice, Charsets.UTF_8)
+        val sizeNote = if (bytes.size > slice.size) {
+            getString(R.string.raw_scan_preview_truncated, slice.size, bytes.size)
+        } else {
+            getString(R.string.raw_scan_preview_full, bytes.size)
+        }
+        return "$sizeNote\n\n${getString(R.string.raw_scan_preview_hex_label)}\n$hex\n\n" +
+            "${getString(R.string.raw_scan_preview_utf8_label)}\n$utf8"
+    }
+
+    /**
      * A `key_material` (SPEC §9) was just discovered — retain it (if recommended), then try
      * it against everything currently locked: cached ciphertext awaiting a key, and any
      * in-progress encrypted assembly. "Discovery, not declaration": scan order between a key
@@ -907,29 +917,8 @@ class ReceiveActivity : AppCompatActivity() {
     }
 
     /**
-     * After each legacy fragment is appended, try to parse the joined string as a
-     * complete `data:` URI. If it parses and the base64 decodes cleanly, save it as
-     * a [FoundCache] entry and open it — no button press needed.
-     * Returns true if completed (caller should skip the "N fragment(s)" toast).
-     */
-    private fun tryCompleteLegacy(): Boolean {
-        val joined = legacyChunks.joinToString("")
-        val parsed = parseLegacyDataUri(joined) ?: return false
-        val (mimeType, bytes) = parsed
-        legacyChunks.clear()
-        completeSingle(
-            cacheId    = TagDropCodec.contentId(bytes).toHex(),
-            hint       = null,
-            filename   = null,
-            mimeType   = mimeType,
-            content    = bytes
-        )
-        return true
-    }
-
-    /**
-     * Caches a complete non-TagDrop, non-legacy scan (a URL, plain text, vCard, Wi-Fi config,
-     * ...) as standalone content, the same way any other found item is cached -- content-
+     * Caches a complete non-TagDrop scan (a URL, plain text, vCard, Wi-Fi config, ...) as
+     * standalone content, the same way any other found item is cached -- content-
      * addressed by [TagDropCodec.contentId] so re-scanning the same code is recognised as
      * "already found" rather than duplicated. [QrContentClassifier] tags recognised content
      * (vCard, calendar event, Wi-Fi config, URL, ...) with a hashtag-style collectionTag, an
@@ -938,6 +927,14 @@ class ReceiveActivity : AppCompatActivity() {
      * SSID, event summary, ...) becomes this cache's `hint`, the same field every list/title
      * display already falls back to "Untitled" without -- there's no author-declared hint for
      * non-TagDrop content, so this is the only source of a human-readable title.
+     *
+     * Unsolicited, non-TagDrop content is never auto-imported: it's unauthenticated and
+     * unvetted (a random sticker, a gibberish NFC tag), so [askImportRawScan] previews it
+     * (hex + UTF-8) and requires an explicit opt-in before it's cached or opened. The one
+     * exception is content already declared by a Paper the user is actively scanning
+     * ([paperFile] matches) -- that's a known, intentional part of the trail the user already
+     * engaged with by scanning the Paper itself, so it's cached immediately as before, same as
+     * re-scanning anything already found.
      */
     private fun completeRawScan(text: String, format: BarcodeFormat, rawBytes: ByteArray? = null) {
         // cacheId is always derived from the text representation (UTF-8), matching how the paper
@@ -958,7 +955,8 @@ class ReceiveActivity : AppCompatActivity() {
         } else {
             (MimeTypeGuesser.guess(bytes) ?: "text/plain") to true
         }
-        completeSingle(
+
+        fun cache() = completeSingle(
             cacheId          = cacheId,
             hint             = classification?.title,
             filename         = null,
@@ -969,31 +967,13 @@ class ReceiveActivity : AppCompatActivity() {
             pixelArt         = paperFile?.pixelArt ?: false,
             mimeTypeIsGuessed = isGuessed
         )
-    }
 
-    private fun launchLegacyContent() {
-        if (legacyChunks.isEmpty()) return
-        val joined = legacyChunks.joinToString("")
-        val parsed = parseLegacyDataUri(joined)
-        if (parsed != null) {
-            val (mimeType, bytes) = parsed
-            legacyChunks.clear()
-            completeSingle(TagDropCodec.contentId(bytes).toHex(), null, null, mimeType, bytes)
-        } else {
-            openDataUri(joined)
+        if (paperFile != null) { cache(); return }
+        lifecycleScope.launch {
+            val alreadyFound = AppDatabase.get(this@ReceiveActivity).cacheDao().getById(cacheId) != null
+            if (alreadyFound || askImportRawScan(bytes, mimeType, classification?.title)) cache()
+            else toast(getString(R.string.raw_scan_discarded))
         }
-    }
-
-    private fun parseLegacyDataUri(dataUri: String): Pair<String, ByteArray>? {
-        if (!dataUri.startsWith("data:")) return null
-        val comma = dataUri.indexOf(',')
-        if (comma < 0) return null
-        val header = dataUri.substring(5, comma)
-        if (!header.endsWith(";base64")) return null
-        val bytes = runCatching {
-            android.util.Base64.decode(dataUri.substring(comma + 1), android.util.Base64.NO_WRAP)
-        }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
-        return header.removeSuffix(";base64") to bytes
     }
 
     private fun openContent(mimeType: String, bytes: ByteArray, cacheId: String? = null) {
@@ -1012,7 +992,6 @@ class ReceiveActivity : AppCompatActivity() {
 
     private fun clearState() {
         assembler.reset()
-        legacyChunks.clear()
         lastPaper = null
         updateDisplay()
     }
@@ -1027,10 +1006,6 @@ class ReceiveActivity : AppCompatActivity() {
         } else {
             binding.recyclerScanBoard.visibility = View.GONE
             binding.textStatus.text = when {
-                legacyChunks.isNotEmpty() -> {
-                    getString(R.string.status_legacy, legacyChunks.size) + "\n\n" +
-                        legacyChunks.joinToString("").take(300)
-                }
                 !assembler.hasPending -> getString(R.string.status_ready)
                 else -> when (val state = assembler.currentState()) {
                     is SectorAssembler.State.Collecting ->
@@ -1043,7 +1018,6 @@ class ReceiveActivity : AppCompatActivity() {
                 }
             }
         }
-        binding.buttonLaunch.isEnabled = legacyChunks.isNotEmpty()
     }
 
     /** Renders 0-based missing sector indices as 1-based "#1, #2" for display — sectors can be scanned in any order, so list all of them, not just the next. */
@@ -1076,6 +1050,9 @@ class ReceiveActivity : AppCompatActivity() {
 
         /** Expected length of a SPEC §9 AES-256-GCM `key_material`. */
         private const val KEY_MATERIAL_BYTES = 32
+
+        /** How many leading bytes [askImportRawScan]'s hex/UTF-8 preview shows. */
+        private const val RAW_SCAN_PREVIEW_BYTES = 64
 
         private const val PREFS_NAME = "tagdrop_prefs"
         private const val PREF_LOCATION_RATIONALE_SHOWN = "location_rationale_shown"

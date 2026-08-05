@@ -2203,14 +2203,24 @@ Media Preview (Type 7) {              // global — no namespace item; no key 0
 
 ---
 
-## 11. Backward Compatibility: Legacy `data:` URIs
+## 11. Backward Compatibility: Legacy `data:` URIs (removed)
 
-Codes containing a raw `data:` URI (without the `tagdrop:` scheme) are recognised and handled in **legacy mode**:
+Earlier versions of this document specified a **legacy mode** recognising a
+raw `data:` URI (without the `tagdrop:` scheme) as TagDrop-originated
+content — a single code opened directly, multiple codes **dumb-appended**
+in scan order (the original V1 behaviour) and the assembled string
+interpreted as a `data:` URI — despite `data:` never having been a TagDrop-
+specific scheme (any QR generator can produce one). This document
+previously stated that "legacy support will be maintained indefinitely";
+that promise is withdrawn as of this version. The reference implementation
+no longer recognises a scanned `data:` URI specially: it is handled the
+same as any other non-`tagdrop:` code — reader-side handling of
+non-TagDrop content is an implementation detail, not part of this wire
+format, and isn't otherwise specified here.
 
-- A single code: the data URI is opened directly in the WebView viewer.
-- Multiple codes: fragments are **dumb-appended** in scan order (the original V1 behaviour). The assembled string is interpreted as a `data:` URI.
-
-New content should use the `tagdrop:` scheme. Legacy support will be maintained indefinitely.
+This section number is kept, unused, rather than renumbering every section
+after it — an existing SPEC.md cross-reference to `§12`/`§13`/etc. should
+keep pointing at what it always has.
 
 ---
 

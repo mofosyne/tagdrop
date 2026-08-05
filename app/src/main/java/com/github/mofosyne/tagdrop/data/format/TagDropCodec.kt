@@ -46,7 +46,7 @@ import javax.crypto.spec.SecretKeySpec
  * or Split-wrapped (with Media Preview becoming *Split's* subrecord instead) when it doesn't.
  * Content Signature (declared Type 2, wire `-2`, TagDrop-scoped), present only when signed, nests as Media
  * Payload's own subrecord, so `signature`/`signer_pubkey` travel once per payload regardless
- * of how many codes it spans. [decode]/[decodeRaw] return a [TagDropScan]; feed each
+ * of how many codes it spans. [decode]/[decodeRaw] return a [TagDropScan.RecordScan]; feed each
  * [ScannedRecord] to [SectorAssembler] to reassemble and parse the payload it belongs to.
  *
  * Paper (SPEC §3.3-§3.4) is a flat Preview/Body pair (Types 3/4).
@@ -1016,12 +1016,10 @@ object TagDropCodec {
     // ── Decoding (SPEC §2, §5.1) ────────────────────────────────────────────────
 
     /**
-     * Decodes one scanned string into a [TagDropScan]: a `tagdrop:` encoding URI becomes a
-     * [TagDropScan.RecordScan]; a raw `data:` URI becomes a [TagDropScan.LegacyScan] (§11).
-     * Navigation links (`tagdrop://`, §2) and anything else return null.
+     * Decodes one scanned string into a [TagDropScan.RecordScan]. Navigation links
+     * (`tagdrop://`, §2) and anything not on the `tagdrop:` scheme return null.
      */
-    fun decode(scanned: String): TagDropScan? {
-        if (scanned.startsWith("data:")) return TagDropScan.LegacyScan(TagDropPayload.Legacy(scanned))
+    fun decode(scanned: String): TagDropScan.RecordScan? {
         if (!scanned.startsWith(SCHEME) || scanned.startsWith(NAV_LINK_PREFIX)) return null
         val bytes = runCatching { Base41.decode(scanned.removePrefix(SCHEME)) }.getOrNull() ?: return null
         return decodeRaw(bytes)
@@ -1033,7 +1031,7 @@ object TagDropCodec {
      * NDEF, byte-mode QR with optional QDEF framing). Returns null for an unrecognized
      * leading Type ID or malformed sequence.
      */
-    fun decodeRaw(bytes: ByteArray): TagDropScan? =
+    fun decodeRaw(bytes: ByteArray): TagDropScan.RecordScan? =
         recordScanResult(stripQdefFraming(bytes))?.let { TagDropScan.RecordScan(it, rawWireBytes = bytes) }
 
     /** SPEC §2.2 even/odd criticality: an unrecognized EVEN key means this decoder can't
