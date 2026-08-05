@@ -1415,14 +1415,28 @@ async function zlibCompress(bytes) {
 
 // Mirror-image of zlibCompress, used by the debug splitReassembledStream's
 // compressed-bulky_meta_item branch (no current encoder produces one).
-async function zlibDecompress(bytes) {
+// Decompression-bomb guard (SPEC §8): caps output size, checked incrementally, mirroring
+// tools/reader/index.html's zlibDecompress exactly (this function has no live caller against
+// untrusted input today, but stays capped for consistency with the codec copy this mirrors).
+const MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
+async function zlibDecompress(bytes, maxBytes = MAX_DECOMPRESSED_BYTES) {
   const ds = new DecompressionStream('deflate');
   const w = ds.writable.getWriter();
   w.write(bytes); w.close();
   const chunks = [];
+  let total = 0;
   const r = ds.readable.getReader();
-  for (;;) { const { done, value } = await r.read(); if (done) break; chunks.push(value); }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
+  try {
+    for (;;) {
+      const { done, value } = await r.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) throw new Error(`decompressed output exceeds ${maxBytes} bytes (SPEC §8)`);
+      chunks.push(value);
+    }
+  } finally {
+    r.cancel().catch(() => {});
+  }
   const out = new Uint8Array(total);
   let off = 0; for (const c of chunks) { out.set(c, off); off += c.length; }
   return out;

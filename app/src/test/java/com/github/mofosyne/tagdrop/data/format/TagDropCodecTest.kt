@@ -862,6 +862,24 @@ class TagDropCodecTest {
         assertArrayEquals(original, TagDropCodec.decompress(compressed))
     }
 
+    @Test fun decompressRejectsOutputExceedingCap() {
+        // Decompression-bomb guard (SPEC §8): a small, highly-repetitive DEFLATE stream can
+        // still inflate past a byte cap even though the cap itself is generous — verified here
+        // against a tiny override cap (not the real 64 MiB MAX_DECOMPRESSED_BYTES) so the test
+        // doesn't need to allocate a real multi-megabyte fixture.
+        val bomb = TagDropCodec.compress(ByteArray(10_000))
+        assertTrue("fixture must actually compress smaller than the cap it's meant to exceed", bomb.size < 100)
+        assertThrows(TagDropCodec.DecompressionBombException::class.java) {
+            TagDropCodec.decompress(bomb, maxBytes = 100)
+        }
+    }
+
+    @Test fun decompressAcceptsOutputAtOrBelowCap() {
+        val original = ByteArray(50) { it.toByte() }
+        val compressed = TagDropCodec.compress(original)
+        assertArrayEquals(original, TagDropCodec.decompress(compressed, maxBytes = 50))
+    }
+
     @Test fun encryptAesGcmRoundTrip() {
         val key = TagDropCodec.generateKeyMaterial()
         val nonce = TagDropCodec.generateNonce()

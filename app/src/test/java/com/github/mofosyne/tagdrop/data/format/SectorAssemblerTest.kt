@@ -270,6 +270,55 @@ class SectorAssemblerTest {
         assertTrue("expected HashMismatch, got $state", state is SectorAssembler.State.HashMismatch)
     }
 
+    // ── Resource-exhaustion guards (SPEC §5.1) ──────────────────────────────────
+
+    @Test fun oversizedDeclaredCountRejected() {
+        // A hostile fragment declaring count far beyond TagDropCodec.MAX_SPLIT_FRAGMENT_COUNT
+        // must fail closed before any fragment-tracking storage is allocated -- not be silently
+        // accepted into an indefinitely "Collecting" state. Carries a Media Preview subrecord
+        // like any real multi-code fragment (SPEC §3.1a) -- without one, contentScanResult
+        // itself rejects the code before ever reaching SectorAssembler, which would test the
+        // wrong thing.
+        val groupId = sha256("x".toByteArray()).copyOf(8)
+        val hostileCount = TagDropCodec.MAX_SPLIT_FRAGMENT_COUNT + 1
+        val fragRaw = splitFragmentBytes(
+            groupId, 0, hostileCount, byteArrayOf(1, 2, 3), total = 100,
+            subrecords = listOf(mediaPreviewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        )
+        val record = recordOf(extensionBytes(null), fragRaw)
+        val a = SectorAssembler()
+        assertEquals(SectorAssembler.State.Failed, a.add(record))
+        assertFalse("must not leave a group in flight", a.hasPending)
+    }
+
+    @Test fun oversizedDeclaredTotalBytesRejected() {
+        // Same guard, for total_bytes -- bounds the reassembled-buffer allocation directly,
+        // independent of count.
+        val groupId = sha256("y".toByteArray()).copyOf(8)
+        val hostileTotal = TagDropCodec.MAX_SPLIT_TOTAL_BYTES + 1
+        val fragRaw = splitFragmentBytes(
+            groupId, 0, 2, byteArrayOf(1, 2, 3), total = hostileTotal,
+            subrecords = listOf(mediaPreviewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)))
+        )
+        val record = recordOf(extensionBytes(null), fragRaw)
+        val a = SectorAssembler()
+        assertEquals(SectorAssembler.State.Failed, a.add(record))
+        assertFalse("must not leave a group in flight", a.hasPending)
+    }
+
+    @Test fun ordinarySmallMultiFragmentPayloadUnaffectedByGuards() {
+        // The new resource-exhaustion guards must not reject any real-world-shaped payload --
+        // only ones declaring count/total_bytes far beyond what a physical multi-code drop needs.
+        val content = ByteArray(50) { it.toByte() }
+        val records = splitRecords(
+            extensionBytes(null), mediaPreviewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)), mediaPayloadBytes(content), chunkCount = 5
+        )
+        val a = SectorAssembler()
+        var state: SectorAssembler.State = SectorAssembler.State.Idle
+        for (r in records) state = a.add(r)
+        assertTrue("ordinary small multi-fragment payload must still complete normally", state is SectorAssembler.State.ContentReady)
+    }
+
     // ── Reset ─────────────────────────────────────────────────────────────────
 
     @Test fun resetClearsAllState() {

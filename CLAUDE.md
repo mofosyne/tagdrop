@@ -1413,6 +1413,129 @@ three Android-framework-dependent files touched (`WriteNfcTagActivity.kt`,
 (`android.nfc.*` isn't on it) — verified by careful diff re-reading
 instead, same as every prior session's honest limitation here.
 
+### Decompression-bomb and Split resource-exhaustion guards
+
+User question, not an upstream/spec-driven trigger this time: "hmmmmm...
+zip bombs, is that an issue here?" — prompted by Compress Wrapper's
+existence, followed by "yes and may want to note in spec so others don't
+get zip bombed" once the answer came back yes. Two related but distinct
+gaps, both real:
+
+1. **Decompression bomb via Compress Wrapper.** Nothing about DEFLATE
+   stopped an author (malicious or otherwise) from shipping a small,
+   pathologically repetitive stream that inflates far past its own size.
+   DEFLATE has no recursive container structure (unlike nested ZIP, which
+   compounds this across several unzip passes), so the amplification from
+   one inflate pass is bounded — but the bound is still large, ~1032:1
+   worst case. Both codecs' `decompress()`/`zlibDecompress()` previously
+   copied the inflate stream to output with no size check at all.
+2. **Reassembly resource exhaustion via Split Wrapper.** `count`/
+   `total_bytes` are attacker-controlled fields read off an untrusted
+   scanned code, straight into sizing decisions for fragment-tracking
+   storage — a single hostile code declaring an enormous `count` or
+   `total_bytes` could force a large allocation (or repeated large
+   `O(count)` scans) before a single real fragment arrives, no multi-code
+   group actually needed.
+
+**Fixed in both, with hard ceilings, not just observation.** Kotlin:
+`TagDropCodec.kt` gained `MAX_DECOMPRESSED_BYTES` (64 MiB),
+`MAX_SPLIT_TOTAL_BYTES` (16 MiB), `MAX_SPLIT_FRAGMENT_COUNT` (4096), and
+a `DecompressionBombException`; `decompress()` now checks cumulative
+output size incrementally against the cap as it reads from
+`InflaterInputStream` (catching a bomb as soon as the ceiling is
+crossed, not after allocating up to it), throwing rather than silently
+truncating — all 3 production call sites already wrap it in
+`runCatching { }.getOrNull()`, so no caller changes needed beyond the
+guard itself. `SectorAssembler.kt`'s `add()` rejects (`State.Failed`)
+any Split fragment whose declared `count`/`total` falls outside the caps
+*before* `groups.getOrPut` ever runs. JS: `tools/reader/index.html`
+(the only JS file that actually decodes — generator/examples got the
+same `MAX_DECOMPRESSED_BYTES` constant and bounded-read pattern applied
+to their own unused-by-any-live-encoder `zlibDecompress` copies, for
+codec-copy consistency per "Known duplication" below, not because
+they're a real attack surface) gained matching constants and the same
+incremental-cap-check rewrite of `zlibDecompress` (reading
+`DecompressionStream`'s output chunk-by-chunk rather than draining it
+in one shot), plus the same count/total guard at both of
+`RecordAssembler.add()`'s group-creation sites (Paper and Content) —
+hit a real editing gotcha here, not a logic bug: the two sites have
+different indentation (6-space vs 4-space), so a first `replace_all`
+Edit silently matched only one of them; caught by re-grepping for the
+new constant and finding a single occurrence, fixed with a second,
+separately-indented Edit.
+
+**SPEC.md gained two new subsections**, not just code — the user's ask
+was explicit about this ("note in spec so others don't get zip
+bombed"): §8 (Compression) gained "Decompression-bomb guard" (the
+incremental-check requirement, the 1032:1 worst-case DEFLATE
+amplification bound, why a hard MUST ceiling is required); §5 (Multi-
+Code Assembly Protocol) gained "Reassembly resource-exhaustion guard"
+(the count/total_bytes ceiling requirement, explicitly called out as a
+*separate* guard from §8's — `total_bytes` bounds the reassembled bytes
+as transmitted, which may themselves still be Compress-wrapped, so a
+single-code Compressed payload with no Split involved still needs §8's
+guard on its own). Both describe the requirement generically (decoders
+MUST enforce hard ceilings, checked incrementally) with TagDrop's own
+implementations' specific numbers given as a concrete example, so a
+from-scratch third-party decoder gets the same warning this session's
+question surfaced. **No SPEC.md version bump** — unlike every prior
+version-N entry above, this is a decoder-side robustness/validation
+addition, not a wire-format byte-layout change; nothing about what a
+compliant encoder emits on the wire changes, only what a compliant
+decoder must be prepared to reject. SPEC.md's version stays `17`.
+
+**New test coverage on both sides**, not just the fix. Kotlin:
+`TagDropCodecTest.kt` gained `decompressRejectsOutputExceedingCap`/
+`decompressAcceptsOutputAtOrBelowCap` (using `decompress()`'s new
+optional `maxBytes` parameter to test against a tiny 100-byte cap
+rather than needing a real 64 MiB+ fixture); `SectorAssemblerTest.kt`
+gained three tests under a new "Resource-exhaustion guards" section
+(`oversizedDeclaredCountRejected`, `oversizedDeclaredTotalBytesRejected`,
+`ordinarySmallMultiFragmentPayloadUnaffectedByGuards`). The first two
+initially failed with an NPE unrelated to the guard itself — the
+hand-built hostile `splitFragmentBytes(...)` fixtures were missing the
+Media Preview subrecord `contentScanResult`'s multi-code decode path
+requires, so the code was being rejected at an earlier, unrelated
+validation layer before `SectorAssembler.add()` (and the new guard) was
+ever reached; diagnosed via a standalone debug script calling
+`MiniCbor.decodeRootBundle` directly, fixed by adding the missing
+subrecord. JS: `tools/test-cross-tool-roundtrip.mjs` — the real
+generator→real reader jsdom harness (see the version-15 history entry
+above for why this file exists) — gained
+`testOversizedSplitDeclarationsRejected`, building a real Content
+Extension + Media Preview via the generator's own encoders and only
+hand-constructing the hostile part (a Split fragment via the
+generator's own low-level `cborRecord`/`TYPE_SPLIT` primitives,
+declaring `count`/`total_bytes` one past the reader's caps), then
+asserting the real reader's `RecordAssembler.add()` rejects it. Verified
+this test actually catches a regression, not just that it runs: with
+both of `reader/index.html`'s guard checks temporarily disabled, the
+new test failed with the exact wrong-state symptom (`'Collecting'`
+instead of `'Failed'`); restored, it passes again.
+
+Verified via the same standalone `kotlinc`+JUnit harness this project's
+QDEF port has used throughout (freshly assembled again for this
+session, this environment resets its filesystem between sessions) —
+196/196 tests pass across the full harness-eligible file set
+(`TagDropCodecTest`/`SectorAssemblerTest`/`MiniCborTest`/`Base41Test`/
+`TagDropPayloadTest`; `MarkdownRendererTest`/`LenientJsonTest`/
+`TagDropLinkResolverTest` excluded from this harness as before, since
+those source files pull in dependencies — `commonmark`, Room's
+`AppDatabase`/DAOs — this lightweight jar-only harness was never set up
+to vendor). JS: `npm test` (`test-qr-roundtrip.mjs`, 14/14 — notably
+*not* failing on the sandbox `zxing-wasm` issue this session's earlier
+CLAUDE.md entries flagged as pre-existing, apparently resolved in this
+environment since then), `npm run test:qdef` (11/11),
+`npm run test:crosstool` (5/5, including the new guard test),
+`npm run lint:qdef`/`lint:examples` (both clean, 15 codes/11 fixtures, 0
+errors/warnings) all pass; `qdef-fixtures.json` regenerated.
+
+**Outstanding gap, same as every prior port**: a full Android Studio
+build hasn't run against this change — this environment's Gradle
+wrapper still can't download its own distribution. The standalone
+`kotlinc`+JUnit harness remains the substitute verification this
+project has relied on throughout its QDEF history.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

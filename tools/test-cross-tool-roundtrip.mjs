@@ -265,10 +265,55 @@ async function testKeyOnlyCode() {
   return { name: 'key-only-code' };
 }
 
+// `TYPE_SPLIT` is `const TYPE_SPLIT = 1` at generator/index.html's top level — a global
+// lexical binding, not a `window` property (see header comment's RecordAssembler note).
+function getConst(window, name) {
+  return window.eval(name);
+}
+
+async function testOversizedSplitDeclarationsRejected() {
+  const gen = await loadGeneratorWindow();
+  const reader = await loadReaderWindow();
+
+  // Real Content Extension + Media Preview, built with the generator's own encoders —
+  // only the Split fragment itself is hand-built, hostile: a well-formed Record whose
+  // declared count/total_bytes exceed the reader's resource-exhaustion caps (SPEC.md
+  // §5.1). This is the exact attack the guard exists for — an untrusted scanned code
+  // driving unbounded fragment-tracking allocation before any real data arrives — so
+  // the assertion is that RecordAssembler rejects it outright, not that it mis-parses.
+  const contentExtension = gen.buildContentExtension({ hint: 'cross-tool hostile split' });
+  const mediaPreview = gen.buildMediaPreview({
+    contentHash: crossBytes(new Uint8Array(8).fill(7), gen), mediaType: 'text/plain',
+  });
+  const groupId = crossBytes(new Uint8Array(8).fill(9), gen);
+  const TYPE_SPLIT = getConst(gen, 'TYPE_SPLIT');
+  // Mirrors reader/index.html's MAX_SPLIT_FRAGMENT_COUNT (4096) / MAX_SPLIT_TOTAL_BYTES
+  // (16 MiB) — kept as literals here since the generator has no need for its own copies
+  // of these decode-side-only constants.
+  const hostileFragment = gen.cborRecord(TYPE_SPLIT, {
+    0: crossBytes(new Uint8Array([1, 2, 3]), gen), 2: groupId, 4: 0,
+    6: 4096 + 1, 7: (16 * 1024 * 1024) + 1,
+  }, [mediaPreview]);
+  const bytes = crossBytes(gen.encodeRootBundle([contentExtension, hostileFragment]), reader);
+
+  const scan = reader.recordScanResult(bytes);
+  assert.equal(scan.type, 'record', 'a hostile-but-well-formed Split fragment must still parse as a Record');
+
+  const RecordAssembler = getRecordAssemblerClass(reader);
+  const state = await new RecordAssembler().add(scan);
+  assert.equal(state.kind, 'Failed',
+    'an oversized declared count/total_bytes must be rejected before any allocation (SPEC §5.1)');
+
+  return { name: 'oversized-split-declarations-rejected' };
+}
+
 async function main() {
   console.log('Cross-tool round-trip test: real generator/index.html -> real reader/index.html\n');
   const results = [];
-  for (const test of [testSingleCodeContent, testMultiCodeContentSplit, testSingleCodePaper, testKeyOnlyCode]) {
+  for (const test of [
+    testSingleCodeContent, testMultiCodeContentSplit, testSingleCodePaper, testKeyOnlyCode,
+    testOversizedSplitDeclarationsRejected,
+  ]) {
     try {
       const result = await test();
       console.log(`  PASS  ${result.name}` + (result.codeCount ? ` (${result.codeCount} codes)` : ''));
@@ -278,10 +323,11 @@ async function main() {
       process.exitCode = 1;
     }
   }
+  const total = 5;
   if (!process.exitCode) {
-    console.log(`\n${results.length}/${results.length} passed.`);
+    console.log(`\n${results.length}/${total} passed.`);
   } else {
-    console.log(`\n${results.length}/4 passed — see FAIL lines above.`);
+    console.log(`\n${results.length}/${total} passed — see FAIL lines above.`);
   }
 }
 

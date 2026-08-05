@@ -102,6 +102,33 @@ object TagDropCodec {
     /** Paired don't-bother-splitting threshold for [DEFAULT_SECTOR_DATA_BYTES] — see [MAX_URI_LENGTH]. */
     const val DEFAULT_URI_LENGTH = 700
 
+    // ── Resource-exhaustion guards (SPEC §8) ────────────────────────────────
+    // A scanned code is untrusted input — nothing stops a hostile QR/NFC tag from declaring a
+    // Split Wrapper `count`/`total_bytes` far beyond any real payload, or from Compress-wrapping
+    // a small DEFLATE stream engineered to inflate far past its own size (a "decompression bomb"
+    // — DEFLATE's own single-pass ceiling is roughly 1032:1, since there's no recursive
+    // container structure here the way nested ZIP archives have). Both [decompress] and
+    // [SectorAssembler]'s Split reassembly enforce these caps before allocating anything sized by
+    // untrusted values, so a malicious scan fails closed (a bounded, catchable error) instead of
+    // exhausting memory. All three are generous relative to any real TagDrop payload (SPEC §4.3
+    // "no more practical size limit" describes hundreds of files, not gigabytes) and cheap to
+    // check relative to the allocations they're guarding.
+
+    /** Hard ceiling on [decompress]'s output size — DEFLATE's own amplification (≈1032:1) means a
+     *  compressed blob far smaller than this can still inflate past it if unchecked. Checked
+     *  incrementally as bytes are produced, not after allocating the full output. */
+    const val MAX_DECOMPRESSED_BYTES = 64L * 1024 * 1024
+
+    /** Hard ceiling on a Split Wrapper's declared `total_bytes` (SPEC §5.1) — bounds the
+     *  reassembled-buffer allocation in [SectorAssembler] directly, independent of and before any
+     *  decompression is attempted on the result. */
+    const val MAX_SPLIT_TOTAL_BYTES = 16 * 1024 * 1024
+
+    /** Hard ceiling on a Split Wrapper's declared `count` (SPEC §5.1) — bounds the fragment-
+     *  tracking map size and the `missing`-index scan's cost in [SectorAssembler], which would
+     *  otherwise scale with an attacker-declared value on every fragment received. */
+    const val MAX_SPLIT_FRAGMENT_COUNT = 4096
+
     /** NDEF MIME type for a code's raw CBOR Record Sequence on an NFC tag (SPEC §12/§13). */
     const val NFC_MIME_TYPE = "application/vnd.tagdrop"
 
@@ -1419,9 +1446,31 @@ object TagDropCodec {
         return out.toByteArray()
     }
 
-    fun decompress(data: ByteArray): ByteArray {
+    /** Thrown by [decompress] when a compressed payload's output exceeds [maxBytes]
+     *  ([MAX_DECOMPRESSED_BYTES] by default) — a decompression-bomb guard (SPEC §8), not a
+     *  malformed-stream error. Callers already treat any exception from [decompress] as a decode
+     *  failure (`runCatching { decompress(...) }.getOrNull()`), so this needs no special handling
+     *  beyond existing call sites. */
+    class DecompressionBombException(message: String) : Exception(message)
+
+    /** [maxBytes] defaults to [MAX_DECOMPRESSED_BYTES]; overridable only so tests can exercise the
+     *  guard itself without allocating a real multi-megabyte fixture — every production call site
+     *  uses the default. */
+    fun decompress(data: ByteArray, maxBytes: Long = MAX_DECOMPRESSED_BYTES): ByteArray {
         val out = ByteArrayOutputStream()
-        InflaterInputStream(ByteArrayInputStream(data)).use { it.copyTo(out) }
+        val buffer = ByteArray(8192)
+        var total = 0L
+        InflaterInputStream(ByteArrayInputStream(data)).use { input ->
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                total += n
+                if (total > maxBytes) {
+                    throw DecompressionBombException("decompressed output exceeds $maxBytes bytes (SPEC §8)")
+                }
+                out.write(buffer, 0, n)
+            }
+        }
         return out.toByteArray()
     }
 

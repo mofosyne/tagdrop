@@ -1129,6 +1129,25 @@ discriminator needed beyond the index itself. Reusing an index *within*
 safe — that range is reserved for the data fragments, in that order, with
 no exceptions.
 
+**Reassembly resource-exhaustion guard.** `count`/`total_bytes` are
+attacker-controlled — a scanned code declaring them is untrusted input,
+same reasoning as §8's decompression-bomb guard. A decoder MUST NOT
+allocate fragment-tracking storage or a reassembly buffer sized directly
+by an unbounded declared `count`/`total_bytes` — a single hostile code
+could otherwise force a large allocation (or a large `O(count)` missing-
+fragment scan, repeated on every fragment received) before a single real
+fragment even arrives. Implementations MUST enforce hard ceilings on both
+and reject (fail the group, don't crash) a Split Wrapper declaring either
+beyond them. TagDrop's own implementations cap `count` at 4096 and
+`total_bytes` at 16 MiB (`TagDropCodec.MAX_SPLIT_FRAGMENT_COUNT`/
+`MAX_SPLIT_TOTAL_BYTES`, or the JS reader's equivalents) — both far
+beyond any real multi-code group this format is meant for. This is a
+separate guard from §8's decompression-bomb cap, not a substitute for
+it: `total_bytes` bounds the reassembled bytes as transmitted (which may
+themselves be Compress-wrapped), while §8's cap bounds what those bytes
+inflate to — a single-code Compressed payload (no Split involved at all)
+still needs §8's guard on its own.
+
 ---
 
 ## 6. Placing Codes in the Field
@@ -1645,6 +1664,28 @@ what's inside it (QDEF-SPEC.md §3.2), which is what let the old design's
 anywhere in the old stream) be dropped entirely.
 
 DEFLATE typically achieves 50–70% size reduction on HTML and text, effectively doubling QR capacity for textual content.
+
+**Decompression-bomb guard.** A scanned code is untrusted input — nothing
+about Compress Wrapper's own definition stops an author (malicious or
+otherwise) from deflating a small, pathologically repetitive stream that
+inflates to far more than its own size once decompressed. DEFLATE has no
+recursive container structure (unlike nested ZIP archives, which can
+compound this into a much larger blow-up across several unzip passes),
+so the amplification from a single inflate pass is bounded — but that
+bound is still large: roughly 1032:1 in the worst case. A decoder MUST
+NOT allocate an unbounded buffer for decompressed output — implementations
+MUST enforce a hard ceiling on decompressed size, checked incrementally as
+output is produced (so a bomb is caught as soon as the ceiling is crossed,
+without first allocating up to it) rather than only after decompression
+completes, and MUST treat exceeding it as a decode failure like any other
+malformed input, not a crash. TagDrop's own implementations cap
+decompressed output at 64 MiB (`TagDropCodec.MAX_DECOMPRESSED_BYTES` /
+the JS reader's equivalent) — generous relative to any real payload this
+format is meant for (§4.3's "no more practical size limit" describes
+hundreds of files, not gigabytes), but bounded. This applies wherever
+Compress Wrapper is unwrapped, independent of whether the payload also
+used Split (§5) — a single-code Compressed payload is exposed exactly the
+same as a Split-wrapped one.
 
 ---
 

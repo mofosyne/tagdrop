@@ -419,7 +419,12 @@ function cborDecodeSequencePrefix(bytes, n) {
 }
 
 // ── Decompression ─────────────────────────────────────────────────────────
-async function zlibDecompress(bytes) {
+/**
+ * [maxBytes] defaults to MAX_DECOMPRESSED_BYTES; overridable only so tests can exercise the
+ * decompression-bomb guard (SPEC §8) without allocating a real multi-megabyte fixture — every
+ * production call site uses the default.
+ */
+async function zlibDecompress(bytes, maxBytes = MAX_DECOMPRESSED_BYTES) {
   const ds = new DecompressionStream('deflate');
   const writer = ds.writable.getWriter();
   // Don't await write()/close() here — DecompressionStream's writable side has
@@ -429,13 +434,22 @@ async function zlibDecompress(bytes) {
   writer.write(bytes).catch(() => {});
   writer.close().catch(() => {});
   const chunks = [];
+  let total = 0;
   const reader = ds.readable.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      // Decompression-bomb guard (SPEC §8): abort as soon as the cap is crossed, before
+      // allocating the full output — DEFLATE's own amplification (≈1032:1) means a small
+      // compressed input can still inflate past it if unchecked.
+      if (total > maxBytes) throw new Error(`decompressed output exceeds ${maxBytes} bytes (SPEC §8)`);
+      chunks.push(value);
+    }
+  } finally {
+    reader.cancel().catch(() => {});
   }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
   for (const c of chunks) { out.set(c, off); off += c.length; }
@@ -508,6 +522,20 @@ function askPassphrase(infoText) {
 
 // Minimum size of a self-contained nonce(12) || ciphertext || tag(16) override-map blob (SPEC §9).
 const OVERRIDE_BLOB_MIN_BYTES = 28;
+
+// ── Resource-exhaustion guards (SPEC §5.1, §8) ──────────────────────────────
+// A scanned code is untrusted input -- nothing stops a hostile QR from declaring a Split
+// Wrapper count/total_bytes far beyond any real payload, or from Compress-wrapping a small
+// DEFLATE stream engineered to inflate far past its own size ("decompression bomb" -- DEFLATE's
+// own single-pass ceiling is roughly 1032:1, no recursive container structure here the way
+// nested ZIP archives have). RecordAssembler and zlibDecompress both enforce these caps before
+// allocating anything sized by untrusted values. All three are generous relative to any real
+// TagDrop payload (SPEC §4.3 "no more practical size limit" describes hundreds of files, not
+// gigabytes) — mirrors TagDropCodec.kt's MAX_DECOMPRESSED_BYTES/MAX_SPLIT_TOTAL_BYTES/
+// MAX_SPLIT_FRAGMENT_COUNT exactly.
+const MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
+const MAX_SPLIT_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_SPLIT_FRAGMENT_COUNT = 4096;
 
 /**
  * Tries `key` against `blob` as nonce(12) || ciphertext || tag(16) (SPEC §9). Returns the
@@ -1969,6 +1997,11 @@ class RecordAssembler {
       if (!(groupId instanceof Uint8Array) || !(data instanceof Uint8Array) || count < 1 || total == null) {
         return { kind: 'Failed' };
       }
+      // Resource-exhaustion guard (SPEC §5.1): reject before allocating any fragment-tracking
+      // storage sized by an untrusted declared count/total.
+      if (count > MAX_SPLIT_FRAGMENT_COUNT || total < 0 || total > MAX_SPLIT_TOTAL_BYTES) {
+        return { kind: 'Failed' };
+      }
       const key = toHex(groupId);
       let group = this.groups.get(key);
       if (!group) {
@@ -2009,6 +2042,11 @@ class RecordAssembler {
     const groupId = frag[SK.GROUP_ID], index = frag[SK.INDEX] ?? 0, count = frag[SK.COUNT] ?? 1;
     const data = frag[SK.DATA], total = frag[SK.TOTAL];
     if (!(groupId instanceof Uint8Array) || !(data instanceof Uint8Array) || count < 1 || total == null) {
+      return { kind: 'Failed' };
+    }
+    // Resource-exhaustion guard (SPEC §5.1): reject before allocating any fragment-tracking
+    // storage sized by an untrusted declared count/total.
+    if (count > MAX_SPLIT_FRAGMENT_COUNT || total < 0 || total > MAX_SPLIT_TOTAL_BYTES) {
       return { kind: 'Failed' };
     }
     const key = toHex(groupId);
