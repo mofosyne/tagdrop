@@ -257,7 +257,8 @@ abstract class AppDatabase : RoomDatabase() {
                         enabled INTEGER NOT NULL DEFAULT 1,
                         addedAt INTEGER NOT NULL,
                         lastFetchedAt INTEGER,
-                        entryCount INTEGER NOT NULL DEFAULT 0
+                        entryCount INTEGER NOT NULL DEFAULT 0,
+                        lastFetchFailed INTEGER NOT NULL DEFAULT 0
                     )"""
                 )
                 // Seed default sources for existing installs (disabled by default).
@@ -275,7 +276,7 @@ abstract class AppDatabase : RoomDatabase() {
         private fun seedDefaultSources(db: SupportSQLiteDatabase, now: Long, context: Context) {
             com.github.mofosyne.tagdrop.data.SourceFetcher.readBundledDefaultSources(context).forEach { source ->
                 db.execSQL(
-                    "INSERT INTO drop_sources (name, url, enabled, addedAt, lastFetchedAt, entryCount) VALUES (?, ?, 0, ?, NULL, 0)",
+                    "INSERT INTO drop_sources (name, url, enabled, addedAt, lastFetchedAt, entryCount, lastFetchFailed) VALUES (?, ?, 0, ?, NULL, 0, 0)",
                     arrayOf(source.name, source.url, now)
                 )
             }
