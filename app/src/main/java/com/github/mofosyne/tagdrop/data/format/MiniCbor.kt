@@ -52,10 +52,13 @@ object MiniCbor {
     }
 
     /**
-     * Encodes a CBOR map/field key: a non-negative uint (major type 0) for an ordinary
-     * Type-specific key, or — for a QDEF Common Field Key (QDEF-SPEC.md §3.6, always
-     * negative, always odd/optional) — a CBOR negative integer (major type 1, RFC 8949
-     * §3.1: stores `-(n+1)` as its argument).
+     * Encodes a signed CBOR integer: a non-negative uint (major type 0) for `k >= 0`, or a CBOR
+     * negative integer (major type 1, RFC 8949 §3.1: stores `-(n+1)` as its argument) for `k <
+     * 0`. Used for map/field keys (a non-negative uint for an ordinary Type-specific key, a
+     * negative one for a QDEF Common Field Key, QDEF-SPEC.md §3.6, always negative/odd/optional)
+     * — and, as of SPEC.md v16, for a Record's own `typeId` item too ([encodeRecord]), where
+     * sign is the namespace-scoping signal (§2.1a): non-negative = global, negative = scoped to
+     * whatever namespace is ambient.
      */
     private fun encodeKey(k: Int): ByteArray {
         val out = ByteArrayOutputStream()
@@ -317,24 +320,33 @@ object MiniCbor {
 
     /**
      * Encodes a QDEF Record: `[namespace?, typeId, map?, subrecord*]` as one CBOR array (major
-     * type 4) — QDEF-SPEC.md §2.1a/§3.5's namespace-pairing prefix, SPEC.md v14 §2.1a. There is
-     * no positional payload slot as of SPEC.md v15 (§3.6's reserved map key `0` replaces it — a
-     * caller that needs one just includes `0 to someBytes` as an ordinary entry in [fields]).
-     * [namespace], when non-null, is encoded as a CBOR byte string (major type 2) and
-     * prepended as the array's very first item, ahead of the typeId item: pass the real 4-byte
-     * value (`TagDropCodec.TAGDROP_NAMESPACE`) to declare it explicitly (the root Bundle's own
-     * leading element, or a lone top-level Record's own leading element in the key-only case),
-     * `ByteArray(0)` (`h''`) to cascade from an already-declared ambient namespace (every other
-     * TagDrop-scoped Record, at any nesting depth), or `null` (the default) for a QDEF
-     * standard/global Type (Media Preview, Media Payload, Split Wrapper, Compress Wrapper),
-     * which never carries a namespace item of its own. Fields sort by RFC 8949 §4.2.1
-     * canonical/deterministic order — by their *encoded* key bytes (shorter first, then
-     * bytewise), not by plain integer value; see [CANONICAL_KEY_BYTES_ORDER] (QDEF-SPEC.md
-     * §3.4). The map is omitted entirely only when [fields] itself is empty — a static,
-     * per-call-site choice — NOT whenever every declared field's *value* happens to be null: a
-     * Type that always declares fields (Content Extension, Paper-Preview/Body) must keep
-     * writing `{}` even when every optional field is unset this time, since [stripKeys] and any
-     * signature-hash formula covering its bytes need a stable map to exist.
+     * type 4) — QDEF-SPEC.md §2.1a/§3.5's namespace-pairing prefix. There is no positional
+     * payload slot as of SPEC.md v15 (§3.6's reserved map key `0` replaces it — a caller that
+     * needs one just includes `0 to someBytes` as an ordinary entry in [fields]).
+     *
+     * As of SPEC.md v16, [typeId]'s own **sign** — not the presence of a namespace item — decides
+     * whether *this* Record is global or namespace-scoped: pass a non-negative [typeId] for a
+     * QDEF standard/global Type (Media Preview, Media Payload, Split Wrapper, Compress Wrapper),
+     * or a negative [typeId] (the negation of one of TagDrop's declared magnitudes, e.g. `-1` for
+     * Content Extension) for a Record scoped to whatever namespace is ambient from an ancestor —
+     * `h''` ("inherit the ambient namespace as my own scope") is gone from QDEF's grammar
+     * entirely, so a TagDrop-scoped Record now passes [namespace] as `null` (the default) and
+     * relies purely on its negative typeId; see [decodeRecordPrefix]'s doc comment for the full
+     * resolution rule. [namespace] here therefore has exactly one remaining job — introducing a
+     * fresh ambient value for this Record's OWN [subrecords], never for itself — pass the real
+     * 4-byte value (`TagDropCodec.TAGDROP_NAMESPACE`) when this Record needs to hand a namespace
+     * down to something nested inside it (the root Bundle's own leading element being the common
+     * case, via [encodeRootBundle]); leave it `null` on every other Record, TagDrop-scoped or
+     * global alike, letting the ambient value already in scope keep flowing through untouched.
+     *
+     * Fields sort by RFC 8949 §4.2.1 canonical/deterministic order — by their *encoded* key
+     * bytes (shorter first, then bytewise), not by plain integer value; see
+     * [CANONICAL_KEY_BYTES_ORDER] (QDEF-SPEC.md §3.4). The map is omitted entirely only when
+     * [fields] itself is empty — a static, per-call-site choice — NOT whenever every declared
+     * field's *value* happens to be null: a Type that always declares fields (Content Extension,
+     * Paper-Preview/Body) must keep writing `{}` even when every optional field is unset this
+     * time, since [stripKeys] and any signature-hash formula covering its bytes need a stable
+     * map to exist.
      */
     fun encodeRecord(
         typeId: Int, fields: List<Pair<Int, Any?>>, subrecords: List<ByteArray> = emptyList(),
@@ -342,7 +354,7 @@ object MiniCbor {
     ): ByteArray {
         val items = mutableListOf<ByteArray>()
         if (namespace != null) items.add(encodeBytes(namespace))
-        items.add(encodeUInt(typeId.toLong()))
+        items.add(encodeKey(typeId)) // typeId's own sign (major 0 vs. major 1) is the v16 scoping signal
         if (fields.isNotEmpty()) items.add(encodeMap(fields.sortedWith(compareBy(CANONICAL_KEY_BYTES_ORDER) { encodeKey(it.first) })))
         items.addAll(subrecords)
         val out = ByteArrayOutputStream()
@@ -364,15 +376,19 @@ object MiniCbor {
         /** Whatever follows this Record in the CBOR Sequence. */
         val trailing: ByteArray,
         /**
-         * This Record's own resolved namespace (QDEF-SPEC.md §3.5/SPEC.md v14 §2.1a) — the
-         * value that governs how *this Record's own* [typeId] is interpreted. `null` means
-         * global/standard (no namespace item present at all on this Record's own array, or an
-         * empty cascade with no ambient value to inherit). Non-null is either this Record's own
-         * explicit declaration, or an inherited ambient value if this Record emitted `h''`. Does
-         * NOT by itself tell you what ambient value was forwarded to [subrecords] — a
-         * standard/global Type with no namespace item of its own (this field null) still passes
-         * whatever ambient value IT received through to its own subrecords, untouched; see
-         * [decodeRecordPrefix]'s own doc comment.
+         * This Record's own resolved namespace (QDEF-SPEC.md §3.5, SPEC.md v16 §2.1a) — the
+         * value that governs how *this Record's own* [typeId] is interpreted. As of v16 this is
+         * decided purely by [typeId]'s own sign: `null` (global/standard) whenever [typeId] is
+         * non-negative, regardless of whether a namespace item happens to be present on this
+         * Record's own array; the ambient value passed in as `decodeRecordPrefix`'s
+         * `ambientNamespace` parameter whenever [typeId] is negative. A namespace item present on
+         * this SAME Record never contributes to this field — as of v16 it has exactly one job,
+         * becoming the new ambient value for [subrecords], never scoping the Record that carries
+         * it (this is precisely why a Record can no longer both introduce a namespace and be
+         * scoped by it in the same array). Does NOT by itself tell you what ambient value was
+         * forwarded to [subrecords] — a standard/global Type with no namespace item of its own
+         * (this field null) still passes whatever ambient value IT received through to its own
+         * subrecords, untouched; see [decodeRecordPrefix]'s own doc comment.
          */
         val namespace: ByteArray?
     )
@@ -409,19 +425,30 @@ object MiniCbor {
      *
      * [ambientNamespace] is whatever namespace value is already in scope from this Record's own
      * *parent* (null at the outermost call unless the caller already knows better — e.g.
-     * [decodeRootBundle] threading the root's own declaration down). Namespace resolution
-     * (QDEF-SPEC.md §3.5, SPEC.md v14 §2.1a): if this Record's own leading item is an empty
-     * byte string (`h''`), it cascades — [DecodedRecord.namespace] becomes [ambientNamespace]
-     * unchanged. If it's a non-empty byte string, that value is this Record's own explicit
-     * namespace. If no namespace item is present at all, [DecodedRecord.namespace] is `null`
-     * (global) — but *regardless of which of these three cases applies*, the ambient value
-     * forwarded to [DecodedRecord.subrecords] is this Record's own explicit/cascaded value when
-     * it declared one, or [ambientNamespace] passed straight through unchanged when it declared
-     * none at all — a standard/global Type (no namespace item of its own, ever) still relays
-     * whatever ambient namespace it received on to whatever's nested inside it. Getting this
-     * distinction right is what lets e.g. Content Signature — nested inside Media Payload
-     * inside Media Preview, neither of which ever declares a namespace of their own — still
-     * correctly resolve back to the root's one declaration by emitting `h''` itself.
+     * [decodeRootBundle] threading the root's own declaration down).
+     *
+     * Namespace resolution (QDEF-SPEC.md §3.5, SPEC.md v16 §2.1a — this Record's own scope is
+     * decided purely by [DecodedRecord.typeId]'s sign, never by whether a namespace item happens
+     * to be present on this same Record): [DecodedRecord.namespace] is [ambientNamespace]
+     * unchanged when the decoded typeId is negative, or `null` (global) when it's non-negative —
+     * `h''` ("inherit the ambient namespace as my own scope") no longer exists as a distinct
+     * wire form, since sign alone now carries that signal at zero extra bytes.
+     *
+     * A namespace item on this Record, if present, plays a completely different, narrower role:
+     * it becomes the *new* ambient value handed down to [DecodedRecord.subrecords] — never a
+     * contributor to this Record's own [DecodedRecord.namespace] above. If no namespace item is
+     * present at all, [ambientNamespace] is passed straight through unchanged to subrecords
+     * instead — a standard/global Type (no namespace item of its own, ever) still relays
+     * whatever ambient namespace it received on to whatever's nested inside it. A present
+     * namespace item that decodes to an empty byte string (`h''`) is treated the same as "no
+     * item present" for this purpose — no valid v16 encoder ever emits an empty namespace bstr
+     * (the mechanism it used to signal, cascading, is now free — sign does that job instead), so
+     * this is purely graceful handling of a malformed/stale input, not a supported cascade form.
+     * Getting the distinction between "this Record's own scope" and "what it hands its children"
+     * right is what lets e.g. Content Signature — nested inside Media Payload inside Media
+     * Preview, neither of which ever declares a namespace of their own or is itself
+     * namespace-scoped — still correctly resolve back to the root's one declaration via its own
+     * negative typeId alone.
      */
     @Suppress("UNCHECKED_CAST")
     fun decodeRecordPrefix(bytes: ByteArray, ambientNamespace: ByteArray? = null): DecodedRecord? = try {
@@ -430,21 +457,24 @@ object MiniCbor {
         if (ranges.isEmpty()) null else {
             val layout = layoutOf(bytes, ranges)
             if (layout.typeIdIdx >= ranges.size) null else {
-                val ownNamespace: ByteArray? = if (layout.hasNamespace) {
+                // Ambient value handed down to subrecords: a present, non-empty namespace item
+                // becomes the new ambient value; otherwise (no item at all, or a malformed empty
+                // `h''` no valid encoder emits any more) [ambientNamespace] passes through
+                // untouched — the "global Type still relays ambient context" rule above.
+                val childAmbient: ByteArray? = if (layout.hasNamespace) {
                     val (nsStart, nsEnd) = ranges[0]
                     val nsBytes = decodeSequencePrefix(bytes.copyOfRange(nsStart, nsEnd), 1).first[0] as? ByteArray
                         ?: throw IllegalStateException("bad namespace item")
                     if (nsBytes.isEmpty()) ambientNamespace else nsBytes
-                } else null
-                // Ambient value handed down to subrecords: this Record's own resolved value when
-                // it declared a namespace item (explicit or cascaded — same thing, since a cascade
-                // resolves to the same value anyway), otherwise the ambient value passed straight
-                // through untouched (the "global Type still relays ambient context" rule above).
-                val childAmbient: ByteArray? = if (layout.hasNamespace) ownNamespace else ambientNamespace
+                } else ambientNamespace
                 val (typeIdStart, typeIdEnd) = ranges[layout.typeIdIdx]
                 val typeIdVal = decodeSequencePrefix(bytes.copyOfRange(typeIdStart, typeIdEnd), 1).first[0]
                 val typeId = (typeIdVal as? Long)?.toInt()
                 if (typeId == null) null else {
+                    // v16's own-scope rule: negative typeId adopts [ambientNamespace] as received;
+                    // non-negative typeId is unconditionally global, regardless of any namespace
+                    // item sitting on this same Record (that item's only job is [childAmbient]).
+                    val ownNamespace: ByteArray? = if (typeId < 0) ambientNamespace else null
                     val record: Map<Int, Any> = if (layout.mapIdx < 0) emptyMap() else {
                         val (mapStart, mapEnd) = ranges[layout.mapIdx]
                         decodeSequencePrefix(bytes.copyOfRange(mapStart, mapEnd), 1).first[0] as? Map<Int, Any> ?: throw IllegalStateException("bad map")
@@ -466,22 +496,24 @@ object MiniCbor {
 
     /**
      * Encodes 1+ already-encoded top-level Record byte-arrays as the QDEF self-delimited root
-     * (QDEF-SPEC.md §2/§3.1): a single Record is returned as-is — its own array already IS the
-     * root, "no Bundle indirection," and [namespace] is unused/ignored in this case since the
-     * caller is expected to have already passed the real namespace directly to that single
-     * Record's own [encodeRecord] call (its own array already has it baked in as its own leading
-     * element) — while two or more become subrecords of an implied, never-transmitted Bundle
-     * (typeId 0, omitted): one more definite-length CBOR array wrapping them, with [namespace],
-     * if non-null, prepended as *that wrapping array's own* leading element (QDEF-SPEC.md §3.5,
-     * SPEC.md v14 §2.1a) — each TagDrop-scoped child then cascades from it via its own `h''`
-     * rather than re-declaring the full value. Bytes appended after the returned array are
-     * provably outside the container, and MUST be tolerated by a decoder (SPEC §9's deniability
-     * feature) — [decodeRootBundle]'s own self-delimiting length is what makes that safe without
-     * any app-specific record-count foreknowledge.
+     * (QDEF-SPEC.md §2/§3.1): one more definite-length CBOR array wrapping [records] as its own
+     * subrecords, with [namespace], if non-null, prepended as *that wrapping array's own* leading
+     * element (QDEF-SPEC.md §3.5, SPEC.md v16 §2.1a).
+     *
+     * As of SPEC.md v16, this ALWAYS wraps — even a single Record (SPEC §9's key-only case) —
+     * since a Record can no longer both introduce a namespace and be scoped by it in the same
+     * array, so there's no shape left where a lone top-level Record's own array could double as
+     * both the root and something namespace-scoped itself (the version-13–15 "single Record
+     * needs no Bundle indirection" special case is gone). Each TagDrop-scoped child then
+     * resolves back to [namespace] via its own negative typeId (see [encodeRecord]/
+     * [decodeRecordPrefix]) rather than repeating the full value or emitting a cascade marker of
+     * its own. Bytes appended after the returned array are provably outside the container, and
+     * MUST be tolerated by a decoder (SPEC §9's deniability feature) — [decodeRootBundle]'s own
+     * self-delimiting length is what makes that safe without any app-specific record-count
+     * foreknowledge.
      */
     fun encodeRootBundle(records: List<ByteArray>, namespace: ByteArray? = null): ByteArray {
         require(records.isNotEmpty()) { "encodeRootBundle requires at least one Record" }
-        if (records.size == 1) return records[0]
         val items = mutableListOf<ByteArray>()
         if (namespace != null) items.add(encodeBytes(namespace))
         items.addAll(records)
@@ -492,57 +524,30 @@ object MiniCbor {
     }
 
     /**
-     * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1, §3.5/SPEC.md v14 §2.1a):
-     * exactly one definite-length CBOR array, whose own leading element may be TagDrop's
-     * namespace declaration. Peeks at the first item (and, if it's a byte string, tentatively
-     * what would be the second) to disambiguate three shapes:
-     *   - First item is a byte string (major 2), second item is an array (major 4): the Bundle-
-     *     with-namespace case — that byte string is the namespace declaration, and every
-     *     remaining item is a nested Record, each decoded with [DecodedRecord.namespace]
-     *     resolution seeded from that declared value (each cascades via its own `h''`).
-     *   - First item is a byte string but the above doesn't hold (no second item, or the second
-     *     item isn't an array): the single-Record-root case where that Record's own leading item
-     *     IS its own namespace slot (the key-only/lone-Record case, SPEC §9) — delegated whole to
-     *     [decodeRecordPrefix] with no ambient namespace, letting it resolve its own leading item
-     *     itself.
-     *   - First item is a uint (major 0): also the single-Record-root case, but with no namespace
-     *     item present at all — again delegated whole to [decodeRecordPrefix].
-     *   - First item is itself an array (major 4), with no leading namespace: a legacy/malformed
-     *     Bundle-without-namespace shape — every item decoded as a nested Record with no ambient
-     *     namespace.
-     * Returns null if the root isn't a well-formed, definite-length CBOR array, or if any of its
-     * items fails to decode as a Record.
+     * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1, §3.5/SPEC.md v16 §2.1a):
+     * exactly one definite-length CBOR array whose own leading element MUST be TagDrop's
+     * namespace declaration (a CBOR byte string, major type 2) — as of v16 every TagDrop code is
+     * a namespace-declaring root Bundle, including the former single-Record/key-only shape (see
+     * [encodeRootBundle]), so there is no longer a "single-Record root, no Bundle indirection"
+     * case, nor a legacy Bundle-with-no-namespace-item case, to special-case here. Returns null
+     * if the root isn't a well-formed, definite-length CBOR array, if its first item isn't a
+     * byte string, or if any remaining item fails to decode as a Record (each seeded with the
+     * declared namespace as its own `ambientNamespace`, per [decodeRecordPrefix]).
      */
     fun decodeRootBundle(bytes: ByteArray): List<DecodedRecord>? {
         return try {
             val ranges = itemRanges(Cursor(bytes, 0), 4)
-            if (ranges.isEmpty()) null
-            else when (majorOf(bytes, ranges[0].first)) {
-                2 -> {
-                    if (ranges.size > 1 && majorOf(bytes, ranges[1].first) == 4) {
-                        // Bundle-with-namespace: item 0 is the declared namespace, items 1..N are subrecords.
-                        val (nsStart, nsEnd) = ranges[0]
-                        val namespace = decodeSequencePrefix(bytes.copyOfRange(nsStart, nsEnd), 1).first[0] as? ByteArray
-                            ?: return null
-                        val out = mutableListOf<DecodedRecord>()
-                        for (i in 1 until ranges.size) {
-                            val (s, e) = ranges[i]
-                            out.add(decodeRecordPrefix(bytes.copyOfRange(s, e), namespace) ?: return null)
-                        }
-                        out
-                    } else {
-                        // Single-Record root, that Record's own leading item is its own namespace slot.
-                        decodeRecordPrefix(bytes)?.let { listOf(it) }
-                    }
+            if (ranges.isEmpty() || majorOf(bytes, ranges[0].first) != 2) null
+            else {
+                val (nsStart, nsEnd) = ranges[0]
+                val namespace = decodeSequencePrefix(bytes.copyOfRange(nsStart, nsEnd), 1).first[0] as? ByteArray
+                    ?: return null
+                val out = mutableListOf<DecodedRecord>()
+                for (i in 1 until ranges.size) {
+                    val (s, e) = ranges[i]
+                    out.add(decodeRecordPrefix(bytes.copyOfRange(s, e), namespace) ?: return null)
                 }
-                0 -> decodeRecordPrefix(bytes)?.let { listOf(it) }
-                4 -> {
-                    // Legacy/malformed Bundle with no root-level namespace declaration at all.
-                    val out = mutableListOf<DecodedRecord>()
-                    for ((s, e) in ranges) out.add(decodeRecordPrefix(bytes.copyOfRange(s, e)) ?: return null)
-                    out
-                }
-                else -> null
+                out
             }
         } catch (e: Exception) { null }
     }

@@ -419,7 +419,12 @@ function cborDecodeSequencePrefix(bytes, n) {
 }
 
 // ── Decompression ─────────────────────────────────────────────────────────
-async function zlibDecompress(bytes) {
+/**
+ * [maxBytes] defaults to MAX_DECOMPRESSED_BYTES; overridable only so tests can exercise the
+ * decompression-bomb guard (SPEC §8) without allocating a real multi-megabyte fixture — every
+ * production call site uses the default.
+ */
+async function zlibDecompress(bytes, maxBytes = MAX_DECOMPRESSED_BYTES) {
   const ds = new DecompressionStream('deflate');
   const writer = ds.writable.getWriter();
   // Don't await write()/close() here — DecompressionStream's writable side has
@@ -429,13 +434,22 @@ async function zlibDecompress(bytes) {
   writer.write(bytes).catch(() => {});
   writer.close().catch(() => {});
   const chunks = [];
+  let total = 0;
   const reader = ds.readable.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      // Decompression-bomb guard (SPEC §8): abort as soon as the cap is crossed, before
+      // allocating the full output — DEFLATE's own amplification (≈1032:1) means a small
+      // compressed input can still inflate past it if unchecked.
+      if (total > maxBytes) throw new Error(`decompressed output exceeds ${maxBytes} bytes (SPEC §8)`);
+      chunks.push(value);
+    }
+  } finally {
+    reader.cancel().catch(() => {});
   }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
   for (const c of chunks) { out.set(c, off); off += c.length; }
@@ -508,6 +522,20 @@ function askPassphrase(infoText) {
 
 // Minimum size of a self-contained nonce(12) || ciphertext || tag(16) override-map blob (SPEC §9).
 const OVERRIDE_BLOB_MIN_BYTES = 28;
+
+// ── Resource-exhaustion guards (SPEC §5.1, §8) ──────────────────────────────
+// A scanned code is untrusted input -- nothing stops a hostile QR from declaring a Split
+// Wrapper count/total_bytes far beyond any real payload, or from Compress-wrapping a small
+// DEFLATE stream engineered to inflate far past its own size ("decompression bomb" -- DEFLATE's
+// own single-pass ceiling is roughly 1032:1, no recursive container structure here the way
+// nested ZIP archives have). RecordAssembler and zlibDecompress both enforce these caps before
+// allocating anything sized by untrusted values. All three are generous relative to any real
+// TagDrop payload (SPEC §4.3 "no more practical size limit" describes hundreds of files, not
+// gigabytes) — mirrors TagDropCodec.kt's MAX_DECOMPRESSED_BYTES/MAX_SPLIT_TOTAL_BYTES/
+// MAX_SPLIT_FRAGMENT_COUNT exactly.
+const MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
+const MAX_SPLIT_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_SPLIT_FRAGMENT_COUNT = 4096;
 
 /**
  * Tries `key` against `blob` as nonce(12) || ciphertext || tag(16) (SPEC §9). Returns the
@@ -610,19 +638,24 @@ const KR = { HINT:1, SET:2, SLUG:3, PAPER_ID:4, LAT:5, LNG:6, RADIUS_M:7, KEY_MA
 const VERSION = 1;
 const TYPE_CONTENT = 0, TYPE_PAPER = 1;
 
-// ── QDEF Records (SPEC.md §2/§2.1a, v15) ──────────────────────────────────
+// ── QDEF Records (SPEC.md §2/§2.1a, v16) ──────────────────────────────────
 // A new-format code is a CBOR Sequence of Records — each Record is its own
 // self-delimited CBOR array, [namespace?, typeId, map?, subrecord*]
-// (QDEF-SPEC.md §3.1/§3.5), not a bare typeId-then-map pair. As of v15,
-// there's no separate positional `payload` array slot at all any more — a
-// Record's "one genuinely singular value" (Compress Wrapper's compressed
-// bytes, Media Payload's `content`, Split Wrapper's fragment data) lives at
-// reserved map key `0` instead. TagDrop's own Type IDs are small, sequential,
-// namespace-scoped values under TagDrop's explicitly-transmitted namespace
-// (§2.1a) — several deliberately collide numerically with QDEF's own
-// standard, globally-interpreted Type IDs (Split/Media Payload/Compress
-// Wrapper), disambiguated only by namespace resolution, never by the bare
-// integer alone.
+// (QDEF-SPEC.md §3.1/§3.5), not a bare typeId-then-map pair. There's no
+// separate positional `payload` array slot at all — a Record's "one
+// genuinely singular value" (Compress Wrapper's compressed bytes, Media
+// Payload's `content`, Split Wrapper's fragment data) lives at reserved map
+// key `0` instead (v15). The constants below are the DECLARED (positive)
+// magnitudes, matching registry.rec — TagDrop's own four Type IDs are
+// small, sequential, namespace-scoped values under TagDrop's explicitly-
+// transmitted namespace (§2.1a) and, as of v16, always wire-encode NEGATED
+// (`-TYPE_CONTENT_EXTENSION` etc. — negation, not magnitude choice, is what
+// signals "scoped to the ambient namespace" now). Several magnitudes
+// deliberately collide numerically with QDEF's own standard, globally-
+// interpreted Type IDs (Split/Media Payload/Compress Wrapper) — disambiguated
+// by sign alone (TagDrop's four always negative, QDEF's globals always
+// non-negative on the wire), with namespace resolution then confirming which
+// application's registry a negative typeId belongs to.
 const TYPE_SPLIT = 1, TYPE_COMPRESS = 4;
 const TYPE_MEDIA_PAYLOAD = 3, TYPE_MEDIA_PREVIEW = 7;
 const TYPE_CONTENT_EXTENSION = 1;
@@ -632,7 +665,10 @@ const TYPE_PAPER_BODY = 4;
 
 // TagDrop's namespace (SPEC.md §2.1a): SHA-256("io.github.mofosyne.tagdrop")[0:4].
 // A Record only counts as one of TagDrop's own Types once its resolved namespace
-// (see decodeRecordPrefix's `ambientNamespace`/`.namespace`) actually matches this.
+// (see decodeRecordPrefix's `ambientNamespace`/`.namespace`) actually matches this
+// — which, as of v16, is only ever non-null when that Record's own typeId is
+// negative (the sign is what makes it scoped in the first place; a namespace
+// value can be ambient without ever appearing as a literal item on this Record).
 const TAGDROP_NAMESPACE = new Uint8Array([0x89, 0xD4, 0x14, 0xE0]);
 
 function isTagDropNamespace(ns) {
@@ -799,30 +835,30 @@ function recordLayout(bytes, ranges) {
 }
 
 /**
- * Decodes one QDEF Record (QDEF-SPEC.md §3.1/§3.5, SPEC.md v15: a
- * self-delimited CBOR array, [namespace?, typeId, map?, subrecord*] — no
- * positional payload slot any more) from the head of `bytes`.
+ * Decodes one QDEF Record (QDEF-SPEC.md §3.1/§3.5, SPEC.md v16: a
+ * self-delimited CBOR array, [namespace?, typeId, map?, subrecord*]) from
+ * the head of `bytes`.
  *
  * `ambientNamespace` is whatever namespace this Record's own PARENT
  * received from ITS parent, in turn (SPEC.md §2.1a's cascading rule) —
- * NOT this Record's own resolved value. This distinction is the crux of
- * v14's namespace design: a Record's own namespace token governs only how
- * THAT Record's own Type ID resolves, not whether the ambient namespace
- * keeps flowing to whatever's nested inside it, so every recursive call
- * below passes `ambientNamespace` straight through unchanged to
- * subrecords, never this Record's own resolved `namespace`. Call with no
- * second argument (or `null`) at the true root, where nothing is ambient
- * yet.
+ * NOT this Record's own resolved value. Call with no second argument (or
+ * `null`) at the true root, where nothing is ambient yet.
+ *
+ * As of version 16, a namespace bstr present on THIS Record affects only
+ * what's ambient for ITS OWN subrecords — never this Record's own scope,
+ * which is instead decided purely by this Record's own typeId's sign
+ * (negative = scoped, adopting `ambientNamespace`; non-negative = always
+ * global, `null`, regardless of whether a namespace bstr sits on this same
+ * Record). `h''` no longer exists in the grammar — any namespace bstr
+ * present is used as-is, no empty/non-empty distinction needed.
  *
  * Returns { typeId, namespace, record, raw, subrecords, trailing } —
- * `namespace` is this Record's own RESOLVED namespace: the explicit value
- * if it declared one (a non-empty leading byte string), the inherited
- * `ambientNamespace` if it cascaded (`h''`), or `null` if it carries no
- * namespace item at all (unconditionally global/standard Type-ID space,
- * SPEC.md §2.1a — no ambient value rescues this). `record` is the decoded
- * field map (plain object, `{}` if the map was omitted from the wire
- * entirely — its own key `0`, if present, is whatever used to be the
- * separate payload-slot value, e.g. Media Payload's `content`, Compress
+ * `namespace` is this Record's own RESOLVED SCOPE per the sign rule above:
+ * `ambientNamespace` if `typeId < 0`, else `null` (unconditionally global,
+ * SPEC.md §2.1a — no ambient value rescues a non-negative typeId). `record`
+ * is the decoded field map (plain object, `{}` if the map was omitted from
+ * the wire entirely — its own key `0`, if present, is whatever used to be
+ * the separate payload-slot value, e.g. Media Payload's `content`, Compress
  * Wrapper's compressed bytes, Split Wrapper's fragment data), `raw` is
  * this record's own exact byte range (namespace item included, if
  * present — what signature/group hashes are computed over), `subrecords`
@@ -839,22 +875,31 @@ function decodeRecordPrefix(bytes, ambientNamespace = null) {
     if (ranges.length === 0) return null;
     const layout = recordLayout(bytes, ranges);
     if (layout.typeIdIdx >= ranges.length) return null;
-    let namespace = null;
+    // A namespace bstr present on THIS Record only ever affects what's ambient
+    // for ITS OWN subrecords (SPEC.md §2.1a, v16) — never this Record's own
+    // scope, computed below from typeId's sign alone.
+    let childAmbientNamespace = ambientNamespace;
     if (layout.nsIdx >= 0) {
       const nsVal = cborDecodeSequencePrefix(bytes.slice(ranges[layout.nsIdx][0]), 1).items[0];
       if (!(nsVal instanceof Uint8Array)) return null;
-      namespace = nsVal.length > 0 ? nsVal : ambientNamespace;
+      childAmbientNamespace = nsVal;
     }
     const typeId = cborDecodeSequencePrefix(bytes.slice(ranges[layout.typeIdIdx][0]), 1).items[0];
     if (typeof typeId !== 'number') return null;
+    // This Record's own resolved scope (v16, SPEC.md §2.1a): negative typeId
+    // means "scoped, adopting the ambient namespace"; non-negative always
+    // means global, regardless of any namespace bstr on this same Record.
+    const namespace = typeId < 0 ? ambientNamespace : null;
     const record = layout.mapIdx < 0 ? {} : cborDecodeSequencePrefix(bytes.slice(ranges[layout.mapIdx][0]), 1).items[0];
     if (!isCborMap(record)) return null;
     const subrecords = [];
     for (let i = layout.subrecordsFrom; i < ranges.length; i++) {
       const r = ranges[i];
-      // Subrecords inherit AMBIENT namespace unchanged — not `namespace` (this
-      // Record's own resolved value) — per SPEC.md §2.1a's cascading rule.
-      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]), ambientNamespace);
+      // Subrecords inherit CHILD ambient namespace (this Record's own namespace
+      // bstr if it carried one, else whatever was already ambient) — never
+      // `namespace` (this Record's own resolved scope) — per SPEC.md §2.1a's
+      // cascading rule.
+      const sub = decodeRecordPrefix(bytes.slice(r[0], r[1]), childAmbientNamespace);
       if (!sub) return null;
       subrecords.push({ ...sub, raw: bytes.slice(r[0], r[1]) });
     }
@@ -875,55 +920,28 @@ function rootArrayByteLength(bytes) {
 }
 
 /**
- * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1/§3.5, SPEC.md v14): exactly one
- * definite-length CBOR array, whose own leading element may be a namespace declaration
- * (SPEC.md §2.1a) — mandatory on every carrier as of v14, but tolerated as absent for
- * non-TagDrop/legacy input. Three shapes, disambiguated purely by CBOR major type, peeking
- * past any leading namespace byte string first:
- *   - namespace bstr, then an array: a Bundle — every remaining item is a nested Record,
- *     independently decoded with the declared value (or `null`, if the bstr was empty) as
- *     their shared ambient namespace.
- *   - namespace bstr, then a uint (or nothing else follows): the namespace was actually this
- *     lone Record's own leading item, not a Bundle's — delegate the WHOLE bytes (namespace
- *     included) to decodeRecordPrefix, which parses that shape itself ("no Bundle
- *     indirection", the key-only/single-Record-root case).
- *   - no namespace bstr, first item already a uint: a bare, non-namespaced single-Record
- *     root (legacy/tolerated) — same delegation, with no ambient namespace.
- *   - no namespace bstr, first item an array: a bare, non-namespaced Bundle (legacy/
- *     tolerated) — every item independently decoded with no ambient namespace.
- * Returns null if the root isn't a well-formed, definite-length CBOR array, or if any of its
- * items fails to decode as a Record.
+ * Decodes the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1/§3.5, SPEC.md v16): exactly one
+ * definite-length CBOR array, always a namespace-declaring Bundle now — its own leading
+ * element is a namespace byte string (SPEC.md §2.1a), and every remaining item is a nested
+ * Record, independently decoded with that declared value as their shared ambient namespace.
+ * There is no more "single Record IS the root, no Bundle indirection" case (v13-15) — a
+ * Record can no longer simultaneously introduce a namespace and be scoped by it (§2.1a), so
+ * even a key-only code's lone Content Extension is wrapped, uniformly. Returns null if the
+ * root isn't a well-formed, definite-length CBOR array whose first item is a byte string, if
+ * it carries no Records at all, or if any Record fails to decode.
  */
 function decodeRootBundle(bytes) {
   try {
     const ranges = cborItemRanges({ bytes, pos: 0 }, 4);
-    if (ranges.length === 0) return null;
-    if (majorOf(bytes, ranges[0][0]) === 2) {
-      if (ranges.length > 1 && majorOf(bytes, ranges[1][0]) === 4) {
-        const nsVal = cborDecodeSequencePrefix(bytes.slice(ranges[0][0]), 1).items[0];
-        const ambientNamespace = (nsVal instanceof Uint8Array && nsVal.length > 0) ? nsVal : null;
-        const out = [];
-        for (let i = 1; i < ranges.length; i++) {
-          const [s, e] = ranges[i];
-          const rec = decodeRecordPrefix(bytes.slice(s, e), ambientNamespace);
-          if (!rec) return null;
-          out.push(rec);
-        }
-        return out;
-      }
-      // Namespace bstr not followed by an array: it's this lone Record's own leading
-      // item, not a Bundle's — delegate the WHOLE bytes to decodeRecordPrefix, which
-      // parses that shape itself.
-      const rec = decodeRecordPrefix(bytes, null);
-      return rec ? [rec] : null;
-    }
-    if (majorOf(bytes, ranges[0][0]) !== 4) {
-      const rec = decodeRecordPrefix(bytes, null);
-      return rec ? [rec] : null;
-    }
+    if (ranges.length < 2) return null;
+    if (majorOf(bytes, ranges[0][0]) !== 2) return null;
+    const nsVal = cborDecodeSequencePrefix(bytes.slice(ranges[0][0]), 1).items[0];
+    if (!(nsVal instanceof Uint8Array)) return null;
+    const ambientNamespace = nsVal;
     const out = [];
-    for (const [s, e] of ranges) {
-      const rec = decodeRecordPrefix(bytes.slice(s, e), null);
+    for (let i = 1; i < ranges.length; i++) {
+      const [s, e] = ranges[i];
+      const rec = decodeRecordPrefix(bytes.slice(s, e), ambientNamespace);
       if (!rec) return null;
       out.push(rec);
     }
@@ -1172,7 +1190,10 @@ const CONTENT_EXTENSION_SIGNATURE_KEYS = new Set([EK.SIGNATURE_ALGORITHM, EK.SIG
  */
 function contentSignedMessageHash(extensionRaw, mediaPreviewRaw, mediaPayloadRaw) {
   const unsignedExtension = stripKeys(extensionRaw, CONTENT_EXTENSION_SIGNATURE_KEYS);
-  const unsignedMediaPayload = mediaPayloadRaw ? stripSubrecordType(mediaPayloadRaw, TYPE_CONTENT_SIGNATURE) : new Uint8Array(0);
+  // Content Signature's wire typeId is negated (-TYPE_CONTENT_SIGNATURE, SPEC.md v16
+  // §2.1a) — stripSubrecordType matches on the exact wire typeId, not the declared
+  // magnitude, so this must match what buildContentSignature actually emits.
+  const unsignedMediaPayload = mediaPayloadRaw ? stripSubrecordType(mediaPayloadRaw, -TYPE_CONTENT_SIGNATURE) : new Uint8Array(0);
   return sha256(concatBytes(mediaPreviewRaw ?? new Uint8Array(0), unsignedMediaPayload, unsignedExtension));
 }
 
@@ -1281,24 +1302,25 @@ const SUB_KEY_NAMES = { 1: FILE_ENTRY_KEY_NAMES, 3: RELATED_ENTRY_KEY_NAMES, 15:
 // New-format (QDEF Record) field-name tables.
 // Type ID is a QDEF prefix item (§3), not a map key — no key 0 in field maps.
 //
-// Keyed by a composite (namespace-scope, typeId) key, NOT typeId alone: as of SPEC.md
-// v14 (§2.1), several of TagDrop's own Type IDs deliberately collide numerically with
-// QDEF's own standard Type IDs (Content Extension/Split both `1`, Paper-Preview/Media
-// Payload both `3`, Paper-Body/Compress both `4`) — a plain `Map` keyed by
-// `String(typeId)` alone would let whichever entry is inserted last silently clobber
-// the other under the same key, exactly the ambiguity §2.1a's namespace resolution
-// exists to prevent. recordTypeInfoKey/lookupRecordTypeInfo below resolve each Record
-// against the right table half using its own resolved namespace (rec.namespace),
-// mirroring the real decode logic's own disambiguation (recordScanResult/
-// _unwrapPaperBody) rather than trusting the bare integer alone.
-function recordTypeInfoKey(typeId, isTagDropScoped) {
-  return (isTagDropScoped ? 'td:' : 'std:') + typeId;
-}
+// Keyed by the literal (signed) wire typeId, NOT the declared magnitude: as of
+// SPEC.md v16 (§2.1a), TagDrop's own four Type IDs always wire-encode NEGATED
+// while QDEF's own standard Type IDs stay non-negative, so even though several
+// declared magnitudes numerically collide (Content Extension/Split both `1`,
+// Paper-Preview/Media Payload both `3`, Paper-Body/Compress both `4`), their
+// actual wire values never do (`-1` vs `1`, `-3` vs `3`, `-4` vs `4`) — a plain
+// `Map` keyed directly by `rec.typeId` is now sufficient on its own, no
+// namespace-aware composite key needed (that was v14-15's design, before sign
+// alone was load-bearing). Namespace is still checked separately, in
+// describeOneRecord below and in the real scan-time dispatch
+// (recordScanResult/_unwrapPaperBody), to flag/require a scoped Record whose
+// resolved namespace actually is TagDrop's — a distinct, still-necessary
+// security signal, just no longer entangled with which name/keyNames table
+// entry applies.
 function lookupRecordTypeInfo(rec) {
-  return RECORD_TYPE_INFO.get(recordTypeInfoKey(rec.typeId, isTagDropNamespace(rec.namespace)));
+  return RECORD_TYPE_INFO.get(rec.typeId);
 }
 const RECORD_TYPE_INFO = new Map([
-  [recordTypeInfoKey(TYPE_CONTENT_EXTENSION, true), { name: 'Content Extension', keyNames: {
+  [-TYPE_CONTENT_EXTENSION, { name: 'Content Extension', keyNames: {
     [EK.HINT]:'hint', [EK.DESCRIPTION]:'description',
     [EK.COLLECTION_ID]:'collection_id', [EK.COLLECTION_LABEL]:'collection_label',
     [EK.COLLECTION_TAG]:'collection_tag', [EK.ICON]:'icon', [EK.PIXEL_ART]:'pixel_art',
@@ -1310,17 +1332,17 @@ const RECORD_TYPE_INFO = new Map([
     [EK.SIGNER_LABEL]:'signer_label', [EK.IN_REPLY_TO]:'in_reply_to',
     [EK.CREATED_AT]:'created_at', [EK.SOURCE_URL]:'source_url',
   } }],
-  [recordTypeInfoKey(TYPE_MEDIA_PREVIEW, false), { name: 'Media Preview', keyNames: {
+  [TYPE_MEDIA_PREVIEW, { name: 'Media Preview', keyNames: {
     [MPK.MEDIA_TYPE]:'mediaType', [MPK.CONTENT_HASH]:'contentHash',
     [MPK.FILENAME]:'filename', [MPK.LABEL]:'label',
   } }],
-  [recordTypeInfoKey(TYPE_MEDIA_PAYLOAD, false), { name: 'Media Payload', keyNames: {
+  [TYPE_MEDIA_PAYLOAD, { name: 'Media Payload', keyNames: {
     [MYK.CONTENT]:'content', [MYK.MEDIA_TYPE]:'mediaType',
   } }],
-  [recordTypeInfoKey(TYPE_CONTENT_SIGNATURE, true), { name: 'Content Signature', keyNames: {
+  [-TYPE_CONTENT_SIGNATURE, { name: 'Content Signature', keyNames: {
     [CSK.SIGNATURE]:'signature', [CSK.SIGNER_PUBKEY]:'signer_pubkey',
   } }],
-  [recordTypeInfoKey(TYPE_PAPER_PREVIEW, true), { name: 'Paper-Preview', keyNames: {
+  [-TYPE_PAPER_PREVIEW, { name: 'Paper-Preview', keyNames: {
     [PPK.ROOT_HASH]:'root_hash', [PPK.HINT]:'hint', [PPK.SET]:'set',
     [PPK.SLUG]:'slug', [PPK.DOMAIN]:'domain', [PPK.STEP]:'step',
     [PPK.COLLECTION_ID]:'collection_id', [PPK.COLLECTION_LABEL]:'collection_label',
@@ -1333,15 +1355,15 @@ const RECORD_TYPE_INFO = new Map([
     [PPK.TITLE]:'title', [PPK.DESCRIPTION]:'description',
     [PPK.KEY_MATERIAL]:'key_material', [PPK.RETAIN_KEY]:'retain_key',
   } }],
-  [recordTypeInfoKey(TYPE_PAPER_BODY, true), { name: 'Paper-Body', keyNames: {
+  [-TYPE_PAPER_BODY, { name: 'Paper-Body', keyNames: {
     [PBK.FILES]:'files', [PBK.RELATED]:'related',
     [PBK.SIGNATURE]:'signature', [PBK.SIGNER_PUBKEY]:'signer_pubkey',
   } }],
-  [recordTypeInfoKey(TYPE_SPLIT, false), { name: 'Split Wrapper', keyNames: {
+  [TYPE_SPLIT, { name: 'Split Wrapper', keyNames: {
     [SK.DATA]:'data', [SK.GROUP_ID]:'group_id', [SK.INDEX]:'index',
     [SK.COUNT]:'count', [SK.TOTAL]:'total_bytes', [SK.PARITY]:'parity',
   } }],
-  [recordTypeInfoKey(TYPE_COMPRESS, false), { name: 'Compress Wrapper', keyNames: {
+  [TYPE_COMPRESS, { name: 'Compress Wrapper', keyNames: {
     [CK.DATA]:'data',
   } }],
 ]);
@@ -1351,11 +1373,11 @@ function toHexDump(bytes) {
 }
 
 /** Pretty-prints one decoded Record (as returned by decodeRecordPrefix) and, recursively
- *  indented, any subrecords it carries. Shows the Record's own resolved namespace
- *  (SPEC.md §2.1a) when it carried a namespace item at all — the hex value for an
- *  explicit declaration or an inherited cascade, flagged "NOT TagDrop's!" when it
- *  resolves to something other than TAGDROP_NAMESPACE, since that's the real
- *  security-relevant signal this whole mechanism exists to surface. */
+ *  indented, any subrecords it carries. Shows the Record's own resolved SCOPE (SPEC.md
+ *  §2.1a, v16 — decided by typeId's sign, not by whether this Record itself carried a
+ *  namespace item) whenever it's non-null, flagged "NOT TagDrop's!" when it resolves to
+ *  something other than TAGDROP_NAMESPACE, since that's the real security-relevant signal
+ *  this whole mechanism exists to surface. */
 function describeOneRecord(rec, indent, label) {
   const info = lookupRecordTypeInfo(rec);
   const pad = '  '.repeat(indent);
@@ -1635,18 +1657,26 @@ function recordScanResult(bytes) {
   const second = records[1] ?? null;
   const typeId = first.typeId;
   let kind, knownKeys;
-  if (typeId === TYPE_CONTENT_EXTENSION) {
+  // As of SPEC.md v16 (§2.1a), TagDrop's own Type IDs always wire-encode NEGATED
+  // (-TYPE_CONTENT_EXTENSION = -1, -TYPE_PAPER_PREVIEW = -3) — compare against the
+  // negated constants, not the declared (positive) magnitudes, which is what QDEF's
+  // own same-magnitude global Types (Split = 1, Media Payload = 3) wire-encode as.
+  if (typeId === -TYPE_CONTENT_EXTENSION) {
     kind = 'content'; knownKeys = KNOWN_KEYS.CONTENT_EXTENSION;
-  } else if (typeId === TYPE_PAPER_PREVIEW) {
+  } else if (typeId === -TYPE_PAPER_PREVIEW) {
     kind = 'paper'; knownKeys = KNOWN_KEYS.PAPER_PREVIEW;
   } else {
     return { type: 'invalid' };
   }
   // SPEC.md §2.1a: the real security-relevant check the whole namespace mechanism
-  // exists for. TagDrop's small Type IDs (1/2/3/4) are the same integers QDEF's own
-  // global standard Types use (Split/Media Payload/Compress Wrapper) — a Record only
-  // counts as TagDrop's Content Extension/Paper-Preview once its resolved namespace
-  // actually matches, never merely because the bare Type ID happened to.
+  // exists for. TagDrop's small Type IDs, negated, numerically collide with the same
+  // integers QDEF's own global standard Types use (Split/Media Payload/Compress
+  // Wrapper) once you drop the sign — a Record only counts as TagDrop's Content
+  // Extension/Paper-Preview once its resolved namespace actually matches, never
+  // merely because the typeId happened to be negative. (decodeRecordPrefix only
+  // ever resolves `first.namespace` non-null when `typeId < 0` in the first place —
+  // this check is what confirms it's actually TagDrop's namespace, not just some
+  // other negative/scoped application's.)
   if (!isTagDropNamespace(first.namespace)) return { type: 'invalid' };
   if (!checkRecordKeys(first.record, knownKeys)) return { type: 'invalid' };
   if (kind === 'paper') {
@@ -1967,6 +1997,11 @@ class RecordAssembler {
       if (!(groupId instanceof Uint8Array) || !(data instanceof Uint8Array) || count < 1 || total == null) {
         return { kind: 'Failed' };
       }
+      // Resource-exhaustion guard (SPEC §5.1): reject before allocating any fragment-tracking
+      // storage sized by an untrusted declared count/total.
+      if (count > MAX_SPLIT_FRAGMENT_COUNT || total < 0 || total > MAX_SPLIT_TOTAL_BYTES) {
+        return { kind: 'Failed' };
+      }
       const key = toHex(groupId);
       let group = this.groups.get(key);
       if (!group) {
@@ -2007,6 +2042,11 @@ class RecordAssembler {
     const groupId = frag[SK.GROUP_ID], index = frag[SK.INDEX] ?? 0, count = frag[SK.COUNT] ?? 1;
     const data = frag[SK.DATA], total = frag[SK.TOTAL];
     if (!(groupId instanceof Uint8Array) || !(data instanceof Uint8Array) || count < 1 || total == null) {
+      return { kind: 'Failed' };
+    }
+    // Resource-exhaustion guard (SPEC §5.1): reject before allocating any fragment-tracking
+    // storage sized by an untrusted declared count/total.
+    if (count > MAX_SPLIT_FRAGMENT_COUNT || total < 0 || total > MAX_SPLIT_TOTAL_BYTES) {
       return { kind: 'Failed' };
     }
     const key = toHex(groupId);
@@ -2120,16 +2160,20 @@ class RecordAssembler {
    *  it needs its own ambient namespace (SPEC.md §2.1a) passed in explicitly:
    *  TAGDROP_NAMESPACE, since by the time this runs, recordScanResult has already validated
    *  the group's root declared TagDrop's namespace, and nothing in TagDrop's own wire format
-   *  ever overrides ambient mid-tree. This is what lets Content Signature's own `h''` cascade
-   *  (nested here, inside two intervening global Types) resolve correctly. */
+   *  ever overrides ambient mid-tree. This is what lets Content Signature's own negated
+   *  typeId (nested here, inside two intervening global Types) resolve correctly. */
   async _unwrapMediaPayload(bodyWireBytes) {
     let cur = decodeRecordPrefix(bodyWireBytes, TAGDROP_NAMESPACE);
     if (!cur) return null;
-    // Compress Wrapper's Type ID (4) is the same integer as Paper-Body's (SPEC.md §2.1's
-    // collision note) — not reachable via genuine Content encoder output (Media Payload here
-    // is always typeId 3, plain or Compress-wrapped, never Paper-Body-shaped), but checking
-    // `cur.namespace === null` anyway, defensively, keeps this symmetric with the check
-    // `_unwrapPaperBody` below needs for real (not just adversarial) input.
+    // Compress Wrapper's Type ID (4) numerically matches Paper-Body's DECLARED magnitude,
+    // but as of SPEC.md v16 (§2.1a) Paper-Body's actual WIRE value is negated (-4), so the
+    // two are different CBOR values by sign alone, not just by namespace convention — this
+    // collision isn't reachable via genuine Content encoder output at all (Media Payload
+    // here is always typeId 3, plain or Compress-wrapped, never Paper-Body-shaped). The
+    // `cur.namespace === null` check is now structurally redundant (TYPE_COMPRESS is
+    // always non-negative, so decodeRecordPrefix always resolves its namespace to `null`
+    // regardless of ambient) — kept anyway, defensively, for symmetry with the check
+    // `_unwrapPaperBody` below still needs for real (not just adversarial) input.
     if (cur.typeId === TYPE_COMPRESS && cur.namespace === null) {
       if (!checkRecordKeys(cur.record, KNOWN_KEYS.COMPRESS)) return null;
       if (!(cur.record[CK.DATA] instanceof Uint8Array)) return null;
@@ -2141,7 +2185,8 @@ class RecordAssembler {
     if (cur.typeId !== TYPE_MEDIA_PAYLOAD) return null;
     if (!checkRecordKeys(cur.record, KNOWN_KEYS.MEDIA_PAYLOAD)) return null;
     let contentSignature = null;
-    const cs = cur.subrecords.find(s => s.typeId === TYPE_CONTENT_SIGNATURE);
+    // Content Signature's wire typeId is negated (-TYPE_CONTENT_SIGNATURE, SPEC.md v16).
+    const cs = cur.subrecords.find(s => s.typeId === -TYPE_CONTENT_SIGNATURE);
     if (cs) {
       // SPEC.md §2.1a: Content Signature is TagDrop-scoped even though neither of the two
       // intervening Types (Media Preview/Payload) ever declares a namespace of their own —
@@ -2158,14 +2203,15 @@ class RecordAssembler {
    *  returning { body, bodyRaw } or null if malformed.
    *
    *  `bodyWireBytes` is re-decoded here from scratch, same reasoning and same
-   *  TAGDROP_NAMESPACE ambient as _unwrapMediaPayload above — but load-bearing here in a way
-   *  it isn't there: Paper-Body's Type ID (4) is the *same integer* as Compress Wrapper's
-   *  (SPEC.md §2.1's collision note), so the `cur.typeId === TYPE_COMPRESS` check just below
-   *  is only actually correct once namespace resolution disambiguates the two — a genuine
-   *  Compress Wrapper never carries a namespace item (`cur.namespace` stays `null`
-   *  regardless of ambient), while Paper-Body cascades TagDrop's namespace instead. Without
-   *  this check, a Paper-Body that happens to decode as typeId 4 would be misread as a
-   *  Compress Wrapper and fed to zlibDecompress instead of being returned as the answer. */
+   *  TAGDROP_NAMESPACE ambient as _unwrapMediaPayload above. Paper-Body's DECLARED
+   *  magnitude (4) is the same integer as Compress Wrapper's, but as of SPEC.md v16
+   *  (§2.1a) Paper-Body's actual WIRE value is negated (-4) — the `cur.typeId ===
+   *  TYPE_COMPRESS` check just below (comparing against the positive, global constant)
+   *  can therefore never match genuine Paper-Body bytes at all, a correctness upgrade
+   *  over v14-15's design (where both wire-encoded as bare `4`, disambiguated only by
+   *  namespace resolution — see the version-16 SPEC.md history entry). The
+   *  `cur.namespace === null` check is now structurally redundant for the same reason
+   *  noted in _unwrapMediaPayload above — kept for defensive symmetry. */
   async _unwrapPaperBody(bodyWireBytes) {
     let cur = decodeRecordPrefix(bodyWireBytes, TAGDROP_NAMESPACE);
     if (!cur) return null;
@@ -2177,7 +2223,8 @@ class RecordAssembler {
       cur = decodeRecordPrefix(inflated, TAGDROP_NAMESPACE);
       if (!cur) return null;
     }
-    if (cur.typeId !== TYPE_PAPER_BODY) return null;
+    // Paper-Body's wire typeId is negated (-TYPE_PAPER_BODY, SPEC.md v16 §2.1a).
+    if (cur.typeId !== -TYPE_PAPER_BODY) return null;
     if (!isTagDropNamespace(cur.namespace)) return null;
     if (!checkRecordKeys(cur.record, KNOWN_KEYS.PAPER_BODY)) return null;
     return { body: cur.record, bodyRaw: cur.raw };

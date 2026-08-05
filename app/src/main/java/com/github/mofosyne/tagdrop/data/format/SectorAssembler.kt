@@ -147,6 +147,12 @@ class SectorAssembler {
             }
         }
         val frag = TagDropCodec.splitFragmentOf(record) ?: return State.Failed
+        // Resource-exhaustion guard (SPEC §5.1): `count`/`total` come from an untrusted scanned
+        // code — reject before allocating any fragment-tracking storage sized by them, the same
+        // way a malformed Record is rejected, rather than letting a hostile declaration force a
+        // large allocation or an O(count) missing-fragment scan on every fragment received.
+        if (frag.count <= 0 || frag.count > TagDropCodec.MAX_SPLIT_FRAGMENT_COUNT ||
+            frag.total < 0 || frag.total > TagDropCodec.MAX_SPLIT_TOTAL_BYTES) return State.Failed
         val key = frag.groupId.toHex()
         val group = groups.getOrPut(key) { Group(record.kind, frag.groupId, frag.count, frag.total) }
         // The small/always-repeated part repeats identically on every code (SPEC §5.1) — keep
