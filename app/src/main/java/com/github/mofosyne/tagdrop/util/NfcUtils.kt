@@ -6,9 +6,9 @@ import com.github.mofosyne.tagdrop.data.format.TagDropCodec
 
 /**
  * Builds the [NdefMessage] written to / parsed from a physical NFC tag (SPEC §12): one MIME
- * record carrying a code's raw CBOR Record Sequence bytes, optionally preceded by a standard
- * record matching the content's real type (so a phone without TagDrop installed still gets
- * something useful from the tap) and optionally followed by an Android Application Record so
+ * record carrying a code's QDEF-framed CBOR Record Sequence bytes, optionally preceded by a
+ * standard record matching the content's real type (so a phone without TagDrop installed still
+ * gets something useful from the tap) and optionally followed by an Android Application Record so
  * tapping the tag launches TagDrop directly even when this app isn't already running.
  */
 object NfcUtils {
@@ -17,6 +17,10 @@ object NfcUtils {
      * resolves `ACTION_NDEF_DISCOVERED`'s dispatch type from record 0 only, so this is what makes
      * the tag openable by a generic NFC reader. The same record-0 rule means a tag built this way
      * no longer dispatches to TagDrop itself either (SPEC §12) — there's no way to have both.
+     *
+     * [recordSequence] is the plain (unframed) Record Sequence bytes — [TagDropCodec.addQdefFraming]
+     * prepends the 4-byte QDEF magic header before it becomes the MIME record's payload (SPEC.md
+     * v17 §12/§14: every carrier except `tagdrop:` URI now includes it, NFC NDEF included).
      */
     fun buildNdefMessage(
         recordSequence: ByteArray,
@@ -26,7 +30,7 @@ object NfcUtils {
     ): NdefMessage {
         val records = mutableListOf<NdefRecord>()
         if (standardRecord != null) records += standardRecord
-        records += NdefRecord.createMime(TagDropCodec.NFC_MIME_TYPE, recordSequence)
+        records += NdefRecord.createMime(TagDropCodec.NFC_MIME_TYPE, TagDropCodec.addQdefFraming(recordSequence))
         if (includeAppRecord) records += NdefRecord.createApplicationRecord(packageName)
         return NdefMessage(records.toTypedArray())
     }

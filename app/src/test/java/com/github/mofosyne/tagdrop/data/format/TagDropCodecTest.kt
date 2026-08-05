@@ -530,6 +530,25 @@ class TagDropCodecTest {
         assertEquals((viaRaw as TagDropScan.RecordScan).record, (viaFramed as TagDropScan.RecordScan).record)
     }
 
+    @Test fun addQdefFramingRoundTripsWithDecodeRaw() {
+        // SPEC.md v17 §12/§14: NFC NDEF now includes the QDEF magic header too (only `tagdrop:`
+        // URI still skips it) -- addQdefFraming is what NfcUtils.buildNdefMessage uses to build
+        // that MIME-record payload. Confirm it produces exactly what stripQdefFraming/decodeRaw
+        // already expects: a 4-byte "QDEF" prefix ahead of the plain Record Sequence.
+        val build = TagDropCodec.createContentSectors(null, null, "text/plain", "hello".toByteArray())
+        val raw = build.codes.first()
+        val framed = TagDropCodec.addQdefFraming(raw)
+        val qdefMagic = byteArrayOf(0x51, 0x44, 0x45, 0x46)  // "QDEF" magic (4 bytes)
+        assertEquals(qdefMagic.size + raw.size, framed.size)
+        assertTrue(framed.copyOfRange(0, 4).contentEquals(qdefMagic))
+        assertTrue(framed.copyOfRange(4, framed.size).contentEquals(raw))
+        assertEquals(TagDropCodec.stripQdefFraming(framed).toList(), raw.toList())
+        val viaFramed = TagDropCodec.decodeRaw(framed)
+        val viaRaw = TagDropCodec.decodeRaw(raw)
+        assertNotNull(viaFramed)
+        assertEquals((viaRaw as TagDropScan.RecordScan).record, (viaFramed as TagDropScan.RecordScan).record)
+    }
+
     @Test fun decodeRawRejectsRecordSequenceWithNoNamespaceDeclaredAtAll() {
         // SPEC §2.1a's actual security-relevant check: a Record Sequence that never declares
         // TagDrop's namespace anywhere doesn't get treated as TagDrop content just because the

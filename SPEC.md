@@ -1,23 +1,21 @@
 # TagDrop Encoding Specification
 
-**Version:** 16 (QDEF's namespace-scoping rule changed again: a namespace
-byte string's *only* effect is now cascading to subrecords — it never
-scopes the Record that carries it. Whether a Record's own typeId is
-global or namespace-scoped is instead decided purely by that typeId's
-own **sign**: non-negative = global, negative = scoped, adopting
-whatever namespace is ambient from an ancestor. `h''` ["inherit the
-ambient namespace as my own scope"] is gone from QDEF's grammar
-entirely — TagDrop's four Record Types are unchanged in identity but now
-wire-encode as **negative** typeIds (`-1`/`-2`/`-3`/`-4` instead of
-`1`/`2`/`3`/`4`) and carry no namespace item of their own at all. One
-structural consequence: a Record can no longer both introduce a
-namespace and be scoped by it in the same array, so the version-13
-"a single top-level Record needs no Bundle wrapping" exception is gone
-— every TagDrop code, including a key-only code, is now a namespace-
-carrying root Bundle wrapping one or two scoped subrecords. See §14
-"Version history" for the byte-cost accounting and §2.1a for the full
-rule. Versions 14/15's other changes (which fields exist, QDEF standard
-Type field-key layouts) are unaffected by this version.
+**Version:** 17 (QDEF dropped NFC/NDEF from its own scope entirely — it's
+now a 2D-barcode-only format — which removes the carrier-specific
+exemption that used to let an NDEF-embedded payload skip the 4-byte QDEF
+magic header. TagDrop's own NFC NDEF carrier keeps existing independently
+of QDEF's own carrier list [TagDrop, not QDEF, decides what carriers it
+supports], but now follows QDEF's simplified rule instead of citing
+QDEF's [now-removed] own NDEF guidance: only an application's own URI
+scheme skips the magic header; every other carrier, including NFC NDEF,
+always includes it. NFC NDEF's own framing accordingly grows from "Record
+Sequence bytes only" to "QDEF magic (4 bytes) + Record Sequence bytes" —
+identical to byte-mode QR/JABCode's framing now. `tagdrop:` URI is
+unaffected (still skips magic; the scheme itself is still the dispatch
+signal). See §14 "Version history" for the byte-cost accounting and a
+note on a separate QDEF refinement from the same period that TagDrop has
+deliberately not yet adopted. Version 16's namespace/typeId-sign changes
+are otherwise unaffected by this version.
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -59,9 +57,9 @@ Every TagDrop code carries a **Record Sequence**: the QDEF self-delimited root (
 
 | Carrier | Framing | Why |
 |---|---|---|
-| `tagdrop:` URI (QR alphanumeric mode) | `tagdrop:` + Base41(Record Sequence bytes) | The `tagdrop:` scheme itself is still the dispatch signal — no QDEF magic header needed (QDEF-SPEC.md §1: "any application that already defines its own text/URI scheme should encode its envelope directly under that scheme, not wrap it in QDEF"). TagDrop's fixed namespace (§2.1a) is still transmitted on the wire, though — as of version 14 the scheme only exempts a carrier from the magic header, not from declaring the namespace itself (see §2.1a for why). |
-| Byte-mode QR / other 2D barcode | QDEF magic (4 bytes) + Record Sequence bytes (namespace declared as the root array's own leading element, §2.1a) | No scheme, no prior dispatch signal exists — this carrier already declared TagDrop's namespace explicitly even before version 14. |
-| NFC NDEF | Record Sequence bytes only, as the payload of an `application/vnd.tagdrop` MIME record | NDEF's own MIME-type field is still the dispatch signal, so no QDEF magic header — matching QDEF-SPEC.md §2's own guidance for NFC. TagDrop's fixed namespace (§2.1a) is still transmitted on the wire, same reasoning as the URI case. |
+| `tagdrop:` URI (QR alphanumeric mode) | `tagdrop:` + Base41(Record Sequence bytes) | The `tagdrop:` scheme itself is still the dispatch signal — no QDEF magic header needed (QDEF-SPEC.md §1: "any application that already defines its own text/URI scheme should encode its envelope directly under that scheme, not wrap it in QDEF"). TagDrop's fixed namespace (§2.1a) is still transmitted on the wire, though — the scheme only exempts a carrier from the magic header, not from declaring the namespace itself (see §2.1a for why). |
+| Byte-mode QR / other 2D barcode | QDEF magic (4 bytes) + Record Sequence bytes (namespace declared as the root array's own leading element, §2.1a) | No scheme, no prior dispatch signal exists. |
+| NFC NDEF | QDEF magic (4 bytes) + Record Sequence bytes, as the payload of an `application/vnd.tagdrop` MIME record | **Changed in version 17.** NDEF's own MIME-type field is still a genuine dispatch signal, but QDEF dropped NFC/NDEF from its own scope entirely (it's 2D-barcode-only now) and, with it, the carrier-specific exemption this row used to cite — QDEF-SPEC.md's simplified rule (only an application's own URI scheme skips the magic header) is now what TagDrop follows here too, as a matter of TagDrop's own carrier design rather than QDEF endorsement. See §14's version-17 entry for the byte cost and rationale. TagDrop's fixed namespace (§2.1a) is still transmitted on the wire either way, same reasoning as every other carrier. |
 
 This is the "near 1:1" property: an encoder builds the Record Sequence bytes once, then picks a framing based only on which carrier it's targeting — Base41-encode them, prefix them with the QDEF magic, or hand them to NDEF raw. Nothing about the Records' own structure changes per carrier.
 
@@ -2175,17 +2173,24 @@ New content should use the `tagdrop:` scheme. Legacy support will be maintained 
 
 ---
 
-## 12. NFC Transport (future)
+## 12. NFC Transport
 
 The Record Sequence (§2; the same bytes that get Base41-encoded into the
 `tagdrop:` URI) can be stored directly in an NFC NDEF record with:
 
 - **TNF:** `0x02` (MIME Media type)
 - **Type:** `application/vnd.tagdrop`
-- **Payload:** the raw Record Sequence bytes — no Base41 encoding, and no
-  QDEF magic prefix either: NDEF's own MIME-type field is the dispatch
-  signal, so adding QDEF's header here would be redundant (§2's carrier
-  table).
+- **Payload:** QDEF's 4-byte magic prefix, then the raw Record Sequence
+  bytes — no Base41 encoding. **Changed in version 17:** earlier versions
+  omitted the magic prefix here, reasoning that NDEF's own MIME-type
+  field already disambiguated the byte stream so QDEF's own header would
+  be redundant. QDEF dropped NFC/NDEF from its own scope in the same
+  period this reasoning was reconsidered — with no more QDEF-level
+  carrier guidance to lean on either way, TagDrop now always includes the
+  magic prefix here, matching every carrier except `tagdrop:` URI (§2's
+  carrier table, §14's version-17 entry): 4 bytes is cheap, and it keeps
+  identification uniform instead of needing a carrier-specific exception
+  to reason about.
 
 Because each Record carries its own QDEF Type ID (§2.1) in its own bytes,
 one permanent MIME type covers every TagDrop Record Type this document
@@ -2216,8 +2221,8 @@ Order matters, and so does a real limitation it introduces: Android resolves `AC
 
 The format is carrier-agnostic. Any medium that can carry a UTF-8 string
 supports the `tagdrop:` URI form. Any medium that carries raw bytes
-supports the raw Record Sequence form (with or without QDEF's magic
-prefix, per §2's carrier table).
+supports the QDEF-framed Record Sequence form (§2's carrier table) — only
+`tagdrop:` URI skips the magic prefix, every raw-byte carrier includes it.
 
 | Carrier | Form | Notes |
 |---|---|---|
@@ -2225,7 +2230,7 @@ prefix, per §2's carrier table).
 | Aztec code | `tagdrop:` URI | Higher density than QR at small sizes |
 | Data Matrix | `tagdrop:` URI | Better damage resistance |
 | JABCode (color) | `tagdrop:` URI or QDEF-framed Record Sequence | ~4× capacity of QR; see [jabcode/jabcode](https://github.com/jabcode/jabcode) |
-| NFC NDEF tag | Raw Record Sequence, no QDEF magic prefix, MIME type | No Base41 overhead and no magic-header overhead — NDEF's own MIME type is the dispatch signal (§12). Still pays the namespace declaration cost (§2.1a), as of version 14. |
+| NFC NDEF tag | QDEF-framed Record Sequence, MIME type | No Base41 overhead. Pays the same 9-byte magic+namespace cost as byte-mode QR, as of version 17 (§12, §14) — previously omitted the magic prefix, relying on NDEF's own MIME type alone. |
 | Plain URL | `tagdrop:` as deep-link | QR of a URL that deep-links to app |
 
 ---
@@ -2248,29 +2253,34 @@ even/odd key criticality (per-field forward compatibility inside an
 already-recognized Record Type, without needing a version bump for every
 additive change — see below).
 
-**Every carrier now pays for the namespace declaration; only the magic
-header itself stays carrier-specific.** As of version 14 (§2.1a), the
-namespace bstr is mandatory on every carrier's root array — `tagdrop:`
-URI and NFC NDEF pay the same 5-byte cost byte-mode QR/JABCode always
-did, since the old carrier-implied-namespace design no longer has any
-spec-level backing. What still differs by carrier is only the **magic
-header**: byte-mode QR/JABCode (§2, §13 — not implemented in any TagDrop
-codec yet) has no external dispatch signal of its own, so it needs QDEF's
-4-byte magic bytes ahead of the root array to identify the byte stream as
-QDEF at all, bringing its outer framing to 9 bytes total (4-byte magic +
-5-byte namespace, now folded into the root array itself per QDEF-SPEC.md
-§3.5 rather than a separate discriminator item — see CLAUDE.md's "QDEF
-project moved; container discriminator removed entirely" note).
-`tagdrop:` URI and NFC NDEF skip the magic header, for the same reason
-they always have: both already told the reader what it's looking at
-before any QDEF-specific parsing begins (the scheme, the MIME type), so
-there's no ambiguous-byte-stream problem for the magic header to solve
-there — but they still declare the namespace itself, since that's no
-longer about carrier ambiguity, it's about being interpretable as
-TagDrop's own Record Types at all (§2.1a). In short: **the magic header
-is required only in binary/byte-mode QR framing, because nothing else
-identifies the byte stream as QDEF; the namespace declaration is required
-everywhere, because nothing else identifies the Records as TagDrop's.**
+**Every carrier now pays for both the namespace declaration and the
+magic header, except one exemption for each.** As of version 14
+(§2.1a), the namespace bstr is mandatory on every carrier's root array
+— `tagdrop:` URI and NFC NDEF pay the same 5-byte cost byte-mode
+QR/JABCode always did, since the old carrier-implied-namespace design
+no longer has any spec-level backing. As of version 17, the magic
+header follows the same pattern with a narrower exemption: byte-mode
+QR/JABCode (§2, §13 — not implemented in any TagDrop codec yet) has no
+external dispatch signal of its own, so it needs QDEF's 4-byte magic
+bytes ahead of the root array to identify the byte stream as QDEF at
+all, bringing its outer framing to 9 bytes total (4-byte magic + 5-byte
+namespace, folded into the root array itself per QDEF-SPEC.md §3.5
+rather than a separate discriminator item — see CLAUDE.md's "QDEF
+project moved; container discriminator removed entirely" note). NFC
+NDEF now pays the same 9 bytes — its own MIME-type field is a real
+dispatch signal, but QDEF-SPEC.md no longer carves out an exemption for
+it (having dropped NFC from its own scope entirely), so TagDrop no
+longer does either (§14's version-17 entry). Only `tagdrop:` URI still
+skips the magic header, for the reason it always has: the scheme itself
+already told the reader what it's looking at before any QDEF-specific
+parsing begins, so there's no ambiguous-byte-stream problem for the
+magic header to solve there — but it still declares the namespace
+itself, since that's not about carrier ambiguity, it's about being
+interpretable as TagDrop's own Record Types at all (§2.1a). In short:
+**the magic header is skipped only where an application's own URI
+scheme already disambiguates the byte stream; the namespace declaration
+is required everywhere, because nothing else identifies the Records as
+TagDrop's.**
 
 **Additive fields vs. version bumps (issue #37):** §2.2's even/odd
 criticality rule gives forward compatibility for both optional fields an
@@ -2299,7 +2309,47 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 16** (current) — QDEF-SPEC.md §3.5 changed how a Record's own
+**Version 17** (current) — QDEF dropped NFC/NDEF from its own scope
+entirely: it's a 2D-barcode-only format now, full stop. This removed the
+one carrier-specific exemption QDEF used to define for NDEF (skip the
+magic header, since NDEF's own MIME-type field already disambiguates
+the byte stream) along with everything else about NFC. TagDrop's own
+NFC NDEF carrier isn't going anywhere — that's TagDrop's own carrier
+design choice, independent of whether QDEF's own spec still discusses
+NFC — but with QDEF's own NDEF-specific guidance gone, TagDrop now
+follows QDEF's simplified general rule instead: only an application's
+own URI scheme skips the magic header, every other carrier includes it.
+Net effect:
+
+- **NFC NDEF now always includes the QDEF magic header** — framing
+  changes from "Record Sequence bytes only" to "QDEF magic (4 bytes) +
+  Record Sequence bytes", identical to byte-mode QR/JABCode's framing
+  (§2, §12, §13). Cost: **+4 bytes per NDEF-carried code.** NFC tag
+  capacity is generous relative to this cost (a Type 2 tag alone is
+  ~1 KB) — nowhere near the pressure every byte under QR's alphanumeric
+  budget is under, which is why `tagdrop:` URI keeps its own exemption
+  (added bytes there cost roughly 1.5× as many QR alphanumeric
+  characters after Base41 encoding, not a flat 1:1 add).
+- **`tagdrop:` URI is unaffected** — it was never citing QDEF's NDEF
+  guidance in the first place, only QDEF-SPEC.md §1's own-URI-scheme
+  exemption, which still exists.
+- **Decode side needed no change.** `TagDropCodec.decodeRaw`'s existing
+  `stripQdefFraming` step already tolerantly strips the magic prefix
+  when present and passes bytes through unchanged when it's not — it
+  was already carrier-agnostic, just never previously exercised on an
+  NDEF payload that actually carried the prefix.
+
+Separately, in the same period, QDEF-SPEC.md §3.5 gained a namespace-
+scoping refinement: a Record MAY now simultaneously declare a namespace
+and be scoped by it in one array (previously this needed two Records —
+a namespace-carrying parent, a negative-typeId child), which would let
+a key-only code (§9) drop its Bundle wrapper again, recovering the
+version-13-era byte shape for that one case. **Not adopted in this
+version** — deliberately deferred, not overlooked, to keep this
+version's scope to the magic-header change alone; revisit as a
+follow-up pass if/when it's prioritized.
+
+**Version 16** — QDEF-SPEC.md §3.5 changed how a Record's own
 scope is decided, again: a namespace bstr's effect is now *cascade to
 subrecords only* — it never scopes the typeId on the Record that carries
 it. Whether a Record's own typeId is global or scoped is instead decided

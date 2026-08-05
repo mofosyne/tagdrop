@@ -1299,6 +1299,120 @@ session, since the bug was caught by diff review before it ever ran,
 but worth a closer look at what these tests actually assert versus
 what they'd need to assert to catch this specific failure mode.
 
+### QDEF self-scoping amendment (declined for TagDrop, for now); NFC dropped from QDEF's scope, magic header now always included on NDEF (SPEC.md version 17)
+
+Two independent changes, initiated back to back in the same session by
+the user (who is also `qdef-format`'s maintainer, so both landed as
+direct edits rather than relayed proposals — see CLAUDE.md's own
+"drop the veil" framing for why that's notable: no qdef-bot round trip
+was needed for the first change).
+
+**QDEF-side: a Record may now self-scope** (`qdef-format/qdef-format.
+github.io`, not this repo). Raised as a design question — since a
+namespace bstr's presence next to a *global*-typed Record is legal but
+inert (§3.5), was the "two Records needed to declare-and-scope in one
+step" limitation actually load-bearing, or just an artifact of the v16
+redesign's "check sign, not presence" simplification? Landed upstream
+directly: a negative-typeId Record now checks for an explicit bstr on
+its *own* array first, before falling back to ambient — `[h'ns', -N,
+{...}]` is now valid and self-scoped, at zero extra cost either way. A
+narrow, additive amendment, not a reversion to the pre-v16 decision
+tree's complexity (still "check sign" as the primary rule, with one
+small addition, not three cases at every level). Also fixed in the same
+pass: a genuine pre-existing inconsistency in QDEF-SPEC.md's own §3
+closing paragraph (contradicted the sign-only rule stated moments
+earlier in the same section — unrelated to this change, just found
+while editing nearby), and a real bug in `tools/validator.js`'s own
+independent `analyzeRecord` copy that would have flagged a self-scoping
+root Record as an error (it unconditionally required an *inherited*
+namespace, never checking the Record's own bstr first). Verified via
+the qdef-format repo's own `npm test`/`npm run build`/`npm run lint` —
+38/38 tests passing, including new assertions decoding a hand-built
+self-scoped example and checking it annotates correctly.
+
+**Assessed for TagDrop, explicitly deferred, not adopted.** This would
+let a key-only code (§9) drop its Bundle wrapper again — Content
+Extension could declare `h'89d414e0'` and scope itself to it on the
+same array, recovering the version-13-era "no Bundle indirection" byte
+shape for that one case (a 1-byte saving). Noted in SPEC.md's
+version-17 history entry as deliberately deferred rather than silently
+skipped, so it doesn't get lost — revisit as a small follow-up pass if
+prioritized. Every other TagDrop-scoped Record (Content Signature,
+Paper-Body, and Content Extension/Paper-Preview in the common two-Record
+case) already gets the zero-byte "no namespace item, adopt ambient"
+path and has nothing to gain from this amendment, since only a Record
+that's *simultaneously* the namespace's introduction point and itself
+scoped benefits.
+
+**QDEF drops NFC/NDEF from its own scope; TagDrop's own NDEF carrier now
+always includes the QDEF magic header.** Separately, prompted by "isn't
+excluding the magic header on NDEF kind of pointless when it's just 4
+bytes" — assessed and agreed: NFC's capacity headroom (a Type 2 tag
+alone is ~1 KB) makes the old "NDEF's own MIME type already
+disambiguates it, so skip the redundant 4 bytes" reasoning genuinely
+weak compared to the same argument for `tagdrop:` URI, where those same
+4 bytes cost ~1.5× as many QR alphanumeric characters after Base41
+encoding — real pressure `tagdrop:` URI's own exemption is worth
+keeping, that NFC's never really had. In the same conversation, decided
+to narrow QDEF's own scope to 2D barcodes only, dropping NFC/NDEF as a
+QDEF-supported carrier entirely (`qdef-format/qdef-format.github.io`
+again) — removed from QDEF-SPEC.md's philosophy/framing, §2's carrier
+table and its NDEF magic-header exemption paragraph, §3.6/§3.5/§4.4/§4.7's
+NDEF-analogy asides, README.md, index.html, and the embedded llms.txt
+description in `scripts/build.js`; `docs/RELATED-WORK.md` keeps its NDEF
+comparison intact (that page's whole purpose is surveying prior art) but
+several cells/claims that had drifted into describing QDEF's *own* scope
+rather than NDEF's were corrected, including a stale claim that QDEF's
+own §2 still defines an NDEF MIME-type-embedding mechanism (it doesn't,
+post this change). `llms-full.txt` (the single-page LLM reference,
+manually maintained and copied verbatim into the build, not
+auto-generated) turned out to be several spec versions stale in the
+process of removing its own NFC mention — still described the old
+`h''`-based namespace rule and mislabeled the standard-type range as
+"2-22" instead of "1-22" — fully rewritten to match the spec's actual
+current state while fixing the NFC mention, rather than leaving the rest
+wrong.
+
+Dropping NFC from QDEF's own scope removes the magic-header exemption
+QDEF used to define for NDEF specifically, but **TagDrop's own NFC NDEF
+carrier isn't going anywhere** — that's TagDrop's own carrier design
+choice (§12), independent of whether QDEF's own spec still discusses
+NFC. With QDEF's own NDEF-specific guidance gone, TagDrop now follows
+QDEF's simplified general rule directly: only an application's own URI
+scheme (`tagdrop:`) skips the magic header; every other carrier,
+including NFC NDEF as of this version, always includes it (SPEC.md
+version 17). Framing changes from "Record Sequence bytes only" to "QDEF
+magic (4 bytes) + Record Sequence bytes" — identical to byte-mode
+QR/JABCode's framing now. Cost: **+4 bytes per NDEF-carried code.**
+
+**Implementation**: `TagDropCodec.kt` gained `addQdefFraming` (the
+encode-side mirror of the existing decode-side `stripQdefFraming`, which
+needed no changes at all — it was already tolerant of the prefix being
+present or absent, just never previously exercised on a real NDEF
+payload that had one). `NfcUtils.buildNdefMessage` — the one function
+that actually builds the wire-level NDEF MIME record payload, called
+from both of `WriteNfcTagActivity.kt`'s write sites — now calls
+`addQdefFraming` before handing bytes to `NdefRecord.createMime`, so
+every call site (including the `fitsCapacity` tag-capacity probe) picks
+up the correct framing and byte-accurate capacity measurement
+automatically, with no per-call-site changes needed. `ReceiveActivity.kt`'s
+NDEF read path (`handleNfcIntent` → `TagDropCodec.decodeRaw`) needed no
+code change at all, only a comment update — `decodeRaw`'s existing
+`stripQdefFraming` step was already carrier-agnostic. Added
+`addQdefFramingRoundTripsWithDecodeRaw` to `TagDropCodecTest.kt`
+covering the new encode-side helper specifically. The JS web tools
+implement no NDEF carrier at all (Android-only, confirmed by grep before
+concluding no JS changes were needed) — only the Kotlin side needed
+propagation, no parallel background-agent port this time, small enough
+to do directly. Verified via the same standalone `kotlinc`+JUnit harness
+this project's QDEF port has used throughout (freshly assembled again,
+same jar versions as the version-16 port): 165/165 tests pass (the +1
+over version 16's 164 being the new NDEF-framing round-trip test). The
+three Android-framework-dependent files touched (`WriteNfcTagActivity.kt`,
+`NfcUtils.kt`, `ReceiveActivity.kt`) can't compile in this harness
+(`android.nfc.*` isn't on it) — verified by careful diff re-reading
+instead, same as every prior session's honest limitation here.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -1381,19 +1495,22 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `16` — QDEF Records with declared
-Type IDs `1`/`2`/`3`/`4` wire-encoded **negated** under an
-explicitly-transmitted namespace, scope decided by typeId sign rather
-than namespace-item presence [§2.1a, version 16, superseding version
-14's `h''`-based design]; QDEF's own standard Types' payload values at
-reserved map key `0` rather than a positional payload slot [§3.1a/§5,
+SPEC.md's `version` field (currently `17` — NFC NDEF now always
+includes the 4-byte QDEF magic header, same as byte-mode QR/JABCode;
+only `tagdrop:` URI still skips it [§2/§12/§14, version 17, since QDEF
+dropped NFC/NDEF from its own scope and, with it, the carrier-specific
+exemption this used to cite]; QDEF Records with declared Type IDs
+`1`/`2`/`3`/`4` wire-encoded **negated** under an explicitly-transmitted
+namespace, scope decided by typeId sign rather than namespace-item
+presence [§2.1a, version 16]; QDEF's own standard Types' payload values
+at reserved map key `0` rather than a positional payload slot [§3.1a/§5,
 version 15]; both the Kotlin app and the web tools are on this shape
 now, see "Two parallel wire-format implementations" above and the
-version-14/15/16 history entries) is independent of the Android app's
+version-14/15/16/17 history entries) is independent of the Android app's
 `versionName` (currently `2.6.0`, `versionCode` 12) — bumping one never
 requires bumping the other. (This note has drifted stale before —
-previously said `8`/`2.1.0`, then `15`/`2.5.1`, for a while — a
-reminder to re-check this line's own numbers against SPEC.md §14's
+previously said `8`/`2.1.0`, then `15`/`2.5.1`, then `16`, for a while —
+a reminder to re-check this line's own numbers against SPEC.md §14's
 actual current entry and `app/build.gradle` rather than trust it
 silently.)
 

@@ -189,10 +189,12 @@ class ReceiveActivity : AppCompatActivity() {
     /**
      * A tapped NFC tag delivers its NDEF message(s) via [intent] -- either [onNewIntent] (app
      * already foregrounded, via [nfcPendingIntent]/[nfcIntentFilters]) or a cold start through
-     * the manifest's NDEF intent-filter. Each TagDrop MIME record's payload is the raw CBOR
-     * sequence with no Base41 wrapper (SPEC §12), the same bytes [TagDropCodec.decodeRaw] already
-     * parses for fully-binary QR codes -- so a tag decodes through the identical [processScan]
-     * pipeline a camera scan does.
+     * the manifest's NDEF intent-filter. Each TagDrop MIME record's payload is QDEF-framed CBOR
+     * with no Base41 wrapper (SPEC §12; as of SPEC.md v17, this now includes the 4-byte QDEF
+     * magic prefix, same as a fully-binary QR code) -- [TagDropCodec.decodeRaw] already handles
+     * that framing generically ([TagDropCodec.stripQdefFraming] tolerates the prefix being present
+     * or absent), so a tag decodes through the identical [processScan] pipeline a camera scan does,
+     * with no carrier-specific branch needed here.
      */
     private fun handleNfcIntent(intent: Intent?) {
         if (intent?.action != NfcAdapter.ACTION_NDEF_DISCOVERED) return

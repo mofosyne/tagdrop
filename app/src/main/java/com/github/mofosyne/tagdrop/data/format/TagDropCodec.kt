@@ -34,8 +34,9 @@ import javax.crypto.spec.SecretKeySpec
  * whatever payload it's part of (Paper: Preview; Content: Content Extension + Media Preview,
  * §3.1/§3.1a) and, if the payload has a large part, either that part complete (single code) or
  * one Split-Wrapper-wrapped (QDEF Type 1) fragment of it (multi-code). No magic header on this
- * carrier (or on NFC NDEF) — the `tagdrop:` scheme itself is still the dispatch signal, but the
- * namespace itself is transmitted on the wire the same as on every other carrier (§2.1a).
+ * carrier — the `tagdrop:` scheme itself is still the dispatch signal — but every other carrier,
+ * including NFC NDEF as of SPEC.md v17, does carry the QDEF magic header (see [addQdefFraming]);
+ * the namespace itself is transmitted on the wire the same as on every carrier either way (§2.1a).
  *
  * Content (SPEC §3.1/§3.1a, §5.1): Content Extension (declared Type 1, wire `-1`, TagDrop-scoped) carries
  * hint/collection/location/small-signing fields and is always whole, unwrapped, and repeated
@@ -132,23 +133,32 @@ object TagDropCodec {
     private fun isTagDropNamespace(namespace: ByteArray?): Boolean =
         namespace != null && namespace.contentEquals(TAGDROP_NAMESPACE)
 
-    // ── QDEF binary-mode QR framing (QDEF-SPEC.md §2, §3.5) ────────────────
-    // 4-byte "QDEF" magic ahead of the Record Sequence bytes — the only carrier-specific
-    // framing left as of SPEC.md v14 (§14): the namespace declaration itself is no longer
-    // magic-specific overhead, since every carrier's root array now carries it the same way
-    // (MiniCbor.decodeRootBundle/encodeRootBundle handle it uniformly regardless of carrier).
-    // tagdrop: URI and NFC NDEF skip only this magic — they still declare the namespace, same
-    // as byte-mode QR always has.
+    // ── QDEF magic framing (QDEF-SPEC.md §2, §3.5) ────────────────
+    // 4-byte "QDEF" magic ahead of the Record Sequence bytes. As of SPEC.md v17, only
+    // `tagdrop:` URI skips it (the scheme itself is still the dispatch signal) — every other
+    // carrier, including NFC NDEF as of this version, always includes it: QDEF dropped NFC/NDEF
+    // from its own scope entirely, taking the carrier-specific "NDEF's own MIME type already
+    // disambiguates it" exemption with it, so TagDrop no longer carves one out here either. The
+    // namespace declaration itself is separate overhead, unaffected by this — every carrier's
+    // root array carries it the same way regardless of magic (MiniCbor.decodeRootBundle/
+    // encodeRootBundle handle it uniformly).
     private val QDEF_MAGIC = byteArrayOf(0x51, 0x44, 0x45, 0x46)  // "QDEF" (4 bytes)
 
     /** If [bytes] starts with the 4-byte QDEF magic header, strips it, returning the plain
      *  Record Sequence bytes (a namespaced root array, decodable directly by
      *  [MiniCbor.decodeRootBundle] exactly like any other carrier's); otherwise returns [bytes]
-     *  unchanged. */
+     *  unchanged. Tolerant either way, so it's safe to call on any carrier's payload regardless
+     *  of whether that carrier's framing includes the magic prefix. */
     fun stripQdefFraming(bytes: ByteArray): ByteArray {
         if (bytes.size < 4 || !QDEF_MAGIC.contentEquals(bytes.copyOfRange(0, 4))) return bytes
         return bytes.copyOfRange(4, bytes.size)
     }
+
+    /** Prepends the 4-byte QDEF magic header ahead of [bytes] (a Record Sequence — a namespaced
+     *  root array). As of SPEC.md v17, every carrier except `tagdrop:` URI includes this —
+     *  currently used for NFC NDEF's MIME-record payload ([com.github.mofosyne.tagdrop.util.NfcUtils.buildNdefMessage]); byte-mode
+     *  QR encoding isn't implemented in this app yet. */
+    fun addQdefFraming(bytes: ByteArray): ByteArray = QDEF_MAGIC + bytes
 
     // ── QDEF Record Type IDs (SPEC.md v14 §2.1) — TagDrop's four are small sequential DECLARED
     // magnitudes, namespace-scoped (§2.1a) — parity carries no meaning as of v14. As of SPEC.md

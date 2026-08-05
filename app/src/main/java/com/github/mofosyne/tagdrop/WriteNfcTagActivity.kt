@@ -218,9 +218,13 @@ class WriteNfcTagActivity : AppCompatActivity() {
         // unchanged by SPEC.md v16 (Content Extension no longer carries its own `h''` cascade
         // marker, but `single.extensionRaw.size` is read dynamically here, not hard-coded, so
         // that 1-byte saving is already reflected automatically — the three-item root Bundle
-        // shape this subtracts around is otherwise identical). This is only an estimate feeding
-        // the retry loop below, not a byte-exact requirement — [fitsCapacity] re-measures the
-        // real rebuilt code every iteration.
+        // shape this subtracts around is otherwise identical). Doesn't account for the 4-byte
+        // QDEF magic prefix [NfcUtils.buildNdefMessage] now always adds (SPEC.md v17) either —
+        // that's a flat per-code constant, not something this per-code `code` size varies by, so
+        // it doesn't change how many sectors are needed, only [fitsCapacity]'s absolute
+        // pass/fail per candidate. This is only an estimate feeding the retry loop below, not a
+        // byte-exact requirement — [fitsCapacity] re-measures the real rebuilt code (magic prefix
+        // included) every iteration.
         val total = single.codes.first().size - single.extensionRaw.size - 1 - TagDropCodec.NAMESPACE_DECLARATION_BYTES
         for (count in 2..MAX_SECTOR_PROBES) {
             val candidate = build((total + count - 1) / count)
