@@ -1608,6 +1608,17 @@ noted throughout this file) — verified by careful hand re-reading instead,
 which is what caught the `tryBytes()` return-type mismatch above before
 it could ship.
 
+Released as `v2.6.1` (`versionCode` 12→13, `versionName` "2.6.0"→"2.6.1")
+— a bugfix/robustness release bundling everything landed on `master`
+since `v2.6.0` (2026-07-29): the SPEC.md v16/v17 wire-format port
+(namespace scoping by typeId sign, NFC magic-header-always-included),
+the decompression-bomb/Split resource-exhaustion guards, an unrelated
+real crash fix (a SQLite `NOT NULL` constraint failure in
+`drop_sources` seeding, landed directly on `master` outside this
+session's own changes), and this section's legacy-removal/raw-scan-
+preview work. CI (`./gradlew`-based `Unit tests & APK builds`,
+GitHub's own runners) confirmed green on the exact commit tagged.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -1702,7 +1713,7 @@ at reserved map key `0` rather than a positional payload slot [§3.1a/§5,
 version 15]; both the Kotlin app and the web tools are on this shape
 now, see "Two parallel wire-format implementations" above and the
 version-14/15/16/17 history entries) is independent of the Android app's
-`versionName` (currently `2.6.0`, `versionCode` 12) — bumping one never
+`versionName` (currently `2.6.1`, `versionCode` 13) — bumping one never
 requires bumping the other. (This note has drifted stale before —
 previously said `8`/`2.1.0`, then `15`/`2.5.1`, then `16`, for a while —
 a reminder to re-check this line's own numbers against SPEC.md §14's

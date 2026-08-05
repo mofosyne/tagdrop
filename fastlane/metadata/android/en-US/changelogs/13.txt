@@ -1,0 +1,5 @@
+- Wire format: another QDEF update — namespace scoping is now decided by whether a Record's type ID is negative instead of a separate marker byte, and NFC tags now always include the 4-byte QDEF header (previously omitted there). Codes and NFC tags made with a previous version of this app or its web tools won't scan with this version, and vice versa — regenerate QR codes and rewrite NFC tags after updating.
+- Security: added hard limits on decompressed size and on the number/total size of a code's split fragments, so a malicious code can no longer force excessive memory or CPU use.
+- Changed: scanning a code that isn't a TagDrop code (a random QR/NFC find) now shows a preview — the first bytes as hex and text — and asks before saving or opening it, instead of importing it automatically.
+- Removed: old-format `data:` URI codes (from before the tagdrop: scheme existed) are no longer recognised specially.
+- Fixed: a crash-causing database error when seeding default drop sources on some installs.
