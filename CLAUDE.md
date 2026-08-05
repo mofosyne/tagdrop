@@ -1536,6 +1536,78 @@ wrapper still can't download its own distribution. The standalone
 `kotlinc`+JUnit harness remains the substitute verification this
 project has relied on throughout its QDEF history.
 
+### Legacy `data:` URI support removed; non-TagDrop scans gated behind an opt-in preview
+
+Two related receiver-side changes, both user-requested and both scoped to
+the Android app only (the JS web tools have no equivalent legacy path or
+raw-scan auto-import behavior to begin with — confirmed by grep before
+concluding no JS changes were needed).
+
+**Legacy `data:` URI support removed.** SPEC.md §11 previously described
+a **legacy mode**: a code containing a raw `data:` URI (not the
+`tagdrop:` scheme) was recognized specially — a single code opened
+directly, multiple codes dumb-appended in scan order (the original V1
+behavior) — with the document stating "legacy support will be maintained
+indefinitely." That promise is withdrawn: `TagDropCodec.decode()` no
+longer special-cases a `data:` prefix (it's now just another
+non-`tagdrop:` string, returning null same as any unrecognized scheme);
+`TagDropPayload.Legacy` and `TagDropScan.LegacyScan` are deleted outright,
+narrowing `decode()`/`decodeRaw()`'s return type from `TagDropScan?` to
+`TagDropScan.RecordScan?` now that it's the sealed class's only remaining
+case (a real type-checker catch during this change: `ReceiveActivity.kt`'s
+`barcodeCallback`'s local `tryBytes()` helper still declared a `TagDropScan?`
+return type feeding into `processScan(scan: TagDropScan.RecordScan)` —
+narrowed to match, or it wouldn't have compiled). `ReceiveActivity.kt`
+loses `legacyChunks`/`tryCompleteLegacy()`/`launchLegacyContent()`/
+`parseLegacyDataUri()` and the "Launch Content (legacy)" button
+(`activity_receive.xml`, `strings.xml`); a scanned `data:` URI now falls
+through to the same generic non-TagDrop content path as a URL, vCard, or
+plain text QR code (see below) instead of being auto-opened. SPEC.md §11's
+heading and section number are kept as a deliberate placeholder ("removed"
+appended to the title, content rewritten to say so) rather than deleting
+the section and renumbering §12 onward — avoids invalidating every other
+`§12`/`§13`/etc. cross-reference elsewhere in the document for a promise
+that's simply being withdrawn, not replaced by a differently-numbered
+one.
+
+**Non-TagDrop scans no longer auto-import.** Follow-up ask, arriving
+mid-session: a scanned code that isn't a TagDrop payload — a URL, vCard,
+Wi-Fi config, or any other content `QrContentClassifier`/`MimeTypeGuesser`
+can't (or can) make sense of — was previously cached and opened
+immediately by `completeRawScan()`. Unlike a `tagdrop:` payload (an
+intentional dead-drop with author-declared metadata), a stray non-TagDrop
+scan is unauthenticated and unvetted — "a tag full of gibberish is not
+something people would care about" was the concrete framing. `completeRawScan()`
+now gates on a new suspend dialog, `askImportRawScan()` (same
+`CompletableDeferred`-bridges-`AlertDialog` pattern already used by
+`askAddSource`/`askPassphrase`): shows the first `RAW_SCAN_PREVIEW_BYTES`
+(64) bytes as hex and as best-effort UTF-8 (Java's `String(bytes,
+Charsets.UTF_8)` replaces invalid sequences with U+FFFD rather than
+throwing, so this never crashes on arbitrary binary) side by side, so the
+user can visually guess what it is, with explicit Import/Discard buttons —
+nothing is cached or opened until Import is tapped. Two cases skip the
+prompt, both because it would be pure friction for content the user has
+already effectively vetted: content already declared by a Paper the user
+is actively scanning (`paperFile` matches the currently-open Paper's
+manifest — an expected, intentional part of a trail the user engaged with
+by scanning the Paper itself, not a stray find) and anything already
+cached (re-scanning something already imported shouldn't re-prompt every
+time). This is reader-side UX, not a wire-format change — no SPEC.md
+entry, matching how §11's rewrite above frames non-TagDrop content
+handling as "an implementation detail, not part of this wire format."
+
+Verified: the `data/format` package (Android-framework-free) recompiles
+clean and the full suite passes (195/195, one fewer than before since the
+removed `legacyDataUriDecodesToLegacyScan` test folded into
+`navigationLinkAndUnknownSchemesReturnNull`, asserting a `data:` URI now
+returns null same as any other unrecognized scheme) via the same
+standalone `kotlinc`+JUnit harness this project's QDEF port has used
+throughout. `ReceiveActivity.kt` itself can't compile in that harness
+(Android framework classes aren't vendored, the same longstanding gap
+noted throughout this file) — verified by careful hand re-reading instead,
+which is what caught the `tryBytes()` return-type mismatch above before
+it could ship.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

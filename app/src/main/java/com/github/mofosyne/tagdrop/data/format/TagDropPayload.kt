@@ -156,9 +156,6 @@ sealed class TagDropPayload {
         override fun equals(other: Any?) = other is Paper && rootHash.contentEquals(other.rootHash)
         override fun hashCode() = rootHash.contentHashCode()
     }
-
-    /** Raw data: URI from the original tagdrop format (backward compatibility). */
-    data class Legacy(val dataUri: String) : TagDropPayload()
 }
 
 /** Which payload kind a scanned code's small, always-repeated Record belongs to (SPEC §2.1). */
@@ -309,10 +306,9 @@ data class SplitFragment(
 }
 
 /**
- * What one scanned/printed code decoded to. A [RecordScan] always needs [SectorAssembler]
- * to resolve into a usable [TagDropPayload] — even a single-code payload is technically a
- * one-code group — while a [LegacyScan] is already a complete, displayable
- * [TagDropPayload.Legacy].
+ * What one scanned/printed `tagdrop:` code decoded to. Always needs [SectorAssembler] to
+ * resolve into a usable [TagDropPayload] — even a single-code payload is technically a
+ * one-code group.
  */
 sealed class TagDropScan {
     data class RecordScan(val record: ScannedRecord, val rawWireBytes: ByteArray? = null) : TagDropScan() {
@@ -331,7 +327,6 @@ sealed class TagDropScan {
             return result
         }
     }
-    data class LegacyScan(val payload: TagDropPayload.Legacy) : TagDropScan()
 }
 
 /**

@@ -599,15 +599,13 @@ class TagDropCodecTest {
         assertNull(TagDropCodec.decodeRaw(partial))
     }
 
-    @Test fun legacyDataUriDecodesToLegacyScan() {
-        val scan = TagDropCodec.decode("data:text/plain;base64,aGVsbG8=")
-        assertTrue(scan is TagDropScan.LegacyScan)
-    }
-
     @Test fun navigationLinkAndUnknownSchemesReturnNull() {
         assertNull(TagDropCodec.decode("tagdrop://example.com/slug"))
         assertNull(TagDropCodec.decode("https://example.com"))
         assertNull(TagDropCodec.decode("not a uri at all"))
+        // Legacy data: URI multi-fragment recognition was removed (SPEC.md §11) — a data:
+        // URI is no longer decoded specially, same as any other non-tagdrop: scheme.
+        assertNull(TagDropCodec.decode("data:text/plain;base64,aGVsbG8="))
     }
 
     // ── Paper (SPEC §3.3-§3.4, §4.4) ─────────────────────────────────────────────
