@@ -272,7 +272,10 @@ val ScannedRecord.kind: PayloadKind
  * [secondRaw] decoded one level further when `second[0] == TYPE_SPLIT`. A fragment at
  * `index == count` is the optional XOR parity fragment (SPEC §5's redundancy scheme), never
  * a data fragment; [isParity] distinguishes the two cases explicitly rather than leaving
- * callers to compare `index`/`count` themselves.
+ * callers to compare `index`/`count` themselves. [payloadHash] (`payload_hash`, QDEF-SPEC.md
+ * §4.1 key `11`) is only ever present on fragment index `0` — a multihash of the fully
+ * reassembled payload, TagDrop-MANDATORY (SPEC.md "Reassembly integrity") even though QDEF
+ * itself leaves it OPTIONAL/odd.
  */
 data class SplitFragment(
     val groupId: ByteArray,
@@ -280,7 +283,8 @@ data class SplitFragment(
     val count: Int,
     val data: ByteArray,
     val total: Int,
-    val isParity: Boolean
+    val isParity: Boolean,
+    val payloadHash: ByteArray? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -291,6 +295,8 @@ data class SplitFragment(
         if (!data.contentEquals(other.data)) return false
         if (total != other.total) return false
         if (isParity != other.isParity) return false
+        if ((payloadHash == null) != (other.payloadHash == null)) return false
+        if (payloadHash != null && other.payloadHash != null && !payloadHash.contentEquals(other.payloadHash)) return false
         return true
     }
 
@@ -301,6 +307,7 @@ data class SplitFragment(
         result = 31 * result + data.contentHashCode()
         result = 31 * result + total
         result = 31 * result + isParity.hashCode()
+        result = 31 * result + (payloadHash?.contentHashCode() ?: 0)
         return result
     }
 }

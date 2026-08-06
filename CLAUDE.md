@@ -1619,6 +1619,133 @@ session's own changes), and this section's legacy-removal/raw-scan-
 preview work. CI (`./gradlew`-based `Unit tests & APK builds`,
 GitHub's own runners) confirmed green on the exact commit tagged.
 
+### Split's `group_id` reframed as a correlation token; new mandatory `payload_hash` field (SPEC.md version 18)
+
+Two related upstream QDEF-SPEC.md commits
+([49d4962](https://github.com/qdef-format/qdef-format.github.io/commit/49d4962),
+[f56220b](https://github.com/qdef-format/qdef-format.github.io/commit/f56220b))
+surfaced a real gap in this repo's own SPEC.md, not just an upstream
+grammar change to port. §4.1's Split Wrapper used to describe `group_id`
+(key `2`) as a content hash "a decoder MUST verify" after reassembly —
+an integrity check. Upstream reframed it as an opaque **correlation
+token** only: every physical QR/Data Matrix/Aztec symbol already carries
+its own Reed-Solomon error correction, so a scanned code either decodes
+cleanly or fails outright — there's no realistic "decoded fine but
+silently wrong bytes" case for a per-fragment field to catch (QR's own
+Structured Append mode makes the same call for the same reason, ISO/IEC
+18004). A new field fills the resulting gap for applications that do
+want reassembly-integrity verification: `payload_hash` (Split Wrapper
+key `11`, OPTIONAL/odd at the QDEF level) — a multihash of the fully
+reassembled payload, present only on the `index == 0` fragment.
+
+The bug this surfaced: SPEC.md's own "Why `contentHash` and `root_hash`
+are scoped differently" note (§3.4) explicitly justified deleting the
+old design's `content_sha256`/`bulky_meta_sha256` multi-sector integrity
+hashes as "superseded by `group_id`'s mandatory decoder-side
+verification" — a real guarantee this repo's own payloads had been
+relying on, that had since been redefined out from under it upstream.
+Fixing the prose alone would have left every real Split-wrapped TagDrop
+payload actually unverified while SPEC.md claimed otherwise, so
+`payload_hash` was adopted as a **TagDrop-MUST**, not left as QDEF's own
+optional field — the same "tighten a QDEF-optional mechanism into a
+TagDrop-MUST where TagDrop specifically needs it" pattern §2.1a's
+mandatory namespace declaration already established: TagDrop encoders
+MUST always set it; TagDrop decoders MUST reject a Split-wrapped payload
+missing it, rather than silently proceeding the way skipping an
+ordinary optional field normally would.
+
+**SPEC.md** (§14's version-18 entry has the full detail): the
+`contentHash`/`root_hash`/`group_id` scoping note (§3.4), §5.1's two
+`group_id`-verification sentences (replaced with a new shared
+"Reassembly integrity (`payload_hash`)" paragraph), §5.2's reassembly
+steps and redundancy-reconstruction paragraph, §9's encrypted-
+override-map ordering note, and §15's version-2 history entry (marked
+superseded in place, this project's standing practice, rather than
+silently rewritten) were all corrected. `QDEF-SPEC-cached.md` refreshed
+via `scripts/sync-qdef-spec.sh`.
+
+**Kotlin implementation (this task's actual scope — the JS web tools
+were deliberately left untouched, unlike every prior QDEF-driven port in
+this file's history):** `TagDropCodec.kt` gained `SK_PAYLOAD_HASH = 11`;
+`splitFragments()` now computes a multihash (`0x12` sha2-256 prefix +
+**8-byte truncated** digest, matching `contentHash`'s/`group_id`'s own
+truncation — QDEF-SPEC.md §4.1 explicitly permits "truncated or full"
+here, and this field only guards against accidental damage, not
+deliberate tampering, which Encrypt/Signature already cover, so a
+signature-grade full digest isn't needed. First implemented with a
+full, untruncated digest, then revisited after a user question about
+byte cost — `SectorAssembler.kt`'s `payloadHashMatches` reads the
+digest length from the field itself (`hash.size - 1`) rather than
+hardcoding 8, so a compliant non-TagDrop encoder's full 32-byte digest
+still verifies correctly; `payloadHashAcceptsFullUntruncatedDigestToo`
+covers that path directly) of the bytes being split and stamps it onto
+the `index == 0` fragment only — both of `splitFragments`'s two call
+sites (Paper's
+`buildCodes`, Content's multi-code path) pick this up for free, since
+neither builds fragments by any other route. `TagDropPayload.kt`'s
+`SplitFragment` gained a `payloadHash: ByteArray?` field (with the same
+`contentEquals`-based `equals`/`hashCode` override discipline its other
+`ByteArray` properties already use, per the CI-blocking-test-bug lesson
+above). `SectorAssembler.kt`'s `Group` gained a `payloadHash` field,
+captured in `add()` whenever a fragment carries one; `computeState()`
+was rewritten to require it (`?: return State.HashMismatch`) and verify
+it (`payloadHashMatches`, new — recognizes only sha2-256, `0x12`,
+treating an unrecognized multicodec function code as
+present-but-unverifiable rather than a mismatch, mirroring the
+reference JS `qdef` package's own "skip silently" handling of a hash
+function it doesn't recognize) instead of the old
+`sha256(wrapped).copyOf(8).contentEquals(group.groupId)` check — the
+`State.HashMismatch` terminal state and its doc comment were kept and
+repurposed rather than renamed, since it's still the correct "Split
+reassembly integrity failed" signal, just triggered by a different
+field now. `group_id`'s own generation (`SHA-256(body)[0:8]`, computed
+once per group and reused across every fragment) was left unchanged —
+still a valid correlation token under the new rules (QDEF's own
+"RECOMMENDED: random" guidance is a recommendation, not a requirement;
+"any encoder-chosen scheme producing a value shared identically across
+a group's fragments is valid"), and changing it wasn't part of what
+this task asked for.
+
+**Tests:** `SectorAssemblerTest.kt`'s `splitFragmentBytes`/`splitRecords`
+helpers gained a `payloadHash`/`includePayloadHash` parameter (default
+on, so every existing happy-path test keeps working unmodified); the old
+`groupIdMismatchDetected` was renamed `payloadHashMismatchDetected` with
+its comment corrected to explain *why* the same tamper still gets
+caught (fragment 0's `payload_hash`, not `group_id`, is what no longer
+matches); a new `missingPayloadHashRejected` covers the mandatory-field
+rejection path directly, and a `payloadHashAcceptsFullUntruncatedDigestToo`
+covering the decoder's length-generic verification (a hand-built
+full-32-byte-digest fragment 0, confirming it still verifies correctly
+even though TagDrop's own encoder never emits one). `TagDropCodecTest.kt`
+got the equivalent rename/fix (`multiCodePayloadHashMismatchIsHashMismatch`)
+plus a new `multiCodeMissingPayloadHashOnFragmentZeroIsRejected`, built by
+hand-stripping key `11` from a real encoder-built fragment 0 rather than a
+synthetic fixture. Verified via the same standalone `kotlinc`+JUnit
+harness this project's QDEF port has used throughout (freshly assembled
+again this session — `kotlin-compiler`/`kotlin-stdlib` 2.0.21,
+`kotlin-reflect` 1.6.10, `bcprov-jdk18on` 1.80, `room-common` 2.6.1 for
+`ScannedPaper`'s `@Entity`/`@PrimaryKey` annotations, all fetched fresh
+from Maven Central/`dl.google.com` since this environment resets
+between sessions): 198/198 tests pass across
+`TagDropCodecTest`/`SectorAssemblerTest`/`MiniCborTest`/`Base41Test`/
+`TagDropPayloadTest` — the 2 formerly-pre-existing failures noted in
+earlier sessions' entries are gone (already resolved by an intervening
+session, not by this change).
+
+**Outstanding gap, same as every prior port**: a full Android Studio
+build hasn't run against this change — this environment's Gradle
+wrapper still can't download its own distribution. The standalone
+`kotlinc`+JUnit harness remains the substitute verification this
+project has relied on throughout its QDEF history. Separately, and
+unlike every prior QDEF-driven change in this file's history: **the JS
+web tools (`tools/generator/index.html`, `tools/reader/index.html`,
+`tools/examples/index.html`, `tools/test-qdef-roundtrip.mjs`) were not
+ported** — this task's own scope explicitly named only the Kotlin
+`data/format` package. This is a real, tracked drift between the two
+implementations (the "Two parallel wire-format implementations" note
+at the top of this file) until a follow-up session ports the JS side
+the same way.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -1701,24 +1828,30 @@ build step.
 
 ## Wire-format version policy
 
-SPEC.md's `version` field (currently `17` — NFC NDEF now always
-includes the 4-byte QDEF magic header, same as byte-mode QR/JABCode;
-only `tagdrop:` URI still skips it [§2/§12/§14, version 17, since QDEF
-dropped NFC/NDEF from its own scope and, with it, the carrier-specific
-exemption this used to cite]; QDEF Records with declared Type IDs
-`1`/`2`/`3`/`4` wire-encoded **negated** under an explicitly-transmitted
-namespace, scope decided by typeId sign rather than namespace-item
-presence [§2.1a, version 16]; QDEF's own standard Types' payload values
-at reserved map key `0` rather than a positional payload slot [§3.1a/§5,
-version 15]; both the Kotlin app and the web tools are on this shape
-now, see "Two parallel wire-format implementations" above and the
-version-14/15/16/17 history entries) is independent of the Android app's
-`versionName` (currently `2.6.1`, `versionCode` 13) — bumping one never
-requires bumping the other. (This note has drifted stale before —
-previously said `8`/`2.1.0`, then `15`/`2.5.1`, then `16`, for a while —
-a reminder to re-check this line's own numbers against SPEC.md §14's
-actual current entry and `app/build.gradle` rather than trust it
-silently.)
+SPEC.md's `version` field (currently `18` — Split Wrapper's `group_id`
+is now documented purely as an opaque correlation token, not a verified
+content hash; TagDrop adopts a new field, `payload_hash` (Split Wrapper
+key `11`), as its own MANDATORY reassembly-integrity check whenever
+Split is used — QDEF itself leaves this field OPTIONAL/odd [§5.1,
+version 18]; **the Kotlin app is on this shape, the web tools are NOT
+yet** — see the version-18 CLAUDE.md history entry's "Outstanding gap"
+note, a real drift between the two implementations this note now has to
+flag rather than assume away. Older shape, both implementations still
+share: NFC NDEF always includes the 4-byte QDEF magic header, same as
+byte-mode QR/JABCode; only `tagdrop:` URI still skips it [§2/§12/§14,
+version 17]; QDEF Records with declared Type IDs `1`/`2`/`3`/`4`
+wire-encoded **negated** under an explicitly-transmitted namespace,
+scope decided by typeId sign rather than namespace-item presence
+[§2.1a, version 16]; QDEF's own standard Types' payload values at
+reserved map key `0` rather than a positional payload slot [§3.1a/§5,
+version 15]; see "Two parallel wire-format implementations" above and
+the version-14/15/16/17/18 history entries) is independent of the
+Android app's `versionName` (currently `2.6.1`, `versionCode` 13) —
+bumping one never requires bumping the other. (This note has drifted
+stale before — previously said `8`/`2.1.0`, then `15`/`2.5.1`, then
+`16`, for a while — a reminder to re-check this line's own numbers
+against SPEC.md §14's actual current entry and `app/build.gradle`
+rather than trust it silently.)
 
 SPEC.md as a whole is currently a **draft, not frozen** (see its `Status`
 line): no real TagDrop code has been printed or distributed yet, so no

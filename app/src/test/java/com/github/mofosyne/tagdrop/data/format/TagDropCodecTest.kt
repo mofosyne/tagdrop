@@ -18,7 +18,8 @@ import org.junit.Test
  * this is what a decoder actually keys off of to tell TagDrop's Content Extension (wire `-1`)
  * apart from QDEF's own global Split Wrapper (wire `+1`), not the bare typeId magnitude alone.
  * Mirrors `tools/test-qdef-roundtrip.mjs`'s adversarial coverage (tamper detection via
- * group_id/root_hash recomputation, SPEC §2.2 even/odd key criticality, key-only codes, the
+ * payload_hash/root_hash recomputation — group_id itself is just an opaque correlation token,
+ * SPEC §5.1 "Reassembly integrity" — SPEC §2.2 even/odd key criticality, key-only codes, the
  * placeholder-then-strip signing round trip) rather than porting the old version-1 envelope's
  * byte-layout assertions, which no longer apply.
  */
@@ -292,9 +293,12 @@ class TagDropCodecTest {
         assertEquals(listOf(build.codes.size - 1), state.missingIndices)
     }
 
-    @Test fun multiCodeGroupIdMismatchIsHashMismatch() {
+    @Test fun multiCodePayloadHashMismatchIsHashMismatch() {
         // Reassembling a truncated/corrupted fragment set that still nominally "completes"
-        // (every index present) but doesn't hash back to the declared group_id.
+        // (every index present) but doesn't hash back to fragment 0's declared payload_hash —
+        // group_id itself is just an opaque correlation token now (SPEC §5.1 "Reassembly
+        // integrity"), so tampering fragment 1 (not the payload_hash-bearing fragment 0) is
+        // caught by TagDrop's own mandatory payload_hash field instead.
         val content = ByteArray(2000) { it.toByte() }
         val build = TagDropCodec.createContentSectors(null, null, "application/octet-stream", content, maxSectorDataBytes = 600)
         assertTrue(build.codes.size >= 3)
@@ -303,6 +307,7 @@ class TagDropCodecTest {
         // once every index is present) by re-decoding a hand-tampered raw record.
         val victim = records[1] as ScannedRecord.Content
         val frag = TagDropCodec.splitFragmentOf(victim)!!
+        assertEquals("must tamper a fragment other than the payload_hash-bearing one", 1, frag.index)
         val tamperedData = frag.data.copyOf().also { it[0] = (it[0].toInt() xor 0xFF).toByte() }
         // Multi-code Content's Split Wrapper (Type 1) carries Media Preview as its own subrecord
         // (SPEC.md §3.1a) — preserve it so the tampered fragment still decodes. Split Wrapper is
@@ -321,6 +326,35 @@ class TagDropCodecTest {
 
         val state = assemble(records)
         assertTrue("expected HashMismatch, got $state", state is SectorAssembler.State.HashMismatch)
+    }
+
+    @Test fun multiCodeMissingPayloadHashOnFragmentZeroIsRejected() {
+        // TagDrop makes payload_hash mandatory whenever Split is used (SPEC §5.1 "Reassembly
+        // integrity"), stricter than QDEF's own OPTIONAL/odd framing of it: unlike an ordinary
+        // unrecognized/absent optional field, a decoder must reject reassembly outright when
+        // it's missing, rather than silently proceeding without a reassembly-integrity check.
+        // Strip it from the one fragment that would carry it (index 0) while leaving every
+        // other field — group_id, index/count/total, the fragment data itself — untouched and
+        // otherwise perfectly valid.
+        val content = ByteArray(2000) { it.toByte() }
+        val build = TagDropCodec.createContentSectors(null, null, "application/octet-stream", content, maxSectorDataBytes = 600)
+        assertTrue(build.codes.size >= 3)
+        val records = roundTrip(build.codes).toMutableList()
+        val victim = records[0] as ScannedRecord.Content
+        val frag = TagDropCodec.splitFragmentOf(victim)!!
+        assertEquals(0, frag.index)
+        assertNotNull("fragment 0 should carry payload_hash before it's stripped", frag.payloadHash)
+        // Split Wrapper's field keys per SPEC.md v15: fragment data at reserved map key `0`,
+        // group_id/index/count shifted up two keys each (2/4/6), total_bytes unchanged (7) —
+        // payload_hash (key 11) simply omitted here.
+        val strippedSplit = MiniCbor.encodeRecord(1, listOf(
+            0 to frag.data, 2 to frag.groupId, 4 to frag.index, 6 to frag.count, 7 to frag.total
+        ), listOf(victim.mediaPreviewRaw!!))
+        val strippedFull = MiniCbor.encodeRootBundle(listOf(victim.extensionRaw, strippedSplit), TagDropCodec.TAGDROP_NAMESPACE)
+        records[0] = (TagDropCodec.decodeRaw(strippedFull) as TagDropScan.RecordScan).record
+
+        val state = assemble(records)
+        assertTrue("expected HashMismatch (missing payload_hash), got $state", state is SectorAssembler.State.HashMismatch)
     }
 
     @Test fun parityReconstructsOneMissingDataFragment() {

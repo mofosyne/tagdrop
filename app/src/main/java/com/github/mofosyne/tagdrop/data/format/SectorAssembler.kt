@@ -20,6 +20,8 @@ class SectorAssembler {
     private class Group(val kind: PayloadKind, val groupId: ByteArray, val count: Int, val total: Int) {
         val data = mutableMapOf<Int, ByteArray>()
         var parity: ByteArray? = null
+        /** `payload_hash` (SK_PAYLOAD_HASH, SPEC §5.1) — only ever carried on fragment index `0`. */
+        var payloadHash: ByteArray? = null
         // Content (SPEC §3.1/§3.1a) — Content Extension repeats on every code; Media Preview is
         // known as soon as any code in the group has been scanned (§5.1).
         var extensionRaw: ByteArray? = null
@@ -131,7 +133,13 @@ class SectorAssembler {
          */
         data class PaperReady(val paper: TagDropPayload.Paper, val previewRaw: ByteArray, val bodyRaw: ByteArray, val streamBytes: ByteArray) : State()
 
-        /** A Split group fully reassembled but `group_id` didn't match — incomplete or corrupt assembly. */
+        /**
+         * A Split group fully reassembled but its `payload_hash` (SPEC §5.1) is missing or
+         * didn't match — corrupt assembly, or a non-compliant encoder that omitted TagDrop's
+         * own mandatory reassembly-integrity field. (`group_id` itself is just an opaque
+         * correlation token now — QDEF-SPEC.md's Split Wrapper history — so it plays no role
+         * in this check.)
+         */
         object HashMismatch : State()
 
         /** All fragments present but the reassembled bytes weren't a well-formed payload. */
@@ -170,6 +178,7 @@ class SectorAssembler {
             }
         }
         if (frag.isParity) group.parity = frag.data else group.data[frag.index] = frag.data
+        if (frag.payloadHash != null) group.payloadHash = frag.payloadHash
         lastGroupKey = key
         val state = computeState(group)
         if (state.isTerminal) groups.remove(key)
@@ -221,10 +230,14 @@ class SectorAssembler {
     private fun computeState(group: Group): State {
         val wrapped = reassemble(group)
         if (wrapped != null) {
-            // group_id is SHA-256(wrapped fragment bytes)[0:8] (SPEC §5.1) — the reassembly
-            // integrity check over the bytes exactly as transmitted (after Compress-wrap, if
-            // applicable).
-            if (!sha256(wrapped).copyOf(8).contentEquals(group.groupId)) return State.HashMismatch
+            // `group_id` is an opaque correlation token only (QDEF-SPEC.md's Split Wrapper no
+            // longer treats it as a verified content hash, SPEC.md "Reassembly integrity") — it
+            // already did its job just by getting these fragments grouped together ([add]).
+            // The actual reassembly-integrity check is TagDrop's own mandatory `payload_hash`
+            // (fragment index 0): reject a Split-wrapped payload that's missing it outright,
+            // same as a mismatch.
+            val payloadHash = group.payloadHash ?: return State.HashMismatch
+            if (!payloadHashMatches(payloadHash, wrapped)) return State.HashMismatch
             val record = group.toScannedRecord() ?: return State.Failed
             return when (record) {
                 is ScannedRecord.Paper -> finishPaper(record, wrapped)
@@ -358,6 +371,27 @@ class SectorAssembler {
     }
 
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
+
+    /**
+     * Verifies `payload_hash` (a multihash: 1-byte multicodec function code + digest, full or
+     * truncated — QDEF-SPEC.md §3.6/§4.1 permits either) against the reassembled [wrapped]
+     * bytes. Recognizes only sha2-256 (`0x12`), matching every field TagDrop's own encoder
+     * emits (`splitFragments`, `MPK_CONTENT_HASH`) — both truncated to 8 bytes, matching
+     * `contentHash`'s own truncation, since this field only guards against accidental damage,
+     * not deliberate tampering (Encrypt/Signature already cover that); the digest length here
+     * is read from [hash] itself rather than hardcoded, so a full 32-byte digest (a compliant
+     * non-TagDrop encoder's choice) still verifies correctly. An unrecognized function code is
+     * treated as present-but-unverifiable rather than a mismatch, mirroring QDEF's reference
+     * decoder's own "skip silently" handling of a hash function it doesn't recognize —
+     * [computeState] already enforces that the field is present at all before calling this.
+     */
+    private fun payloadHashMatches(hash: ByteArray, wrapped: ByteArray): Boolean {
+        if (hash.isEmpty()) return false
+        if (hash[0] != 0x12.toByte()) return true
+        val digestLen = hash.size - 1
+        if (digestLen <= 0) return false
+        return hash.copyOfRange(1, hash.size).contentEquals(sha256(wrapped).copyOf(digestLen))
+    }
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 }
