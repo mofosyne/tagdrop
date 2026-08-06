@@ -545,27 +545,35 @@ async function compressWrap(bytes) {
  * QDEF Split Wrapper Records (QDEF-SPEC.md §4.1 Type 2, SPEC.md §5) —
  * fragments `bytes` into `fragmentCount` pieces of ceil(total/count) each
  * (every fragment but the last the same length), stamped with `groupId`
- * (a content hash of `bytes`, computed by the caller) and, if `withParity`,
- * one appended full-XOR parity fragment at index == fragmentCount that
- * recovers any single lost fragment (SPEC.md §5's redundancy scheme).
- * `extraSubrecords` (SPEC.md §3.1a) is attached to every fragment Record
- * unwrapped and repeated — used to carry Content's Media Preview alongside
- * a Split-wrapped Media Payload; Paper has none, so it's `[]` by default.
- * Fragment data lives at map key `0` (SPEC.md v15 — was the array's
- * positional payload slot through v14); `group_id`/`index`/`count` shift up
- * two keys each to make room (`0`/`2`/`4` → `2`/`4`/`6`); `total_bytes`/
- * `parity_scheme` are unaffected (`7`/`9` both versions).
+ * (an opaque correlation token, computed by the caller — QDEF-SPEC.md's
+ * Split Wrapper history no longer treats `group_id` as a verified content
+ * hash, SPEC.md "Reassembly integrity") and, if `withParity`, one appended
+ * full-XOR parity fragment at index == fragmentCount that recovers any
+ * single lost fragment (SPEC.md §5's redundancy scheme). Fragment index `0`
+ * also carries `payload_hash` (key `11`) — TagDrop-MANDATORY (unlike
+ * QDEF's own OPTIONAL/odd framing of it): a multihash (`0x12` sha2-256
+ * prefix + 8-byte truncated digest, matching `contentHash`'s/`group_id`'s
+ * own truncation) of `bytes` itself, the actual reassembly-integrity check
+ * now that `group_id` no longer provides one. `extraSubrecords` (SPEC.md
+ * §3.1a) is attached to every fragment Record unwrapped and repeated —
+ * used to carry Content's Media Preview alongside a Split-wrapped Media
+ * Payload; Paper has none, so it's `[]` by default. Fragment data lives at
+ * map key `0` (SPEC.md v15 — was the array's positional payload slot
+ * through v14); `group_id`/`index`/`count` shift up two keys each to make
+ * room (`0`/`2`/`4` → `2`/`4`/`6`); `total_bytes`/`parity_scheme` are
+ * unaffected (`7`/`9` both versions).
  */
-function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecords = []) {
+async function splitFragments(bytes, groupId, fragmentCount, withParity, extraSubrecords = []) {
   const total = bytes.length;
   const chunkLen = Math.ceil(total / fragmentCount);
+  const payloadHash = concatBytes(new Uint8Array([0x12]), await sha256first8(bytes));
   const fragments = [];
   for (let i = 0; i < fragmentCount; i++) {
     const start = Math.min(i * chunkLen, total);
     const end = Math.min(start + chunkLen, total);
     fragments.push(cborRecord(TYPE_SPLIT, {
       0: bytes.slice(start, end), 2: groupId, 4: i, 6: fragmentCount,
-      7: total, 9: withParity ? 1 : undefined,
+      7: total, 9: withParity ? 1 : undefined, 11: i === 0 ? payloadHash : undefined,
     }, extraSubrecords));
   }
   if (withParity) {
@@ -1030,7 +1038,7 @@ const RECORD_TYPE_INFO = new Map([
     1:'files', 3:'related', 5:'signature', 7:'signer_pubkey',
   } }],
   [TYPE_SPLIT, { name: 'Split Wrapper', keyNames: {
-    0:'data', 2:'group_id', 4:'index', 6:'count', 7:'total_bytes', 9:'parity',
+    0:'data', 2:'group_id', 4:'index', 6:'count', 7:'total_bytes', 9:'parity', 11:'payload_hash',
   } }],
   [TYPE_COMPRESS, { name: 'Compress Wrapper', keyNames: {
     0:'data',
@@ -1622,7 +1630,7 @@ async function createContentSectors({
   // Media Preview becomes Split's own repeated subrecord in the multi-code case
   // (§3.1a) — Content Extension stays a separate top-level Record, repeated per
   // code exactly as in the single-code case above.
-  const fragments = splitFragments(mediaPayloadForWire, groupId, fragmentCount, parity, [mediaPreview]);
+  const fragments = await splitFragments(mediaPayloadForWire, groupId, fragmentCount, parity, [mediaPreview]);
   return {
     codes: fragments.map((frag, i) => ({
       raw: encodeRootBundle([contentExtension, frag]), cacheId, totalBytes,
@@ -1739,7 +1747,7 @@ async function createPaper({ label, set, slug, domain, files, related, descripti
 
   const fragmentCount = Math.ceil(totalBytes / maxSectorDataBytes);
   const groupId = await sha256first8(bodyForWire);
-  const fragments = splitFragments(bodyForWire, groupId, fragmentCount, parity);
+  const fragments = await splitFragments(bodyForWire, groupId, fragmentCount, parity);
   return {
     codes: fragments.map((frag, i) => ({
       raw: encodeRootBundle([finalPreview, frag]), rootHash, totalBytes,

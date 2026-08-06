@@ -1736,15 +1736,64 @@ session, not by this change).
 build hasn't run against this change — this environment's Gradle
 wrapper still can't download its own distribution. The standalone
 `kotlinc`+JUnit harness remains the substitute verification this
-project has relied on throughout its QDEF history. Separately, and
-unlike every prior QDEF-driven change in this file's history: **the JS
-web tools (`tools/generator/index.html`, `tools/reader/index.html`,
-`tools/examples/index.html`, `tools/test-qdef-roundtrip.mjs`) were not
-ported** — this task's own scope explicitly named only the Kotlin
-`data/format` package. This is a real, tracked drift between the two
-implementations (the "Two parallel wire-format implementations" note
-at the top of this file) until a follow-up session ports the JS side
-the same way.
+project has relied on throughout its QDEF history.
+
+**Update: JS web tools ported too, closing the drift noted above.**
+The initial task explicitly scoped this port to the Kotlin
+`data/format` package only, leaving the JS web tools drifted (a
+real interop break: the generator wasn't emitting `payload_hash`, so
+the just-updated Android app would reject any multi-code payload the
+generator built) — flagged as a real gap and followed up in the same
+session rather than left for later, per this project's own established
+"port both together, or they drift" practice.
+
+`tools/generator/index.html` and `tools/examples/index.html` (byte-
+identical codec copies, per "Known duplication" below) both gained the
+same `splitFragments()` change as the Kotlin encoder: computes a
+multihash (`0x12` sha2-256 prefix + 8-byte truncated digest, via the
+already-existing `sha256first8` helper) of the bytes being split and
+stamps it onto the `index == 0` fragment only, now `async` since the
+digest computation needs to `await`. `tools/reader/index.html`'s
+`RecordAssembler` (the decode-side mirror) gained a `payloadHash` field
+on its internal `group` object (captured in `add()` from either of the
+Paper/Content code paths, whichever fragment carries it), and
+`_computeState()` now requires and verifies it (`payloadHashMatches`,
+new — length-generic like the Kotlin decoder's equivalent, so a
+compliant full-32-byte digest from a non-TagDrop encoder still verifies
+correctly) instead of the old `group_id`-as-hash check. `tools/test-
+qdef-roundtrip.mjs` (the independent Node reimplementation) got the
+matching `splitFragments`/`reassembleSplit` changes, plus its existing
+`testTamperedFragmentDetected` adversarial test rewritten to assert on
+`payload_hash` mismatch instead of `group_id`, and a new
+`testMissingPayloadHashRejected` covering the mandatory-field rejection
+path. `tools/test-qr-roundtrip.mjs` deliberately left untouched, per
+the version-10 entry's standing exemption (confirmed via an empty `git
+diff`) — it was never migrated to array-wrapped Records at all.
+
+**A genuinely new test, not just a ported one**: `tools/test-cross-
+tool-roundtrip.mjs` (the real generator→real reader jsdom harness — see
+the version-15 history entry above for why this file exists) gained
+`testMissingPayloadHashRejected`, building a real Content Extension +
+Media Preview via the generator's own encoders and only hand-
+constructing the hostile part (a Split fragment via the generator's own
+low-level `cborRecord`/`TYPE_SPLIT` primitives, omitting key `11`
+entirely), then asserting the real reader's `RecordAssembler.add()`
+rejects it as `HashMismatch`. Verified this test actually catches a
+regression, not just that it runs: with the reader's new payload_hash
+check temporarily disabled (`if (false)` in place of the real
+condition), the test failed with the exact wrong-state symptom
+(`'Failed'` instead of `'HashMismatch'`); restored, it passes again —
+same discipline the file's own header comment already establishes for
+its `testOversizedSplitDeclarationsRejected` neighbor.
+
+Verified: `npm run test:qdef` (`test-qdef-roundtrip.mjs`) 12/12,
+`npm run test:crosstool` 6/6, `npm run lint:qdef`/`lint:examples` both
+clean (15 codes/12 fixtures, 0 errors/warnings), `npm test`
+(`test-qr-roundtrip.mjs`) 14/14 — confirmed unaffected, as expected.
+`qdef-fixtures.json` regenerated. This closes the drift the version-18
+entry above originally flagged — **both implementations are on the
+same `payload_hash` shape now**, and the "Wire-format version policy"
+note below no longer needs its Kotlin-only caveat.
 
 ### Known duplication (not yet deduped)
 
@@ -1833,11 +1882,11 @@ is now documented purely as an opaque correlation token, not a verified
 content hash; TagDrop adopts a new field, `payload_hash` (Split Wrapper
 key `11`), as its own MANDATORY reassembly-integrity check whenever
 Split is used — QDEF itself leaves this field OPTIONAL/odd [§5.1,
-version 18]; **the Kotlin app is on this shape, the web tools are NOT
-yet** — see the version-18 CLAUDE.md history entry's "Outstanding gap"
-note, a real drift between the two implementations this note now has to
-flag rather than assume away. Older shape, both implementations still
-share: NFC NDEF always includes the 4-byte QDEF magic header, same as
+version 18]; both the Kotlin app and the web tools are on this shape now
+(the web tools landed in a same-session follow-up after initially
+shipping Kotlin-only — see the version-18 CLAUDE.md history entry's
+"Update" note). Older shape, both implementations still share: NFC NDEF
+always includes the 4-byte QDEF magic header, same as
 byte-mode QR/JABCode; only `tagdrop:` URI still skips it [§2/§12/§14,
 version 17]; QDEF Records with declared Type IDs `1`/`2`/`3`/`4`
 wire-encoded **negated** under an explicitly-transmitted namespace,
