@@ -2189,3 +2189,31 @@ again or a concrete need emerges.
   F-Droid-distributed, the AAR's built-in fallback (Play Store redirect)
   is already weak for its actual users — but most taps come from people
   already in the ecosystem, so it's a nice-to-have, not core.
+- **Compile the canonical codec to WASM instead of hand-duplicating it
+  across three JS files** (assessed, not started). Raised after the
+  SPEC.md version-18 (`payload_hash`) port shipped Kotlin-only and left
+  the web tools drifted — the JS side's independent codec copies
+  (`tools/generator/index.html`, `tools/reader/index.html`,
+  `tools/examples/index.html`, "Known duplication" above) have now
+  caused a real, shipped bug at least four separate times per this
+  file's own history (the negative-Common-Field-Key decode gap, the
+  `RECORD_TYPE_INFO` collision, the stale-5-argument `cborRecord` bug,
+  and this version's `payload_hash` gap). A single compiled artifact —
+  most plausibly the *canonical* Kotlin codec (`data/format/`) built
+  via Kotlin Multiplatform to target both JVM (Android, unchanged) and
+  Wasm (all three web tools), rather than a fourth hand-written copy —
+  would close off this whole bug class structurally instead of relying
+  on remembering to port every change four times. Not unprecedented for
+  this codebase: the reader already dynamically loads zxing-wasm from a
+  CDN, so "reference a compiled `.wasm` blob at runtime" is an
+  established pattern here. The real cost is that it would be *TagDrop's
+  own* artifact this time, not a third-party one — someone has to own a
+  real build/versioning pipeline for it (likely adopting Kotlin
+  Multiplatform, a nontrivial restructuring of the current JVM-only
+  Kotlin app), a genuinely bigger commitment than "Known duplication"'s
+  already-rejected shared-`.mjs`-module idea (rejected only for needing
+  a bundler to reinline) — it also moves editing the web-side codec from
+  "open the HTML file, edit the function" to "edit Kotlin, rebuild wasm,
+  re-embed/link it," a real workflow change from this project's current
+  zero-build-step-for-its-own-code ethos. Deliberately not started;
+  revisit if the JS-side drift keeps costing real bugs at this rate.
