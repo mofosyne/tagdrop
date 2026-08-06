@@ -1795,6 +1795,64 @@ entry above originally flagged — **both implementations are on the
 same `payload_hash` shape now**, and the "Wire-format version policy"
 note below no longer needs its Kotlin-only caveat.
 
+### `ContentExporter.kt` filename sanitization gap (found via a routine cache re-sync)
+
+Prompted by "moving towards a release, don't forget to sync the cached
+spec" — running `scripts/sync-qdef-spec.sh` again turned up two real
+upstream changes since the version-18 sync above: a scope-boundary note
+clarifying Split targets a finite, printed set of codes rather than an
+animated/streamed one (no TagDrop action — matches this project's
+existing usage), and a new security note that Media Preview's
+`filename` (key 5) "MUST be sanitized before any local use, never
+trusted as a safe path component," with an explicit checklist (bare
+basename, strip control characters, substitute a generic name if the
+result is empty, `.`, or `..`).
+
+Traced against real code rather than just logging the note, per this
+project's standing practice: `ContentExporter.kt`'s `suggestFilename()`
+is the one place a scanned `filename` becomes a real filesystem write
+(`File(dir, suggestFilename(cache))`, used by save/share/export).
+`sanitize()` stripped Windows-illegal characters (`\/:*?"<>|`) but
+never checked the *result* against `.`/`..`/empty — normally masked by
+`suggestFilename()` appending a guessed extension afterward, but
+`cache.mimeType` is itself an unauthenticated field: a code declaring
+`filename: ".."` alongside a `mimeType` `MimeTypeMap`/`FALLBACK_EXTENSIONS`
+doesn't recognize hits `extensionFor(...) ?: return base`, returning
+the bare, unextended `".."` — which `File(dir, "..")` then resolves to
+the parent of the app's own `cacheDir/exports/` (still inside the app
+sandbox, not a real off-device traversal, but a genuine escape of the
+intended subdirectory, and exactly the case upstream's new note calls
+out). The web tools were checked too and found not to need this: their
+only equivalent is the browser's native `<a download>` attribute
+(`reader/index.html`'s content-download button,
+`generator/index.html`'s QR-PNG/signing-identity exports), which
+browsers already refuse `../`/path-separator characters in themselves —
+a fundamentally different mechanism from a raw `File()` write, and the
+generator's own `filename` values there are self-authored by whoever's
+using the tool, not scanned/untrusted content anyway.
+
+Fixed with a new `isSafeBaseName()` check (`name.isNotBlank() && name
+!= "." && name != ".."`) applied via `takeIf` alongside the existing
+sanitize-then-check pattern already used for both the `filename` and
+`hint` candidates — a rejected candidate now falls through to the next
+one in the existing `filename ?: hint ?: cacheId-prefix` chain, the
+same way an already-blank result already did, rather than substituting
+a fixed generic name (more consistent with this function's existing
+design, and TagDrop already has good fallbacks available).
+`sanitize()` also gained control-character stripping
+(`\p{Cntrl}`), matching upstream's checklist in full, not just the
+directory-token half of it. `ContentExporter.kt` needs the Android SDK
+(`Context`/`Uri`/`FileProvider`) to compile at all, so it's outside the
+`data/format`+`data/signing` standalone `kotlinc` harness this
+project's QDEF work has relied on throughout — verified instead by
+extracting the pure string logic (`sanitize`/`isSafeBaseName`/
+`hasExtension`/`suggestFilename`, with `extensionFor` stubbed) into a
+disposable standalone script and running it against the exact attack
+case plus five other cases (ordinary filenames, embedded slashes,
+control characters) confirming no regression — not committed, since
+the project has no Robolectric/instrumented test setup for
+`app/src/test` to host a real permanent test in.
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/

@@ -94,8 +94,8 @@ object ContentExporter {
 
     /** Suggested filename for [cache]: its declared filename or hint, with an extension guessed from its MIME type. */
     fun suggestFilename(cache: FoundCache): String {
-        val base = cache.filename?.let(::sanitize)?.takeIf { it.isNotBlank() }
-            ?: cache.hint?.let(::sanitize)?.takeIf { it.isNotBlank() }
+        val base = cache.filename?.let(::sanitize)?.takeIf(::isSafeBaseName)
+            ?: cache.hint?.let(::sanitize)?.takeIf(::isSafeBaseName)
             ?: cache.cacheId.take(12)
         if (hasExtension(base)) return base
         val ext = extensionFor(cache.mimeType) ?: return base
@@ -103,7 +103,21 @@ object ContentExporter {
     }
 
     private fun sanitize(name: String): String =
-        name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        name.trim()
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .replace(Regex("\\p{Cntrl}"), "")
+
+    /**
+     * A sanitized name is only safe to use as a bare filesystem path component (`File(dir,
+     * name)`) if it isn't blank or a directory-navigation token — `filename` arrives over an
+     * unauthenticated channel (any scanned code can claim any value, QDEF-SPEC.md's Media
+     * Preview note), and `sanitize()` above only strips `/`/`\`, which "." and ".." don't
+     * need to mean "current"/"parent directory" to the underlying filesystem. Without this
+     * check, `filename: ".."` paired with a [cache.mimeType] `extensionFor` doesn't recognize
+     * (so no extension gets appended to mask it) would resolve outside the intended export
+     * subdirectory.
+     */
+    private fun isSafeBaseName(name: String): Boolean = name.isNotBlank() && name != "." && name != ".."
 
     private fun hasExtension(name: String): Boolean {
         val dot = name.lastIndexOf('.')
