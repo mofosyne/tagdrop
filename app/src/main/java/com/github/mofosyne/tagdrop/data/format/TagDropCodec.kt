@@ -333,6 +333,10 @@ object TagDropCodec {
     private const val SK_COUNT    = 6
     private const val SK_TOTAL    = 7
     private const val SK_PARITY   = 9
+    // `payload_hash` (QDEF-SPEC.md §4.1, added alongside the `group_id` reframe below) —
+    // OPTIONAL/odd at the QDEF level, but TagDrop-MANDATORY whenever Split is used (SPEC.md
+    // "Reassembly integrity" note): present on exactly fragment index 0, never repeated.
+    private const val SK_PAYLOAD_HASH = 11
 
     // Compress Wrapper (Type 4) field keys (QDEF-SPEC.md §4.1). As of SPEC.md v15, its one
     // value (the deflated bytes) is an ordinary field at reserved map key `0` (QDEF-SPEC.md
@@ -361,7 +365,7 @@ object TagDropCodec {
         PPK_SIGNATURE_ALGORITHM, PPK_SIGNER_ID, PPK_SIGNER_LABEL, PPK_IN_REPLY_TO, PPK_CREATED_AT,
         PPK_SOURCE_URL, PPK_TITLE, PPK_DESCRIPTION, PPK_KEY_MATERIAL, PPK_RETAIN_KEY)
     private val KNOWN_PAPER_BODY = setOf(PBK_FILES, PBK_RELATED, PBK_SIGNATURE, PBK_SIGNER_PUBKEY)
-    private val KNOWN_SPLIT = setOf(SK_GROUP_ID, SK_INDEX, SK_COUNT, SK_DATA, SK_TOTAL, SK_PARITY)
+    private val KNOWN_SPLIT = setOf(SK_GROUP_ID, SK_INDEX, SK_COUNT, SK_DATA, SK_TOTAL, SK_PARITY, SK_PAYLOAD_HASH)
     private val KNOWN_COMPRESS = setOf(CK_PAYLOAD)
 
     const val KDF_NONE          = 0
@@ -489,12 +493,18 @@ object TagDropCodec {
     /**
      * Fragments [bytes] into [fragmentCount] QDEF Split Wrapper Records (Type 1, QDEF-SPEC.md
      * §4.1, SPEC §5) of `ceil(total/count)` bytes each (every fragment but the last the same
-     * length), stamped with [groupId] (a content hash of [bytes], computed by the caller). If
-     * [withParity], appends one more fragment at `index == count`: the byte-wise XOR of every
-     * data fragment, each implicitly zero-padded to the widest — SPEC §5's single-loss
-     * redundancy scheme. [extraSubrecords] (SPEC §3.1a) is attached to every fragment Record,
-     * unwrapped and repeated — used to carry Content's Media Preview alongside a Split-wrapped
-     * Media Payload; Paper has none, so it's empty by default.
+     * length), stamped with [groupId] (an opaque correlation token, computed by the caller —
+     * QDEF-SPEC.md's Split Wrapper history no longer treats `group_id` as a verified content
+     * hash, SPEC.md "Reassembly integrity"). Each fragment also carries `payload_hash`
+     * (`SK_PAYLOAD_HASH`, key `11`) on fragment index `0` only — TagDrop-MANDATORY (unlike
+     * QDEF's own OPTIONAL/odd framing of it): a multihash (`0x12` sha2-256 prefix + full
+     * 32-byte digest) of [bytes] itself, the actual reassembly-integrity check now that
+     * `group_id` no longer provides one. If [withParity], appends one more fragment at
+     * `index == count`: the byte-wise XOR of every data fragment, each implicitly zero-padded
+     * to the widest — SPEC §5's single-loss redundancy scheme. [extraSubrecords] (SPEC §3.1a)
+     * is attached to every fragment Record, unwrapped and repeated — used to carry Content's
+     * Media Preview alongside a Split-wrapped Media Payload; Paper has none, so it's empty by
+     * default.
      */
     private fun splitFragments(
         bytes: ByteArray, groupId: ByteArray, fragmentCount: Int, withParity: Boolean,
@@ -502,6 +512,7 @@ object TagDropCodec {
     ): List<ByteArray> {
         val total = bytes.size
         val chunkLen = (total + fragmentCount - 1) / fragmentCount
+        val payloadHash = byteArrayOf(0x12) + sha256(bytes)
         val fragments = mutableListOf<ByteArray>()
         for (i in 0 until fragmentCount) {
             val start = minOf(i * chunkLen, total)
@@ -509,7 +520,8 @@ object TagDropCodec {
             fragments.add(MiniCbor.encodeRecord(TYPE_SPLIT, listOf(
                 SK_GROUP_ID to groupId, SK_INDEX to i, SK_COUNT to fragmentCount,
                 SK_DATA to bytes.copyOfRange(start, end), SK_TOTAL to total,
-                SK_PARITY to (1.takeIf { withParity })
+                SK_PARITY to (1.takeIf { withParity }),
+                SK_PAYLOAD_HASH to (payloadHash.takeIf { i == 0 })
             ), extraSubrecords))
         }
         if (withParity) {
@@ -531,10 +543,13 @@ object TagDropCodec {
      * Builds the codes for one Paper payload: [preview] repeated on every code (SPEC §5.1),
      * plus either [body] directly (single code, if it and [preview] together fit within
      * [maxFragmentDataBytes]), or [body] Split-wrapped across as many codes as needed.
-     * `group_id` is `SHA-256(body)[0:8]` (the wrapped — Compress-wrapped if [compressBody], not
-     * the raw plain — bytes, SPEC §5.1), computed once and reused across every fragment of the
-     * group. Content doesn't use this — its single-code/multi-code nesting differs (§3.1a), see
-     * [createContentSectors].
+     * `group_id` — an opaque correlation token, no longer a verified hash (SPEC.md "Reassembly
+     * integrity") — is `SHA-256(body)[0:8]` (the wrapped — Compress-wrapped if [compressBody],
+     * not the raw plain — bytes), computed once and reused across every fragment of the group;
+     * any encoder-chosen scheme would do, this one is simply convenient and collision-resistant.
+     * `payload_hash` (TagDrop-mandatory reassembly integrity, see [splitFragments]) is computed
+     * from the same `wrapped` bytes. Content doesn't use this — its single-code/multi-code
+     * nesting differs (§3.1a), see [createContentSectors].
      */
     private fun buildCodes(
         preview: ByteArray, body: ByteArray, compressBody: Boolean, withParity: Boolean, maxFragmentDataBytes: Int
@@ -1206,12 +1221,14 @@ object TagDropCodec {
     /** Outcome of parsing a Content payload's reassembled Media Payload (SPEC §5 steps 3-5). */
     sealed class ContentParse {
         /**
-         * Parsed and (if reassembled from a Split group) `group_id`-verified. [mediaPayloadRaw]
-         * is the LOGICAL (Compress-unwrapped, if applicable) Media Payload Record bytes SPEC
-         * §10's signature formula covers — null for a key-only code (no Media Payload at all).
+         * Parsed and (if reassembled from a Split group) `payload_hash`-verified — see
+         * [SectorAssembler]'s `computeState`, which does that check before calling this.
+         * [mediaPayloadRaw] is the LOGICAL (Compress-unwrapped, if applicable) Media Payload
+         * Record bytes SPEC §10's signature formula covers — null for a key-only code (no
+         * Media Payload at all).
          */
         data class Ok(val content: TagDropPayload.Content, val mediaPayloadRaw: ByteArray?) : ContentParse()
-        /** `group_id` was checked and did not match — incomplete or corrupt assembly. */
+        /** Reserved for a Split-reassembly integrity failure caught upstream of [parseContentStream] itself (see [SectorAssembler]); this parser never returns it directly. */
         object HashMismatch : ContentParse()
         /** The bytes aren't a well-formed Content Extension+Media Payload set. */
         object Malformed : ContentParse()
@@ -1397,8 +1414,9 @@ object TagDropCodec {
         val count = frag.uint(SK_COUNT)?.toInt() ?: 1
         val data = frag.bytesOrNull(SK_DATA) ?: return null
         val total = frag.uint(SK_TOTAL)?.toInt() ?: return null
+        val payloadHash = frag.bytesOrNull(SK_PAYLOAD_HASH)
         if (count < 1) return null
-        return SplitFragment(groupId, index, count, data, total, isParity = index >= count)
+        return SplitFragment(groupId, index, count, data, total, isParity = index >= count, payloadHash = payloadHash)
     }
 
     /**
@@ -1533,7 +1551,8 @@ object TagDropCodec {
     )
     private val SPLIT_KEY_NAMES = mapOf(
         SK_GROUP_ID to "group_id", SK_INDEX to "index", SK_COUNT to "count",
-        SK_DATA to "data", SK_TOTAL to "total_bytes", SK_PARITY to "parity"
+        SK_DATA to "data", SK_TOTAL to "total_bytes", SK_PARITY to "parity",
+        SK_PAYLOAD_HASH to "payload_hash"
     )
     private val COMPRESS_KEY_NAMES = mapOf(CK_PAYLOAD to "payload")
 

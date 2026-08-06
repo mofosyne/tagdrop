@@ -1,21 +1,21 @@
 # TagDrop Encoding Specification
 
-**Version:** 17 (QDEF dropped NFC/NDEF from its own scope entirely — it's
-now a 2D-barcode-only format — which removes the carrier-specific
-exemption that used to let an NDEF-embedded payload skip the 4-byte QDEF
-magic header. TagDrop's own NFC NDEF carrier keeps existing independently
-of QDEF's own carrier list [TagDrop, not QDEF, decides what carriers it
-supports], but now follows QDEF's simplified rule instead of citing
-QDEF's [now-removed] own NDEF guidance: only an application's own URI
-scheme skips the magic header; every other carrier, including NFC NDEF,
-always includes it. NFC NDEF's own framing accordingly grows from "Record
-Sequence bytes only" to "QDEF magic (4 bytes) + Record Sequence bytes" —
-identical to byte-mode QR/JABCode's framing now. `tagdrop:` URI is
-unaffected (still skips magic; the scheme itself is still the dispatch
-signal). See §14 "Version history" for the byte-cost accounting and a
-note on a separate QDEF refinement from the same period that TagDrop has
-deliberately not yet adopted. Version 16's namespace/typeId-sign changes
-are otherwise unaffected by this version.
+**Version:** 18 (QDEF-SPEC.md reframed Split Wrapper's `group_id` as an
+opaque correlation token, not a content hash a decoder verifies — every
+physical QR/Data Matrix/Aztec symbol already carries its own
+Reed-Solomon error correction, so there's no realistic "decoded fine but
+silently wrong bytes" case for a per-fragment field like `group_id` to
+catch. QDEF added a new, independent field for applications that do want
+reassembly-integrity verification — `payload_hash` (Split Wrapper key
+`11`), a multihash of the fully reassembled payload, present only on the
+`index == 0` fragment — but leaves it OPTIONAL/odd. TagDrop makes
+`payload_hash` MANDATORY whenever Split is used: encoders MUST always
+set it, decoders MUST reject a Split-wrapped payload that's missing it.
+`content_sha256`/`bulky_meta_sha256` (the old design's own multi-sector
+integrity hashes, removed at version 2) are superseded by `payload_hash`
+now, not by `group_id` as previously documented — see §5.1's
+"Reassembly integrity" note and §14's version-18 entry. Version 17's
+NFC/NDEF magic-header change is otherwise unaffected by this version.
 **Status:** Draft — no real-world deployments yet (no printed or
 distributed codes), so it may still change incompatibly without a version
 bump. Once the first real code ships, that freeze point ends: breaking
@@ -452,7 +452,11 @@ every code in the group, exactly like Content Extension:
 
 (Split Wrapper's field keys are also renumbered in version 15 — see
 §5's own field table below; a ninth key, `9`, is `parity_scheme` when a
-parity fragment is present, omitted from this example since it isn't.)
+parity fragment is present, omitted from this example since it isn't.
+An eleventh key, `11`, is `payload_hash` — TagDrop-MANDATORY reassembly
+integrity (§5.1's "Reassembly integrity" note) — present only on the
+fragment carrying `index == 0`, also omitted from this generic example
+since it shows an arbitrary fragment, not specifically that one.)
 
 Because Content Signature travels *inside* the bytes Split fragments —
 not as a separate repeated Record — `signature`/`signer_pubkey` are
@@ -576,22 +580,25 @@ namespace through transparently regardless of nesting depth.
 | 7 | `signer_pubkey` | bytes (1312, opt) | See §10 |
 
 **Why `contentHash` and `root_hash` are scoped differently, and neither is
-"replaced" by Split's `group_id`.** Content's `contentHash` is deliberately
-`SHA-256(content)` alone, not the whole Preview+Body — this is what lets
-two authors who drop the identical bytes under different
-hints/titles/collections dedup to the same `contentHash` (§4.4). Paper's
-`root_hash` covers everything (there's no bare "content" to isolate a
-Paper's identity to). QDEF's Split Wrapper, when used (§5), separately
-computes its own `group_id` — a content hash of the *wrapped Body Record's*
-bytes, verified by the decoder purely for reassembly integrity. `group_id`
-happens to have the same *scope* as `root_hash` for a multi-code Paper, but
-it is not the same field and must not be conflated in an implementation:
-`group_id` doesn't exist for single-code payloads (nothing to reassemble),
-while `contentHash`/`root_hash` are always present. `content_sha256`/
-`bulky_meta_sha256` — the old design's own multi-sector integrity
-hashes — are gone entirely, superseded by `group_id`'s mandatory
-decoder-side verification (QDEF-SPEC.md FINDINGS.md #5) whenever Split is
-actually in use.
+"replaced" by Split's `group_id` or `payload_hash`.** Content's
+`contentHash` is deliberately `SHA-256(content)` alone, not the whole
+Preview+Body — this is what lets two authors who drop the identical bytes
+under different hints/titles/collections dedup to the same `contentHash`
+(§4.4). Paper's `root_hash` covers everything (there's no bare "content"
+to isolate a Paper's identity to). QDEF's Split Wrapper, when used (§5),
+separately carries its own `group_id` — an **opaque correlation token**,
+not a content hash a decoder verifies (QDEF-SPEC.md's Split Wrapper
+history reframed it this way; see §5.1's "Reassembly integrity" note).
+`group_id` happens to have the same *scope* as `root_hash` for a
+multi-code Paper, but it is not the same field and must not be conflated
+in an implementation: `group_id` doesn't exist for single-code payloads
+(nothing to reassemble), while `contentHash`/`root_hash` are always
+present. `content_sha256`/`bulky_meta_sha256` — the old design's own
+multi-sector integrity hashes — are gone entirely, superseded not by
+`group_id` (which provides no verification of its own) but by
+`payload_hash` (§5.1) — TagDrop's own mandatory reassembly-integrity
+field, distinct again from both `contentHash` and `group_id` — whenever
+Split is actually in use.
 
 **`files[]` entry keys** (each element decoded from Paper-Body's `files`):
 
@@ -1010,10 +1017,9 @@ still a flat Preview/Body pair, Types 3/4):
   version 14).
   If not, Body is Split-wrapped (QDEF-SPEC.md §4.1 Type 1) into `count`
   fragments, and each of those codes carries Preview plus one fragment.
-  `group_id` is a content hash of the fully reassembled, unwrapped Body
-  Record's bytes — decoders MUST verify it after reassembly (QDEF-SPEC.md
-  FINDINGS.md #5) and reject a mismatch, exactly as the old design required
-  for `content_sha256`/`bulky_meta_sha256`, which `group_id` supersedes.
+  `group_id` correlates the fragments as belonging to the same group — an
+  opaque token, not a verified hash (see "Reassembly integrity" below);
+  reassembly is instead verified via the mandatory `payload_hash` field.
 
 **Content** (three Records instead of Paper's two — Content Extension,
 Media Preview, Media Payload; see §3.1/§3.1a for their field tables and
@@ -1042,10 +1048,40 @@ exact nesting):
   embedded, if present) is Split-wrapped (QDEF-SPEC.md §4.1 Type
   1) into `count` fragments; each of those codes carries Content Extension
   plus Media Preview (now Split's own subrecord instead of Media Payload's
-  parent — §3.1a) plus one fragment. `group_id` is a content hash of the
-  fully reassembled, unwrapped `[3, {...}, [-2, {...}]?]` bytes —
-  decoders MUST verify it after reassembly (QDEF-SPEC.md FINDINGS.md #5)
-  and reject a mismatch, same as Paper's `group_id` above.
+  parent — §3.1a) plus one fragment. `group_id` correlates the fragments
+  the same way as Paper's above — an opaque token, not a verified hash;
+  `payload_hash` (below) is what verifies reassembly here too.
+- **Reassembly integrity (`payload_hash`).** QDEF-SPEC.md's Split Wrapper
+  `group_id` (key `2`) is an **opaque correlation token** only, matched by
+  plain equality across a group's fragments — comparable to the parity
+  byte in QR's own Structured Append mode (ISO/IEC 18004), which confirms
+  a symbol belongs to the right stack, not that it survived scanning
+  intact: every physical QR/Data Matrix/Aztec symbol already carries its
+  own Reed-Solomon error correction, so a scanned code either decodes
+  cleanly or fails outright — there's no realistic "decoded fine but
+  silently wrong bytes" case for a per-fragment field like `group_id` to
+  catch. QDEF instead offers a real, independent reassembly-integrity
+  check for applications that want one — `payload_hash` (Split Wrapper
+  key `11`, QDEF's own OPTIONAL/odd framing): a multihash (1-byte
+  multicodec hash-function code + digest, same encoding as Media
+  Preview's `contentHash`, §4.4) of the fully reassembled payload,
+  present on exactly the fragment carrying `index == 0` and never
+  repeated across the group — it only needs checking once, after
+  reassembly completes. QDEF leaves it optional for good reason (not
+  every adopter needs the cost), but **TagDrop makes `payload_hash`
+  MANDATORY whenever Split is used** — the same "tighten a QDEF-optional
+  mechanism into a TagDrop-MUST where TagDrop specifically needs the
+  stronger guarantee" pattern §2.1a's namespace declaration already
+  follows (mandatory on every carrier even though QDEF itself only
+  requires it in-band). TagDrop encoders MUST always set it; TagDrop
+  decoders MUST reject a Split-wrapped TagDrop payload that's missing
+  it, rather than silently proceeding the way skipping an ordinary
+  optional field normally would. `payload_hash` is a **third, distinct**
+  field from `contentHash` and `group_id` (same "must not be conflated"
+  discipline as the note above): it exists purely for Split
+  reassembly integrity, has no scope outside a multi-code group (nothing
+  to reassemble on a single-code payload), and says nothing about
+  content identity or authorship.
 - **Why Content Signature isn't just "part of Body" the way Paper's
   signature fields are part of Paper-Body:** it doesn't need its own
   Record Type at all conceptually — it exists only so `signature`/
@@ -1068,10 +1104,12 @@ exact nesting):
 3. Otherwise, track Split fragments by `group_id` until all `count` are
    collected (QDEF-SPEC.md §4.1's fixed `chunkLen = ceil(total_bytes/count)`
    chunking rule), independently of any fragment at index `≥ count`
-   (parity — see below). When complete, reassemble and verify `group_id` as
-   required above. For Content, reassembly yields Media Payload's own
-   bytes — decode that as one Record to recover `content` and, if the
-   payload is signed, its nested Content Signature subrecord (§3.1a).
+   (parity — see below). When complete, reassemble and verify the
+   mandatory `payload_hash` (carried on the `index == 0` fragment) as
+   required above — reject (don't proceed) if it's missing or doesn't
+   match. For Content, reassembly yields Media Payload's own bytes —
+   decode that as one Record to recover `content` and, if the payload is
+   signed, its nested Content Signature subrecord (§3.1a).
 4. Content: Media Payload's `content` may be a hidden encrypted override
    map — if `content` is ≥ 28 bytes, try AES-256-GCM decryption as
    `nonce(12) || ciphertext || tag(16)` (§9) against every known
@@ -1091,10 +1129,10 @@ the length of the longest data fragment before XOR-ing. If exactly one data
 fragment is missing, reconstruct it: XOR the parity fragment against every
 *other* data fragment already held, then truncate using `total_bytes` to
 discard any padding on a reconstructed final fragment. Verify the
-reconstructed Body against `group_id` (§5.1) before treating it as good —
-if verification fails (e.g. the parity fragment itself was the one that was
-corrupted), discard the attempt and fall back to waiting for the real
-missing fragment. Exactly one parity fragment recovers from exactly one
+reconstructed Body against `payload_hash` (§5.1) before treating it as
+good — if verification fails (e.g. the parity fragment itself was the one
+that was corrupted), discard the attempt and fall back to waiting for the
+real missing fragment. Exactly one parity fragment recovers from exactly one
 lost fragment; additional copies of the same parity fragment would be
 redundant, not additional protection. `parity_scheme` values `2` and up are
 reserved for future schemes tolerating more than one loss (e.g.
@@ -1800,10 +1838,10 @@ all?").
 are high-entropy and don't compress further, so encryption is always the
 last transform applied before transmission, and the first reversed on
 receipt. What gets compressed-then-encrypted is the override map's CBOR
-bytes. When Body is Split-wrapped, `group_id` (§5.1) continues to cover
-`content` exactly as transmitted, i.e. after compression *and* encryption,
-so a partially- or incorrectly-assembled multi-code payload can be detected
-before a decryption key is even available.
+bytes. When Body is Split-wrapped, `payload_hash` (§5.1) continues to
+cover `content` exactly as transmitted, i.e. after compression *and*
+encryption, so a partially- or incorrectly-assembled multi-code payload
+can be detected before a decryption key is even available.
 
 **`contentHash` for a code carrying a hidden override map is random, not
 content-addressed.** §4.4 defines `contentHash = SHA-256(uncompressed
@@ -2360,7 +2398,78 @@ protecting — nothing has been deployed under any version number to date.
 Version history — each entry states only its own delta from the version
 directly above it:
 
-**Version 17** (current) — QDEF dropped NFC/NDEF from its own scope
+**Version 18** (current) — QDEF-SPEC.md §4.1's Split Wrapper reframed
+what `group_id` (key `2`) is actually good for. It used to be described
+as a content hash of the fully reassembled payload that "a decoder MUST
+verify" — an integrity check. That turned out to be the wrong job for
+it: every physical QR/Data Matrix/Aztec symbol already carries its own
+Reed-Solomon error correction, so a scanned code either decodes cleanly
+or fails outright — there's no realistic "decoded fine but silently
+wrong bytes" case for a per-fragment field to catch (the comparable QR
+mechanism, Structured Append's parity byte, ISO/IEC 18004, makes the
+same choice for the same reason: it confirms a symbol belongs to the
+right set, it doesn't try to detect damage). `group_id` is now
+documented purely as an **opaque correlation token**, RECOMMENDED to be
+random (4+ bytes), matched by plain equality across a group's
+fragments — nothing is computed or verified against it anymore.
+
+That reframe left a real gap for any application that *does* want
+reassembly-integrity verification, not just correlation — Split wraps
+arbitrary Records (§7's key-backup example has no media content in it
+at all), so Media Preview's Content Hash (§4.4/§3.1a) can't be the
+general answer, since it only applies when there's actual media content
+to identify. QDEF's fix: a new field, `payload_hash` (Split Wrapper key
+`11`, OPTIONAL/odd — an older decoder that doesn't recognize it still
+reassembles correctly). It's a multihash (same encoding as Media
+Preview's Content Hash: 1-byte multicodec hash-function code + digest)
+of the fully reassembled payload, present on exactly the fragment
+carrying `index == 0` — never repeated across the group, since it only
+ever needs checking once, after reassembly completes.
+
+**TagDrop adopts `payload_hash` as its own MANDATORY field, not just an
+available-if-you-feel-like-it QDEF option** — the same "tighten a
+QDEF-optional mechanism into a TagDrop-MUST where TagDrop specifically
+needs the stronger guarantee" pattern §2.1a's namespace declaration
+already established (mandatory on every carrier even though QDEF itself
+only requires it in-band). This repo's own `content_sha256`/
+`bulky_meta_sha256` (the old design's multi-sector integrity hashes,
+removed at version 2) had been justified as "superseded by `group_id`'s
+mandatory decoder-side verification" — that justification is no longer
+true now that `group_id` provides no verification at all, so TagDrop
+needed a real replacement, not just a documentation fix:
+
+- **Encoders MUST always set `payload_hash`** on a Split-wrapped
+  payload, on the `index == 0` fragment only.
+- **Decoders MUST reject a Split-wrapped payload that's missing
+  `payload_hash`** — not silently proceed the way skipping an ordinary
+  optional field normally would (§2.2's even/odd criticality rule still
+  governs an *unrecognized* field on an old decoder; a *current*
+  TagDrop decoder encountering a Split-wrapped payload with no
+  `payload_hash` at all is a different case — a required TagDrop-level
+  guarantee absent, not merely an optional field left unset).
+- `payload_hash` is a **third, distinct** field from `group_id` and
+  `contentHash` (§5.1's "Reassembly integrity" note keeps the same
+  "must not be conflated" discipline the `contentHash`/`root_hash`
+  scoping note already established) — it exists purely for Split
+  reassembly integrity, has no scope outside a multi-code group, and
+  says nothing about content identity or authorship.
+
+§3's Split Wrapper worked example (§2) and §5's own field description
+were updated to show `payload_hash` at key `11`; §5.1 gained the
+"Reassembly integrity (`payload_hash`)" note explaining the mechanism
+once, referenced from both the Paper and Content bullets above it; §5.2
+step 3 and the redundancy-reconstruction paragraph now verify
+`payload_hash` instead of `group_id`. Every other place this document
+previously credited `group_id` with a verification role (the
+`contentHash`/`root_hash` scoping note in §3.4, §9's encrypted-
+override-map ordering note, §15's version-2 history entry) was corrected
+to either describe `group_id` as correlation-only or point at
+`payload_hash` as the actual check, with the version-2 entry left in
+place and marked superseded (this document's standing practice of
+leaving a visible trail rather than silently rewriting an earlier
+documented belief that turned out wrong).
+
+**Version 17** — QDEF dropped NFC/NDEF from its own scope
 entirely: it's a 2D-barcode-only format now, full stop. This removed the
 one carrier-specific exemption QDEF used to define for NDEF (skip the
 magic header, since NDEF's own MIME-type field already disambiguates
@@ -2831,8 +2940,12 @@ field-level changes.
   replaces the old three-part `core_meta_item || bulky_meta_item ||
   content` stream and bespoke `part_meta` sectoring. `content_sha256`/
   `bulky_meta_sha256`/`bulky_meta_compressed_bytes` are gone, superseded by
-  QDEF's Split Wrapper `group_id` (mandatory decoder-verified) and a
-  Wrapper's already-self-delimiting byte-string framing.
+  QDEF's Split Wrapper `group_id` (mandatory decoder-verified at the time)
+  and a Wrapper's already-self-delimiting byte-string framing.
+  (**Superseded by version 18:** QDEF later reframed `group_id` as an
+  opaque correlation token with no verification role at all — see that
+  version's entry below; the actual integrity check this bullet
+  describes is now TagDrop's own mandatory `payload_hash` field, §5.1.)
 - Every TagDrop-defined key is odd (optional) in this version; even keys
   are reserved headroom for a future must-understand field (§2.2),
   resolving tagdrop#63 by adopting QDEF's even/odd rule directly.
@@ -2926,7 +3039,7 @@ accurate regardless of version.
   - `TagDropCodec.kt` — encode/decode both payload types; `contentId()`, `createContentSectors()`, `createPaper()`
   - `Base41.kt` — TagDrop's own alphabet, packed like RFC 9285 Base45 (§2)
   - `MiniCbor.kt` — minimal CBOR encoder/decoder; supports arrays (major 4), nested maps, float64 (major 7), and top-level CBOR sequences (RFC 8742). Currently limited to 32-bit unsigned integers — no longer a gap for QDEF Record Type IDs specifically, now that all four fit in 16 bits (§2.1, version 6); still a real limitation for any future 64-bit-scale field.
-  - `SectorAssembler.kt` — multi-sector assembly with SHA-256 verification; tracks any number of in-flight `group_id` groups concurrently (Split Wrapper `group_id`, §5.1 — not the old version-1 `(type, cache_id)` keying)
+  - `SectorAssembler.kt` — multi-sector assembly, `payload_hash`-verified (SHA-256, §5.1); tracks any number of in-flight groups concurrently, keyed by Split Wrapper `group_id` (an opaque correlation token, §5.1 — not the old version-1 `(type, cache_id)` keying)
   - `TagDropLinkResolver.kt` — resolves `tagdrop://<domain>/<slug>` and `tagdrop://[<domain>]@<rootHash>/<slug>` navigation links; also locates the `style.css` sibling for `text/markdown` content (§7)
   - `MarkdownRenderer.kt` — renders `text/markdown` content to HTML (§7) via CommonMark
 

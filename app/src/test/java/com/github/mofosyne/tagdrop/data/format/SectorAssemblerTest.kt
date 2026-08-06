@@ -10,7 +10,10 @@ import java.security.MessageDigest
  * functions, which is how TagDropCodecTest.kt already covers most round-trip/erasure-coding/
  * paper scenarios) — isolates the assembler's own reassembly/grouping/state logic from the
  * codec's encode-side field layout. Every fragment here is self-describing (carries its own
- * group_id inline, SPEC §5), matching the real wire format. Records are hand-built as raw QDEF
+ * group_id inline, SPEC §5), matching the real wire format; fragment index 0 also carries
+ * payload_hash (TagDrop-mandatory reassembly integrity, SPEC §5.1 "Reassembly integrity" —
+ * group_id itself is just an opaque correlation token, QDEF-SPEC.md's Split Wrapper history).
+ * Records are hand-built as raw QDEF
  * array-wrapped bytes (SPEC.md v16 §2, §2.1a, §3.1/§3.1a) and turned into [ScannedRecord]s via
  * [TagDropCodec.decodeRaw] — the same decode path a real scan uses — so this file only needs to
  * get the wire *bytes* right, not reimplement Record/subrecord decoding a second time.
@@ -61,13 +64,14 @@ class SectorAssemblerTest {
      * optionally nesting [subrecords] (Media Preview, multi-code case). Renumbered in
      * SPEC.md v15: fragment `data` moves onto reserved map key `0`; `group_id`/`index`/`count`
      * shift up two keys each (2/4/6) to make room; `total_bytes`/`parity_scheme` are unchanged
-     * (7/9).
+     * (7/9). [payloadHash] is `payload_hash` (key `11`) — TagDrop-mandatory reassembly
+     * integrity (SPEC §5.1), normally only passed on fragment index `0`.
      */
     private fun splitFragmentBytes(
         groupId: ByteArray, index: Int, count: Int, data: ByteArray, total: Int, parity: Boolean = false,
-        subrecords: List<ByteArray> = emptyList()
+        subrecords: List<ByteArray> = emptyList(), payloadHash: ByteArray? = null
     ): ByteArray = MiniCbor.encodeRecord(1, listOf(
-        0 to data, 2 to groupId, 4 to index, 6 to count, 7 to total, 9 to (1.takeIf { parity })
+        0 to data, 2 to groupId, 4 to index, 6 to count, 7 to total, 9 to (1.takeIf { parity }), 11 to payloadHash
     ), subrecords)
 
     /** Decodes [extensionRaw]/[secondRaw] the same way a real scan would (SPEC §2, §2.1a, §5.1): wrapped as the QDEF self-delimited root (QDEF-SPEC.md §2/§3.1), namespace declared as the root Bundle's own leading element. */
@@ -78,20 +82,26 @@ class SectorAssemblerTest {
      * Splits [mediaPayloadRaw] into [chunkCount]-many Split Wrapper fragment [ScannedRecord.
      * Content]s sharing [extensionRaw] and [mediaPreviewRaw] (Split's own repeated subrecord in
      * the multi-code case, SPEC.md v9 §3.1a), each carrying its own `group_id`
-     * (SHA-256([mediaPayloadRaw])[0:8]) — mirrors [TagDropCodec]'s own `splitFragments`. Appends
-     * a trailing XOR parity fragment when [withParity].
+     * (SHA-256([mediaPayloadRaw])[0:8], an opaque correlation token only — SPEC §5.1) — mirrors
+     * [TagDropCodec]'s own `splitFragments`. Fragment index `0` also carries `payload_hash`
+     * (a multihash of [mediaPayloadRaw], TagDrop-mandatory reassembly integrity) unless
+     * [includePayloadHash] is false, which builds a group missing the mandatory field on
+     * purpose (for [SectorAssemblerTest]'s own rejection-path test). Appends a trailing XOR
+     * parity fragment when [withParity].
      */
     private fun splitRecords(
-        extensionRaw: ByteArray, mediaPreviewRaw: ByteArray, mediaPayloadRaw: ByteArray, chunkCount: Int, withParity: Boolean = false
+        extensionRaw: ByteArray, mediaPreviewRaw: ByteArray, mediaPayloadRaw: ByteArray, chunkCount: Int,
+        withParity: Boolean = false, includePayloadHash: Boolean = true
     ): List<ScannedRecord.Content> {
         val groupId = sha256(mediaPayloadRaw).copyOf(8)
+        val payloadHash = byteArrayOf(0x12) + sha256(mediaPayloadRaw)
         val chunkLen = (mediaPayloadRaw.size + chunkCount - 1) / chunkCount
         val dataRecords = (0 until chunkCount).map { i ->
             val start = minOf(i * chunkLen, mediaPayloadRaw.size)
             val end = minOf(start + chunkLen, mediaPayloadRaw.size)
             val fragRaw = splitFragmentBytes(
                 groupId, i, chunkCount, mediaPayloadRaw.copyOfRange(start, end), mediaPayloadRaw.size,
-                subrecords = listOf(mediaPreviewRaw)
+                subrecords = listOf(mediaPreviewRaw), payloadHash = payloadHash.takeIf { i == 0 && includePayloadHash }
             )
             recordOf(extensionRaw, fragRaw)
         }
@@ -247,15 +257,16 @@ class SectorAssemblerTest {
         assertArrayEquals(contentB, completedB.content)
     }
 
-    // ── group_id integrity check (SPEC §5.1) ────────────────────────────────────
+    // ── payload_hash integrity check (SPEC §5.1) ────────────────────────────────
 
-    @Test fun groupIdMismatchDetected() {
+    @Test fun payloadHashMismatchDetected() {
         val content = ByteArray(60) { it.toByte() }
         val records = splitRecords(
             extensionBytes(null), mediaPreviewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)), mediaPayloadBytes(content), chunkCount = 4
         ).toMutableList()
-        // Tamper one fragment's data in place, without touching its declared group_id —
-        // the reassembled bytes no longer hash to the group_id every fragment still claims.
+        // Tamper one fragment's data in place, without touching group_id (an opaque correlation
+        // token only now, SPEC §5.1 — no longer verified) or fragment 0's payload_hash: the
+        // reassembled bytes no longer hash to what fragment 0's payload_hash still claims.
         val victim = records[1]
         val frag = TagDropCodec.splitFragmentOf(victim)!!
         val tamperedData = frag.data.copyOf().also { it[0] = (it[0].toInt() xor 0xFF).toByte() }
@@ -268,6 +279,22 @@ class SectorAssemblerTest {
         var state: SectorAssembler.State = SectorAssembler.State.Idle
         for (r in records) state = a.add(r)
         assertTrue("expected HashMismatch, got $state", state is SectorAssembler.State.HashMismatch)
+    }
+
+    @Test fun missingPayloadHashRejected() {
+        // TagDrop makes payload_hash mandatory whenever Split is used (SPEC §5.1 "Reassembly
+        // integrity"), stricter than QDEF's own OPTIONAL/odd framing of it -- a Split-wrapped
+        // payload that never carries it on any fragment must be rejected outright once fully
+        // reassembled, not silently accepted the way skipping a merely-optional field would be.
+        val content = ByteArray(60) { it.toByte() }
+        val records = splitRecords(
+            extensionBytes(null), mediaPreviewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)), mediaPayloadBytes(content),
+            chunkCount = 4, includePayloadHash = false
+        )
+        val a = SectorAssembler()
+        var state: SectorAssembler.State = SectorAssembler.State.Idle
+        for (r in records) state = a.add(r)
+        assertTrue("expected HashMismatch (missing payload_hash), got $state", state is SectorAssembler.State.HashMismatch)
     }
 
     // ── Resource-exhaustion guards (SPEC §5.1) ──────────────────────────────────
