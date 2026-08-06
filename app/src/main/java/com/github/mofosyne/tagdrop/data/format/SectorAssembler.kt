@@ -373,18 +373,24 @@ class SectorAssembler {
     private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
     /**
-     * Verifies `payload_hash` (a multihash: 1-byte multicodec function code + digest,
-     * QDEF-SPEC.md §3.6/§4.1) against the reassembled [wrapped] bytes. Recognizes only
-     * sha2-256 (`0x12`), matching every field TagDrop's own encoder emits (`splitFragments`,
-     * `MPK_CONTENT_HASH`); an unrecognized function code is treated as present-but-unverifiable
-     * rather than a mismatch, mirroring QDEF's reference decoder's own "skip silently" handling
-     * of a hash function it doesn't recognize — [computeState] already enforces that the field
-     * is present at all before calling this.
+     * Verifies `payload_hash` (a multihash: 1-byte multicodec function code + digest, full or
+     * truncated — QDEF-SPEC.md §3.6/§4.1 permits either) against the reassembled [wrapped]
+     * bytes. Recognizes only sha2-256 (`0x12`), matching every field TagDrop's own encoder
+     * emits (`splitFragments`, `MPK_CONTENT_HASH`) — both truncated to 8 bytes, matching
+     * `contentHash`'s own truncation, since this field only guards against accidental damage,
+     * not deliberate tampering (Encrypt/Signature already cover that); the digest length here
+     * is read from [hash] itself rather than hardcoded, so a full 32-byte digest (a compliant
+     * non-TagDrop encoder's choice) still verifies correctly. An unrecognized function code is
+     * treated as present-but-unverifiable rather than a mismatch, mirroring QDEF's reference
+     * decoder's own "skip silently" handling of a hash function it doesn't recognize —
+     * [computeState] already enforces that the field is present at all before calling this.
      */
     private fun payloadHashMatches(hash: ByteArray, wrapped: ByteArray): Boolean {
         if (hash.isEmpty()) return false
         if (hash[0] != 0x12.toByte()) return true
-        return hash.copyOfRange(1, hash.size).contentEquals(sha256(wrapped))
+        val digestLen = hash.size - 1
+        if (digestLen <= 0) return false
+        return hash.copyOfRange(1, hash.size).contentEquals(sha256(wrapped).copyOf(digestLen))
     }
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }

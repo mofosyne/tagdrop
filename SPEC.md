@@ -1063,11 +1063,17 @@ exact nesting):
   catch. QDEF instead offers a real, independent reassembly-integrity
   check for applications that want one — `payload_hash` (Split Wrapper
   key `11`, QDEF's own OPTIONAL/odd framing): a multihash (1-byte
-  multicodec hash-function code + digest, same encoding as Media
-  Preview's `contentHash`, §4.4) of the fully reassembled payload,
+  multicodec hash-function code + digest — QDEF-SPEC.md permits either
+  a full or truncated digest here) of the fully reassembled payload,
   present on exactly the fragment carrying `index == 0` and never
   repeated across the group — it only needs checking once, after
-  reassembly completes. QDEF leaves it optional for good reason (not
+  reassembly completes. TagDrop truncates to 8 bytes (`0x12` sha2-256 +
+  8-byte digest, 9 bytes total), the same truncation Media Preview's
+  `contentHash` (§4.4) and Split's own `group_id` already use — this
+  field only ever guards against *accidental* damage (deliberate
+  tampering is Encrypt's/Signature's job, §9/§10, not this field's), so
+  the full 256-bit collision resistance a signature needs isn't the
+  bar here. QDEF leaves it optional for good reason (not
   every adopter needs the cost), but **TagDrop makes `payload_hash`
   MANDATORY whenever Split is used** — the same "tighten a QDEF-optional
   mechanism into a TagDrop-MUST where TagDrop specifically needs the
@@ -2421,10 +2427,15 @@ general answer, since it only applies when there's actual media content
 to identify. QDEF's fix: a new field, `payload_hash` (Split Wrapper key
 `11`, OPTIONAL/odd — an older decoder that doesn't recognize it still
 reassembles correctly). It's a multihash (same encoding as Media
-Preview's Content Hash: 1-byte multicodec hash-function code + digest)
-of the fully reassembled payload, present on exactly the fragment
-carrying `index == 0` — never repeated across the group, since it only
-ever needs checking once, after reassembly completes.
+Preview's Content Hash: 1-byte multicodec hash-function code + digest,
+which QDEF-SPEC.md permits full or truncated) of the fully reassembled
+payload, present on exactly the fragment carrying `index == 0` — never
+repeated across the group, since it only ever needs checking once,
+after reassembly completes. TagDrop truncates to 8 bytes, matching
+`contentHash`'s and `group_id`'s own established truncation — this
+field is only ever an accidental-damage check (§9/§10's Encrypt/
+Signature already cover deliberate tampering), so it doesn't need a
+signature-grade full digest.
 
 **TagDrop adopts `payload_hash` as its own MANDATORY field, not just an
 available-if-you-feel-like-it QDEF option** — the same "tighten a

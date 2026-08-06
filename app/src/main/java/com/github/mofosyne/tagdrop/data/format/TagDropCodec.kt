@@ -497,9 +497,12 @@ object TagDropCodec {
      * QDEF-SPEC.md's Split Wrapper history no longer treats `group_id` as a verified content
      * hash, SPEC.md "Reassembly integrity"). Each fragment also carries `payload_hash`
      * (`SK_PAYLOAD_HASH`, key `11`) on fragment index `0` only — TagDrop-MANDATORY (unlike
-     * QDEF's own OPTIONAL/odd framing of it): a multihash (`0x12` sha2-256 prefix + full
-     * 32-byte digest) of [bytes] itself, the actual reassembly-integrity check now that
-     * `group_id` no longer provides one. If [withParity], appends one more fragment at
+     * QDEF's own OPTIONAL/odd framing of it): a multihash (`0x12` sha2-256 prefix + 8-byte
+     * truncated digest, matching `contentHash`'s/`group_id`'s own truncation — QDEF-SPEC.md
+     * permits either — since this only guards against accidental damage, not deliberate
+     * tampering, which Encrypt/Signature already cover) of [bytes] itself, the actual
+     * reassembly-integrity check now that `group_id` no longer provides one. If [withParity],
+     * appends one more fragment at
      * `index == count`: the byte-wise XOR of every data fragment, each implicitly zero-padded
      * to the widest — SPEC §5's single-loss redundancy scheme. [extraSubrecords] (SPEC §3.1a)
      * is attached to every fragment Record, unwrapped and repeated — used to carry Content's
@@ -512,7 +515,7 @@ object TagDropCodec {
     ): List<ByteArray> {
         val total = bytes.size
         val chunkLen = (total + fragmentCount - 1) / fragmentCount
-        val payloadHash = byteArrayOf(0x12) + sha256(bytes)
+        val payloadHash = byteArrayOf(0x12) + sha256(bytes).copyOf(8)
         val fragments = mutableListOf<ByteArray>()
         for (i in 0 until fragmentCount) {
             val start = minOf(i * chunkLen, total)

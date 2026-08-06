@@ -94,7 +94,7 @@ class SectorAssemblerTest {
         withParity: Boolean = false, includePayloadHash: Boolean = true
     ): List<ScannedRecord.Content> {
         val groupId = sha256(mediaPayloadRaw).copyOf(8)
-        val payloadHash = byteArrayOf(0x12) + sha256(mediaPayloadRaw)
+        val payloadHash = byteArrayOf(0x12) + sha256(mediaPayloadRaw).copyOf(8)
         val chunkLen = (mediaPayloadRaw.size + chunkCount - 1) / chunkCount
         val dataRecords = (0 until chunkCount).map { i ->
             val start = minOf(i * chunkLen, mediaPayloadRaw.size)
@@ -295,6 +295,32 @@ class SectorAssemblerTest {
         var state: SectorAssembler.State = SectorAssembler.State.Idle
         for (r in records) state = a.add(r)
         assertTrue("expected HashMismatch (missing payload_hash), got $state", state is SectorAssembler.State.HashMismatch)
+    }
+
+    @Test fun payloadHashAcceptsFullUntruncatedDigestToo() {
+        // QDEF-SPEC.md permits payload_hash's digest to be full or truncated (§4.1). TagDrop's
+        // own encoder always truncates to 8 bytes (matching contentHash/group_id, since this
+        // field only guards accidental damage, not deliberate tampering) -- but the decoder
+        // must still correctly verify a compliant full-32-byte digest, since nothing about the
+        // wire format requires truncation from every encoder.
+        val mediaPayloadRaw = mediaPayloadBytes(ByteArray(60) { it.toByte() })
+        val mediaPreviewRaw = mediaPreviewBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
+        val extension = extensionBytes(null)
+        val groupId = sha256(mediaPayloadRaw).copyOf(8)
+        val fullPayloadHash = byteArrayOf(0x12) + sha256(mediaPayloadRaw)
+        val chunkLen = (mediaPayloadRaw.size + 1) / 2
+        val frag0 = splitFragmentBytes(
+            groupId, 0, 2, mediaPayloadRaw.copyOfRange(0, chunkLen), mediaPayloadRaw.size,
+            subrecords = listOf(mediaPreviewRaw), payloadHash = fullPayloadHash
+        )
+        val frag1 = splitFragmentBytes(
+            groupId, 1, 2, mediaPayloadRaw.copyOfRange(chunkLen, mediaPayloadRaw.size), mediaPayloadRaw.size,
+            subrecords = listOf(mediaPreviewRaw)
+        )
+        val a = SectorAssembler()
+        a.add(recordOf(extension, frag0))
+        val state = a.add(recordOf(extension, frag1))
+        assertTrue("expected ContentReady with a valid full-digest payload_hash, got $state", state is SectorAssembler.State.ContentReady)
     }
 
     // ── Resource-exhaustion guards (SPEC §5.1) ──────────────────────────────────

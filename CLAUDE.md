@@ -1668,10 +1668,19 @@ via `scripts/sync-qdef-spec.sh`.
 were deliberately left untouched, unlike every prior QDEF-driven port in
 this file's history):** `TagDropCodec.kt` gained `SK_PAYLOAD_HASH = 11`;
 `splitFragments()` now computes a multihash (`0x12` sha2-256 prefix +
-full 32-byte digest, chosen over `contentHash`'s truncated-8-byte form
-since this field's whole job is tamper detection, not a compact
-identity) of the bytes being split and stamps it onto the `index == 0`
-fragment only — both of `splitFragments`'s two call sites (Paper's
+**8-byte truncated** digest, matching `contentHash`'s/`group_id`'s own
+truncation — QDEF-SPEC.md §4.1 explicitly permits "truncated or full"
+here, and this field only guards against accidental damage, not
+deliberate tampering, which Encrypt/Signature already cover, so a
+signature-grade full digest isn't needed. First implemented with a
+full, untruncated digest, then revisited after a user question about
+byte cost — `SectorAssembler.kt`'s `payloadHashMatches` reads the
+digest length from the field itself (`hash.size - 1`) rather than
+hardcoding 8, so a compliant non-TagDrop encoder's full 32-byte digest
+still verifies correctly; `payloadHashAcceptsFullUntruncatedDigestToo`
+covers that path directly) of the bytes being split and stamps it onto
+the `index == 0` fragment only — both of `splitFragments`'s two call
+sites (Paper's
 `buildCodes`, Content's multi-code path) pick this up for free, since
 neither builds fragments by any other route. `TagDropPayload.kt`'s
 `SplitFragment` gained a `payloadHash: ByteArray?` field (with the same
@@ -1704,17 +1713,20 @@ on, so every existing happy-path test keeps working unmodified); the old
 its comment corrected to explain *why* the same tamper still gets
 caught (fragment 0's `payload_hash`, not `group_id`, is what no longer
 matches); a new `missingPayloadHashRejected` covers the mandatory-field
-rejection path directly. `TagDropCodecTest.kt` got the equivalent
-rename/fix (`multiCodePayloadHashMismatchIsHashMismatch`) plus a new
-`multiCodeMissingPayloadHashOnFragmentZeroIsRejected`, built by hand-
-stripping key `11` from a real encoder-built fragment 0 rather than a
+rejection path directly, and a `payloadHashAcceptsFullUntruncatedDigestToo`
+covering the decoder's length-generic verification (a hand-built
+full-32-byte-digest fragment 0, confirming it still verifies correctly
+even though TagDrop's own encoder never emits one). `TagDropCodecTest.kt`
+got the equivalent rename/fix (`multiCodePayloadHashMismatchIsHashMismatch`)
+plus a new `multiCodeMissingPayloadHashOnFragmentZeroIsRejected`, built by
+hand-stripping key `11` from a real encoder-built fragment 0 rather than a
 synthetic fixture. Verified via the same standalone `kotlinc`+JUnit
 harness this project's QDEF port has used throughout (freshly assembled
 again this session — `kotlin-compiler`/`kotlin-stdlib` 2.0.21,
 `kotlin-reflect` 1.6.10, `bcprov-jdk18on` 1.80, `room-common` 2.6.1 for
 `ScannedPaper`'s `@Entity`/`@PrimaryKey` annotations, all fetched fresh
 from Maven Central/`dl.google.com` since this environment resets
-between sessions): 197/197 tests pass across
+between sessions): 198/198 tests pass across
 `TagDropCodecTest`/`SectorAssemblerTest`/`MiniCborTest`/`Base41Test`/
 `TagDropPayloadTest` — the 2 formerly-pre-existing failures noted in
 earlier sessions' entries are gone (already resolved by an intervening
