@@ -19,8 +19,10 @@
  * Originally written as a throwaway shape-prototyping tool (find bugs in the
  * new shape *before* porting it into the real codecs — the same discipline
  * mofosyne/qdef's own prototype+FINDINGS.md process used) — but its
- * adversarial/validation coverage (tamper detection via group_id/root_hash
- * recomputation, SPEC §2.2 even/odd key criticality enforcement, key-only
+ * adversarial/validation coverage (tamper detection via payload_hash/
+ * root_hash recomputation — group_id itself is just an opaque correlation
+ * token, SPEC §5.1 "Reassembly integrity" — SPEC §2.2 even/odd key
+ * criticality enforcement, key-only
  * codes) isn't duplicated anywhere else, including tools/test-qr-
  * roundtrip.mjs (which focuses on real QR rendering/decoding round-trips,
  * not malformed/adversarial input), so it's kept as a permanent part of the
@@ -470,10 +472,18 @@ function compressWrap(bytes) {
 // Fragment data lives at map key `0` (SPEC.md v15 — was the array's
 // positional payload slot through v14); `group_id`/`index`/`count` shift up
 // two keys each to make room (`0`/`2`/`4` → `2`/`4`/`6`); `total_bytes`/
-// `parity_scheme` are unaffected (`7`/`9` both versions).
+// `parity_scheme` are unaffected (`7`/`9` both versions). `groupId` is an
+// opaque correlation token (SPEC.md v18 — QDEF-SPEC.md's Split Wrapper
+// history no longer treats `group_id` as a verified content hash); fragment
+// index `0` also carries `payload_hash` (key `11`) — TagDrop-MANDATORY
+// (unlike QDEF's own OPTIONAL/odd framing of it): a multihash (`0x12`
+// sha2-256 prefix + 8-byte truncated digest, matching `contentHash`'s/
+// `group_id`'s own truncation) of `bytes` itself, the actual
+// reassembly-integrity check now that `group_id` no longer provides one.
 function splitFragments(bytes, groupId, fragmentCount, withParity, subrecords = []) {
   const totalBytes = bytes.length;
   const chunkLen = Math.ceil(totalBytes / fragmentCount);
+  const payloadHash = Buffer.concat([Buffer.from([0x12]), sha256(bytes).subarray(0, 8)]);
   const fragments = [];
   for (let i = 0; i < fragmentCount; i++) {
     const slice = bytes.subarray(i * chunkLen, Math.min((i + 1) * chunkLen, totalBytes));
@@ -485,6 +495,7 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, subrecords = 
         6: fragmentCount,
         7: totalBytes,
         9: withParity ? 1 : undefined,
+        11: i === 0 ? payloadHash : undefined,
       }, subrecords)
     );
   }
@@ -512,12 +523,16 @@ function splitFragments(bytes, groupId, fragmentCount, withParity, subrecords = 
 
 function reassembleSplit(fragmentRecords, expectedGroupId) {
   const byIndex = new Map();
-  let count, totalBytes;
+  let count, totalBytes, payloadHash;
   for (const rec of fragmentRecords) {
+    // group_id is an opaque correlation token only (SPEC.md v18) -- equality
+    // just confirms these fragments were meant to be grouped together; it's
+    // no longer a verified hash (see the payload_hash check below instead).
     assert.ok(rec[2].equals(expectedGroupId), 'group_id mismatch across fragments');
     count = rec[6];
     totalBytes = rec[7];
     byIndex.set(rec[4], rec[0]);
+    if (rec[4] === 0 && rec[11]) payloadHash = rec[11]; // payload_hash lives on fragment index 0 only (key 11, SPEC.md v18)
   }
   const chunkLen = Math.ceil(totalBytes / count);
   const missing = [];
@@ -539,8 +554,14 @@ function reassembleSplit(fragmentRecords, expectedGroupId) {
   const parts = [];
   for (let i = 0; i < count; i++) parts.push(byIndex.get(i));
   const reassembled = Buffer.concat(parts);
-  const actualGroupId = sha256(reassembled).subarray(0, 8);
-  assert.ok(actualGroupId.equals(expectedGroupId), 'group_id verification failed after reassembly');
+  // TagDrop-mandatory reassembly integrity (SPEC.md v18) -- payload_hash
+  // must be present on fragment 0 and must verify, replacing the old
+  // group_id-as-hash check above.
+  assert.ok(payloadHash, 'payload_hash missing on fragment 0 -- TagDrop-mandatory reassembly integrity (SPEC.md v18)');
+  assert.equal(payloadHash[0], 0x12, 'payload_hash must use the sha2-256 multicodec prefix');
+  const digestLen = payloadHash.length - 1;
+  const actualDigest = sha256(reassembled).subarray(0, digestLen);
+  assert.ok(actualDigest.equals(payloadHash.subarray(1)), 'payload_hash verification failed after reassembly');
   return reassembled;
 }
 
@@ -1171,12 +1192,14 @@ function testEncryptedContent() {
 }
 
 function testTamperedFragmentDetected() {
-  // The actual security property SPEC.md §3 states group_id exists for:
-  // "an adversary who substitutes one sector of a multi-sector payload
-  // after the fact... goes undetected [without this check]." Every prior
-  // Split test only ever exercised a *missing* fragment (recovered via
-  // parity) — never a *present but corrupted* one, which is the real
-  // threat the hash check, not the parity check, is what defends against.
+  // The actual security property SPEC.md §5.1 "Reassembly integrity" states
+  // payload_hash exists for: "an adversary who substitutes one sector of a
+  // multi-sector payload after the fact... goes undetected [without this
+  // check]." (group_id itself is just an opaque correlation token, no
+  // longer a verified hash, SPEC.md v18.) Every prior Split test only ever
+  // exercised a *missing* fragment (recovered via parity) — never a
+  // *present but corrupted* one, which is the real threat the hash check,
+  // not the parity check, is what defends against.
   const bigContent = Buffer.from('y'.repeat(5000), 'utf8');
   const codes = buildContentPayload({
     hint: 'tamper test', mimeType: 'text/plain', content: bigContent,
@@ -1191,12 +1214,13 @@ function testTamperedFragmentDetected() {
   const fragmentRecord = second.record;
   const mediaPreviewSubRaw = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW).raw;
 
-  // Flip one bit in the fragment's data (key 0, SPEC.md v15), leaving its
-  // declared group_id (key 2) field untouched — the tamper must be caught
-  // by recomputing the hash from the actual reassembled bytes, not by
-  // comparing declared fields. Media Preview's subrecord (carried on every
-  // Split fragment, §3.1a) must be preserved so the tampered fragment still
-  // decodes.
+  // Flip one bit in the fragment's data (key 0, SPEC.md v15) of a
+  // non-index-0 fragment (codes[1]), leaving its declared group_id (key 2)
+  // field untouched and fragment 0's own payload_hash untouched too — the
+  // tamper must be caught by recomputing payload_hash from the actual
+  // reassembled bytes, not by comparing declared fields. Media Preview's
+  // subrecord (carried on every Split fragment, §3.1a) must be preserved so
+  // the tampered fragment still decodes.
   const tamperedFragmentBytes = Buffer.from(fragmentRecord[0]);
   tamperedFragmentBytes[0] ^= 0xff;
   const tamperedFragmentRecordBytes = encodeArrayRecord(TYPE.SPLIT, {
@@ -1208,11 +1232,52 @@ function testTamperedFragmentDetected() {
 
   assert.throws(
     () => decodeContentPayload(tamperedCodes),
-    /group_id/,
-    'a tampered (not missing) fragment must be caught by group_id verification, not silently reassembled'
+    /payload_hash/,
+    'a tampered (not missing) fragment must be caught by payload_hash verification, not silently reassembled'
   );
 
-  return { name: 'tampered-fragment-detected-via-group-id' };
+  return { name: 'tampered-fragment-detected-via-payload-hash' };
+}
+
+function testMissingPayloadHashRejected() {
+  // TagDrop makes payload_hash mandatory whenever Split is used (SPEC.md
+  // v18, §5.1 "Reassembly integrity"), stricter than QDEF's own
+  // OPTIONAL/odd framing of it -- a Split-wrapped payload that never
+  // carries it on any fragment must be rejected outright once fully
+  // reassembled, not silently accepted the way skipping a merely-optional
+  // field would be. Strip it from fragment 0 (the one that would carry it)
+  // while leaving every other field -- group_id, index/count/total, the
+  // fragment data itself -- untouched and otherwise perfectly valid.
+  const bigContent = Buffer.from('z'.repeat(5000), 'utf8');
+  const codes = buildContentPayload({
+    hint: 'missing payload_hash test', mimeType: 'text/plain', content: bigContent,
+    maxBodyBytes: 10, compress: true,
+  });
+  assert.ok(codes.length > 1, 'need at least two codes to exercise fragment 0 specifically');
+
+  const [first, second] = decodeRootBundle(codes[0]);
+  const rawExtensionBytes = first.raw;
+  assert.equal(second.typeId, TYPE.SPLIT);
+  const fragmentRecord = second.record;
+  assert.equal(fragmentRecord[4], 0, 'codes[0] must be fragment index 0');
+  assert.ok(fragmentRecord[11], 'fragment 0 should carry payload_hash before it is stripped');
+  const mediaPreviewSubRaw = second.subrecords.find((s) => s.typeId === TYPE.MEDIA_PREVIEW).raw;
+
+  const strippedFragmentRecordBytes = encodeArrayRecord(TYPE.SPLIT, {
+    0: fragmentRecord[0], 2: fragmentRecord[2], 4: fragmentRecord[4],
+    6: fragmentRecord[6], 7: fragmentRecord[7], 9: fragmentRecord[9],
+    // key 11 (payload_hash) deliberately omitted
+  }, [mediaPreviewSubRaw]);
+  const strippedCode = encodeRootBundle([rawExtensionBytes, strippedFragmentRecordBytes]);
+  const strippedCodes = codes.map((c, i) => (i === 0 ? strippedCode : c));
+
+  assert.throws(
+    () => decodeContentPayload(strippedCodes),
+    /payload_hash missing/,
+    'a Split-wrapped payload missing payload_hash on fragment 0 must be rejected, not silently reassembled'
+  );
+
+  return { name: 'missing-payload-hash-rejected' };
 }
 
 function testTamperedPaperRootHashDetected() {
@@ -1337,7 +1402,7 @@ function testWrongNamespaceRejected() {
 
 function main() {
   const results = [];
-  console.log('QDEF-redesign round-trip prototype (SPEC.md v16)\n');
+  console.log('QDEF-redesign round-trip prototype (SPEC.md v18)\n');
 
   for (const test of [
     testSingleCodeContent,
@@ -1347,6 +1412,7 @@ function main() {
     testSingleCodePaper,
     testMultiCodePaper,
     testTamperedFragmentDetected,
+    testMissingPayloadHashRejected,
     testTamperedPaperRootHashDetected,
     testKeyOnlyCode,
     testEvenOddCriticality,

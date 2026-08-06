@@ -307,12 +307,46 @@ async function testOversizedSplitDeclarationsRejected() {
   return { name: 'oversized-split-declarations-rejected' };
 }
 
+async function testMissingPayloadHashRejected() {
+  const gen = await loadGeneratorWindow();
+  const reader = await loadReaderWindow();
+
+  // TagDrop makes payload_hash mandatory whenever Split is used (SPEC.md v18, §5.1
+  // "Reassembly integrity"), stricter than QDEF's own OPTIONAL/odd framing of it -- a
+  // Split-wrapped payload that never carries it must be rejected outright once fully
+  // reassembled, not silently accepted the way skipping a merely-optional field would be.
+  // Real Content Extension + Media Preview, built with the generator's own encoders --
+  // only the Split fragment itself is hand-built, deliberately missing key 11.
+  const contentExtension = gen.buildContentExtension({ hint: 'cross-tool missing payload_hash' });
+  const mediaPreview = gen.buildMediaPreview({
+    contentHash: crossBytes(new Uint8Array(8).fill(3), gen), mediaType: 'text/plain',
+  });
+  const groupId = crossBytes(new Uint8Array(8).fill(4), gen);
+  const TYPE_SPLIT = getConst(gen, 'TYPE_SPLIT');
+  const data = crossBytes(new Uint8Array([1, 2, 3, 4, 5]), gen);
+  const fragment = gen.cborRecord(TYPE_SPLIT, {
+    0: data, 2: groupId, 4: 0, 6: 1, 7: data.length,
+    // key 11 (payload_hash) deliberately omitted
+  }, [mediaPreview]);
+  const bytes = crossBytes(gen.encodeRootBundle([contentExtension, fragment]), reader);
+
+  const scan = reader.recordScanResult(bytes);
+  assert.equal(scan.type, 'record', 'a Split fragment missing payload_hash must still parse as a Record');
+
+  const RecordAssembler = getRecordAssemblerClass(reader);
+  const state = await new RecordAssembler().add(scan);
+  assert.equal(state.kind, 'HashMismatch',
+    'a Split-wrapped payload missing payload_hash must be rejected, not silently reassembled');
+
+  return { name: 'missing-payload-hash-rejected' };
+}
+
 async function main() {
   console.log('Cross-tool round-trip test: real generator/index.html -> real reader/index.html\n');
   const results = [];
   for (const test of [
     testSingleCodeContent, testMultiCodeContentSplit, testSingleCodePaper, testKeyOnlyCode,
-    testOversizedSplitDeclarationsRejected,
+    testOversizedSplitDeclarationsRejected, testMissingPayloadHashRejected,
   ]) {
     try {
       const result = await test();
@@ -323,7 +357,7 @@ async function main() {
       process.exitCode = 1;
     }
   }
-  const total = 5;
+  const total = 6;
   if (!process.exitCode) {
     console.log(`\n${results.length}/${total} passed.`);
   } else {

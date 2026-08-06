@@ -708,8 +708,10 @@ const CSK = { SIGNATURE:3, SIGNER_PUBKEY:5 };
 // QDEF Split Wrapper (Type 1) field keys, SPEC.md v15 — fragment data moves from the
 // array's positional payload slot into map key `0`; `GROUP_ID`/`INDEX`/`COUNT` shift up two
 // keys each to make room (`0`/`2`/`4` → `2`/`4`/`6`); `TOTAL`/`PARITY` are unaffected
-// (`7`/`9` both versions).
-const SK = { DATA:0, GROUP_ID:2, INDEX:4, COUNT:6, TOTAL:7, PARITY:9 };
+// (`7`/`9` both versions). `PAYLOAD_HASH` (key `11`, SPEC.md v18) is TagDrop-MANDATORY
+// reassembly integrity — see RecordAssembler._computeState — unlike QDEF's own
+// OPTIONAL/odd framing of it.
+const SK = { DATA:0, GROUP_ID:2, INDEX:4, COUNT:6, TOTAL:7, PARITY:9, PAYLOAD_HASH:11 };
 // Compress Wrapper (Type 4) field keys, SPEC.md v15 — its one value moved from the array's
 // positional payload slot into map key `0` (was `[4, deflated_bytes]` through v14, no field
 // map at all; now `[4, {0: deflated_bytes}]`).
@@ -1362,6 +1364,7 @@ const RECORD_TYPE_INFO = new Map([
   [TYPE_SPLIT, { name: 'Split Wrapper', keyNames: {
     [SK.DATA]:'data', [SK.GROUP_ID]:'group_id', [SK.INDEX]:'index',
     [SK.COUNT]:'count', [SK.TOTAL]:'total_bytes', [SK.PARITY]:'parity',
+    [SK.PAYLOAD_HASH]:'payload_hash',
   } }],
   [TYPE_COMPRESS, { name: 'Compress Wrapper', keyNames: {
     [CK.DATA]:'data',
@@ -1763,6 +1766,27 @@ function bytesEqual(a, b) {
   return true;
 }
 
+/**
+ * Verifies payload_hash (a multihash: 1-byte multicodec function code + digest, full or
+ * truncated — QDEF-SPEC.md §3.6/§4.1 permits either) against the reassembled `wrapped`
+ * bytes (SPEC.md v18, §5.1 "Reassembly integrity"). Recognizes only sha2-256 (0x12),
+ * matching every field TagDrop's own encoder emits (both truncated to 8 bytes, matching
+ * contentHash's own truncation) — the digest length is read from `hash` itself rather than
+ * hardcoded, so a compliant non-TagDrop encoder's full 32-byte digest still verifies
+ * correctly. An unrecognized function code is treated as present-but-unverifiable rather
+ * than a mismatch, mirroring QDEF's reference decoder's own "skip silently" handling of a
+ * hash function it doesn't recognize — RecordAssembler._computeState already enforces that
+ * the field is present at all before calling this.
+ */
+async function payloadHashMatches(hash, wrapped) {
+  if (!hash || hash.length === 0) return false;
+  if (hash[0] !== 0x12) return true;
+  const digestLen = hash.length - 1;
+  if (digestLen <= 0) return false;
+  const digest = (await sha256(wrapped)).slice(0, digestLen);
+  return bytesEqual(digest, hash.slice(1));
+}
+
 function concatBytes(...arrays) {
   const total = arrays.reduce((s, a) => s + a.length, 0);
   const out = new Uint8Array(total);
@@ -1968,7 +1992,9 @@ class SectorAssembler {
 // New-format counterpart to SectorAssembler above, for Content codes. Paper is unchanged
 // from before v9: every code in a multi-code group carries the identical Preview Record
 // plus one Split fragment of the (possibly Compress-wrapped) Body; groups are keyed by
-// the Split Wrapper's group_id, which doubles as the reassembly integrity check. Content
+// the Split Wrapper's group_id (an opaque correlation token only, SPEC.md v18 — reassembly
+// integrity is TagDrop's own mandatory payload_hash field instead, see _computeState).
+// Content
 // (SPEC.md v9 §3.1/§3.1a/§5.1) has three Records instead of Paper's two — Content
 // Extension, Media Preview, Media Payload — with one nesting difference by case: unsplit,
 // Media Payload nests as Media Preview's own subrecord; Split-wrapped, Media Preview
@@ -2005,7 +2031,7 @@ class RecordAssembler {
       const key = toHex(groupId);
       let group = this.groups.get(key);
       if (!group) {
-        group = { kind, groupId, count, total, data: new Map(), parity: null, resolvedOverride: null };
+        group = { kind, groupId, count, total, data: new Map(), parity: null, resolvedOverride: null, payloadHash: null };
         this.groups.set(key, group);
       }
       // Preview repeats identically on every code (SPEC §5.1) — keep the latest scan's copy.
@@ -2014,6 +2040,8 @@ class RecordAssembler {
       // A parity fragment sits at index == count (SPEC §5's redundancy scheme).
       if (index >= count) group.parity = data;
       else group.data.set(index, data);
+      // payload_hash (key 11, SPEC.md v18) lives on fragment index 0 only.
+      if (frag[SK.PAYLOAD_HASH] instanceof Uint8Array) group.payloadHash = frag[SK.PAYLOAD_HASH];
 
       const state = await this._computeState(group);
       if (isTerminalState(state)) this.groups.delete(key);
@@ -2052,7 +2080,7 @@ class RecordAssembler {
     const key = toHex(groupId);
     let group = this.groups.get(key);
     if (!group) {
-      group = { kind, groupId, count, total, data: new Map(), parity: null, resolvedOverride: null };
+      group = { kind, groupId, count, total, data: new Map(), parity: null, resolvedOverride: null, payloadHash: null };
       this.groups.set(key, group);
     }
     group.preview = preview;
@@ -2060,6 +2088,8 @@ class RecordAssembler {
     group.mediaPreviewRaw = mediaPreviewSub.raw; // already bare — Media Preview carries no subrecord of its own here
     if (index >= count) group.parity = data;
     else group.data.set(index, data);
+    // payload_hash (key 11, SPEC.md v18) lives on fragment index 0 only.
+    if (frag[SK.PAYLOAD_HASH] instanceof Uint8Array) group.payloadHash = frag[SK.PAYLOAD_HASH];
 
     const state = await this._computeState(group);
     if (isTerminalState(state)) this.groups.delete(key);
@@ -2129,10 +2159,13 @@ class RecordAssembler {
   async _computeState(group) {
     const wrapped = this._reassemble(group);
     if (wrapped) {
-      // group_id is SHA-256(wrapped fragment bytes)[0:8] (SPEC §5.1) — the reassembly
-      // integrity check over the bytes exactly as transmitted (after compression AND
-      // encryption).
-      if (!bytesEqual((await sha256(wrapped)).slice(0, 8), group.groupId)) {
+      // group_id is an opaque correlation token only (SPEC.md v18 — QDEF-SPEC.md's Split
+      // Wrapper history no longer treats it as a verified content hash); it already did its
+      // job just by getting these fragments grouped together (add()). The actual
+      // reassembly-integrity check is TagDrop's own mandatory payload_hash (fragment index
+      // 0, over the bytes exactly as transmitted, after compression AND encryption): reject
+      // a Split-wrapped payload that's missing it outright, same as a mismatch.
+      if (!group.payloadHash || !(await payloadHashMatches(group.payloadHash, wrapped))) {
         return { kind: 'HashMismatch' };
       }
       if (group.kind === 'paper') {
