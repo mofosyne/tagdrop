@@ -892,6 +892,28 @@ wrapping avoids a cross-record correctness hazard.
 so this stays strictly opt-in — a Record Type with no need for it stays
 a plain, unwrapped Record.
 
+**Scope boundary: Split targets a finite, printed set of codes, not an
+animated/streamed one.** Split's model is "reassemble exactly `count`
+known fragments" (with single-fragment XOR recovery at best) — the
+right fit for a fixed, static artifact like a set of printed labels,
+where every code is expected to eventually be in hand. It is
+deliberately not a fountain code: an application that scans a live,
+looping display over an unreliable camera (drop rates far higher and
+more variable than a printed code's one-time scan) wants a mechanism
+where the receiver can reconstruct from *any* sufficient subset of an
+open-ended stream, not a specific fixed set — e.g. LT/Luby-transform
+fountain coding, as used by
+[Decimen](https://github.com/bashalarmistalt/decimen-optical-transfer)
+for exactly this animated-QR case. That's a substantially larger
+mechanism (a shared pseudorandom degree distribution that must produce
+bit-identical output across every implementation — Decimen's own build
+notes a real cross-engine desync from a 1-ulp difference in `Math.log`
+between JS engines) for a different physical situation than the one
+Split is scoped to. An application needing it should look at a
+fountain-coding scheme built for that channel rather than QDEF's Split,
+the same considered exclusion as Encrypt's own deniability limit,
+above.
+
 ### 4.2 Open/Hint URI (optional)
 
 Unlike §4.1, this is deliberately **not** a wrapper — a plain standard
@@ -1087,6 +1109,19 @@ The identified content itself is carried as a subrecord, typically a
 [ 7, { 2: "image/png", 3: h'...', 5: "photo.png" },
   [ 3, { 0: h'<payload bytes>', 1: "image/png" } ] ]
 ```
+
+**Key `5` (Filename) MUST be sanitized before any local use, never
+trusted as a safe path component.** It arrives over the same
+un-authenticated optical channel as everything else in the container —
+any scanned code can claim any filename. A decoder that writes it
+straight to a filesystem path, or otherwise treats it as more than a
+display string, is exposed to path traversal (`../../etc/passwd`-style
+values) and embedded control characters. At minimum: reduce to a bare
+basename (strip any `/` or `\` and everything before the last one),
+strip control characters, and substitute a generic name if the result
+is empty, `.`, or `..`. The same caution applies to any other
+QDEF-carried field a decoder is tempted to use as a filesystem path or
+shell argument rather than opaque display text.
 
 **Why not put identification fields on Media Payload's own map?** §4.3
 deliberately stays minimal (media type + bytes, nothing else) so it
