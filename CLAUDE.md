@@ -1853,6 +1853,24 @@ control characters) confirming no regression — not committed, since
 the project has no Robolectric/instrumented test setup for
 `app/src/test` to host a real permanent test in.
 
+Released as `v2.6.2` (`versionCode` 13→14, `versionName` "2.6.1"→"2.6.2")
+— a bugfix release bundling everything landed on `master` since
+`v2.6.1`: the SPEC.md version-18 `payload_hash` wire-format port (both
+Kotlin and JS, above) and this section's `ContentExporter.kt`
+hardening. Pre-release audit caught one real issue outside the code
+itself: the `Deploy GitHub Pages` workflow run triggered by the JS
+port's merge had failed (a GitHub Pages API timeout stuck on
+`deployment_in_progress` for 10 minutes, not a build/content problem —
+the `build` job itself succeeded) — confirmed via the Actions API
+before assuming it was fine, since a merged PR's own CI check doesn't
+cover this separate, path-filtered workflow. Re-ran the failed job
+directly rather than pushing a no-op commit; it succeeded on retry, so
+the hosted web tools (`mofosyne.github.io/tagdrop`) are back in sync
+with `master`. `fastlane/metadata/android/en-US/changelogs/14.txt`
+added for the F-Droid listing (a separate, terser changelog from the
+GitHub Release notes — this repo's established per-`versionCode`
+convention, not something to skip).
+
 ### Known duplication (not yet deduped)
 
 `tools/generator/index.html`'s codec helpers — Base41 (`base41Encode`/
@@ -1953,7 +1971,7 @@ scope decided by typeId sign rather than namespace-item presence
 reserved map key `0` rather than a positional payload slot [§3.1a/§5,
 version 15]; see "Two parallel wire-format implementations" above and
 the version-14/15/16/17/18 history entries) is independent of the
-Android app's `versionName` (currently `2.6.1`, `versionCode` 13) —
+Android app's `versionName` (currently `2.6.2`, `versionCode` 14) —
 bumping one never requires bumping the other. (This note has drifted
 stale before — previously said `8`/`2.1.0`, then `15`/`2.5.1`, then
 `16`, for a while — a reminder to re-check this line's own numbers
